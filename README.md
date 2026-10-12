@@ -78,32 +78,152 @@ see the note.
 The JavaScript debugger tools on Firefox need its debugger (RDP) port: on by
 default for a launched Firefox, `--firefox-rdp-port` for an attached one.
 
-## Installation
+## 📦 Installation
 
-Every method installs the same pre-compiled binaries published on each
-[GitHub Release](https://github.com/raultov/browser-control-mcp/releases);
-a Rust toolchain is only needed for Cargo. Install Chrome and/or Firefox
-yourself: the server launches them, it does not ship them (except the Docker
-image).
+Every method installs the **same pre-compiled binaries** published on each
+[GitHub Release](https://github.com/raultov/browser-control-mcp/releases); a Rust toolchain is only needed for the Cargo and
+source routes. The npm package is a small wrapper whose `postinstall` fetches
+the pre-compiled binary for your platform from GitHub Releases: no compiling,
+no Rust toolchain. Install Chrome and/or Firefox yourself: the server launches
+them, it does not ship them (except the Docker image).
 
-> Always use the scoped npm name `@raultov/browser-control-mcp`: the unscoped
-> `browser-control-mcp` on npm is an unrelated project.
+> ⚠️ **Always use the scoped npm name `@raultov/browser-control-mcp`.** The
+> unscoped `browser-control-mcp` on npm is a different, unrelated project.
 
-| Platform | Command |
-| --- | --- |
-| macOS, Linux (Homebrew) | `brew install raultov/tap/browser-control-mcp` |
-| Any (Node.js >= 14) | `npm install -g @raultov/browser-control-mcp`, or run it with `npx -y @raultov/browser-control-mcp` |
-| macOS, Linux (shell) | `curl --proto '=https' --tlsv1.2 -LsSf https://github.com/raultov/browser-control-mcp/releases/latest/download/browser-control-mcp-installer.sh \| sh` |
-| Windows (PowerShell) | `powershell -ExecutionPolicy Bypass -c "irm https://github.com/raultov/browser-control-mcp/releases/latest/download/browser-control-mcp-installer.ps1 \| iex"` |
-| Windows (MSI) | `browser-control-mcp-x86_64-pc-windows-msvc.msi` from the Releases page |
-| Any (Rust) | `cargo install browser-control-mcp` |
-| Docker (amd64) | `docker build -t browser-control-mcp .` then `docker run -i --rm browser-control-mcp --headless` (Chrome and Firefox inside) |
+Prefer zero effort? The one-prompt route below lets your AI agent do all of
+it. Otherwise, methods are grouped by platform and ordered by popularity.
 
-The Linux binaries need glibc >= 2.35 (Ubuntu 22.04+, Debian 12+).
+### 🤖 One-Prompt Install (any platform)
 
-Browser discovery: `CHROME_PATH`, then `google-chrome`, `chromium` and the
-usual install paths; `--firefox-path`, then `FIREFOX_PATH`, then `firefox`
-and the usual install paths.
+Paste this prompt into any AI coding agent's chat (Claude Code, opencode,
+Cursor, Codex CLI, Copilot, ...) and let it install the server and register
+it with every MCP-capable client it detects on your machine:
+
+```text
+Install and set up the browser-control-mcp MCP server on this machine. Do not launch Chrome or Firefox yourself: the server launches and manages them.
+
+1. Install the server binary with the first method that works on this OS:
+   - Homebrew available (macOS/Linux): brew install raultov/tap/browser-control-mcp
+   - Node.js >= 14 available (any OS): npm install -g @raultov/browser-control-mcp
+   - macOS/Linux fallback: curl --proto '=https' --tlsv1.2 -LsSf https://github.com/raultov/browser-control-mcp/releases/latest/download/browser-control-mcp-installer.sh | sh
+   - Windows fallback: download and run the .msi from https://github.com/raultov/browser-control-mcp/releases/latest
+   Verify with: browser-control-mcp --version (add the install dir to PATH if it is not found).
+
+2. Register the MCP server with every AI client you detect on this machine:
+   - Claude Code: claude mcp add --scope user browser-control-mcp browser-control-mcp
+   - opencode: merge into ~/.config/opencode/opencode.json —
+     "mcp": { "browser-control-mcp": { "type": "local", "command": ["browser-control-mcp"] } }
+   - Codex CLI: append to ~/.codex/config.toml —
+     [mcp_servers.browser-control-mcp]
+     command = "browser-control-mcp"
+   - Any other MCP-capable client (Cursor, Windsurf, VS Code, ...): add it with its own MCP settings, command "browser-control-mcp" with no arguments.
+
+3. Report what you installed and which clients you configured, and remind me to restart each client so the MCP server loads. Do not enable --user-profile or --allow-cookie-import unless I ask for them.
+```
+
+### macOS
+
+**1. Homebrew**, the natural option on macOS:
+```bash
+brew install raultov/tap/browser-control-mcp
+```
+The formula fetches the pre-compiled binary (Apple Silicon and Intel) from
+GitHub Releases, and `brew upgrade` keeps you current.
+
+**2. npm / npx**, the MCP-client convention (requires Node.js >= 14):
+```bash
+npm install -g @raultov/browser-control-mcp   # installs the `browser-control-mcp` command
+npx -y @raultov/browser-control-mcp           # ...or just run it once, nothing to install
+```
+
+**3. Shell installer**, a one-liner that installs to `~/.cargo/bin`:
+```bash
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/raultov/browser-control-mcp/releases/latest/download/browser-control-mcp-installer.sh | sh
+```
+
+**4. Cargo**, if you already have Rust:
+```bash
+cargo install browser-control-mcp     # compiles from crates.io
+cargo binstall browser-control-mcp    # with cargo-binstall: fetches the pre-compiled binary, no compile
+```
+
+**5. Manual download**: the `aarch64-apple-darwin` or `x86_64-apple-darwin`
+`.tar.xz` archive from the [Releases](https://github.com/raultov/browser-control-mcp/releases) page.
+
+### Linux
+
+**1. npm / npx** (requires Node.js >= 14):
+```bash
+npm install -g @raultov/browser-control-mcp   # installs the `browser-control-mcp` command
+npx -y @raultov/browser-control-mcp           # ...or just run it once, nothing to install
+```
+
+**2. Shell installer**, a one-liner that installs to `~/.cargo/bin`:
+```bash
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/raultov/browser-control-mcp/releases/latest/download/browser-control-mcp-installer.sh | sh
+```
+The Linux binaries require glibc >= 2.35 (Ubuntu 22.04+, Debian 12+, Fedora 36+).
+
+**3. Homebrew (Linuxbrew)**, if you already use
+[Homebrew on Linux](https://docs.brew.sh/Homebrew-on-Linux):
+```bash
+brew install raultov/tap/browser-control-mcp
+```
+
+**4. Cargo**, if you already have Rust:
+```bash
+cargo install browser-control-mcp     # compiles from crates.io
+cargo binstall browser-control-mcp    # with cargo-binstall: fetches the pre-compiled binary, no compile
+```
+
+**5. Manual download**: the `x86_64-unknown-linux-gnu` or
+`aarch64-unknown-linux-gnu` `.tar.xz` archive from the [Releases](https://github.com/raultov/browser-control-mcp/releases) page.
+
+### Windows
+
+**1. npm / npx** (requires Node.js >= 14):
+```powershell
+npm install -g @raultov/browser-control-mcp   # installs the `browser-control-mcp` command
+npx -y @raultov/browser-control-mcp           # ...or just run it once, nothing to install
+```
+
+**2. MSI installer**, the native Windows experience: download
+`browser-control-mcp-x86_64-pc-windows-msvc.msi` from the [Releases](https://github.com/raultov/browser-control-mcp/releases)
+page and double-click it.
+
+**3. PowerShell installer**, a one-liner:
+```powershell
+powershell -ExecutionPolicy Bypass -c "irm https://github.com/raultov/browser-control-mcp/releases/latest/download/browser-control-mcp-installer.ps1 | iex"
+```
+
+**4. Cargo**, if you already have Rust:
+```powershell
+cargo install browser-control-mcp     # compiles from crates.io
+cargo binstall browser-control-mcp    # with cargo-binstall: fetches the pre-compiled binary, no compile
+```
+
+**5. Manual download**: the `x86_64-pc-windows-msvc` `.zip` archive from the
+[Releases](https://github.com/raultov/browser-control-mcp/releases) page.
+
+### Docker (amd64)
+
+```bash
+docker build -t browser-control-mcp .
+docker run -i --rm browser-control-mcp --headless   # Chrome and Firefox inside
+```
+
+### From source
+
+```bash
+git clone https://github.com/raultov/browser-control-mcp && cd browser-control-mcp
+make install   # release build copied to ~/.cargo/bin (or cargo install --path . --locked)
+```
+
+### Browser discovery
+
+`CHROME_PATH`, then `google-chrome`, `chromium` and the usual install paths;
+`--firefox-path`, then `FIREFOX_PATH`, then `firefox` and the usual install
+paths.
 
 ## MCP client configuration
 
@@ -131,25 +251,6 @@ Claude Code:
 claude mcp add browser-control-mcp browser-control-mcp
 claude mcp add browser-control-firefox -- browser-control-mcp --browser firefox
 claude mcp add browser-control-mcp -- npx -y @raultov/browser-control-mcp
-```
-
-One-prompt install: paste this into any AI coding agent.
-
-```text
-Install and set up the browser-control-mcp MCP server on this machine. Do not
-launch Chrome or Firefox yourself: the server launches them.
-
-1. Install the binary with the first method that works:
-   - Homebrew: brew install raultov/tap/browser-control-mcp
-   - Node.js >= 14: npm install -g @raultov/browser-control-mcp
-   - macOS/Linux: curl --proto '=https' --tlsv1.2 -LsSf https://github.com/raultov/browser-control-mcp/releases/latest/download/browser-control-mcp-installer.sh | sh
-   - Windows: the .msi from https://github.com/raultov/browser-control-mcp/releases/latest
-   Verify with: browser-control-mcp --version
-2. Register it with every MCP client you find (Claude Code:
-   claude mcp add --scope user browser-control-mcp browser-control-mcp;
-   others: command "browser-control-mcp", no arguments).
-3. Report what you installed and configured, and remind me to restart the
-   clients. Do not enable --user-profile or --allow-cookie-import unless I ask.
 ```
 
 ## Usage concepts
