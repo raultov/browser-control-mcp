@@ -6,7 +6,7 @@ use rust_mcp_sdk::{
 
 #[macros::mcp_tool(
     name = "webmcp_get_invocation",
-    description = "Returns the current status and result of a WebMCP tool invocation by its invocationId. Side effects: none (read-only state access). Prerequisites: the invocationId must have been returned by webmcp_invoke_tool (it is included in the timeout error when a page tool awaits user consent). Returns: JSON with toolName, frameId, input, status ('Pending', 'Completed', 'Error', or 'Canceled'), and output/errorText when available. Use this to poll a long-running invocation (e.g. one waiting for a human to approve a consent dialog on the page) without blocking. Alternatives: webmcp_list_invocations to see all invocations at once."
+    description = "Returns the current status and result of a WebMCP tool invocation by its invocationId. Side effects: none (read-only state access). Prerequisites: the invocationId must have been returned by webmcp_invoke_tool (it is included in the timeout error when a page tool awaits user consent). Returns: JSON with toolName, frameId, input, status ('Pending', 'Completed', 'Error', or 'Canceled'), and output/errorText when available. Use this to poll a long-running invocation (e.g. one waiting for a human to approve a consent dialog on the page) without blocking. Alternatives: webmcp_list_invocations to see all invocations at once. Chrome only (not available on Firefox)."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct GetWebmcpInvocationTool {

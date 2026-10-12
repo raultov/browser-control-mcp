@@ -6,7 +6,7 @@ use rust_mcp_sdk::{
 
 #[macros::mcp_tool(
     name = "webmcp_list_invocations",
-    description = "Lists all WebMCP tool invocations from this Chrome session with their current status. Side effects: none (read-only state access). Returns: JSON array with toolName, frameId, input, and status ('Pending', 'Completed', 'Error', or 'Canceled') for each invocation. Use this to find invocations that are waiting for user consent on the page (status 'Pending') or to recover an invocationId after losing it. Alternatives: webmcp_get_invocation for a single invocation by id."
+    description = "Lists all WebMCP tool invocations from this Chrome session with their current status. Side effects: none (read-only state access). Returns: JSON array with toolName, frameId, input, and status ('Pending', 'Completed', 'Error', or 'Canceled') for each invocation. Use this to find invocations that are waiting for user consent on the page (status 'Pending') or to recover an invocationId after losing it. Alternatives: webmcp_get_invocation for a single invocation by id. Chrome only (not available on Firefox)."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct ListWebmcpInvocationsTool {

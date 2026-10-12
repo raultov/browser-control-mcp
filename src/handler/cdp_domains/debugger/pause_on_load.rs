@@ -10,7 +10,7 @@ use serde_json::json;
 
 #[macros::mcp_tool(
     name = "pause_on_load",
-    description = "Enables the debugger and injects a breakpoint at the first statement of any script loaded after reloading the page. Side effects: reloads the current page (destructive of unsaved state). Prerequisites: requires an active Chrome tab. Returns: confirmation of debugger enablement and page reload. Use this to debug script execution from the page load. Alternatives: 'set_breakpoint' for targeting specific scripts/lines, 'pause_on_exceptions' for exception-based pausing."
+    description = "Enables the debugger and injects a breakpoint at the first statement of any script loaded after reloading the page. Side effects: reloads the current page (destructive of unsaved state). Prerequisites: requires an active Chrome tab. Returns: confirmation of debugger enablement and page reload. Use this to debug script execution from the page load. Alternatives: 'set_breakpoint' for targeting specific scripts/lines, 'resume' to continue after the pause."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct PauseOnLoadTool {

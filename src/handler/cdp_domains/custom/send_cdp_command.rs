@@ -6,7 +6,7 @@ use rust_mcp_sdk::{
 
 #[macros::mcp_tool(
     name = "send_cdp_command",
-    description = "EXPERIMENTAL: Sends raw Chrome DevTools Protocol (CDP) commands to the browser for advanced use cases not covered by specialized tools. Side effects: depends on command; may modify page state, DOM, or trigger navigation. Auth requirements: subject to local-only restrictions if enabled (Page.navigate and Target.createTarget checked). Prerequisites: requires knowledge of CDP protocol; active Chrome connection. Returns: raw CDP command response as JSON. Use this only when specialized tools inadequate. Alternatives: use domain-specific tools (navigate, click_element, evaluate_js)."
+    description = "EXPERIMENTAL: Sends raw Chrome DevTools Protocol (CDP) commands to the browser for advanced use cases not covered by specialized tools. Side effects: depends on command; may modify page state, DOM, or trigger navigation. Auth requirements: subject to local-only restrictions if enabled (Page.navigate and Target.createTarget checked). Prerequisites: requires knowledge of CDP protocol; active Chrome connection. Returns: raw CDP command response as JSON. Use this only when specialized tools inadequate. Alternatives: use domain-specific tools (navigate, click_element, evaluate_js). Chrome only (not available on Firefox)."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct SendCdpCommandTool {

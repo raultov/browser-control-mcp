@@ -12,7 +12,7 @@ use tokio_stream::StreamExt;
 
 #[macros::mcp_tool(
     name = "enable_proxy_auth",
-    description = "Activates proxy authentication interception via Fetch domain, supplying credentials for authenticated proxies. Side effects: starts background event listener that auto-terminates after 30s inactivity; initiates pre-warming navigation. Auth requirements: username and password credentials required. Prerequisites: Chrome must be started with proxy-server flag. Rate limits: 30-second timeout per inactivity period. Returns: confirmation of proxy auth activation. Use this after 'restart_chrome' with proxy settings. Alternatives: manual proxy configuration in system settings."
+    description = "Activates proxy authentication interception via Fetch domain, supplying credentials for authenticated proxies. Side effects: starts background event listener that auto-terminates after 30s inactivity; initiates pre-warming navigation. Auth requirements: username and password credentials required. Prerequisites: Chrome must be started with proxy-server flag. Rate limits: 30-second timeout per inactivity period. Returns: confirmation of proxy auth activation. Use this after 'restart_browser' with proxy settings. Alternatives: manual proxy configuration in system settings."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct EnableProxyAuthTool {

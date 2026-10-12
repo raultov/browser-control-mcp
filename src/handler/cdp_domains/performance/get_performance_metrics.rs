@@ -6,7 +6,7 @@ use rust_mcp_sdk::{
 
 #[macros::mcp_tool(
     name = "get_performance_metrics",
-    description = "Captures runtime performance metrics including JS heap size, DOM node count, and layout timing. Side effects: none (read-only snapshot). Prerequisites: requires an active Chrome tab. Returns: JSON object mapping metric names to numeric values (e.g., JSHeapUsedSize, LayoutCount). Use this to monitor memory usage, detect memory leaks, or profile performance. Alternatives: 'profile_page_performance' for detailed tracing, browser DevTools Performance tab."
+    description = "Captures runtime performance metrics including JS heap size, DOM node count, and layout timing. Side effects: none (read-only snapshot). Prerequisites: requires an active Chrome tab. Returns: JSON object mapping metric names to numeric values (e.g., JSHeapUsedSize, LayoutCount). Use this to monitor memory usage, detect memory leaks, or profile performance. Alternatives: 'profile_page_performance' for detailed tracing, browser DevTools Performance tab. Chrome only (not available on Firefox)."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct GetPerformanceMetricsTool {

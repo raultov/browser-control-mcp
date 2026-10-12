@@ -48,6 +48,10 @@ from a copy of its code: entries describe the differences from that release.
 - Server title "Browser Control MCP"; new description and instructions that
   cover both browsers.
 
+- Tool descriptions say which tools are Chrome only and no longer mention
+  tools that do not exist (`pause_on_exceptions`, `step_out`);
+  `remove_breakpoint` no longer claims the page must be paused.
+
 ### Fixed
 - `inspect_dom` no longer crashes the server when the context window around a
   match falls inside a multi-byte character.

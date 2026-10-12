@@ -6,7 +6,7 @@ use rust_mcp_sdk::{
 
 #[macros::mcp_tool(
     name = "webmcp_invoke_tool",
-    description = "Invokes a WebMCP tool registered by the current web page. Side effects: depends on the tool invoked; may modify page state, trigger network requests, or perform other actions defined by the page. Prerequisites: WebMCP feature must be enabled, target frame must exist, and the tool must be registered. Returns: The output of the tool invocation. Use this to interact with page-provided tools."
+    description = "Invokes a WebMCP tool registered by the current web page. Side effects: depends on the tool invoked; may modify page state, trigger network requests, or perform other actions defined by the page. Prerequisites: WebMCP feature must be enabled, target frame must exist, and the tool must be registered. Returns: The output of the tool invocation. Use this to interact with page-provided tools. Chrome only (not available on Firefox)."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct InvokeWebmcpToolTool {

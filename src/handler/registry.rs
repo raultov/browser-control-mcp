@@ -6,6 +6,8 @@ use super::McpHandler;
 use super::cdp_domains;
 use super::chrome_instance;
 use crate::backend::{BrowserKind, Capability};
+#[cfg(test)]
+use crate::backend::{Capabilities, capabilities::CapabilityFlags};
 use rust_mcp_sdk::schema::{CallToolError, CallToolRequestParams, CallToolResult, Tool};
 use std::future::Future;
 use std::pin::Pin;
@@ -442,6 +444,89 @@ mod tests {
         assert!(
             message.contains("not available on Firefox (BiDi)"),
             "{message}"
+        );
+    }
+
+    /// Argument and result field names that descriptions quote.
+    const ARGUMENT_NAMES: &[&str] = &[
+        "active_tab_id",
+        "confirm_restart",
+        "copy_cookies",
+        "current_navigation_only",
+        "disable_cache",
+        "duration_ms",
+        "full_page",
+        "include_details",
+        "include_sensitive_headers",
+        "instance_id",
+        "is_default",
+        "prewarm_url",
+        "profile_dir",
+        "resource_type",
+        "source_profile",
+        "tab_id",
+        "target_id",
+        "type_filter",
+    ];
+
+    fn all_tools() -> Vec<Tool> {
+        table().into_iter().map(|e| (e.tool)()).collect()
+    }
+
+    /// TOL-03: Chrome-only tools say so in their description.
+    #[test]
+    fn browser_limited_tools_say_so() {
+        let firefox = Capabilities::new(
+            BrowserKind::Firefox,
+            CapabilityFlags {
+                server: crate::cli::ServerFlags {
+                    allow_cookie_import: true,
+                    enable_webmcp: true,
+                    local: false,
+                },
+                proxy: true,
+                firefox_debugger: true,
+            },
+        );
+        for entry in table() {
+            let tool = (entry.tool)();
+            let description = tool.description.unwrap_or_default();
+            let chrome_only = entry.needs.iter().any(|c| !firefox.has(*c));
+            let says_so = description.ends_with("Chrome only (not available on Firefox).");
+            assert_eq!(chrome_only, says_so, "{}: {description}", tool.name);
+        }
+    }
+
+    /// TOL-06: Descriptions only reference existing tools.
+    #[test]
+    fn descriptions_reference_existing_tools() {
+        let tools = all_tools();
+        let known: BTreeSet<String> = tools.iter().map(|t| t.name.clone()).collect();
+        for tool in &tools {
+            let description = tool.description.clone().unwrap_or_default();
+            for quoted in description.split(['\'', '`']).skip(1).step_by(2) {
+                let is_tool_like = quoted.contains('_')
+                    && quoted.chars().all(|c| c.is_ascii_lowercase() || c == '_');
+                let arguments = ARGUMENT_NAMES;
+                if is_tool_like && !arguments.contains(&quoted) {
+                    assert!(
+                        known.contains(quoted),
+                        "{} references unknown `{quoted}`",
+                        tool.name
+                    );
+                }
+            }
+        }
+        let remove = tools
+            .iter()
+            .find(|t| t.name == "remove_breakpoint")
+            .unwrap();
+        assert!(
+            !remove
+                .description
+                .clone()
+                .unwrap_or_default()
+                .contains("requires an active, paused")
         );
     }
 }

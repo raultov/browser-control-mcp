@@ -7,7 +7,7 @@ use serde_json::json;
 
 #[macros::mcp_tool(
     name = "remove_breakpoint",
-    description = "Removes a previously set debugger breakpoint by its ID, allowing execution to pass that location uninterrupted. Side effects: modifies debugger state (breakpoint deleted). Prerequisites: requires an active, paused debugger session with the breakpoint ID returned from 'set_breakpoint'. Returns: confirmation of breakpoint removal. Use this to clean up breakpoints or disable debugging at specific locations. Alternatives: 'set_breakpoint' to add new breakpoints, 'resume' to continue execution."
+    description = "Removes a previously set debugger breakpoint by its ID, allowing execution to pass that location uninterrupted. Side effects: modifies debugger state (breakpoint deleted). Prerequisites: the breakpoint ID returned by 'set_breakpoint' (works whether or not execution is stopped). Returns: confirmation of breakpoint removal. Use this to clean up breakpoints or disable debugging at specific locations. Alternatives: 'set_breakpoint' to add new breakpoints, 'resume' to continue execution."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct RemoveBreakpointTool {
