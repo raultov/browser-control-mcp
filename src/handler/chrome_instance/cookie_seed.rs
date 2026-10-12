@@ -709,7 +709,10 @@ mod tests {
 
         let err = resolve_source(None, &env, &fs).unwrap_err();
         assert!(err.contains("No Chrome profile with cookies found"));
-        assert!(err.contains("/home/test/.config/google-chrome"));
+        // Joined like `linux_roots` does, so the separator matches the host
+        // (`/home/test\.config/google-chrome` on Windows).
+        let searched = PathBuf::from("/home/test").join(".config/google-chrome");
+        assert!(err.contains(&searched.display().to_string()), "{err}");
     }
 
     #[test]
