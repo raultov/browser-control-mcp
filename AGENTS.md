@@ -103,18 +103,23 @@ implements the semantic operations with its own protocol.
 ```
 src/
 ├── main.rs           thin binary: parse Args, call browser_control_mcp::run()
-├── lib.rs            crate docs, run(): server info, handler, stdio server
-├── cli.rs            Args (clap)
-└── handler/          imported from chrome-debug-mcp 1.5.6 (CDP only, being reshaped)
-    ├── mod.rs            McpHandler, per-session state, tool dispatch
-    ├── schema_compat.rs  schema normalisation for strict tool-calling engines
-    ├── cdp_domains/      one dir per CDP domain + event pump
-    └── chrome_instance/  instance/tab registries, Chrome launch, cookie seeding
+├── lib.rs            crate docs, run(): handler, stdio server, stop signals, shutdown
+├── cli.rs            Args (clap): BrowserFlags, ServerFlags, ProxyArgs (redacting Debug)
+├── server_info.rs    name, title, description, instructions
+├── backend/          BrowserKind, Capability/Capabilities, BackendError (+ bidi/ for Firefox)
+├── handler/
+│   ├── mod.rs            McpHandler, BrowserSession (Chrome), shared tool helpers
+│   ├── registry.rs       the tool table: schema, flag gate, capabilities, per-browser handlers
+│   ├── shutdown.rs       stop every instance on exit
+│   ├── schema_compat.rs  schema normalisation for strict tool-calling engines
+│   ├── cdp_domains/      Chrome tools and listeners, one dir per CDP domain + event pump
+│   └── chrome_instance/  instance/tab registries, Chrome launch, cookie seeding
+└── util/             url policy and redaction, JS snippets, json fields, text, locks, bounded maps
 ```
 
-Planned (specs 00 §5): `server_info.rs`, `instances/`, `backend/{cdp,bidi}/`,
-`tools/`, `util/`; `tests/` with fixtures, the stdio E2E driver and the
-browser scripts. This section is updated whenever the tree changes.
+The Chrome (CDP) implementation lives in `handler/`; the Firefox (BiDi + RDP)
+implementation in `backend/bidi/`. `handler/registry.rs` checks an
+instance's capabilities before dispatching to its browser's implementation.
 
 ## Gates
 

@@ -65,20 +65,25 @@ mod tests {
 
     #[async_trait::async_trait]
     impl ChromeManager for StuckManager {
-        async fn ensure_instance(&mut self) -> anyhow::Result<()> {
+        async fn ensure_instance(&mut self) -> crate::handler::chrome_instance::ManagerResult<()> {
             Ok(())
         }
-        async fn stop_instance(&mut self) -> anyhow::Result<()> {
+        async fn stop_instance(&mut self) -> crate::handler::chrome_instance::ManagerResult<()> {
             if self.fail {
-                return Err(anyhow::anyhow!("boom"));
+                return Err(crate::handler::chrome_instance::manager_error!("boom"));
             }
             std::future::pending().await
         }
-        async fn client(&self) -> anyhow::Result<cdp_browser_lite::CdpClient> {
-            Err(anyhow::anyhow!("no client"))
+        async fn client(
+            &self,
+        ) -> crate::handler::chrome_instance::ManagerResult<cdp_browser_lite::CdpClient> {
+            Err(crate::handler::chrome_instance::manager_error!("no client"))
         }
-        async fn browser_client(&self) -> anyhow::Result<cdp_browser_lite::BrowserClient> {
-            Err(anyhow::anyhow!("no client"))
+        async fn browser_client(
+            &self,
+        ) -> crate::handler::chrome_instance::ManagerResult<cdp_browser_lite::BrowserClient>
+        {
+            Err(crate::handler::chrome_instance::manager_error!("no client"))
         }
         fn get_port(&self) -> u16 {
             0

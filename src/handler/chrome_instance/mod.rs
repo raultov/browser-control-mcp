@@ -14,20 +14,49 @@ pub(crate) mod tab_lifecycle;
 pub(crate) mod tab_registry;
 
 use async_trait::async_trait;
+
+/// Why a Chrome lifecycle operation failed (the message is shown to the agent).
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+pub(crate) struct ManagerError(pub(crate) String);
+
+impl From<cdp_browser_lite::BrowserError> for ManagerError {
+    fn from(error: cdp_browser_lite::BrowserError) -> Self {
+        Self(error.to_string())
+    }
+}
+
+impl From<cdp_browser_lite::CdpError> for ManagerError {
+    fn from(error: cdp_browser_lite::CdpError) -> Self {
+        Self(error.to_string())
+    }
+}
+
+/// Result of a Chrome lifecycle operation.
+pub(crate) type ManagerResult<T> = Result<T, ManagerError>;
+
+/// `ManagerError` from format arguments.
+macro_rules! manager_error {
+    ($($arg:tt)*) => {
+        $crate::handler::chrome_instance::ManagerError(format!($($arg)*))
+    };
+}
 use cdp_browser_lite::{BrowserClient, CdpClient};
+pub(crate) use manager_error;
 
 use crate::handler::chrome_instance::cookie_seed::SeedReport;
 use crate::handler::chrome_instance::launch::ChromeFeature;
 
 #[async_trait]
 pub trait ChromeManager: Send + Sync {
-    async fn ensure_instance(&mut self) -> anyhow::Result<()>;
-    async fn stop_instance(&mut self) -> anyhow::Result<()>;
-    async fn client(&self) -> anyhow::Result<CdpClient>;
+    async fn ensure_instance(&mut self) -> crate::handler::chrome_instance::ManagerResult<()>;
+    async fn stop_instance(&mut self) -> crate::handler::chrome_instance::ManagerResult<()>;
+    async fn client(&self) -> crate::handler::chrome_instance::ManagerResult<CdpClient>;
     /// Retrieves a browser-level CDP client for tab management
     /// (open_tab, close_tab, attach_tab). Errors when the underlying
     /// manager does not support it (e.g. test mocks).
-    async fn browser_client(&self) -> anyhow::Result<BrowserClient>;
+    async fn browser_client(&self)
+    -> crate::handler::chrome_instance::ManagerResult<BrowserClient>;
     /// Returns the on-disk profile directory of the managed browser, if any.
     /// Defaults to `None` for managers that do not expose profile paths
     /// (e.g. test mocks). For ephemeral profiles the directory only exists
@@ -83,26 +112,28 @@ impl MockChromeManager {
 
 #[async_trait]
 impl ChromeManager for MockChromeManager {
-    async fn ensure_instance(&mut self) -> anyhow::Result<()> {
+    async fn ensure_instance(&mut self) -> crate::handler::chrome_instance::ManagerResult<()> {
         self.running = true;
         Ok(())
     }
 
-    async fn stop_instance(&mut self) -> anyhow::Result<()> {
+    async fn stop_instance(&mut self) -> crate::handler::chrome_instance::ManagerResult<()> {
         self.running = false;
         self.seed_report = None;
         Ok(())
     }
 
-    async fn client(&self) -> anyhow::Result<CdpClient> {
+    async fn client(&self) -> crate::handler::chrome_instance::ManagerResult<CdpClient> {
         let addr = format!("127.0.0.1:{}", self.port);
         CdpClient::new(&addr, std::time::Duration::from_secs(10))
             .await
             .map_err(Into::into)
     }
 
-    async fn browser_client(&self) -> anyhow::Result<BrowserClient> {
-        Err(anyhow::anyhow!(
+    async fn browser_client(
+        &self,
+    ) -> crate::handler::chrome_instance::ManagerResult<BrowserClient> {
+        Err(crate::handler::chrome_instance::manager_error!(
             "MockChromeManager does not support browser_client; tab management requires a real Chrome instance"
         ))
     }

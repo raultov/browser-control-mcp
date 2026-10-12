@@ -42,7 +42,6 @@ struct_excessive_bools = "warn"
 fn_params_excessive_bools = "warn"
 
 [dependencies]
-anyhow = "1.0.104"
 async-trait = "0.1.92"
 cdp-browser-lite = "0.4.1"
 chrono = "0.4.45"

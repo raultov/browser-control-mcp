@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use cdp_browser_lite::{BrowserClient, BrowserConfig, BrowserError, CdpClient};
+use cdp_browser_lite::{BrowserClient, BrowserConfig, CdpClient};
 
 use crate::handler::chrome_instance::cookie_seed::SeedReport;
 use crate::handler::chrome_instance::launch::{LaunchParams, LaunchPlan};
@@ -27,7 +27,7 @@ impl CdpBrowserManager {
 
 #[async_trait]
 impl crate::handler::chrome_instance::ChromeManager for CdpBrowserManager {
-    async fn ensure_instance(&mut self) -> anyhow::Result<()> {
+    async fn ensure_instance(&mut self) -> crate::handler::chrome_instance::ManagerResult<()> {
         if let Some(browser) = self.browser.as_ref()
             && browser.is_alive().await
         {
@@ -42,7 +42,7 @@ impl crate::handler::chrome_instance::ChromeManager for CdpBrowserManager {
         Ok(())
     }
 
-    async fn stop_instance(&mut self) -> anyhow::Result<()> {
+    async fn stop_instance(&mut self) -> crate::handler::chrome_instance::ManagerResult<()> {
         if let Some(browser) = self.browser.take() {
             browser.stop().await?;
         }
@@ -54,19 +54,23 @@ impl crate::handler::chrome_instance::ChromeManager for CdpBrowserManager {
         Ok(())
     }
 
-    async fn client(&self) -> anyhow::Result<CdpClient> {
-        let browser = self
-            .browser
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("Chrome instance has not been ensured yet"))?;
+    async fn client(&self) -> crate::handler::chrome_instance::ManagerResult<CdpClient> {
+        let browser = self.browser.as_ref().ok_or_else(|| {
+            crate::handler::chrome_instance::manager_error!(
+                "Chrome instance has not been ensured yet"
+            )
+        })?;
         browser.client().await
     }
 
-    async fn browser_client(&self) -> anyhow::Result<BrowserClient> {
-        let browser = self
-            .browser
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("Chrome instance has not been ensured yet"))?;
+    async fn browser_client(
+        &self,
+    ) -> crate::handler::chrome_instance::ManagerResult<BrowserClient> {
+        let browser = self.browser.as_ref().ok_or_else(|| {
+            crate::handler::chrome_instance::manager_error!(
+                "Chrome instance has not been ensured yet"
+            )
+        })?;
         browser.browser_client().await
     }
 
@@ -121,20 +125,24 @@ impl crate::handler::chrome_instance::ChromeManager for CdpBrowserManager {
 pub(crate) trait ManagedBrowser: Send + Sync {
     async fn resolved_port(&self) -> u16;
     async fn is_alive(&self) -> bool;
-    async fn client(&self) -> anyhow::Result<CdpClient>;
+    async fn client(&self) -> crate::handler::chrome_instance::ManagerResult<CdpClient>;
     /// Retrieves a browser-level CDP client for tab management.
     /// Default implementation rejects when the backend cannot provide one.
-    async fn browser_client(&self) -> anyhow::Result<BrowserClient>;
+    async fn browser_client(&self)
+    -> crate::handler::chrome_instance::ManagerResult<BrowserClient>;
     /// On-disk profile directory, if the backend exposes one.
     async fn profile_dir(&self) -> Option<std::path::PathBuf> {
         None
     }
-    async fn stop(&self) -> anyhow::Result<()>;
+    async fn stop(&self) -> crate::handler::chrome_instance::ManagerResult<()>;
 }
 
 #[async_trait]
 pub(crate) trait BrowserLauncher: Send + Sync {
-    async fn launch(&self, config: BrowserConfig) -> anyhow::Result<Box<dyn ManagedBrowser>>;
+    async fn launch(
+        &self,
+        config: BrowserConfig,
+    ) -> crate::handler::chrome_instance::ManagerResult<Box<dyn ManagedBrowser>>;
     #[cfg(test)]
     fn as_any(&self) -> &dyn std::any::Any;
 }
@@ -155,29 +163,31 @@ impl ManagedBrowser for RealBrowser {
         self.browser.is_alive().await
     }
 
-    async fn client(&self) -> anyhow::Result<CdpClient> {
+    async fn client(&self) -> crate::handler::chrome_instance::ManagerResult<CdpClient> {
         self.browser
             .client()
             .await
-            .map_err(|e: BrowserError| anyhow::anyhow!(e.to_string()))
+            .map_err(crate::handler::chrome_instance::ManagerError::from)
     }
 
-    async fn browser_client(&self) -> anyhow::Result<BrowserClient> {
+    async fn browser_client(
+        &self,
+    ) -> crate::handler::chrome_instance::ManagerResult<BrowserClient> {
         self.browser
             .browser_client()
             .await
-            .map_err(|e: BrowserError| anyhow::anyhow!(e.to_string()))
+            .map_err(crate::handler::chrome_instance::ManagerError::from)
     }
 
     async fn profile_dir(&self) -> Option<std::path::PathBuf> {
         self.browser.profile_dir().await
     }
 
-    async fn stop(&self) -> anyhow::Result<()> {
+    async fn stop(&self) -> crate::handler::chrome_instance::ManagerResult<()> {
         self.pool
             .close(self.id)
             .await
-            .map_err(|e: BrowserError| anyhow::anyhow!(e.to_string()))
+            .map_err(crate::handler::chrome_instance::ManagerError::from)
     }
 }
 
@@ -187,15 +197,21 @@ pub(crate) struct RealLauncher {
 
 #[async_trait]
 impl BrowserLauncher for RealLauncher {
-    async fn launch(&self, config: BrowserConfig) -> anyhow::Result<Box<dyn ManagedBrowser>> {
+    async fn launch(
+        &self,
+        config: BrowserConfig,
+    ) -> crate::handler::chrome_instance::ManagerResult<Box<dyn ManagedBrowser>> {
         let id = self
             .pool
             .open(config)
             .await
-            .map_err(|e: BrowserError| anyhow::anyhow!(e.to_string()))?;
+            .map_err(crate::handler::chrome_instance::ManagerError::from)?;
         let browser = self.pool.get(id).await;
         let Some(browser) = browser else {
-            return Err(anyhow::anyhow!("browser entry missing for {:?}", id));
+            return Err(crate::handler::chrome_instance::manager_error!(
+                "browser entry missing for {:?}",
+                id
+            ));
         };
         Ok(Box::new(RealBrowser {
             browser,
@@ -245,19 +261,21 @@ impl ManagedBrowser for FakeBrowser {
         self.alive.load(std::sync::atomic::Ordering::SeqCst)
     }
 
-    async fn client(&self) -> anyhow::Result<CdpClient> {
-        Err(anyhow::anyhow!(
+    async fn client(&self) -> crate::handler::chrome_instance::ManagerResult<CdpClient> {
+        Err(crate::handler::chrome_instance::manager_error!(
             "FakeBrowser::client is not implemented; tests should not reach this path"
         ))
     }
 
-    async fn browser_client(&self) -> anyhow::Result<BrowserClient> {
-        Err(anyhow::anyhow!(
+    async fn browser_client(
+        &self,
+    ) -> crate::handler::chrome_instance::ManagerResult<BrowserClient> {
+        Err(crate::handler::chrome_instance::manager_error!(
             "FakeBrowser::browser_client is not implemented; tests should not reach this path"
         ))
     }
 
-    async fn stop(&self) -> anyhow::Result<()> {
+    async fn stop(&self) -> crate::handler::chrome_instance::ManagerResult<()> {
         self.stop_calls
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         self.stopped
@@ -298,7 +316,10 @@ impl FakeLauncher {
 #[cfg(test)]
 #[async_trait]
 impl BrowserLauncher for FakeLauncher {
-    async fn launch(&self, config: BrowserConfig) -> anyhow::Result<Box<dyn ManagedBrowser>> {
+    async fn launch(
+        &self,
+        config: BrowserConfig,
+    ) -> crate::handler::chrome_instance::ManagerResult<Box<dyn ManagedBrowser>> {
         self.configs
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -310,7 +331,11 @@ impl BrowserLauncher for FakeLauncher {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .pop_front()
-            .ok_or_else(|| anyhow::anyhow!("FakeLauncher: no scripted FakeBrowser left"))?;
+            .ok_or_else(|| {
+                crate::handler::chrome_instance::manager_error!(
+                    "FakeLauncher: no scripted FakeBrowser left"
+                )
+            })?;
         let arc = std::sync::Arc::new(next);
         self.launched
             .lock()
@@ -338,17 +363,19 @@ impl ManagedBrowser for FakeBrowserHandle {
         self.0.is_alive().await
     }
 
-    async fn client(&self) -> anyhow::Result<CdpClient> {
-        Err(anyhow::anyhow!(
+    async fn client(&self) -> crate::handler::chrome_instance::ManagerResult<CdpClient> {
+        Err(crate::handler::chrome_instance::manager_error!(
             "FakeBrowserHandle::client is not implemented; tests should not reach this path"
         ))
     }
 
-    async fn browser_client(&self) -> anyhow::Result<BrowserClient> {
+    async fn browser_client(
+        &self,
+    ) -> crate::handler::chrome_instance::ManagerResult<BrowserClient> {
         self.0.browser_client().await
     }
 
-    async fn stop(&self) -> anyhow::Result<()> {
+    async fn stop(&self) -> crate::handler::chrome_instance::ManagerResult<()> {
         self.0.stop().await
     }
 }
