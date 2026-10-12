@@ -37,6 +37,9 @@ from a copy of its code: entries describe the differences from that release.
 - Custom-domain listeners started by `send_cdp_command` on a tab are stopped
   when the tab closes (a reference cycle kept them running forever), and no
   longer leak one static string per domain name.
+- Per-tab state fed by the browser is bounded: at most 2,000 parsed scripts,
+  100 WebSocket connections (with their frames) and 1,000 WebMCP
+  invocations; the oldest are forgotten first.
 
 ### Security
 - The start-up log no longer prints the proxy password, username or a
@@ -57,4 +60,7 @@ from a copy of its code: entries describe the differences from that release.
   (only `Page.navigate` was checked).
 - Cookie import refuses a `source_profile` that is not a single profile
   directory name (`../..` could read outside the browser's user-data root).
+- `get_network_logs` returns `Authorization`, `Proxy-Authorization`, `Cookie`
+  and `Set-Cookie` header values as `<redacted>` unless the new
+  `include_sensitive_headers: true` is passed.
 

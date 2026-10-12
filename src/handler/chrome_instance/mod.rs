@@ -48,13 +48,8 @@ pub trait ChromeManager: Send + Sync {
     }
     /// Sets or clears the seed profile report for the next launch.
     fn set_seed_profile(&mut self, _seed: Option<SeedReport>) {}
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "required for downcasting MockChromeManager in tests"
-        )
-    )]
+    /// Downcasting hook for tests (inspecting a `MockChromeManager`).
+    #[cfg(test)]
     fn as_any(&self) -> &dyn std::any::Any;
 }
 
@@ -136,6 +131,7 @@ impl ChromeManager for MockChromeManager {
         self.seed_report = seed;
     }
 
+    #[cfg(test)]
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }

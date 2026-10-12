@@ -48,9 +48,14 @@ pub(crate) struct ScriptInfo {
     pub start_column: i32,
 }
 
+/// Most parsed scripts remembered per tab (oldest forgotten first).
+pub(crate) const MAX_SCRIPTS: usize = 2000;
+/// Most WebSocket connections remembered per tab, with their frames.
+pub(crate) const MAX_WS_CONNECTIONS: usize = 100;
+
 #[derive(Default)]
 pub(crate) struct DebuggerState {
-    pub scripts: std::collections::HashMap<String, ScriptInfo>,
+    pub scripts: crate::util::bounded::BoundedMap<String, ScriptInfo, MAX_SCRIPTS>,
     pub paused_call_frame_id: Option<String>,
 }
 
@@ -87,8 +92,12 @@ pub(crate) struct NavigationBucket {
 
 pub(crate) struct NetworkState {
     pub navigations: std::collections::VecDeque<NavigationBucket>,
-    pub ws_connections: std::collections::HashMap<String, String>,
-    pub ws_frames: std::collections::HashMap<String, std::collections::VecDeque<WebSocketFrame>>,
+    pub ws_connections: crate::util::bounded::BoundedMap<String, String, MAX_WS_CONNECTIONS>,
+    pub ws_frames: crate::util::bounded::BoundedMap<
+        String,
+        std::collections::VecDeque<WebSocketFrame>,
+        MAX_WS_CONNECTIONS,
+    >,
 }
 
 impl Default for NetworkState {
@@ -97,8 +106,8 @@ impl Default for NetworkState {
         navigations.push_back(NavigationBucket::default());
         Self {
             navigations,
-            ws_connections: std::collections::HashMap::new(),
-            ws_frames: std::collections::HashMap::new(),
+            ws_connections: Default::default(),
+            ws_frames: Default::default(),
         }
     }
 }
@@ -133,11 +142,24 @@ impl NetworkState {
         self.navigations.truncate(MAX_NAVIGATIONS_RETAINED);
     }
 
+    /// Remembers a WebSocket connection; the oldest one beyond the cap is
+    /// forgotten together with its frames.
+    pub(crate) fn insert_ws_connection(&mut self, id: String, url: String) {
+        if let Some(evicted) = self.ws_connections.insert(id, url) {
+            self.ws_frames.remove(&evicted);
+        }
+    }
+
     pub(crate) fn push_ws_frame(&mut self, id: String, frame: WebSocketFrame) {
-        let frames = self.ws_frames.entry(id).or_default();
-        frames.push_back(frame);
-        if frames.len() > MAX_WS_FRAMES_PER_CONNECTION {
-            frames.pop_front();
+        if self.ws_frames.get_mut(&id).is_none() {
+            self.ws_frames
+                .insert(id.clone(), std::collections::VecDeque::new());
+        }
+        if let Some(frames) = self.ws_frames.get_mut(&id) {
+            frames.push_back(frame);
+            if frames.len() > MAX_WS_FRAMES_PER_CONNECTION {
+                frames.pop_front();
+            }
         }
     }
 
@@ -1028,6 +1050,48 @@ impl ServerHandler for McpHandler {
 
 #[cfg(test)]
 mod tests {
+    /// SEC-18: Observation buffers are bounded.
+    #[test]
+    fn observation_buffers_are_bounded() {
+        // Given empty per-tab states, When far more items than the caps are pushed
+        let mut debugger = DebuggerState::default();
+        for i in 0..5000 {
+            let info = ScriptInfo {
+                hash: String::new(),
+                start_line: 0,
+                start_column: 0,
+            };
+            debugger.scripts.insert(i.to_string(), info);
+        }
+        let mut network = NetworkState::default();
+        for i in 0..500 {
+            network.insert_ws_connection(i.to_string(), "wss://x".into());
+            let frame = WebSocketFrame {
+                url: String::new(),
+                payload_data: String::new(),
+                is_sent: true,
+            };
+            network.push_ws_frame(i.to_string(), frame);
+        }
+        let mut webmcp = cdp_domains::webmcp::WebmcpState::default();
+        for i in 0..2000 {
+            webmcp.invocations.insert(i.to_string(), Default::default());
+        }
+        // Then each keeps at most its cap, dropping the oldest
+        assert_eq!(debugger.scripts.len(), MAX_SCRIPTS);
+        assert!(!debugger.scripts.contains_key("0") && debugger.scripts.contains_key("4999"));
+        assert_eq!(network.ws_connections.len(), MAX_WS_CONNECTIONS);
+        assert_eq!(network.ws_frames.len(), MAX_WS_CONNECTIONS);
+        assert!(
+            !network.ws_frames.contains_key("0"),
+            "evicted connection keeps frames"
+        );
+        assert_eq!(
+            webmcp.invocations.len(),
+            cdp_domains::webmcp::MAX_INVOCATIONS
+        );
+    }
+
     use super::*;
     use serde_json::json;
     struct DummyMcpServer {}

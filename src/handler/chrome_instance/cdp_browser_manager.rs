@@ -111,6 +111,7 @@ impl crate::handler::chrome_instance::ChromeManager for CdpBrowserManager {
         self.seed_report = seed;
     }
 
+    #[cfg(test)]
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }

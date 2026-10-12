@@ -90,7 +90,7 @@ pub(crate) async fn process_network_event(event: &WsResponse, state: &Arc<Mutex<
                     .unwrap_or("")
                     .to_string();
                 let mut st = state.lock().await;
-                st.ws_connections.insert(request_id.to_string(), url);
+                st.insert_ws_connection(request_id.to_string(), url);
             }
         }
         "Network.webSocketFrameSent" => {

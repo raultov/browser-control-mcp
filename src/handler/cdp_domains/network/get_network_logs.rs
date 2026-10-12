@@ -39,6 +39,10 @@ pub struct GetNetworkLogsTool {
     #[serde(default)]
     pub include_details: Option<bool>,
 
+    /// Return the values of sensitive headers (Authorization, Proxy-Authorization, Cookie, Set-Cookie) instead of `"<redacted>"`. Constraints: boolean. Interactions: only meaningful with include_details. Defaults to: false.
+    #[serde(default)]
+    pub include_sensitive_headers: Option<bool>,
+
     /// Limit results to current navigation only. Constraints: boolean. Interactions: when false, includes up to 3 retained navigations. Defaults to: false.
     #[serde(default)]
     pub current_navigation_only: Option<bool>,
@@ -79,7 +83,7 @@ impl GetNetworkLogsTool {
                 st.iter_all()
             };
             let c_ids = st.current_ids();
-            let ws = st.ws_frames.clone();
+            let ws: std::collections::HashMap<_, _> = st.ws_frames.clone().into_iter().collect();
             if args.clear.unwrap_or(false) {
                 st.clear_all();
             }
@@ -148,6 +152,9 @@ impl GetNetworkLogsTool {
         }
 
         let output_requests = if include_details {
+            if !args.include_sensitive_headers.unwrap_or(false) {
+                redact_requests(&mut requests);
+            }
             serde_json::to_value(&requests).unwrap_or_default()
         } else {
             let mut min_reqs = serde_json::Map::new();
@@ -199,6 +206,20 @@ impl GetNetworkLogsTool {
                 .unwrap_or_default()
                 .into(),
         ]))
+    }
+}
+
+/// Hides the values of credential-carrying headers in every request.
+fn redact_requests(
+    requests: &mut std::collections::HashMap<String, crate::handler::NetworkRequest>,
+) {
+    for request in requests.values_mut() {
+        for headers in [&mut request.request_headers, &mut request.response_headers]
+            .into_iter()
+            .flatten()
+        {
+            crate::util::headers::redact_sensitive(headers);
+        }
     }
 }
 
@@ -446,5 +467,37 @@ mod tests {
             serde_json::from_str(result2.content[0].as_text().unwrap()).unwrap();
         assert!(json2["requests"].as_object().unwrap().is_empty());
         assert!(json2["websocket_frames"].as_object().unwrap().is_empty());
+    }
+
+    /// SEC-19: Sensitive headers are redacted by default.
+    #[test]
+    fn sensitive_headers_are_redacted_by_default() {
+        // Given a captured request with Authorization, Cookie and Accept headers
+        let request = crate::handler::NetworkRequest {
+            url: "https://a/".into(),
+            method: "GET".into(),
+            resource_type: None,
+            request_headers: Some(
+                json!({"Authorization": "Bearer t", "cookie": "s=1", "Accept": "*/*"}),
+            ),
+            request_post_data: None,
+            response_status: Some(200),
+            response_status_text: None,
+            response_headers: Some(json!({"Set-Cookie": "s=2"})),
+            response_body: None,
+        };
+        let mut requests = std::collections::HashMap::from([("R1".to_string(), request)]);
+        // When the default (redacting) path runs
+        redact_requests(&mut requests);
+        // Then credential headers are hidden and the rest is intact
+        let r = &requests["R1"];
+        let req = r.request_headers.as_ref().unwrap();
+        assert_eq!(req["Authorization"], crate::cli::REDACTED);
+        assert_eq!(req["cookie"], crate::cli::REDACTED);
+        assert_eq!(req["Accept"], "*/*");
+        assert_eq!(
+            r.response_headers.as_ref().unwrap()["Set-Cookie"],
+            crate::cli::REDACTED
+        );
     }
 }

@@ -49,7 +49,7 @@ pub struct WebmcpTool {
     pub backend_node_id: Option<i64>,
 }
 
-#[derive(Clone, Debug, ::serde::Serialize, ::serde::Deserialize)]
+#[derive(Clone, Debug, Default, ::serde::Serialize, ::serde::Deserialize)]
 pub struct WebmcpInvocation {
     #[serde(rename = "toolName")]
     pub tool_name: String,
@@ -84,12 +84,15 @@ impl WebmcpAvailability {
     }
 }
 
+/// Most WebMCP invocations remembered per tab.
+pub(crate) const MAX_INVOCATIONS: usize = 1000;
+
 #[derive(Default, Debug, Clone)]
 pub struct WebmcpState {
     // Maps frame_id -> (tool_name -> Tool)
     pub tools: HashMap<String, HashMap<String, WebmcpTool>>,
-    // Maps invocation_id -> Invocation
-    pub invocations: HashMap<String, WebmcpInvocation>,
+    // Maps invocation_id -> Invocation (oldest forgotten beyond the cap)
+    pub invocations: crate::util::bounded::BoundedMap<String, WebmcpInvocation, MAX_INVOCATIONS>,
     // Tracks current availability of the WebMCP feature
     pub availability: WebmcpAvailability,
 }
