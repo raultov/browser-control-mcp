@@ -1,0 +1,13 @@
+{
+  "from": "server1.conn5.watcher4",
+  "options": {
+    "isModeSwitching": false,
+    "isTargetSwitching": true
+  },
+  "target": {
+    "actor": "server1.conn5.watcher3.process18//windowGlobalTarget2",
+    "innerWindowId": 38654705665,
+    "isTopLevelTarget": true
+  },
+  "type": "target-destroyed-form"
+}

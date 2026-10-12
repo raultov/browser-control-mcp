@@ -1,0 +1,20 @@
+{
+  "from": "root",
+  "tabs": [
+    {
+      "actor": "server1.conn3.tabDescriptor1",
+      "browserId": 9,
+      "browsingContextID": 10,
+      "isZombieTab": false,
+      "outerWindowID": 20,
+      "selected": true,
+      "title": "New Tab",
+      "traits": {
+        "supportsNavigation": true,
+        "supportsReloadDescriptor": true,
+        "watcher": true
+      },
+      "url": "about:home"
+    }
+  ]
+}

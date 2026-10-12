@@ -1,0 +1,15 @@
+{
+  "acceptInsecureCerts": false,
+  "browserName": "firefox",
+  "browserVersion": "157.0.1",
+  "moz:buildID": "20261006030843",
+  "moz:headless": false,
+  "moz:platformVersion": "7.0.0-38-generic",
+  "moz:shutdownTimeout": 60000,
+  "platformName": "linux",
+  "setWindowRect": true,
+  "unhandledPromptBehavior": {
+    "default": "ignore"
+  },
+  "userAgent": "Mozilla/5.0 (X11; Linux x86_64; rv:157.0) Gecko/20100101 Firefox/157.0"
+}

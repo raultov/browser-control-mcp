@@ -1,0 +1,10 @@
+{
+  "id": 31,
+  "result": {
+    "bytes": {
+      "type": "string",
+      "value": "{\"ok\":true}"
+    }
+  },
+  "type": "success"
+}

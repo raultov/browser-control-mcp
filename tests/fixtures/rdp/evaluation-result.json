@@ -1,0 +1,10 @@
+{
+  "type": "evaluationResult",
+  "resultID": "1791717107383.731-0",
+  "hasException": false,
+  "input": "window.testFn(10)",
+  "result": 11,
+  "startTime": 1791717107383.731,
+  "timestamp": 1791717107471.368,
+  "from": "server1.conn1.watcher2.process7//consoleActor3"
+}

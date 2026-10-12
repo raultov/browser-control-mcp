@@ -1,0 +1,26 @@
+{
+  "id": 18,
+  "result": {
+    "exceptionDetails": {
+      "columnNumber": 0,
+      "exception": {
+        "type": "error"
+      },
+      "lineNumber": 0,
+      "stackTrace": {
+        "callFrames": [
+          {
+            "columnNumber": 0,
+            "functionName": "",
+            "lineNumber": 0,
+            "url": "http://127.0.0.1:8000/"
+          }
+        ]
+      },
+      "text": "ReferenceError: x_not_defined is not defined"
+    },
+    "realm": "f1175984-f23b-4790-a901-ef14cfa1a71e",
+    "type": "exception"
+  },
+  "type": "success"
+}

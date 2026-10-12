@@ -1,0 +1,14 @@
+{
+  "array": [
+    [
+      "thread-state",
+      [
+        {
+          "state": "resumed"
+        }
+      ]
+    ]
+  ],
+  "from": "server1.conn1.watcher3.process10//windowGlobalTarget2",
+  "type": "resources-available-array"
+}

@@ -1,0 +1,32 @@
+{
+  "type": "event",
+  "method": "log.entryAdded",
+  "params": {
+    "args": [
+      {
+        "type": "string",
+        "value": "hello from smoke"
+      }
+    ],
+    "level": "info",
+    "method": "log",
+    "source": {
+      "context": "8e4fe77d-7af3-4439-aff1-6b8884fdb84b",
+      "realm": "fe1cc1a0-dbc6-4f72-99f9-8fc9b2be6058",
+      "userContext": "default"
+    },
+    "stackTrace": {
+      "callFrames": [
+        {
+          "columnNumber": 8,
+          "functionName": "",
+          "lineNumber": 6,
+          "url": "https://example.com/test.html"
+        }
+      ]
+    },
+    "text": "hello from smoke",
+    "timestamp": 1791727899248,
+    "type": "console"
+  }
+}

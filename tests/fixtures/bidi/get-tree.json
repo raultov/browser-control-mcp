@@ -1,0 +1,17 @@
+{
+  "type": "success",
+  "id": 6,
+  "result": {
+    "contexts": [
+      {
+        "children": null,
+        "context": "595962ab-c645-46d8-b701-bfe0da608911",
+        "originalOpener": null,
+        "url": "https://example.com/test.html",
+        "userContext": "default",
+        "clientWindow": "832f4c87-1544-40b5-a204-e444952f9af3",
+        "parent": null
+      }
+    ]
+  }
+}

@@ -180,13 +180,11 @@ impl Capabilities {
     fn firefox(&mut self, flags: CapabilityFlags) {
         self.grant(Capability::RawBidi);
         let no_rdp = "the Firefox debugger port is not available (--no-firefox-debugger, or an attached Firefox without --firefox-rdp-port)";
-        for c in [
-            Capability::JsDebugger,
-            Capability::PauseOnLoad,
-            Capability::RawRdp,
-        ] {
+        for c in [Capability::JsDebugger, Capability::RawRdp] {
             self.flag(c, flags.firefox_debugger, no_rdp);
         }
+        let no_pause = "neither a preload `debugger;` nor an RDP interrupt pauses a reloading page on Firefox (not implemented yet)";
+        self.deny(Capability::PauseOnLoad, no_pause);
         self.deny(
             Capability::WebsocketFrames,
             "WebDriver BiDi has no WebSocket frame events",

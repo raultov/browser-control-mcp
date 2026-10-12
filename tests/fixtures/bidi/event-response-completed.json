@@ -1,0 +1,182 @@
+{
+  "method": "network.responseCompleted",
+  "params": {
+    "context": "0eb3f315-4513-4c76-9af3-5d0ab1823fac",
+    "isBlocked": false,
+    "navigation": null,
+    "redirectCount": 0,
+    "request": {
+      "bodySize": 0,
+      "cookies": [
+        {
+          "domain": "127.0.0.1",
+          "httpOnly": false,
+          "name": "probe",
+          "path": "/",
+          "sameSite": "default",
+          "secure": false,
+          "size": 6,
+          "value": {
+            "type": "string",
+            "value": "1"
+          }
+        }
+      ],
+      "destination": "",
+      "headers": [
+        {
+          "name": "Host",
+          "value": {
+            "type": "string",
+            "value": "127.0.0.1:8000"
+          }
+        },
+        {
+          "name": "User-Agent",
+          "value": {
+            "type": "string",
+            "value": "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:157.0) Gecko/20100101 Firefox/157.0"
+          }
+        },
+        {
+          "name": "Accept",
+          "value": {
+            "type": "string",
+            "value": "*/*"
+          }
+        },
+        {
+          "name": "Accept-Language",
+          "value": {
+            "type": "string",
+            "value": "en-US,en;q=0.9"
+          }
+        },
+        {
+          "name": "Accept-Encoding",
+          "value": {
+            "type": "string",
+            "value": "gzip, deflate, br, zstd"
+          }
+        },
+        {
+          "name": "Referer",
+          "value": {
+            "type": "string",
+            "value": "http://127.0.0.1:8000/"
+          }
+        },
+        {
+          "name": "Connection",
+          "value": {
+            "type": "string",
+            "value": "keep-alive"
+          }
+        },
+        {
+          "name": "Cookie",
+          "value": {
+            "type": "string",
+            "value": "probe=1"
+          }
+        },
+        {
+          "name": "Sec-Fetch-Dest",
+          "value": {
+            "type": "string",
+            "value": "empty"
+          }
+        },
+        {
+          "name": "Sec-Fetch-Mode",
+          "value": {
+            "type": "string",
+            "value": "cors"
+          }
+        },
+        {
+          "name": "Sec-Fetch-Site",
+          "value": {
+            "type": "string",
+            "value": "same-origin"
+          }
+        },
+        {
+          "name": "Priority",
+          "value": {
+            "type": "string",
+            "value": "u=4"
+          }
+        }
+      ],
+      "headersSize": 388,
+      "initiatorType": "fetch",
+      "method": "GET",
+      "request": "5-a1dd6af0-fbdd-47e6-9ece-d9c54a3b58e5",
+      "timings": {
+        "connectEnd": 1791800690065.782,
+        "connectStart": 1791800690065.741,
+        "dnsEnd": 1791800690065.728,
+        "dnsStart": 1791800690065.072,
+        "fetchStart": 1791800690065.072,
+        "redirectEnd": 0,
+        "redirectStart": 0,
+        "requestStart": 1791800690066.522,
+        "requestTime": 1791800690064.625,
+        "responseEnd": 1791800690067.529,
+        "responseStart": 1791800690067.48,
+        "timeOrigin": 0,
+        "tlsEnd": 1791800690065.782,
+        "tlsStart": 0
+      },
+      "url": "http://127.0.0.1:8000/api"
+    },
+    "response": {
+      "bodySize": 11,
+      "bytesReceived": 122,
+      "content": {
+        "size": 0
+      },
+      "fromCache": false,
+      "headers": [
+        {
+          "name": "Content-Type",
+          "value": {
+            "type": "string",
+            "value": "application/json"
+          }
+        },
+        {
+          "name": "Content-Length",
+          "value": {
+            "type": "string",
+            "value": "11"
+          }
+        },
+        {
+          "name": "Connection",
+          "value": {
+            "type": "string",
+            "value": "close"
+          }
+        },
+        {
+          "name": "Set-Cookie",
+          "value": {
+            "type": "string",
+            "value": "probe=1"
+          }
+        }
+      ],
+      "headersSize": 111,
+      "mimeType": "application/json",
+      "protocol": "http/1.1",
+      "status": 200,
+      "statusText": "OK",
+      "url": "http://127.0.0.1:8000/api"
+    },
+    "timestamp": 1791800690068,
+    "userContext": "default"
+  },
+  "type": "event"
+}

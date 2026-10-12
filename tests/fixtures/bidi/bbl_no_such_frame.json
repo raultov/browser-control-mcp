@@ -1,0 +1,7 @@
+{
+  "error": "no such frame",
+  "id": 6,
+  "message": "Browsing Context with id nonexistent not found",
+  "stacktrace": "RemoteError@chrome://remote/content/shared/RemoteError.sys.mjs:8:8\nWebDriverError@chrome://remote/content/shared/webdriver/Errors.sys.mjs:169:5\nNoSuchFrameError@chrome://remote/content/shared/webdriver/Errors.sys.mjs:619:5\n_getNavigable@chrome://remote/content/webdriver-bidi/modules/RootBiDiModule.sys.mjs:110:13\nclose@chrome://remote/content/webdriver-bidi/modules/root/browsingContext.sys.mjs:586:26\nhandleCommand@chrome://remote/content/shared/messagehandler/MessageHandler.sys.mjs:294:33\nexecute@chrome://remote/content/shared/webdriver/Session.sys.mjs:472:32\nonPacket@chrome://remote/content/webdriver-bidi/WebDriverBiDiConnection.sys.mjs:238:37\nonMessage@chrome://remote/content/server/WebSocketTransport.sys.mjs:127:18\nhandleEvent@chrome://remote/content/server/WebSocketTransport.sys.mjs:109:14\n",
+  "type": "error"
+}

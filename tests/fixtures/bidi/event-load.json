@@ -1,0 +1,11 @@
+{
+  "type": "event",
+  "method": "browsingContext.load",
+  "params": {
+    "context": "595962ab-c645-46d8-b701-bfe0da608911",
+    "timestamp": 1791717107153,
+    "url": "https://example.com/test.html",
+    "userContext": "default",
+    "navigation": "9659106c-6621-48cb-8254-0a1c1c748f48"
+  }
+}

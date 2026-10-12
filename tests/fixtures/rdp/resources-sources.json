@@ -1,0 +1,24 @@
+{
+  "type": "resources-available-array",
+  "array": [
+    [
+      "source",
+      [
+        {
+          "actor": "server1.conn1.watcher2.process7//source18",
+          "extensionName": null,
+          "url": "https://example.com/test.html",
+          "isBlackBoxed": false,
+          "sourceMapBaseURL": "https://example.com/test.html",
+          "sourceMapURL": null,
+          "introductionType": "scriptElement",
+          "isInlineSource": true,
+          "sourceStartLine": 6,
+          "sourceStartColumn": 8,
+          "sourceLength": 71
+        }
+      ]
+    ]
+  ],
+  "from": "server1.conn1.watcher2.process7//windowGlobalTarget2"
+}

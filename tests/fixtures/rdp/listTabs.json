@@ -1,0 +1,20 @@
+{
+  "tabs": [
+    {
+      "actor": "server1.conn1.tabDescriptor1",
+      "browserId": 2,
+      "browsingContextID": 3,
+      "isZombieTab": false,
+      "outerWindowID": 24,
+      "selected": true,
+      "title": "BiDi Spike Test",
+      "traits": {
+        "watcher": true,
+        "supportsReloadDescriptor": true,
+        "supportsNavigation": true
+      },
+      "url": "https://example.com/test.html"
+    }
+  ],
+  "from": "root"
+}

@@ -1,0 +1,10 @@
+{
+  "from": "server1.conn0.source1",
+  "contentType": "text/javascript",
+  "source": {
+    "type": "longString",
+    "actor": "server1.conn0.longString2",
+    "length": 150000,
+    "initial": "function hugeScript() {"
+  }
+}

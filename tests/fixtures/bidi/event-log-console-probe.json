@@ -1,0 +1,48 @@
+{
+  "method": "log.entryAdded",
+  "params": {
+    "args": [
+      {
+        "type": "string",
+        "value": "hello from probe"
+      },
+      {
+        "type": "number",
+        "value": 42
+      },
+      {
+        "type": "object",
+        "value": [
+          [
+            "a",
+            {
+              "type": "number",
+              "value": 1
+            }
+          ]
+        ]
+      }
+    ],
+    "level": "info",
+    "method": "log",
+    "source": {
+      "context": "0eb3f315-4513-4c76-9af3-5d0ab1823fac",
+      "realm": "e786630d-1fee-4960-8c5f-ffc3f1cf4656",
+      "userContext": "default"
+    },
+    "stackTrace": {
+      "callFrames": [
+        {
+          "columnNumber": 8,
+          "functionName": "",
+          "lineNumber": 6,
+          "url": "http://127.0.0.1:8000/"
+        }
+      ]
+    },
+    "text": "hello from probe 42 Object(1)",
+    "timestamp": 1791800690047,
+    "type": "console"
+  },
+  "type": "event"
+}

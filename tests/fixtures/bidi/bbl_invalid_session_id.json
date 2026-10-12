@@ -1,0 +1,7 @@
+{
+  "error": "invalid session id",
+  "id": 3,
+  "message": "WebDriver session does not exist, or is not active",
+  "stacktrace": "RemoteError@chrome://remote/content/shared/RemoteError.sys.mjs:8:8\nWebDriverError@chrome://remote/content/shared/webdriver/Errors.sys.mjs:169:5\nInvalidSessionIDError@chrome://remote/content/shared/webdriver/Errors.sys.mjs:439:5\nassert.that/<@chrome://remote/content/shared/webdriver/Assert.sys.mjs:581:13\nassert.session@chrome://remote/content/shared/webdriver/Assert.sys.mjs:38:4\nonPacket@chrome://remote/content/webdriver-bidi/WebDriverBiDiConnection.sys.mjs:230:21\nonMessage@chrome://remote/content/server/WebSocketTransport.sys.mjs:127:18\nhandleEvent@chrome://remote/content/server/WebSocketTransport.sys.mjs:109:14\n",
+  "type": "error"
+}

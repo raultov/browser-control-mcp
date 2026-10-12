@@ -1,0 +1,54 @@
+{
+  "id": 12,
+  "result": {
+    "realm": "f1175984-f23b-4790-a901-ef14cfa1a71e",
+    "result": {
+      "type": "object",
+      "value": [
+        [
+          "sum",
+          {
+            "type": "number",
+            "value": 3
+          }
+        ],
+        [
+          "list",
+          {
+            "type": "array",
+            "value": [
+              {
+                "type": "number",
+                "value": 1
+              },
+              {
+                "type": "string",
+                "value": "a"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        ],
+        [
+          "nested",
+          {
+            "type": "object",
+            "value": [
+              [
+                "b",
+                {
+                  "type": "boolean",
+                  "value": true
+                }
+              ]
+            ]
+          }
+        ]
+      ]
+    },
+    "type": "success"
+  },
+  "type": "success"
+}

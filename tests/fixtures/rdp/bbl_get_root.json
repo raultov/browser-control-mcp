@@ -1,0 +1,10 @@
+{
+  "addonsActor": "server1.conn1.addonsActor2",
+  "deviceActor": "server1.conn1.deviceActor3",
+  "from": "root",
+  "heapSnapshotFileActor": "server1.conn1.heapSnapshotFileActor4",
+  "parentAccessibilityActor": "server1.conn1.parentAccessibilityActor6",
+  "perfActor": "server1.conn1.perfActor5",
+  "preferenceActor": "server1.conn1.preferenceActor1",
+  "screenshotActor": "server1.conn1.screenshotActor7"
+}

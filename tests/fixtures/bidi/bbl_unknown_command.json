@@ -1,0 +1,7 @@
+{
+  "error": "unknown command",
+  "id": 7,
+  "message": "bogus.command",
+  "stacktrace": "RemoteError@chrome://remote/content/shared/RemoteError.sys.mjs:8:8\nWebDriverError@chrome://remote/content/shared/webdriver/Errors.sys.mjs:169:5\nUnknownCommandError@chrome://remote/content/shared/webdriver/Errors.sys.mjs:943:5\nexecute@chrome://remote/content/shared/webdriver/Session.sys.mjs:469:13\nonPacket@chrome://remote/content/webdriver-bidi/WebDriverBiDiConnection.sys.mjs:238:37\nonMessage@chrome://remote/content/server/WebSocketTransport.sys.mjs:127:18\nhandleEvent@chrome://remote/content/server/WebSocketTransport.sys.mjs:109:14\n",
+  "type": "error"
+}

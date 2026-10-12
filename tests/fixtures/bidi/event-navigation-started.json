@@ -1,0 +1,11 @@
+{
+  "method": "browsingContext.navigationStarted",
+  "params": {
+    "context": "0eb3f315-4513-4c76-9af3-5d0ab1823fac",
+    "navigation": "c6817178-abc4-4b51-b3a0-3bf895a5d2d6",
+    "timestamp": 1791800689987,
+    "url": "http://127.0.0.1:8000/",
+    "userContext": "default"
+  },
+  "type": "event"
+}

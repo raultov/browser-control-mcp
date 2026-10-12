@@ -1,0 +1,24 @@
+{
+  "id": 20,
+  "result": {
+    "realm": "f1175984-f23b-4790-a901-ef14cfa1a71e",
+    "result": {
+      "handle": "0692651e-5e22-4355-93e7-83ab9ed3c12f",
+      "sharedId": "17dfd640-5e39-4bc3-81d0-8ce06a062919",
+      "type": "node",
+      "value": {
+        "attributes": {
+          "id": "go",
+          "onclick": "window.__clicked = (window.__clicked||0)+1"
+        },
+        "childNodeCount": 1,
+        "localName": "button",
+        "namespaceURI": "http://www.w3.org/1999/xhtml",
+        "nodeType": 1,
+        "shadowRoot": null
+      }
+    },
+    "type": "success"
+  },
+  "type": "success"
+}

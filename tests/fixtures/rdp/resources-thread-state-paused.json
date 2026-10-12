@@ -1,0 +1,49 @@
+{
+  "array": [
+    [
+      "thread-state",
+      [
+        {
+          "frame": {
+            "actor": "server1.conn1.watcher3.process10//frame21",
+            "arguments": [
+              10
+            ],
+            "asyncCause": null,
+            "displayName": "f",
+            "state": "on-stack",
+            "this": {
+              "actor": "server1.conn1.watcher3.process10//obj22",
+              "class": "Window",
+              "extensible": true,
+              "frozen": false,
+              "isError": false,
+              "ownPropertyLength": 949,
+              "preview": {
+                "kind": "ObjectWithURL",
+                "url": "http://127.0.0.1:8801/dbg.html"
+              },
+              "sealed": false,
+              "type": "object"
+            },
+            "type": "call",
+            "where": {
+              "actor": "server1.conn1.watcher3.process10//source18",
+              "column": 10,
+              "line": 7
+            }
+          },
+          "state": "paused",
+          "why": {
+            "actors": [
+              null
+            ],
+            "type": "breakpoint"
+          }
+        }
+      ]
+    ]
+  ],
+  "from": "server1.conn1.watcher3.process10//windowGlobalTarget2",
+  "type": "resources-available-array"
+}

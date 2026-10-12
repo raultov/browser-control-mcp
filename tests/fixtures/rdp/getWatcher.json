@@ -1,0 +1,41 @@
+{
+  "actor": "server1.conn1.watcher3",
+  "traits": {
+    "frame": true,
+    "process": true,
+    "worker": true,
+    "service_worker": true,
+    "shared_worker": false,
+    "content_script": true,
+    "resources": {
+      "console-message": true,
+      "css-change": true,
+      "css-message": true,
+      "css-registered-properties": true,
+      "document-event": true,
+      "Cache": true,
+      "cookies": true,
+      "error-message": true,
+      "extension-storage": true,
+      "indexed-db": true,
+      "local-storage": true,
+      "session-storage": true,
+      "platform-message": true,
+      "network-event": true,
+      "network-event-decoded-body-size": true,
+      "network-event-stacktrace": true,
+      "reflow": true,
+      "stylesheet": true,
+      "source": true,
+      "thread-state": true,
+      "server-sent-event": true,
+      "session-history": true,
+      "websocket": true,
+      "webtransport": true,
+      "jstracer-trace": true,
+      "jstracer-state": true,
+      "last-private-context-exit": true
+    }
+  },
+  "from": "server1.conn1.tabDescriptor1"
+}

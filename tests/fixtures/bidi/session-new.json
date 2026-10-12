@@ -1,0 +1,24 @@
+{
+  "type": "success",
+  "id": 2,
+  "result": {
+    "sessionId": "6dae903e-7f3c-4022-80e8-8ddb2872fe6c",
+    "capabilities": {
+      "acceptInsecureCerts": false,
+      "browserName": "firefox",
+      "browserVersion": "157.0.1",
+      "platformName": "linux",
+      "setWindowRect": true,
+      "unhandledPromptBehavior": {
+        "default": "ignore"
+      },
+      "userAgent": "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:157.0) Gecko/20100101 Firefox/157.0",
+      "moz:buildID": "20261006030843",
+      "moz:headless": true,
+      "moz:platformVersion": "7.0.0-38-generic",
+      "moz:processID": 3390135,
+      "moz:profile": "/path/to/profile",
+      "moz:shutdownTimeout": 60000
+    }
+  }
+}

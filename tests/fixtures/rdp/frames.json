@@ -1,0 +1,63 @@
+{
+  "frames": [
+    {
+      "actor": "server1.conn1.watcher2.process7//frame21",
+      "type": "call",
+      "asyncCause": null,
+      "state": "on-stack",
+      "this": {
+        "type": "object",
+        "actor": "server1.conn1.watcher2.process7//obj22",
+        "class": "Window",
+        "ownPropertyLength": 946,
+        "extensible": true,
+        "frozen": false,
+        "sealed": false,
+        "isError": false,
+        "preview": {
+          "kind": "ObjectWithURL",
+          "url": "https://example.com/test.html"
+        }
+      },
+      "displayName": "f",
+      "arguments": [
+        10
+      ],
+      "where": {
+        "actor": "server1.conn1.watcher2.process7//source18",
+        "line": 8,
+        "column": 12
+      }
+    },
+    {
+      "actor": "server1.conn1.watcher2.process7//frame25",
+      "type": "global",
+      "asyncCause": null,
+      "state": "on-stack",
+      "depth": 1,
+      "this": {
+        "type": "object",
+        "actor": "server1.conn1.watcher2.process7//obj22",
+        "class": "Window",
+        "ownPropertyLength": 946,
+        "extensible": true,
+        "frozen": false,
+        "sealed": false,
+        "isError": false,
+        "preview": {
+          "kind": "ObjectWithURL",
+          "url": "https://example.com/test.html"
+        }
+      },
+      "displayName": "(global)",
+      "arguments": [],
+      "where": {
+        "actor": "server1.conn1.watcher2.process7//source19",
+        "line": 1,
+        "column": 7
+      },
+      "oldest": true
+    }
+  ],
+  "from": "server1.conn1.watcher2.process7//thread1"
+}

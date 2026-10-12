@@ -1,0 +1,14 @@
+{
+  "applicationType": "browser",
+  "from": "root",
+  "testConnectionPrefix": "server1.conn0.",
+  "traits": {
+    "networkMonitor": true,
+    "resources": {
+      "extensions-backgroundscript-status": true
+    },
+    "supportsEnableWindowGlobalThreadActors": true,
+    "supportsGridGetFragments": true,
+    "workerConsoleApiMessagesDispatchedToMainThread": true
+  }
+}

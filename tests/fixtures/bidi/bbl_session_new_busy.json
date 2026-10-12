@@ -1,0 +1,7 @@
+{
+  "error": "session not created",
+  "id": 2,
+  "message": "Maximum number of active sessions",
+  "stacktrace": "RemoteError@chrome://remote/content/shared/RemoteError.sys.mjs:8:8\nWebDriverError@chrome://remote/content/shared/webdriver/Errors.sys.mjs:169:5\nSessionNotCreatedError@chrome://remote/content/shared/webdriver/Errors.sys.mjs:813:5\ncreateSession@chrome://remote/content/webdriver-bidi/WebDriverBiDi.sys.mjs:132:13\nonPacket@chrome://remote/content/webdriver-bidi/WebDriverBiDiConnection.sys.mjs:208:55\nonMessage@chrome://remote/content/server/WebSocketTransport.sys.mjs:127:18\nhandleEvent@chrome://remote/content/server/WebSocketTransport.sys.mjs:109:14\n",
+  "type": "error"
+}

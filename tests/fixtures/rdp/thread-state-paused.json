@@ -1,0 +1,40 @@
+{
+  "type": "paused",
+  "actor": "server1.conn1.watcher2.process7//pause20",
+  "frame": {
+    "actor": "server1.conn1.watcher2.process7//frame21",
+    "type": "call",
+    "asyncCause": null,
+    "state": "on-stack",
+    "this": {
+      "type": "object",
+      "actor": "server1.conn1.watcher2.process7//obj22",
+      "class": "Window",
+      "ownPropertyLength": 946,
+      "extensible": true,
+      "frozen": false,
+      "sealed": false,
+      "isError": false,
+      "preview": {
+        "kind": "ObjectWithURL",
+        "url": "https://example.com/test.html"
+      }
+    },
+    "displayName": "f",
+    "arguments": [
+      10
+    ],
+    "where": {
+      "actor": "server1.conn1.watcher2.process7//source18",
+      "line": 8,
+      "column": 12
+    }
+  },
+  "why": {
+    "type": "breakpoint",
+    "actors": [
+      null
+    ]
+  },
+  "from": "server1.conn1.watcher2.process7//thread1"
+}

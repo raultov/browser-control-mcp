@@ -1,0 +1,13 @@
+{
+  "method": "browsingContext.contextCreated",
+  "params": {
+    "children": null,
+    "clientWindow": "00334aee-a41b-4e0a-970d-bbd56514121f",
+    "context": "17179869185",
+    "originalOpener": null,
+    "parent": "0eb3f315-4513-4c76-9af3-5d0ab1823fac",
+    "url": "about:blank",
+    "userContext": "default"
+  },
+  "type": "event"
+}

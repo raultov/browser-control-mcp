@@ -1,0 +1,8 @@
+{
+  "type": "success",
+  "id": 3,
+  "result": {
+    "ready": false,
+    "message": "Session already started"
+  }
+}

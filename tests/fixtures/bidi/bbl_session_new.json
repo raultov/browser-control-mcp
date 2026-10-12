@@ -1,0 +1,24 @@
+{
+  "id": 2,
+  "result": {
+    "capabilities": {
+      "acceptInsecureCerts": false,
+      "browserName": "firefox",
+      "browserVersion": "157.0.1",
+      "moz:buildID": "20261006030843",
+      "moz:headless": true,
+      "moz:platformVersion": "7.0.0-38-generic",
+      "moz:processID": 211280,
+      "moz:profile": "/home/user/snap/firefox/common/bidi-browser-lite/spike/fixtures",
+      "moz:shutdownTimeout": 60000,
+      "platformName": "linux",
+      "setWindowRect": true,
+      "unhandledPromptBehavior": {
+        "default": "ignore"
+      },
+      "userAgent": "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:157.0) Gecko/20100101 Firefox/157.0"
+    },
+    "sessionId": "3a3db9af-ca9a-4193-b080-ae633740030a"
+  },
+  "type": "success"
+}

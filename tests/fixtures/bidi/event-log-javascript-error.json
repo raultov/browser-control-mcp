@@ -1,0 +1,25 @@
+{
+  "method": "log.entryAdded",
+  "params": {
+    "level": "error",
+    "source": {
+      "context": "0eb3f315-4513-4c76-9af3-5d0ab1823fac",
+      "realm": "e786630d-1fee-4960-8c5f-ffc3f1cf4656",
+      "userContext": "default"
+    },
+    "stackTrace": {
+      "callFrames": [
+        {
+          "columnNumber": 25,
+          "functionName": "",
+          "lineNumber": 6,
+          "url": "http://127.0.0.1:8000/app.js"
+        }
+      ]
+    },
+    "text": "Error: probe boom",
+    "timestamp": 1791800690074,
+    "type": "javascript"
+  },
+  "type": "event"
+}

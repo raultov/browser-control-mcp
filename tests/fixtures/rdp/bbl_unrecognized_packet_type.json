@@ -1,0 +1,5 @@
+{
+  "error": "unrecognizedPacketType",
+  "from": "root",
+  "message": "Actor root does not recognize the packet type 'bogusType'"
+}
