@@ -1,4 +1,4 @@
-use crate::handler::{McpHandler, is_local_address};
+use crate::handler::{BrowserSession, McpHandler, is_local_address};
 use rust_mcp_sdk::{
     macros,
     schema::{CallToolError, CallToolRequestParams, CallToolResult},
@@ -33,9 +33,7 @@ impl NavigateTool {
         params: CallToolRequestParams,
         handler: &McpHandler,
     ) -> Result<CallToolResult, CallToolError> {
-        let args_value = serde_json::Value::Object(params.arguments.unwrap_or_default());
-        let args: NavigateTool = serde_json::from_value(args_value)
-            .map_err(|e| CallToolError::from_message(e.to_string()))?;
+        let args: NavigateTool = crate::handler::parse_args(params)?;
         let session = handler.session(args.instance_id.clone()).await?;
 
         if handler.flags.local && !is_local_address(&args.url) {
@@ -44,109 +42,102 @@ impl NavigateTool {
                 args.url
             )));
         }
-
         if args.copy_cookies == Some(true) {
-            if !handler.flags.allow_cookie_import {
-                return Err(CallToolError::from_message(
-                    "Cookie import is disabled. Restart the MCP server with the '--allow-cookie-import' argument to enable it.".to_string()
-                ));
-            }
-            if handler.base_params.browser.user_profile {
-                return Err(CallToolError::from_message(
-                    "Cookie import is redundant when running in --user-profile mode, as the user's real profile is already in use.".to_string()
-                ));
-            }
-
-            let source = crate::handler::chrome_instance::cookie_seed::resolve_source(
-                args.source_profile.as_deref(),
-                &crate::handler::chrome_instance::cookie_seed::RealEnvProvider,
-                &crate::handler::chrome_instance::cookie_seed::RealFsProbe,
-            )
-            .map_err(CallToolError::from_message)?;
-
-            let is_running = {
-                let mgr = session.chrome_manager.lock().await;
-                mgr.is_running().await
-            };
-
-            if is_running {
-                if args.confirm_restart != Some(true) {
-                    let instance_id_str = args.instance_id.as_deref().unwrap_or("default");
-                    let (tab_count, tab_list) = {
-                        let registry = crate::util::sync::read(&session.tabs);
-                        let count = registry.tabs.len();
-                        let list = registry
-                            .tabs
-                            .iter()
-                            .map(|(id, entry)| {
-                                let label_str = entry
-                                    .label
-                                    .as_ref()
-                                    .map(|l| format!(" \"{l}\""))
-                                    .unwrap_or_default();
-                                let is_active = registry.active_tab_id.as_ref() == Some(id);
-                                let active_str = if is_active { " (active)" } else { "" };
-                                format!("  - {id}{label_str}{active_str}: {}", entry.url)
-                            })
-                            .collect::<Vec<_>>()
-                            .join("\n");
-                        (count, list)
-                    };
-
-                    let tab_info = if tab_count > 0 {
-                        format!(
-                            "its {tab_count} open tab(s), discarding their state (unsaved form input, breakpoints, and captured logs):\n{tab_list}"
-                        )
-                    } else {
-                        "any open tabs".to_string()
-                    };
-
-                    return Err(CallToolError::from_message(format!(
-                        "Cookie import requires relaunching instance '{instance_id_str}' with a seeded profile: a running browser cannot pick up cookies from disk.\n\nThis will CLOSE the instance and {tab_info}\n\nTell the user exactly which tabs will be closed and ask them to confirm. Only if they agree, call navigate again with the same arguments plus `confirm_restart: true`."
-                    )));
-                }
-
-                let report = crate::handler::chrome_instance::cookie_seed::seed_cookies(
-                    &source,
-                    &crate::handler::chrome_instance::cookie_seed::RealEnvProvider,
-                    &crate::handler::chrome_instance::cookie_seed::RealFsProbe,
-                )
-                .map_err(CallToolError::from_message)?;
-
-                crate::handler::chrome_instance::seeded_relaunch::relaunch_seeded(&session, report)
-                    .await
-                    .map_err(CallToolError::from_message)?;
-            } else if !is_running {
-                let report = crate::handler::chrome_instance::cookie_seed::seed_cookies(
-                    &source,
-                    &crate::handler::chrome_instance::cookie_seed::RealEnvProvider,
-                    &crate::handler::chrome_instance::cookie_seed::RealFsProbe,
-                )
-                .map_err(CallToolError::from_message)?;
-
-                let mut mgr = session.chrome_manager.lock().await;
-                mgr.set_seed_profile(Some(report));
-            }
+            args.import_cookies(handler, &session).await?;
         }
-
         let target = session.target(args.tab_id.clone()).await?;
+        let params = json!({"url": args.url});
+        let val = crate::handler::send_or(&target, "Page.navigate", params, "CDP Error").await?;
+        Ok(CallToolResult::text_content(vec![
+            format!("Navigated to {}. Protocol Response: {:?}", args.url, val).into(),
+        ]))
+    }
 
-        let result = target
-            .send_raw_command(
-                "Page.navigate",
-                json!({
-                    "url": args.url
-                }),
-            )
-            .await;
-
-        match result {
-            Ok(val) => Ok(CallToolResult::text_content(vec![
-                format!("Navigated to {}. Protocol Response: {:?}", args.url, val).into(),
-            ])),
-            Err(e) => Err(CallToolError::from_message(format!("CDP Error: {:?}", e))),
+    /// Seeds the instance's profile with the user's cookies: on the next
+    /// launch if it is not running, else by relaunching it (only after the
+    /// user confirmed, because every tab is closed).
+    async fn import_cookies(
+        &self,
+        handler: &McpHandler,
+        session: &std::sync::Arc<BrowserSession>,
+    ) -> Result<(), CallToolError> {
+        use crate::handler::chrome_instance::cookie_seed::{
+            RealEnvProvider, RealFsProbe, resolve_source, seed_cookies,
+        };
+        if !handler.flags.allow_cookie_import {
+            return Err(CallToolError::from_message(
+                "Cookie import is disabled. Restart the MCP server with the '--allow-cookie-import' argument to enable it.",
+            ));
+        }
+        if handler.base_params.browser.user_profile {
+            return Err(CallToolError::from_message(
+                "Cookie import is redundant when running in --user-profile mode, as the user's real profile is already in use.",
+            ));
+        }
+        let source = resolve_source(
+            self.source_profile.as_deref(),
+            &RealEnvProvider,
+            &RealFsProbe,
+        )
+        .map_err(CallToolError::from_message)?;
+        let is_running = session.chrome_manager.lock().await.is_running().await;
+        if is_running && self.confirm_restart != Some(true) {
+            let instance_id = self.instance_id.as_deref().unwrap_or("default");
+            return Err(CallToolError::from_message(restart_warning(
+                instance_id,
+                session,
+            )));
+        }
+        let report = seed_cookies(&source, &RealEnvProvider, &RealFsProbe)
+            .map_err(CallToolError::from_message)?;
+        if is_running {
+            crate::handler::chrome_instance::seeded_relaunch::relaunch_seeded(session, report)
+                .await
+                .map_err(CallToolError::from_message)
+        } else {
+            session
+                .chrome_manager
+                .lock()
+                .await
+                .set_seed_profile(Some(report));
+            Ok(())
         }
     }
+}
+
+/// The message asking the agent to get the user's consent before a seeded
+/// relaunch, listing the tabs that would be closed.
+fn restart_warning(instance_id: &str, session: &BrowserSession) -> String {
+    let registry = crate::util::sync::read(&session.tabs);
+    let tab_list = registry
+        .tabs
+        .iter()
+        .map(|(id, entry)| {
+            let label = entry
+                .label
+                .as_ref()
+                .map(|l| format!(" \"{l}\""))
+                .unwrap_or_default();
+            let active = if registry.active_tab_id.as_ref() == Some(id) {
+                " (active)"
+            } else {
+                ""
+            };
+            format!("  - {id}{label}{active}: {}", entry.url)
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let tab_count = registry.tabs.len();
+    let tab_info = if tab_count > 0 {
+        format!(
+            "its {tab_count} open tab(s), discarding their state (unsaved form input, breakpoints, and captured logs):\n{tab_list}"
+        )
+    } else {
+        "any open tabs".to_string()
+    };
+    format!(
+        "Cookie import requires relaunching instance '{instance_id}' with a seeded profile: a running browser cannot pick up cookies from disk.\n\nThis will CLOSE the instance and {tab_info}\n\nTell the user exactly which tabs will be closed and ask them to confirm. Only if they agree, call navigate again with the same arguments plus `confirm_restart: true`."
+    )
 }
 
 #[cfg(test)]

@@ -24,106 +24,54 @@ impl ClickElementTool {
         params: CallToolRequestParams,
         handler: &McpHandler,
     ) -> Result<CallToolResult, CallToolError> {
-        let args_value = serde_json::Value::Object(params.arguments.unwrap_or_default());
-        let args: ClickElementTool = serde_json::from_value(args_value)
-            .map_err(|e| CallToolError::from_message(e.to_string()))?;
-        let session = handler.session(args.instance_id.clone()).await?;
-        let target = session.target(args.tab_id.clone()).await?;
-
+        let args: ClickElementTool = crate::handler::parse_args(params)?;
+        let target =
+            crate::handler::resolve_target(handler, args.instance_id.clone(), args.tab_id.clone())
+                .await?;
         let expression = crate::util::js::element_center(&args.selector);
-
-        let eval_result = target
-            .send_raw_command(
-                "Runtime.evaluate",
-                json!({
-                    "expression": expression,
-                    "returnByValue": true
-                }),
-            )
-            .await;
-
-        match eval_result {
-            Ok(val) => {
-                let result_obj = val.result.as_ref().and_then(|r| r.get("result"));
-
-                // Check if element was found
-                if result_obj
-                    .and_then(|r| r.get("type"))
-                    .and_then(|t| t.as_str())
-                    == Some("object")
-                    && result_obj
-                        .and_then(|r| r.get("subtype"))
-                        .and_then(|s| s.as_str())
-                        == Some("null")
-                {
-                    return Err(CallToolError::from_message(format!(
-                        "Element not found for selector: {}",
-                        args.selector
-                    )));
-                }
-
-                let value_obj = result_obj.and_then(|r| r.get("value"));
-
-                if let Some(value) = value_obj {
-                    if let (Some(x), Some(y)) = (
-                        value.get("x").and_then(|v| v.as_f64()),
-                        value.get("y").and_then(|v| v.as_f64()),
-                    ) {
-                        // Dispatch mousePressed
-                        let _ = target
-                            .send_raw_command(
-                                "Input.dispatchMouseEvent",
-                                json!({
-                                    "type": "mousePressed",
-                                    "button": "left",
-                                    "x": x,
-                                    "y": y,
-                                    "clickCount": 1
-                                }),
-                            )
-                            .await
-                            .map_err(|e| {
-                                CallToolError::from_message(format!("CDP Error: {:?}", e))
-                            })?;
-
-                        // Dispatch mouseReleased
-                        let _ = target
-                            .send_raw_command(
-                                "Input.dispatchMouseEvent",
-                                json!({
-                                    "type": "mouseReleased",
-                                    "button": "left",
-                                    "x": x,
-                                    "y": y,
-                                    "clickCount": 1
-                                }),
-                            )
-                            .await
-                            .map_err(|e| {
-                                CallToolError::from_message(format!("CDP Error: {:?}", e))
-                            })?;
-
-                        Ok(CallToolResult::text_content(vec![
-                            format!(
-                                "Successfully clicked on element '{}' at coordinates ({}, {})",
-                                args.selector, x, y
-                            )
-                            .into(),
-                        ]))
-                    } else {
-                        Err(CallToolError::from_message(
-                            "Could not determine coordinates for the element.".to_string(),
-                        ))
-                    }
-                } else {
-                    Err(CallToolError::from_message(format!(
-                        "Element not found for selector: {}",
-                        args.selector
-                    )))
-                }
-            }
-            Err(e) => Err(CallToolError::from_message(format!("CDP Error: {:?}", e))),
+        let params = json!({"expression": expression, "returnByValue": true});
+        let val = crate::handler::send_or(&target, "Runtime.evaluate", params, "CDP Error").await?;
+        let (x, y) = element_point(&val, &args.selector)?;
+        for kind in ["mousePressed", "mouseReleased"] {
+            let event = json!({"type": kind, "button": "left", "x": x, "y": y, "clickCount": 1});
+            crate::handler::send_or(&target, "Input.dispatchMouseEvent", event, "CDP Error")
+                .await?;
         }
+        Ok(CallToolResult::text_content(vec![
+            format!(
+                "Successfully clicked on element '{}' at coordinates ({}, {})",
+                args.selector, x, y
+            )
+            .into(),
+        ]))
+    }
+}
+
+/// The `{x, y}` returned by the element-centre snippet, or why there is none.
+fn element_point(
+    reply: &cdp_browser_lite::WsResponse,
+    selector: &str,
+) -> Result<(f64, f64), CallToolError> {
+    let not_found =
+        || CallToolError::from_message(format!("Element not found for selector: {}", selector));
+    let result = reply.result.as_ref().and_then(|r| r.get("result"));
+    let is_null = result
+        .and_then(|r| r.get("subtype"))
+        .and_then(|s| s.as_str())
+        == Some("null")
+        && result.and_then(|r| r.get("type")).and_then(|t| t.as_str()) == Some("object");
+    if is_null {
+        return Err(not_found());
+    }
+    let value = result.and_then(|r| r.get("value")).ok_or_else(not_found)?;
+    match (
+        value.get("x").and_then(|v| v.as_f64()),
+        value.get("y").and_then(|v| v.as_f64()),
+    ) {
+        (Some(x), Some(y)) => Ok((x, y)),
+        _ => Err(CallToolError::from_message(
+            "Could not determine coordinates for the element.",
+        )),
     }
 }
 

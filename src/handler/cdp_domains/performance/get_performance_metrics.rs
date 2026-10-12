@@ -35,18 +35,17 @@ impl GetPerformanceMetricsTool {
         match result {
             Ok(resp) => {
                 let metrics = resp.result.unwrap_or_default();
-                let mut formatted_metrics = std::collections::HashMap::new();
-
-                if let Some(metrics_arr) = metrics.get("metrics").and_then(|m| m.as_array()) {
-                    for metric in metrics_arr {
-                        if let (Some(name), Some(value)) = (
-                            metric.get("name").and_then(|n| n.as_str()),
-                            metric.get("value").and_then(|v| v.as_f64()),
-                        ) {
-                            formatted_metrics.insert(name.to_string(), value);
-                        }
-                    }
-                }
+                let formatted_metrics: std::collections::HashMap<String, f64> = metrics
+                    .get("metrics")
+                    .and_then(|m| m.as_array())
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|metric| {
+                        let name = metric.get("name").and_then(|n| n.as_str())?;
+                        let value = metric.get("value").and_then(|v| v.as_f64())?;
+                        Some((name.to_string(), value))
+                    })
+                    .collect();
 
                 Ok(CallToolResult::text_content(vec![
                     serde_json::to_string_pretty(&formatted_metrics)

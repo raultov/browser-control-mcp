@@ -49,127 +49,54 @@ struct PerformanceSummary {
     top_long_tasks: Vec<LongTask>,
 }
 
+type Target = crate::handler::cdp_domains::cdp_target::CdpTarget;
+
+/// Trace categories recorded by `profile_page_performance`.
+const CATEGORIES: &str = "devtools.timeline,v8.execute,blink.user_timing,blink,cc,gpu,toplevel";
+
 impl ProfilePagePerformanceTool {
     pub async fn handle(
         params: CallToolRequestParams,
         handler: &McpHandler,
     ) -> Result<CallToolResult, CallToolError> {
-        let args_value = serde_json::Value::Object(params.arguments.unwrap_or_default());
-        let args: ProfilePagePerformanceTool = serde_json::from_value(args_value)
-            .map_err(|e| CallToolError::from_message(e.to_string()))?;
+        let args: ProfilePagePerformanceTool = crate::handler::parse_args(params)?;
         let session = handler.session(args.instance_id.clone()).await?;
         let target = session.target(args.tab_id.clone()).await?;
-
         let duration = args.duration_ms.unwrap_or(3000).clamp(500, 15000);
-        let action = args.action.unwrap_or_else(|| "none".to_string());
         let disable_cache = args.disable_cache.unwrap_or(false);
 
-        // 1. Setup cache
         if disable_cache {
-            let _ = target
-                .send_raw_command("Network.setCacheDisabled", json!({ "cacheDisabled": true }))
-                .await;
+            set_cache_disabled(&target, true).await;
         }
-
-        // 2. Prepare to listen for completion — the completion channel lives in
-        // the tab's tracing state, matching where the tracing listener pumps
-        // Tracing.tracingComplete for that same tab.
+        // The completion channel lives in the tab's tracing state, matching
+        // where the tracing listener pumps Tracing.tracingComplete for that tab.
         let (tx, mut rx) = mpsc::channel(1);
-        {
-            let tracing_state = session.tracing_state(args.tab_id.clone())?;
-            let mut st = tracing_state.lock().await;
-            st.completion_channel = Some(tx);
-        }
+        let tracing_state = session.tracing_state(args.tab_id.clone())?;
+        tracing_state.lock().await.completion_channel = Some(tx);
 
-        // 3. Start tracing
-        let start_res = target
-            .send_raw_command(
-                "Tracing.start",
-                json!({
-                    "transferMode": "ReturnAsStream",
-                    "categories": "devtools.timeline,v8.execute,blink.user_timing,blink,cc,gpu,toplevel"
-                }),
-            )
-            .await;
-
-        if let Err(e) = start_res {
-            return Err(CallToolError::from_message(format!(
-                "Failed to start tracing: {:?}",
-                e
-            )));
-        }
-
-        // 4. Perform action
-        if action == "reload" {
+        let start = json!({"transferMode": "ReturnAsStream", "categories": CATEGORIES});
+        crate::handler::send_or(&target, "Tracing.start", start, "Failed to start tracing").await?;
+        if args.action.as_deref() == Some("reload") {
             let _ = target
                 .send_raw_command("Page.reload", json!({ "ignoreCache": disable_cache }))
                 .await;
         }
-
-        // 5. Wait
         tokio::time::sleep(Duration::from_millis(duration)).await;
-
-        // 6. Stop tracing
         let _ = target.send_raw_command("Tracing.end", json!({})).await;
 
-        // 7. Wait for stream handle
         let stream_handle = match tokio::time::timeout(Duration::from_secs(10), rx.recv()).await {
             Ok(Some(handle)) => handle,
             _ => {
                 return Err(CallToolError::from_message(
-                    "Timeout waiting for Tracing.tracingComplete".to_string(),
+                    "Timeout waiting for Tracing.tracingComplete",
                 ));
             }
         };
-
-        // 8. Read the stream via IO domain
-        let mut raw_json_data = String::new();
-        loop {
-            let read_res = target
-                .send_raw_command(
-                    "IO.read",
-                    json!({
-                        "handle": stream_handle
-                    }),
-                )
-                .await;
-
-            if let Ok(resp) = read_res {
-                if let Some(res_obj) = resp.result {
-                    if let Some(data) = res_obj.get("data").and_then(|v| v.as_str()) {
-                        raw_json_data.push_str(data);
-                    }
-                    if let Some(eof) = res_obj.get("eof").and_then(|v| v.as_bool())
-                        && eof
-                    {
-                        break;
-                    }
-                } else {
-                    break;
-                }
-            } else {
-                break;
-            }
-        }
-
-        // 9. Close IO stream
-        let _ = target
-            .send_raw_command("IO.close", json!({ "handle": stream_handle }))
-            .await;
-
-        // 10. Restore cache if disabled
+        let raw_json_data = read_stream(&target, &stream_handle).await;
         if disable_cache {
-            let _ = target
-                .send_raw_command(
-                    "Network.setCacheDisabled",
-                    json!({ "cacheDisabled": false }),
-                )
-                .await;
+            set_cache_disabled(&target, false).await;
         }
-
-        // 11. Parse and Analyze
         let summary = Self::analyze_trace(&raw_json_data, duration);
-
         let result_json = serde_json::to_value(&summary).unwrap_or_default();
         Ok(CallToolResult::text_content(vec![
             serde_json::to_string_pretty(&result_json)
@@ -183,95 +110,110 @@ impl ProfilePagePerformanceTool {
             profile_duration_ms: duration_ms,
             ..Default::default()
         };
-
-        let parsed: Result<serde_json::Value, _> = serde_json::from_str(raw_json);
-        if let Ok(root) = parsed {
-            // Chrome trace is usually a top-level array OR an object with "traceEvents" array
-            let events_opt = if root.is_array() {
-                root.as_array()
-            } else {
-                root.get("traceEvents").and_then(|v| v.as_array())
-            };
-
-            if let Some(events) = events_opt {
-                let mut long_tasks = Vec::new();
-                let mut navigation_start_ts = None;
-
-                // First pass: find navigationStart to normalize timestamps (ts is in microseconds)
-                for ev in events {
-                    if let (Some(name), Some(ts)) = (
-                        ev.get("name").and_then(|v| v.as_str()),
-                        ev.get("ts").and_then(|v| v.as_f64()),
-                    ) && name == "navigationStart"
-                        && navigation_start_ts.is_none()
-                    {
-                        navigation_start_ts = Some(ts);
-                    }
-                }
-
-                let base_ts = navigation_start_ts.unwrap_or(0.0);
-
-                for ev in events {
-                    let name = ev.get("name").and_then(|v| v.as_str()).unwrap_or("");
-                    let ph = ev.get("ph").and_then(|v| v.as_str()).unwrap_or("");
-                    let ts = ev.get("ts").and_then(|v| v.as_f64()).unwrap_or(0.0);
-
-                    // Web Vitals (Marks)
-                    if ph == "R" || ph == "I" || ph == "O" {
-                        let ms = (ts - base_ts) / 1000.0;
-                        if ms > 0.0 {
-                            if name == "firstContentfulPaint" {
-                                summary.first_contentful_paint_ms = Some(ms);
-                            } else if name == "largestContentfulPaint::Candidate" {
-                                // LCP can have multiple candidates, keep the latest
-                                summary.largest_contentful_paint_ms = Some(ms);
-                            } else if name == "domContentLoadedEventEnd" {
-                                summary.dom_content_loaded_ms = Some(ms);
-                            } else if name == "loadEventEnd" {
-                                summary.load_event_ms = Some(ms);
-                            }
-                        }
-                    }
-
-                    // Long Tasks (Complete events with duration)
-                    if ph == "X" {
-                        let dur = ev.get("dur").and_then(|v| v.as_f64()).unwrap_or(0.0);
-                        let dur_ms = dur / 1000.0;
-
-                        // Consider task long if > 50ms and it's a RunTask or EvaluateScript
-                        if dur_ms > 50.0
-                            && (name == "RunTask"
-                                || name == "EvaluateScript"
-                                || name == "FunctionCall")
-                        {
-                            let start_ms = (ts - base_ts) / 1000.0;
-                            if start_ms > 0.0 {
-                                summary.total_blocking_time_ms += dur_ms - 50.0;
-
-                                long_tasks.push(LongTask {
-                                    name: name.to_string(),
-                                    duration_ms: dur_ms,
-                                    start_time_ms: start_ms,
-                                    args: ev.get("args").cloned(),
-                                });
-                            }
-                        }
-                    }
-                }
-
-                // Sort long tasks by duration descending and keep top 10
-                long_tasks.sort_by(|a, b| {
-                    b.duration_ms
-                        .partial_cmp(&a.duration_ms)
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                });
-                long_tasks.truncate(10);
-                summary.top_long_tasks = long_tasks;
+        let Ok(root) = serde_json::from_str::<serde_json::Value>(raw_json) else {
+            return summary;
+        };
+        // Chrome trace is usually a top-level array OR an object with "traceEvents" array
+        let Some(events) = root
+            .as_array()
+            .or_else(|| root.get("traceEvents").and_then(|v| v.as_array()))
+        else {
+            return summary;
+        };
+        // Timestamps (microseconds) are relative to the first navigationStart.
+        let base_ts = events
+            .iter()
+            .filter(|ev| ev.get("name").and_then(|v| v.as_str()) == Some("navigationStart"))
+            .find_map(|ev| ev.get("ts").and_then(|v| v.as_f64()))
+            .unwrap_or(0.0);
+        let mut long_tasks = Vec::new();
+        for ev in events {
+            apply_mark(&mut summary, ev, base_ts);
+            if let Some(task) = long_task(ev, base_ts) {
+                summary.total_blocking_time_ms += task.duration_ms - 50.0;
+                long_tasks.push(task);
             }
         }
-
+        // Sort long tasks by duration descending and keep top 10
+        long_tasks.sort_by(|a, b| {
+            b.duration_ms
+                .partial_cmp(&a.duration_ms)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        long_tasks.truncate(10);
+        summary.top_long_tasks = long_tasks;
         summary
     }
+}
+
+async fn set_cache_disabled(target: &Target, disabled: bool) {
+    let params = json!({ "cacheDisabled": disabled });
+    let _ = target
+        .send_raw_command("Network.setCacheDisabled", params)
+        .await;
+}
+
+/// Reads a CDP IO stream to the end, then closes it.
+async fn read_stream(target: &Target, handle: &str) -> String {
+    let mut data = String::new();
+    loop {
+        let reply = target
+            .send_raw_command("IO.read", json!({ "handle": handle }))
+            .await;
+        let Some(result) = reply.ok().and_then(|r| r.result) else {
+            break;
+        };
+        data.push_str(result.get("data").and_then(|v| v.as_str()).unwrap_or(""));
+        if result.get("eof").and_then(|v| v.as_bool()) == Some(true) {
+            break;
+        }
+    }
+    let _ = target
+        .send_raw_command("IO.close", json!({ "handle": handle }))
+        .await;
+    data
+}
+
+fn event_str<'a>(ev: &'a serde_json::Value, key: &str) -> &'a str {
+    ev.get(key).and_then(|v| v.as_str()).unwrap_or("")
+}
+
+fn event_f64(ev: &serde_json::Value, key: &str) -> f64 {
+    ev.get(key).and_then(|v| v.as_f64()).unwrap_or(0.0)
+}
+
+/// Web Vitals marks (`ph` R, I or O) after the navigation start.
+fn apply_mark(summary: &mut PerformanceSummary, ev: &serde_json::Value, base_ts: f64) {
+    if !matches!(event_str(ev, "ph"), "R" | "I" | "O") {
+        return;
+    }
+    let ms = (event_f64(ev, "ts") - base_ts) / 1000.0;
+    if ms <= 0.0 {
+        return;
+    }
+    let slot = match event_str(ev, "name") {
+        "firstContentfulPaint" => &mut summary.first_contentful_paint_ms,
+        // LCP can have multiple candidates, keep the latest
+        "largestContentfulPaint::Candidate" => &mut summary.largest_contentful_paint_ms,
+        "domContentLoadedEventEnd" => &mut summary.dom_content_loaded_ms,
+        "loadEventEnd" => &mut summary.load_event_ms,
+        _ => return,
+    };
+    *slot = Some(ms);
+}
+
+/// A complete event (`ph` X) longer than 50 ms that runs script.
+fn long_task(ev: &serde_json::Value, base_ts: f64) -> Option<LongTask> {
+    let name = event_str(ev, "name");
+    let dur_ms = event_f64(ev, "dur") / 1000.0;
+    let start_ms = (event_f64(ev, "ts") - base_ts) / 1000.0;
+    let is_script = matches!(name, "RunTask" | "EvaluateScript" | "FunctionCall");
+    (event_str(ev, "ph") == "X" && dur_ms > 50.0 && is_script && start_ms > 0.0).then(|| LongTask {
+        name: name.to_string(),
+        duration_ms: dur_ms,
+        start_time_ms: start_ms,
+        args: ev.get("args").cloned(),
+    })
 }
 
 #[cfg(test)]

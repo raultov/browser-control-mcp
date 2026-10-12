@@ -24,80 +24,108 @@ impl SearchScriptsTool {
         params: CallToolRequestParams,
         handler: &McpHandler,
     ) -> Result<CallToolResult, CallToolError> {
-        let args_value = serde_json::Value::Object(params.arguments.unwrap_or_default());
-        let args: SearchScriptsTool = serde_json::from_value(args_value)
-            .map_err(|e| CallToolError::from_message(e.to_string()))?;
+        let args: SearchScriptsTool = crate::handler::parse_args(params)?;
         let session = handler.session(args.instance_id.clone()).await?;
         let debugger_state = session.debugger_state(args.tab_id.clone())?;
 
         // Check empty query BEFORE connecting — this is a pure state query
         if args.query.is_empty() {
-            let scripts = debugger_state.lock().await.scripts.clone();
+            let count = debugger_state.lock().await.scripts.len();
             return Ok(CallToolResult::text_content(vec![
-                format!("Total cached scripts: {}", scripts.len()).into(),
+                format!("Total cached scripts: {}", count).into(),
             ]));
         }
 
         let target = session.target(args.tab_id.clone()).await?;
-
         let scripts = debugger_state.lock().await.scripts.clone();
-
-        let mut results = vec![];
-        let mut errors = vec![];
-        for (script_id, script_hash) in scripts {
-            match target
+        let mut report = SearchReport::default();
+        for (script_id, script) in scripts {
+            let reply = target
                 .send_raw_command("Debugger.getScriptSource", json!({"scriptId": script_id}))
-                .await
-            {
-                Ok(script_result) => {
-                    if let Some(source) = extract_from_value(&script_result.result, "scriptSource")
-                    {
-                        if args.query == "@source" {
-                            results.push(json!({"id": script_id, "source": source.chars().take(1000).collect::<String>()}));
-                        } else if args.query == "debug" {
-                            results.push(json!({"id": script_id, "source_len": source.len()}));
-                        } else if let Some((line_number, column_number)) =
-                            find_line_column(source, &args.query)
-                        {
-                            results.push(json!({
-                                    "scriptId": script_id,
-                                    "scriptHash": script_hash.hash,
-                                    "lineNumber": line_number,
-                                    "columnNumber": column_number,
-                                    "linePreview": source.lines().nth(line_number as usize).unwrap_or("").trim()
-                                }));
-                        }
-                    } else {
-                        errors.push(format!(
-                            "No scriptSource for {}: {:?}",
-                            script_id, script_result.result
-                        ));
+                .await;
+            match reply {
+                Ok(reply) => match extract_from_value(&reply.result, "scriptSource") {
+                    Some(source) => {
+                        let text = ScriptText {
+                            id: &script_id,
+                            hash: &script.hash,
+                            source,
+                        };
+                        report.add_source(&args.query, &text)
                     }
-                }
-                Err(e) => {
-                    let error_message = format!("{:?}", e);
-                    if !error_message.contains("No script for id") {
-                        errors.push(format!("Err for {}: {}", script_id, error_message));
-                    }
-                }
+                    None => report.errors.push(format!(
+                        "No scriptSource for {}: {:?}",
+                        script_id, reply.result
+                    )),
+                },
+                Err(e) => report.add_error(&script_id, format!("{:?}", e)),
             }
         }
-
         Ok(CallToolResult::text_content(vec![
-            if args.query == "debug" {
-                format!("Results: {:?}\nErrors: {:?}", results, errors).into()
-            } else if results.is_empty() {
-                if !errors.is_empty() {
-                    format!("No matches found. Errors encountered: {:?}", errors).into()
-                } else {
-                    "No matches found.".into()
-                }
-            } else {
-                serde_json::to_string_pretty(&results)
-                    .unwrap_or_default()
-                    .into()
-            },
+            report.text(&args.query).into(),
         ]))
+    }
+}
+
+/// One script's id, content hash and source text.
+#[derive(Clone, Copy)]
+pub(crate) struct ScriptText<'a> {
+    pub(crate) id: &'a str,
+    pub(crate) hash: &'a str,
+    pub(crate) source: &'a str,
+}
+
+/// Matches and errors of one `search_scripts` call. The query language is
+/// shared by every browser: `@source` dumps the first 1000 characters of
+/// each script, `debug` lists lengths, anything else is a text search
+/// reporting the first match per script.
+#[derive(Default)]
+pub(crate) struct SearchReport {
+    pub(crate) results: Vec<serde_json::Value>,
+    pub(crate) errors: Vec<String>,
+}
+
+impl SearchReport {
+    /// Applies `query` to one script's source.
+    pub(crate) fn add_source(&mut self, query: &str, script: &ScriptText<'_>) {
+        let ScriptText { id, hash, source } = *script;
+        let row = match query {
+            "@source" => {
+                Some(json!({"id": id, "source": source.chars().take(1000).collect::<String>()}))
+            }
+            "debug" => Some(json!({"id": id, "source_len": source.len()})),
+            _ => find_line_column(source, query).map(|(line, column)| {
+                let preview = source.lines().nth(line as usize).unwrap_or("").trim();
+                json!({
+                    "scriptId": id,
+                    "scriptHash": hash,
+                    "lineNumber": line,
+                    "columnNumber": column,
+                    "linePreview": preview
+                })
+            }),
+        };
+        self.results.extend(row);
+    }
+
+    /// Records a failed source fetch; a script that no longer exists is not an error.
+    pub(crate) fn add_error(&mut self, id: &str, message: String) {
+        if !message.contains("No script for id") {
+            self.errors.push(format!("Err for {}: {}", id, message));
+        }
+    }
+
+    /// The tool's text output.
+    pub(crate) fn text(&self, query: &str) -> String {
+        if query == "debug" {
+            format!("Results: {:?}\nErrors: {:?}", self.results, self.errors)
+        } else if self.results.is_empty() && self.errors.is_empty() {
+            "No matches found.".to_string()
+        } else if self.results.is_empty() {
+            format!("No matches found. Errors encountered: {:?}", self.errors)
+        } else {
+            serde_json::to_string_pretty(&self.results).unwrap_or_default()
+        }
     }
 }
 

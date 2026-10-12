@@ -32,65 +32,46 @@ impl SetBreakpointTool {
         params: CallToolRequestParams,
         handler: &McpHandler,
     ) -> Result<CallToolResult, CallToolError> {
-        let args_value = serde_json::Value::Object(params.arguments.unwrap_or_default());
-        let args: SetBreakpointTool = serde_json::from_value(args_value)
-            .map_err(|e| CallToolError::from_message(e.to_string()))?;
+        let args: SetBreakpointTool = crate::handler::parse_args(params)?;
         let session = handler.session(args.instance_id.clone()).await?;
-
-        if args.script_id.is_none() && args.url.is_none() && args.script_hash.is_none() {
-            return Err(CallToolError::from_message(
-                "Either script_id, url or script_hash must be provided",
-            ));
-        }
-
-        let target = session.target(args.tab_id.clone()).await?;
-
-        let response = if let Some(script_id) = args.script_id {
-            let mut location = json!({
-                "scriptId": script_id,
-                "lineNumber": args.line_number,
-            });
-            if let (Some(col), Some(map)) = (args.column_number, location.as_object_mut()) {
-                map.insert("columnNumber".to_string(), json!(col));
-            }
-            target
-                .send_raw_command("Debugger.setBreakpoint", json!({ "location": location }))
-                .await
-        } else if let Some(url) = args.url {
-            let mut params = json!({
-                "url": url,
-                "lineNumber": args.line_number,
-            });
-            if let (Some(col), Some(map)) = (args.column_number, params.as_object_mut()) {
-                map.insert("columnNumber".to_string(), json!(col));
-            }
-            target
-                .send_raw_command("Debugger.setBreakpointByUrl", params)
-                .await
-        } else if let Some(script_hash) = args.script_hash {
-            let mut params = json!({
-                "scriptHash": script_hash,
-                "lineNumber": args.line_number,
-            });
-            if let (Some(col), Some(map)) = (args.column_number, params.as_object_mut()) {
-                map.insert("columnNumber".to_string(), json!(col));
-            }
-            target
-                .send_raw_command("Debugger.setBreakpointByUrl", params)
-                .await
-        } else {
-            return Err(CallToolError::from_message(
-                "Either script_id, url or script_hash must be provided.".to_string(),
-            ));
-        };
-
-        let response = response.map_err(|e| {
-            CallToolError::from_message(format!("Failed to set breakpoint: {:?}", e))
+        let (method, params) = args.command().ok_or_else(|| {
+            CallToolError::from_message("Either script_id, url or script_hash must be provided")
         })?;
-
+        let target = session.target(args.tab_id.clone()).await?;
+        let failure = "Failed to set breakpoint";
+        let response = crate::handler::send_or(&target, method, params, failure).await?;
         Ok(CallToolResult::text_content(vec![
             format!("Breakpoint set successfully. Response: {:?}", response).into(),
         ]))
+    }
+
+    /// The CDP command for the location given, by precedence script id, URL,
+    /// script hash; `None` when none is given.
+    fn command(&self) -> Option<(&'static str, serde_json::Value)> {
+        let (method, mut location, wrap) = if let Some(id) = &self.script_id {
+            ("Debugger.setBreakpoint", json!({"scriptId": id}), true)
+        } else if let Some(url) = &self.url {
+            ("Debugger.setBreakpointByUrl", json!({"url": url}), false)
+        } else {
+            let hash = self.script_hash.as_ref()?;
+            (
+                "Debugger.setBreakpointByUrl",
+                json!({"scriptHash": hash}),
+                false,
+            )
+        };
+        if let Some(map) = location.as_object_mut() {
+            map.insert("lineNumber".into(), json!(self.line_number));
+            if let Some(col) = self.column_number {
+                map.insert("columnNumber".into(), json!(col));
+            }
+        }
+        let params = if wrap {
+            json!({ "location": location })
+        } else {
+            location
+        };
+        Some((method, params))
     }
 }
 

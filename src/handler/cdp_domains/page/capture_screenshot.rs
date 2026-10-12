@@ -28,93 +28,63 @@ impl CaptureScreenshotTool {
         params: CallToolRequestParams,
         handler: &McpHandler,
     ) -> Result<CallToolResult, CallToolError> {
-        let args_value = serde_json::Value::Object(params.arguments.unwrap_or_default());
-        let args: CaptureScreenshotTool = serde_json::from_value(args_value)
-            .map_err(|e| CallToolError::from_message(e.to_string()))?;
-        let session = handler.session(args.instance_id.clone()).await?;
-        let target = session.target(args.tab_id.clone()).await?;
-
-        let format = args.format.unwrap_or_else(|| "png".to_string());
-
-        let mut command_params = json!({
-            "format": format,
-            "fromSurface": true
-        });
-
+        let args: CaptureScreenshotTool = crate::handler::parse_args(params)?;
+        let target =
+            crate::handler::resolve_target(handler, args.instance_id.clone(), args.tab_id.clone())
+                .await?;
+        let format = args.format.clone().unwrap_or_else(|| "png".to_string());
+        let mut command_params = json!({"format": format, "fromSurface": true});
         if let (Some(q), Some(map)) = (args.quality, command_params.as_object_mut()) {
             map.insert("quality".to_string(), json!(q));
         }
-
         if args.full_page.unwrap_or(false) {
-            // 1. Get the metrics of the page
-            let metrics_res = target
-                .send_raw_command("Page.getLayoutMetrics", json!({}))
-                .await
-                .map_err(|e| {
-                    CallToolError::from_message(format!("Failed to get metrics: {:?}", e))
-                })?;
-
-            let content_size = metrics_res
-                .result
-                .as_ref()
-                .and_then(|r| r.get("contentSize"));
-
-            if let (Some(size), Some(map)) = (content_size, command_params.as_object_mut()) {
-                let width = size.get("width").and_then(|v| v.as_f64()).unwrap_or(1280.0);
-                let height = size.get("height").and_then(|v| v.as_f64()).unwrap_or(720.0);
-
-                map.insert(
-                    "clip".to_string(),
-                    json!({
-                        "x": 0,
-                        "y": 0,
-                        "width": width,
-                        "height": height,
-                        "scale": 1
-                    }),
-                );
-
-                // Also enable captureBeyondViewport just in case for newer Chrome versions
-                map.insert("captureBeyondViewport".to_string(), json!(true));
-            }
+            add_full_page_clip(&target, &mut command_params).await?;
         }
-
-        let result = target
-            .send_raw_command("Page.captureScreenshot", command_params)
-            .await;
-
-        match result {
-            Ok(val) => {
-                let data = val
-                    .result
-                    .as_ref()
-                    .and_then(|r| r.get("data"))
-                    .and_then(|d| d.as_str());
-
-                if let Some(base64_data) = data {
-                    let mime_type = format!("image/{}", format);
-                    let image_content = ImageContent::new(
-                        base64_data.to_string(),
-                        mime_type,
-                        None, // annotations
-                        None, // unknown fields
-                    );
-
-                    Ok(CallToolResult {
-                        content: vec![ContentBlock::ImageContent(image_content)],
-                        is_error: None,
-                        meta: None,
-                        structured_content: None,
-                    })
-                } else {
-                    Err(CallToolError::from_message(
-                        "No data returned from Page.captureScreenshot".to_string(),
-                    ))
-                }
-            }
-            Err(e) => Err(CallToolError::from_message(format!("CDP Error: {:?}", e))),
-        }
+        let failure = "CDP Error";
+        let val =
+            crate::handler::send_or(&target, "Page.captureScreenshot", command_params, failure)
+                .await?;
+        let data = val
+            .result
+            .as_ref()
+            .and_then(|r| r.get("data"))
+            .and_then(|d| d.as_str());
+        let base64_data = data.ok_or_else(|| {
+            CallToolError::from_message("No data returned from Page.captureScreenshot")
+        })?;
+        let image = ImageContent::new(
+            base64_data.to_string(),
+            format!("image/{format}"),
+            None,
+            None,
+        );
+        Ok(CallToolResult {
+            content: vec![ContentBlock::ImageContent(image)],
+            is_error: None,
+            meta: None,
+            structured_content: None,
+        })
     }
+}
+
+/// Clips the capture to the whole document (`Page.getLayoutMetrics`).
+async fn add_full_page_clip(
+    target: &crate::handler::cdp_domains::cdp_target::CdpTarget,
+    command_params: &mut serde_json::Value,
+) -> Result<(), CallToolError> {
+    let failure = "Failed to get metrics";
+    let metrics =
+        crate::handler::send_or(target, "Page.getLayoutMetrics", json!({}), failure).await?;
+    let content_size = metrics.result.as_ref().and_then(|r| r.get("contentSize"));
+    if let (Some(size), Some(map)) = (content_size, command_params.as_object_mut()) {
+        let width = size.get("width").and_then(|v| v.as_f64()).unwrap_or(1280.0);
+        let height = size.get("height").and_then(|v| v.as_f64()).unwrap_or(720.0);
+        let clip = json!({"x": 0, "y": 0, "width": width, "height": height, "scale": 1});
+        map.insert("clip".to_string(), clip);
+        // Also enable captureBeyondViewport just in case for newer Chrome versions
+        map.insert("captureBeyondViewport".to_string(), json!(true));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
