@@ -39,3 +39,6 @@ allow-panic-in-tests = true
 # --- Measured curves (appended at every phase gate) ---
 # Format: <lint>: <value> -> <violations> | ... (date, phase)
 # Measured with a temporary CLIPPY_CONF_DIR copy, counting by message text.
+# Phase 0 (2026-10-12, scaffolding; 1 test):
+#   too_many_lines: 50 -> 0 | 40 -> 0 | 30 -> 0
+#   cognitive_complexity: 12 -> 0 | 10 -> 0 | 5 -> 0
