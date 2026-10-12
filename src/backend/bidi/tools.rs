@@ -399,3 +399,46 @@ pub(crate) async fn restart_browser(
     }
     Ok(text("Firefox instance restarted successfully."))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn call(name: &str, arguments: Value) -> CallToolRequestParams {
+        serde_json::from_value(json!({"name": name, "arguments": arguments})).unwrap()
+    }
+
+    /// BID-13: --local blocks Firefox navigation like Chrome (before any launch).
+    #[tokio::test]
+    async fn local_mode_blocks_firefox_navigation() {
+        let mut handler = crate::handler::test_handler();
+        handler.flags.local = true;
+        handler.default_browser = BrowserKind::Firefox;
+        let err = navigate(
+            call("navigate", json!({"url": "https://example.com"})),
+            &handler,
+        )
+        .await;
+        assert!(format!("{:?}", err.unwrap_err()).contains("--local"));
+        let err = open_tab(
+            call("open_tab", json!({"url": "https://example.com"})),
+            &handler,
+        )
+        .await;
+        assert!(format!("{:?}", err.unwrap_err()).contains("--local"));
+    }
+
+    /// BID-10: Lost events are reported, not hidden.
+    #[test]
+    fn lagged_events_are_reported() {
+        let session = FirefoxSession::new(Default::default());
+        session
+            .lagged
+            .store(7, std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(
+            session.lag_note().as_deref(),
+            Some("7 browser events were lost (the server fell behind)")
+        );
+        assert_eq!(session.lag_note(), None, "reported once");
+    }
+}

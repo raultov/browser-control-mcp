@@ -570,4 +570,13 @@ mod tests {
                 .contains("requires an active, paused")
         );
     }
+
+    /// BID-21: WebSocket frames are reported as unavailable on Firefox.
+    #[tokio::test]
+    async fn websocket_frames_reported_unavailable() {
+        let handler = handler_with_firefox();
+        let args = serde_json::json!({"instance_id": "ff", "type_filter": "websocket"});
+        let message = error_of(&handler, "get_network_logs", args).await;
+        assert!(message.contains("WebSocket frame"), "{message}");
+    }
 }
