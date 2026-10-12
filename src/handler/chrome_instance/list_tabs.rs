@@ -23,7 +23,18 @@ impl ListTabsTool {
         let args: ListTabsTool = serde_json::from_value(args_value)
             .map_err(|e| CallToolError::from_message(e.to_string()))?;
         let session = handler.session(args.instance_id.clone()).await?;
-
+        // Current URLs from the browser, when it is running (the registry only
+        // knows the URL a tab was opened with).
+        let running = session.chrome_manager.lock().await.is_running().await;
+        let mut current = std::collections::HashMap::new();
+        // `.ok()` first: the error type is not `Send` across the next await.
+        let browser = match running {
+            true => session.browser_client().await.ok(),
+            false => None,
+        };
+        if let Some(browser) = browser {
+            current = current_urls(browser.list_tabs().await.unwrap_or_default());
+        }
         let registry = crate::util::sync::read(&session.tabs);
 
         let tabs: Vec<serde_json::Value> = registry
@@ -34,7 +45,7 @@ impl ListTabsTool {
                     "tab_id": id,
                     "label": entry.label,
                     "target_id": entry.tab.target_id(),
-                    "url": entry.url,
+                    "url": current.get(entry.tab.target_id()).unwrap_or(&entry.url),
                 })
             })
             .collect();
@@ -55,5 +66,29 @@ impl ListTabsTool {
         Ok(CallToolResult::text_content(vec![
             result.to_string().into(),
         ]))
+    }
+}
+
+/// Target id → current URL.
+fn current_urls(
+    targets: Vec<cdp_browser_lite::TargetInfo>,
+) -> std::collections::HashMap<String, String> {
+    targets.into_iter().map(|t| (t.target_id, t.url)).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// FIX-09: list_tabs shows the current URL.
+    #[test]
+    fn list_tabs_shows_current_url() {
+        // Given the browser reports that target T1 navigated to https://a/
+        let info: cdp_browser_lite::TargetInfo = serde_json::from_value(serde_json::json!(
+            {"targetId": "T1", "type": "page", "title": "", "url": "https://a/"}
+        ))
+        .unwrap();
+        // Then its current URL is the reported one
+        assert_eq!(current_urls(vec![info])["T1"], "https://a/");
     }
 }

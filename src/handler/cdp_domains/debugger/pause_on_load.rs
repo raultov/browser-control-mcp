@@ -38,7 +38,7 @@ impl PauseOnLoadTool {
                 CallToolError::from_message(format!("CDP Debugger.enable error: {:?}", e))
             })?;
 
-        target
+        let added = target
             .send_raw_command(
                 "Page.addScriptToEvaluateOnNewDocument",
                 json!({ "source": "debugger;" }),
@@ -47,6 +47,9 @@ impl PauseOnLoadTool {
             .map_err(|e| {
                 CallToolError::from_message(format!("CDP Page.addScript... error: {:?}", e))
             })?;
+        let identifier = crate::handler::extract_from_value(&added.result, "identifier");
+        let debugger_state = session.debugger_state(args.tab_id.clone())?;
+        debugger_state.lock().await.pause_on_load_script = identifier.map(str::to_string);
 
         target
             .send_raw_command("Page.reload", cdp_browser_lite::NoParams)

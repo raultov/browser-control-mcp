@@ -317,6 +317,7 @@ mod tests {
                     response_status_text: None,
                     response_headers: None,
                     response_body: None,
+                    redirects: Vec::new(),
                 },
             );
         }
@@ -367,6 +368,7 @@ mod tests {
                     response_status_text: None,
                     response_headers: None,
                     response_body: None,
+                    redirects: Vec::new(),
                 },
             );
         }

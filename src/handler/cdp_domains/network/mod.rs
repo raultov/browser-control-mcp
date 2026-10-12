@@ -45,6 +45,7 @@ fn on_request(st: &mut NetworkState, request_id: &str, params: &serde_json::Valu
             response_status_text: None,
             response_headers: None,
             response_body: None,
+            redirects: Vec::new(),
         },
     );
 }
@@ -142,6 +143,7 @@ mod tests {
                     response_status_text: None,
                     response_headers: None,
                     response_body: None,
+                    redirects: Vec::new(),
                 },
             );
         }
@@ -210,5 +212,29 @@ mod tests {
         assert_eq!(frames[0].payload_data, "ping");
         assert!(!frames[1].is_sent);
         assert_eq!(frames[1].payload_data, "pong");
+    }
+
+    /// FIX-05: A redirect keeps one entry per request id with the redirect chain.
+    #[tokio::test]
+    async fn redirects_keep_one_entry() {
+        // Given requestWillBeSent twice for "R1", the second carrying the redirect
+        let state = Arc::new(Mutex::new(NetworkState::default()));
+        let first = json!({"requestId": "R1", "request": {"url": "http://a/old", "method": "GET"}});
+        let second = json!({"requestId": "R1", "request": {"url": "http://a/new", "method": "GET"},
+            "redirectResponse": {"status": 302}});
+        for params in [first, second] {
+            process_network_event(&make_event("Network.requestWillBeSent", params), &state).await;
+        }
+        // Then R1 is listed once, with the final URL and one redirect
+        let st = state.lock().await;
+        let all = st.iter_all();
+        assert_eq!(all.len(), 1);
+        assert_eq!(
+            st.navigations[0].order.len(),
+            1,
+            "id must not be duplicated"
+        );
+        assert_eq!(all["R1"].url, "http://a/new");
+        assert_eq!(all["R1"].redirects, vec!["http://a/old".to_string()]);
     }
 }

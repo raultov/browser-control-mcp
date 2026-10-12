@@ -7,7 +7,7 @@ use serde_json::json;
 
 #[macros::mcp_tool(
     name = "fill_input",
-    description = "Focuses an input field via CSS selector and inserts text using native input simulation, triggering input/change events. Side effects: modifies DOM input value; triggers input/change event handlers. Prerequisites: element must exist, be visible, and be an input/textarea or contenteditable element. Returns: success confirmation. Use this to populate form fields, search boxes, text areas. Alternatives: 'evaluate_js' for direct value assignment without events, 'click_element' to focus manually."
+    description = "Focuses an input field via CSS selector, clears it and inserts text using native input simulation, so the text replaces the previous content; triggers input/change events. Side effects: replaces the DOM input value; triggers input/change event handlers. Prerequisites: element must exist, be visible, and be an input/textarea or contenteditable element. Returns: success confirmation. Use this to populate form fields, search boxes, text areas. Alternatives: 'evaluate_js' for direct value assignment without events, 'click_element' to focus manually."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct FillInputTool {
@@ -32,7 +32,7 @@ impl FillInputTool {
         let session = handler.session(args.instance_id.clone()).await?;
         let target = session.target(args.tab_id.clone()).await?;
 
-        let expression = crate::util::js::focus_element(&args.selector);
+        let expression = crate::util::js::focus_and_clear(&args.selector);
 
         let eval_result = target
             .send_raw_command(

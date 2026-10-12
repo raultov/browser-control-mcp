@@ -66,6 +66,25 @@ from a copy of its code: entries describe the differences from that release.
   100 WebSocket connections (with their frames) and 1,000 WebMCP
   invocations; the oldest are forgotten first.
 
+- `search_scripts` / script cache: Chrome's numeric `startLine`/`startColumn`
+  were read as strings and always stored as 0.
+- `evaluate_on_call_frame` no longer uses a stale frame after the page
+  resumed (`Debugger.resumed` clears it).
+- `pause_on_load` pauses once: the injected `debugger;` script is removed on
+  the next `resume` instead of pausing every later navigation.
+- `get_custom_events` with `limit: 0` returns every event (it returned none).
+- `get_network_logs`: a redirect keeps one entry per request id, with the
+  final URL and a `redirects` list.
+- `profile_page_performance` restores the cache and its completion channel
+  when tracing fails or times out, and keeps the top 5 long tasks its
+  description promises (it kept 10).
+- `fill_input` replaces the field's content, as its description says.
+- Closing the active tab activates the most recently used tab (it picked an
+  arbitrary one); `list_tabs` reports each tab's current URL; a tab opened
+  with `open_tab` can no longer be registered twice.
+- The session-level WebMCP listener starts before `WebMCP.enable`, so the
+  initial tool list is not missed.
+
 ### Security
 - The start-up log no longer prints the proxy password, username or a
   `user:pass@` embedded in `--proxy-server` (chrome-debug-mcp printed every

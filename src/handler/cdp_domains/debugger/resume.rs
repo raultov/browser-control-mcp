@@ -28,8 +28,22 @@ impl ResumeTool {
             params: serde_json::json!({}),
             failure,
         };
-        let ids = crate::handler::parse_args(params)?;
+        let ids: crate::handler::TargetArgs = crate::handler::parse_args(params)?;
+        let session = handler.session(ids.instance_id.clone()).await?;
+        let debugger_state = session.debugger_state(ids.tab_id.clone())?;
+        let pause_script = debugger_state.lock().await.pause_on_load_script.take();
+        let tab_id = ids.tab_id.clone();
         crate::handler::run_on_target(handler, ids, command).await?;
+        if let Some(identifier) = pause_script {
+            // `.ok()` first: the error type is not `Send` across the next await.
+            let target = session.target(tab_id).await.ok();
+            if let Some(target) = target {
+                let params = serde_json::json!({ "identifier": identifier });
+                let _ = target
+                    .send_raw_command("Page.removeScriptToEvaluateOnNewDocument", params)
+                    .await;
+            }
+        }
         Ok(CallToolResult::text_content(vec![
             "Debugger execution resumed.".into(),
         ]))
@@ -88,6 +102,32 @@ mod tests {
             content_str.contains("Debugger execution resumed"),
             "Content didn't match: {}",
             content_str
+        );
+    }
+
+    /// FIX-03: pause_on_load pauses once: resume forgets its script.
+    #[tokio::test]
+    async fn pause_on_load_script_is_removed() {
+        // Given a pause_on_load script recorded for the session page
+        let port = spawn_mock_chrome_server().await;
+        let mut handler = McpHandler::new_test();
+        Arc::get_mut(&mut handler.default_session)
+            .unwrap()
+            .chrome_manager = Arc::new(Mutex::new(MockChromeManager::new(port)));
+        let session = handler.session(None).await.unwrap();
+        session.debugger_state.lock().await.pause_on_load_script = Some("1".into());
+        // When the agent resumes
+        let params: CallToolRequestParams =
+            serde_json::from_value(json!({"name": "resume", "arguments": {}})).unwrap();
+        ResumeTool::handle(params, &handler).await.unwrap();
+        // Then the script is forgotten (its removal was sent), so later navigations do not pause
+        assert!(
+            session
+                .debugger_state
+                .lock()
+                .await
+                .pause_on_load_script
+                .is_none()
         );
     }
 }

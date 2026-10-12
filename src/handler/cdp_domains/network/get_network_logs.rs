@@ -270,6 +270,7 @@ mod tests {
                 response_status_text: Some("OK".to_string()),
                 response_headers: None,
                 response_body: None,
+                redirects: Vec::new(),
             },
         );
 
@@ -285,6 +286,7 @@ mod tests {
                 response_status_text: Some("OK".to_string()),
                 response_headers: None,
                 response_body: None,
+                redirects: Vec::new(),
             },
         );
 
@@ -497,6 +499,7 @@ mod tests {
             response_status_text: None,
             response_headers: Some(json!({"Set-Cookie": "s=2"})),
             response_body: None,
+            redirects: Vec::new(),
         };
         let mut requests = std::collections::HashMap::from([("R1".to_string(), request)]);
         // When the default (redacting) path runs

@@ -11,6 +11,16 @@ use cdp_browser_lite::WsResponse;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
+/// A script position: Chrome sends integers; strings are accepted too.
+fn position(params: &Option<serde_json::Value>, key: &str) -> i32 {
+    let value = params.as_ref().and_then(|p| p.get(key));
+    let number = value
+        .and_then(|v| v.as_i64())
+        .and_then(|n| i32::try_from(n).ok());
+    let text = value.and_then(|v| v.as_str()).and_then(|s| s.parse().ok());
+    number.or(text).unwrap_or(0)
+}
+
 /// Processes a single CDP debugger event, updating the shared state accordingly.
 /// This function is extracted from the listener loop to enable isolated unit testing.
 pub(crate) async fn process_debugger_event(event: &WsResponse, state: &Arc<Mutex<DebuggerState>>) {
@@ -20,12 +30,8 @@ pub(crate) async fn process_debugger_event(event: &WsResponse, state: &Arc<Mutex
                 extract_from_value(&event.params, "scriptId"),
                 extract_from_value(&event.params, "hash"),
             ) {
-                let start_line = extract_from_value(&event.params, "startLine")
-                    .and_then(|s| s.parse::<i32>().ok())
-                    .unwrap_or(0);
-                let start_column = extract_from_value(&event.params, "startColumn")
-                    .and_then(|s| s.parse::<i32>().ok())
-                    .unwrap_or(0);
+                let start_line = position(&event.params, "startLine");
+                let start_column = position(&event.params, "startColumn");
 
                 let mut st = state.lock().await;
                 st.scripts.insert(
@@ -48,6 +54,8 @@ pub(crate) async fn process_debugger_event(event: &WsResponse, state: &Arc<Mutex
                 .and_then(|id: &serde_json::Value| id.as_str())
         {
             state.lock().await.paused_call_frame_id = Some(call_first_frame_id.to_string());
+        } else if method == "Debugger.resumed" {
+            state.lock().await.paused_call_frame_id = None;
         }
     }
 }
@@ -269,5 +277,39 @@ pub(crate) mod tests {
             state.lock().await.paused_call_frame_id.as_deref(),
             Some("new-frame")
         );
+    }
+
+    /// FIX-01: Script start positions are read from integers.
+    #[tokio::test]
+    async fn script_positions_read_from_integers() {
+        // Given Debugger.scriptParsed with numeric positions, as Chrome sends them
+        let state = Arc::new(Mutex::new(DebuggerState::default()));
+        let event = make_event(
+            "Debugger.scriptParsed",
+            serde_json::json!({"scriptId": "7", "hash": "h", "startLine": 12, "startColumn": 4}),
+        );
+        // When it is processed
+        process_debugger_event(&event, &state).await;
+        // Then the cached positions are the numbers
+        let st = state.lock().await;
+        let script = st.scripts.get("7").unwrap();
+        assert_eq!((script.start_line, script.start_column), (12, 4));
+    }
+
+    /// FIX-02: Resuming clears the paused call frame.
+    #[tokio::test]
+    async fn resume_clears_paused_frame() {
+        // Given a pause followed by Debugger.resumed
+        let state = Arc::new(Mutex::new(DebuggerState::default()));
+        let paused = serde_json::json!({"callFrames": [{"callFrameId": "F1"}]});
+        process_debugger_event(&make_event("Debugger.paused", paused), &state).await;
+        assert!(state.lock().await.paused_call_frame_id.is_some());
+        process_debugger_event(
+            &make_event("Debugger.resumed", serde_json::json!({})),
+            &state,
+        )
+        .await;
+        // Then no paused frame remains
+        assert!(state.lock().await.paused_call_frame_id.is_none());
     }
 }

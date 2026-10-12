@@ -35,9 +35,16 @@ pub fn element_center(selector: &str) -> String {
     )
 }
 
-/// Focuses the first element matching `selector`; `true` if found.
-pub fn focus_element(selector: &str) -> String {
-    on_element(selector, "false", "el.focus(); return true;")
+/// Focuses the first element matching `selector` and empties it, so the
+/// text typed next replaces its content; `true` if found.
+pub fn focus_and_clear(selector: &str) -> String {
+    on_element(
+        selector,
+        "false",
+        "el.focus(); \
+         if ('value' in el) { el.value = ''; } else if (el.isContentEditable) { el.textContent = ''; } \
+         el.dispatchEvent(new Event('input', { bubbles: true })); return true;",
+    )
 }
 
 #[cfg(test)]
@@ -63,10 +70,18 @@ mod tests {
         for expression in [
             scroll_into_view(selector),
             element_center(selector),
-            focus_element(selector),
+            focus_and_clear(selector),
         ] {
             // Then it is one JSON string literal that parses back to the original
             assert_eq!(embedded_selector(&expression), selector, "{expression}");
         }
+    }
+
+    /// FIX-07: fill_input replaces the existing value.
+    #[test]
+    fn fill_input_replaces_value() {
+        let expression = focus_and_clear("#q");
+        assert!(expression.contains("el.focus()"));
+        assert!(expression.contains("el.value = ''"), "{expression}");
     }
 }

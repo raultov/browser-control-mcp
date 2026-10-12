@@ -51,6 +51,15 @@ struct PerformanceSummary {
 
 type Target = crate::handler::cdp_domains::cdp_target::CdpTarget;
 
+/// How many long tasks the summary keeps (the description promises 5).
+const TOP_LONG_TASKS: usize = 5;
+
+/// How long to wait for `Tracing.tracingComplete` after `Tracing.end`.
+#[cfg(not(test))]
+const COMPLETION_TIMEOUT: Duration = Duration::from_secs(10);
+#[cfg(test)]
+const COMPLETION_TIMEOUT: Duration = Duration::from_millis(100);
+
 /// Trace categories recorded by `profile_page_performance`.
 const CATEGORIES: &str = "devtools.timeline,v8.execute,blink.user_timing,blink,cc,gpu,toplevel";
 
@@ -75,11 +84,20 @@ impl ProfilePagePerformanceTool {
         tracing_state.lock().await.completion_channel = Some(tx);
 
         let reload = args.action.as_deref() == Some("reload");
-        let stream_handle = record(&target, &mut rx, (duration, reload, disable_cache)).await?;
-        let raw_json_data = read_stream(&target, &stream_handle).await;
+        // As a String: the error type is not `Send` across the next awaits.
+        let recorded = record(&target, &mut rx, (duration, reload, disable_cache))
+            .await
+            .map_err(|e| e.to_string());
+        let raw_json_data = match &recorded {
+            Ok(handle) => read_stream(&target, handle).await,
+            Err(_) => String::new(),
+        };
+        // Restored on every path, failures included.
+        tracing_state.lock().await.completion_channel = None;
         if disable_cache {
             set_cache_disabled(&target, false).await;
         }
+        recorded.map_err(CallToolError::from_message)?;
         let summary = Self::analyze_trace(&raw_json_data, duration);
         let result_json = serde_json::to_value(&summary).unwrap_or_default();
         Ok(CallToolResult::text_content(vec![
@@ -118,13 +136,13 @@ impl ProfilePagePerformanceTool {
                 long_tasks.push(task);
             }
         }
-        // Sort long tasks by duration descending and keep top 10
+        // Sort long tasks by duration descending and keep the top 5 (as described)
         long_tasks.sort_by(|a, b| {
             b.duration_ms
                 .partial_cmp(&a.duration_ms)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
-        long_tasks.truncate(10);
+        long_tasks.truncate(TOP_LONG_TASKS);
         summary.top_long_tasks = long_tasks;
         summary
     }
@@ -146,7 +164,7 @@ async fn record(
     }
     tokio::time::sleep(Duration::from_millis(duration)).await;
     let _ = target.send_raw_command("Tracing.end", json!({})).await;
-    match tokio::time::timeout(Duration::from_secs(10), completion.recv()).await {
+    match tokio::time::timeout(COMPLETION_TIMEOUT, completion.recv()).await {
         Ok(Some(handle)) => Ok(handle),
         _ => Err(CallToolError::from_message(
             "Timeout waiting for Tracing.tracingComplete",
@@ -289,5 +307,39 @@ mod tests {
             err.to_string().contains("not found"),
             "expected tab-not-found error instead of a 10s tracing timeout, got: {err}"
         );
+    }
+
+    /// FIX-06: profile_page_performance always restores state.
+    #[tokio::test]
+    async fn profiling_restores_state_on_failure() {
+        use crate::handler::chrome_instance::MockChromeManager;
+        use std::sync::Arc;
+        // Given a browser that never announces Tracing.tracingComplete
+        let port = crate::handler::cdp_domains::tests::spawn_mock_chrome_server().await;
+        let mut handler = McpHandler::new_test();
+        Arc::get_mut(&mut handler.default_session)
+            .unwrap()
+            .chrome_manager = Arc::new(tokio::sync::Mutex::new(MockChromeManager::new(port)));
+        // When profiling with the cache disabled times out
+        let params = serde_json::from_value(json!({"name": "profile_page_performance",
+            "arguments": {"duration_ms": 500, "disable_cache": true}}))
+        .unwrap();
+        let result = ProfilePagePerformanceTool::handle(params, &handler).await;
+        // Then it fails and the completion channel is cleared
+        assert!(result.is_err());
+        let session = handler.session(None).await.unwrap();
+        assert!(
+            session
+                .tracing_state
+                .lock()
+                .await
+                .completion_channel
+                .is_none()
+        );
+        // And the code and the description agree on the number of long tasks
+        let description = ProfilePagePerformanceTool::tool()
+            .description
+            .unwrap_or_default();
+        assert!(description.contains(&format!("top {TOP_LONG_TASKS} long tasks")));
     }
 }

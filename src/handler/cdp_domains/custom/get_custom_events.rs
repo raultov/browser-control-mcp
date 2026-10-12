@@ -49,7 +49,7 @@ impl GetCustomEventsTool {
                     true
                 }
             })
-            .take(tool.limit as usize)
+            .take(effective_limit(tool.limit))
             .cloned()
             .collect();
 
@@ -61,6 +61,14 @@ impl GetCustomEventsTool {
             )
             .into(),
         ]))
+    }
+}
+
+/// `0` means unlimited, as the schema says.
+fn effective_limit(limit: u32) -> usize {
+    match limit {
+        0 => usize::MAX,
+        n => n as usize,
     }
 }
 
@@ -128,5 +136,34 @@ mod tests {
         let content_str = format!("{:?}", call_result.content);
         assert!(content_str.contains("Found 1 custom events"));
         assert!(content_str.contains("Target.targetCreated"));
+    }
+
+    /// FIX-04: get_custom_events limit 0 means unlimited.
+    #[tokio::test]
+    async fn custom_events_limit_zero_is_unlimited() {
+        // Given 150 buffered custom events
+        let handler = McpHandler::new_test();
+        let session = handler.session(None).await.unwrap();
+        for i in 0..150 {
+            session
+                .custom_state
+                .lock()
+                .await
+                .events
+                .push_back(CustomEvent {
+                    method: format!("DOM.e{i}"),
+                    params: serde_json::json!({}),
+                    timestamp: String::new(),
+                });
+        }
+        // When get_custom_events is called with limit 0
+        let params: CallToolRequestParams = serde_json::from_value(
+            serde_json::json!({"name": "get_custom_events", "arguments": {"limit": 0}}),
+        )
+        .unwrap();
+        let result = GetCustomEventsTool::handle(params, &handler).await.unwrap();
+        // Then all 150 are returned
+        let text = result.content[0].as_text_content().unwrap().text.clone();
+        assert!(text.starts_with("Found 150 custom events"), "{text}");
     }
 }

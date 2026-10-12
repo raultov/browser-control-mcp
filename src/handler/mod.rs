@@ -26,6 +26,9 @@ pub(crate) const MAX_WS_CONNECTIONS: usize = 100;
 pub(crate) struct DebuggerState {
     pub scripts: crate::util::bounded::BoundedMap<String, ScriptInfo, MAX_SCRIPTS>,
     pub paused_call_frame_id: Option<String>,
+    /// Identifier of the `debugger;` script `pause_on_load` installed, removed
+    /// on the next `resume` so later navigations do not pause again.
+    pub pause_on_load_script: Option<String>,
 }
 
 #[derive(Clone, Debug, ::serde::Serialize, ::serde::Deserialize)]
@@ -39,6 +42,9 @@ pub struct NetworkRequest {
     pub response_status_text: Option<String>,
     pub response_headers: Option<serde_json::Value>,
     pub response_body: Option<String>,
+    /// URLs this request was redirected from, oldest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub redirects: Vec<String>,
 }
 
 #[derive(Clone, Debug, ::serde::Serialize, ::serde::Deserialize)]
@@ -83,6 +89,13 @@ impl Default for NetworkState {
 
 impl NetworkState {
     pub(crate) fn insert_request(&mut self, id: String, req: NetworkRequest) {
+        // A redirect reuses the request id: keep one entry, remember the hop.
+        if let Some(existing) = self.find_request_mut(&id) {
+            let previous = std::mem::replace(existing, req);
+            existing.redirects = previous.redirects;
+            existing.redirects.push(previous.url);
+            return;
+        }
         if self.navigations.is_empty() {
             self.navigations.push_back(NavigationBucket::default());
         }
@@ -407,10 +420,11 @@ impl BrowserSession {
                 .await;
         }
         *self.browser_version.lock().await = read_browser_version(client).await;
-        self.enable_session_webmcp(client).await;
 
         let target = cdp_domains::cdp_target::CdpTarget::Client(client.clone());
         let mut handles = self.start_session_listeners(&target);
+        // WebMCP.enable replays the page's tools: its listener runs first.
+        self.enable_session_webmcp(client).await;
         // Debugger.enable replays `scriptParsed`: the listener runs first.
         let _ = client
             .send_raw_command("Debugger.enable", cdp_browser_lite::NoParams)
