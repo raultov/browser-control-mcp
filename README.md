@@ -260,6 +260,13 @@ error that names the new ones.
 - **TODO (priority)** Unified `evaluate_js` result: Chrome wraps the value in
   the CDP `RemoteObject` (`{"result": {"type", "value"}}`) and Firefox
   returns the bare value; both will return the same shape.
+- **TODO (priority)** Navigation errors: on Chrome, `navigate` and `open_tab`
+  to an unreachable host report success (the network error is only inside
+  the reply, or absent); both browsers will fail with the network error.
+- **TODO (priority)** Console buffer per navigation: `get_console_logs` will
+  clear a tab's buffer when it navigates to a different site (kept across
+  subdomains of the same site) and gain a limit, so one call cannot flood
+  the client.
 - **TODO (priority)** Unified debugger replies: `set_breakpoint`,
   `remove_breakpoint` and `step_over` answer differently on Chrome and
   Firefox (and Firefox's `step_over` location uses a 1-based line); both
