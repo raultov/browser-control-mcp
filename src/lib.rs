@@ -10,6 +10,7 @@
 //! [`run`]; everything else lives in this library so that every public item
 //! is documented and testable.
 
+pub mod backend;
 pub mod cli;
 mod handler;
 pub mod util;
