@@ -23,7 +23,8 @@ chrome-devtools-mcp with runtime JavaScript debugging on both browsers.
 
 The default browser is Chrome. Every instance runs one browser for its whole
 life: start the server with `--browser firefox`, or pass
-`"browser": "firefox"` to `open_instance`.
+`"browser": "firefox"` to `open_instance`. If Chrome is not installed but Firefox
+is, the launch error says so and tells the agent to ask you before switching.
 
 ## Feature matrix
 
