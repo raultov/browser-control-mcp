@@ -23,3 +23,6 @@ from a copy of its code: entries describe the differences from that release.
 - Dependencies updated to their latest releases; unused test dependencies
   (`hyper`, `hyper-util`, `http-body-util`, `futures-util`,
   `tokio-tungstenite`) removed.
+- `rust-mcp-sdk` stays on 1.x (MCP 2025-11-25) with only its `server`,
+  `macros` and `stdio` features: the binary no longer links the SDK's HTTP,
+  SSE and OAuth client stack.
