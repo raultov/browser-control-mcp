@@ -284,11 +284,31 @@ fn sweep_orphaned_seed_dirs() {
     }
 }
 
+/// A Chrome profile name is one directory under the user-data root. Anything
+/// else (`../..`, `a/b`, an absolute path) would read outside that root.
+pub(crate) fn validate_profile_name(name: &str) -> Result<(), String> {
+    let mut components = Path::new(name).components();
+    let single_normal = matches!(
+        (components.next(), components.next()),
+        (Some(std::path::Component::Normal(_)), None)
+    );
+    if single_normal && !name.contains(['/', '\\']) {
+        Ok(())
+    } else {
+        Err(format!(
+            "invalid source_profile '{name}': it must be a single profile directory name such as 'Default' or 'Profile 1'"
+        ))
+    }
+}
+
 pub(crate) fn resolve_source(
     requested_profile: Option<&str>,
     env: &dyn EnvProvider,
     fs: &dyn FsProbe,
 ) -> Result<CookieSource, String> {
+    if let Some(name) = requested_profile {
+        validate_profile_name(name)?;
+    }
     let os = env.current_os();
     let roots = source_roots(os, env);
 
@@ -719,5 +739,30 @@ mod tests {
     fn given_user_profile_mode_when_preparing_seed_report_then_rejects() {
         let err = prepare_seed_report(true, None, true, true).unwrap_err();
         assert!(err.contains("--user-profile mode"), "{err}");
+    }
+
+    /// SEC-07: A source_profile that is not a single path component is refused.
+    #[test]
+    fn source_profile_must_be_a_single_component() {
+        // Given a filesystem where every escaping path holds a cookies database
+        let env = MockEnv::new(Os::Linux, &[("HOME", "/home/test")]);
+        let root = "/home/test/.config/google-chrome";
+        let names = ["../..", "a/b", "a\\b", ".", "..", "", "/etc"];
+        let files: Vec<String> = std::iter::once(root.to_string())
+            .chain(names.iter().map(|n| format!("{root}/{n}/Network/Cookies")))
+            .collect();
+        let refs: Vec<&str> = files.iter().map(String::as_str).collect();
+        let fs = MockFs::new(&refs, &[]);
+        for name in names {
+            // When the source is resolved with that profile name
+            let result = resolve_source(Some(name), &env, &fs);
+            // Then it is refused, naming the invalid profile
+            let err = result
+                .err()
+                .unwrap_or_else(|| panic!("'{name}' was accepted"));
+            assert!(err.contains("invalid source_profile"), "{name}: {err}");
+        }
+        // And a plain name with a space is still accepted
+        assert!(validate_profile_name("Profile 1").is_ok());
     }
 }

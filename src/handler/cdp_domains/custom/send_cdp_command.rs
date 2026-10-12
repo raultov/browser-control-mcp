@@ -6,7 +6,7 @@ use rust_mcp_sdk::{
 
 #[macros::mcp_tool(
     name = "send_cdp_command",
-    description = "EXPERIMENTAL: Sends raw Chrome DevTools Protocol (CDP) commands to the browser for advanced use cases not covered by specialized tools. Side effects: depends on command; may modify page state, DOM, or trigger navigation. Auth requirements: subject to local-only restrictions if enabled (Page.navigate checked). Prerequisites: requires knowledge of CDP protocol; active Chrome connection. Returns: raw CDP command response as JSON. Use this only when specialized tools inadequate. Alternatives: use domain-specific tools (navigate, click_element, evaluate_js)."
+    description = "EXPERIMENTAL: Sends raw Chrome DevTools Protocol (CDP) commands to the browser for advanced use cases not covered by specialized tools. Side effects: depends on command; may modify page state, DOM, or trigger navigation. Auth requirements: subject to local-only restrictions if enabled (Page.navigate and Target.createTarget checked). Prerequisites: requires knowledge of CDP protocol; active Chrome connection. Returns: raw CDP command response as JSON. Use this only when specialized tools inadequate. Alternatives: use domain-specific tools (navigate, click_element, evaluate_js)."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct SendCdpCommandTool {
@@ -16,7 +16,7 @@ pub struct SendCdpCommandTool {
     pub tab_id: Option<String>,
     /// CDP protocol method name (e.g., 'DOM.getDocument', 'Runtime.evaluate'). Constraints: valid CDP domain.method format. Interactions: method must be recognized by Chrome protocol version.
     pub method: String,
-    /// JSON-formatted parameters for the CDP command. Constraints: valid JSON object string. Interactions: Page.navigate URLs subject to local-only restrictions; empty string or '{}' for no parameters. Defaults to: None.
+    /// JSON-formatted parameters for the CDP command. Constraints: valid JSON object string. Interactions: Page.navigate and Target.createTarget URLs subject to local-only restrictions; empty string or '{}' for no parameters. Defaults to: None.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub params: Option<String>,
 }
@@ -30,8 +30,6 @@ impl SendCdpCommandTool {
             params.arguments.unwrap_or_default(),
         ))
         .map_err(|e| CallToolError::from_message(format!("Failed to parse arguments: {}", e)))?;
-        let session = handler.session(tool.instance_id.clone()).await?;
-
         let parsed_params: serde_json::Value = match &tool.params {
             Some(s) if !s.trim().is_empty() => serde_json::from_str(s).map_err(|e| {
                 CallToolError::from_message(format!("Invalid JSON in params: {}", e))
@@ -40,16 +38,16 @@ impl SendCdpCommandTool {
         };
 
         if handler.local_only
-            && tool.method == "Page.navigate"
-            && let Some(url) = parsed_params.get("url").and_then(|v| v.as_str())
+            && let Some(url) = crate::util::url::raw_navigation_url(&tool.method, &parsed_params)
             && !is_local_address(url)
         {
             return Err(CallToolError::from_message(format!(
-                "Navigation to '{}' via raw CDP command is blocked. This MCP server is running with the 'local' argument, which restricts navigation to local addresses only (localhost, 127.0.0.1, 192.168.x.x, or *.local). To allow navigation to external addresses, restart the MCP server without the 'local' argument.",
+                "Navigation to '{}' via raw CDP command is blocked. This MCP server is running with --local, which restricts navigation to local addresses only (localhost, 127.0.0.1, 192.168.x.x, or *.local). To allow navigation to external addresses, restart the MCP server without --local.",
                 url
             )));
         }
 
+        let session = handler.session(tool.instance_id.clone()).await?;
         let target = session.target(tool.tab_id.clone()).await?;
 
         // Extract domain from method (e.g., "DOM" from "DOM.getDocument")
@@ -231,5 +229,25 @@ mod tests {
             session.custom_state.lock().await.active_domains.is_empty(),
             "session CustomState must stay untouched when a tab was targeted"
         );
+    }
+
+    /// SEC-08: --local blocks raw navigation methods.
+    #[tokio::test]
+    async fn local_mode_blocks_raw_navigation_methods() {
+        for method in ["Page.navigate", "Target.createTarget"] {
+            // Given --local and a browser nobody can reach (any command would fail)
+            let mut handler = McpHandler::new_test_with_port(0);
+            handler.local_only = true;
+            // When a raw navigation to an external URL is sent
+            let call: CallToolRequestParams = serde_json::from_value(serde_json::json!({
+                "name": "send_cdp_command",
+                "arguments": {"method": method, "params": "{\"url\":\"https://example.com\"}"}
+            }))
+            .unwrap();
+            let result = SendCdpCommandTool::handle(call, &handler).await;
+            // Then it fails with the --local error and nothing is sent
+            let message = format!("{:?}", result.err().unwrap());
+            assert!(message.contains("--local"), "{method}: {message}");
+        }
     }
 }

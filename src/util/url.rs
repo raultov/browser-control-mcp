@@ -28,6 +28,23 @@ pub fn redacted(raw: &str) -> String {
     }
 }
 
+/// Raw protocol methods that navigate, and so must honour `--local`.
+const RAW_NAVIGATION_METHODS: &[&str] = &[
+    "Page.navigate",
+    "Target.createTarget",
+    "browsingContext.navigate",
+];
+
+/// The URL a raw protocol command would navigate to, if it is one of the
+/// known navigation methods. Arbitrary scripts can still navigate: `--local`
+/// is a guard rail, not a sandbox (documented in the README).
+pub fn raw_navigation_url<'a>(method: &str, params: &'a serde_json::Value) -> Option<&'a str> {
+    RAW_NAVIGATION_METHODS
+        .contains(&method)
+        .then(|| params.get("url").and_then(serde_json::Value::as_str))
+        .flatten()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -42,4 +42,8 @@ from a copy of its code: entries describe the differences from that release.
 - `scroll`, `click_element` and `fill_input` embed the CSS selector as a JSON
   string literal; a selector with a backslash could break out of the
   JavaScript string before.
+- `--local` also blocks `Target.createTarget` sent through `send_cdp_command`
+  (only `Page.navigate` was checked).
+- Cookie import refuses a `source_profile` that is not a single profile
+  directory name (`../..` could read outside the browser's user-data root).
 
