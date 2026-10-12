@@ -24,7 +24,7 @@ impl ListTabsTool {
             .map_err(|e| CallToolError::from_message(e.to_string()))?;
         let session = handler.session(args.instance_id.clone()).await?;
 
-        let registry = session.tabs.read().unwrap();
+        let registry = crate::util::sync::read(&session.tabs);
 
         let tabs: Vec<serde_json::Value> = registry
             .tabs

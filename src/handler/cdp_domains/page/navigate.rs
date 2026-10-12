@@ -73,7 +73,7 @@ impl NavigateTool {
                 if args.confirm_restart != Some(true) {
                     let instance_id_str = args.instance_id.as_deref().unwrap_or("default");
                     let (tab_count, tab_list) = {
-                        let registry = session.tabs.read().unwrap();
+                        let registry = crate::util::sync::read(&session.tabs);
                         let count = registry.tabs.len();
                         let list = registry
                             .tabs

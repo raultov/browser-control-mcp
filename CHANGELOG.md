@@ -31,6 +31,13 @@ from a copy of its code: entries describe the differences from that release.
 - `inspect_dom` no longer crashes the server when the context window around a
   match falls inside a multi-byte character.
 
+- The server can no longer panic on a poisoned lock or an unexpected value:
+  every `unwrap`/`expect` outside tests was removed; the instance registry
+  uses a single lock (two locks taken in different orders could deadlock).
+- Custom-domain listeners started by `send_cdp_command` on a tab are stopped
+  when the tab closes (a reference cycle kept them running forever), and no
+  longer leak one static string per domain name.
+
 ### Security
 - The start-up log no longer prints the proxy password, username or a
   `user:pass@` embedded in `--proxy-server` (chrome-debug-mcp printed every

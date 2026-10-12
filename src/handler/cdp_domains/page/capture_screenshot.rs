@@ -41,11 +41,8 @@ impl CaptureScreenshotTool {
             "fromSurface": true
         });
 
-        if let Some(q) = args.quality {
-            command_params
-                .as_object_mut()
-                .unwrap()
-                .insert("quality".to_string(), json!(q));
+        if let (Some(q), Some(map)) = (args.quality, command_params.as_object_mut()) {
+            map.insert("quality".to_string(), json!(q));
         }
 
         if args.full_page.unwrap_or(false) {
@@ -62,11 +59,11 @@ impl CaptureScreenshotTool {
                 .as_ref()
                 .and_then(|r| r.get("contentSize"));
 
-            if let Some(size) = content_size {
+            if let (Some(size), Some(map)) = (content_size, command_params.as_object_mut()) {
                 let width = size.get("width").and_then(|v| v.as_f64()).unwrap_or(1280.0);
                 let height = size.get("height").and_then(|v| v.as_f64()).unwrap_or(720.0);
 
-                command_params.as_object_mut().unwrap().insert(
+                map.insert(
                     "clip".to_string(),
                     json!({
                         "x": 0,
@@ -78,10 +75,7 @@ impl CaptureScreenshotTool {
                 );
 
                 // Also enable captureBeyondViewport just in case for newer Chrome versions
-                command_params
-                    .as_object_mut()
-                    .unwrap()
-                    .insert("captureBeyondViewport".to_string(), json!(true));
+                map.insert("captureBeyondViewport".to_string(), json!(true));
             }
         }
 

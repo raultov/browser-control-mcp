@@ -244,7 +244,7 @@ mod tests {
                     .expect("BrowserClient connect to mock");
             let tab = browser.attach("T-page-1").await.expect("attach to mock");
 
-            let mut registry = session.tabs.write().unwrap();
+            let mut registry = crate::util::sync::write(&session.tabs);
             registry
                 .register_tab(tab, None, "https://example.test".into(), false)
                 .expect("register tab")

@@ -238,7 +238,7 @@ impl BrowserSession {
         *self.browser_version.lock().await = None;
         self.proxy_auth_tasks.lock().await.clear();
         cdp_domains::custom::clear_custom_listeners(&self.custom_state).await;
-        self.tabs.write().unwrap().clear();
+        crate::util::sync::write(&self.tabs).clear();
     }
 
     /// Returns the browser-level CDP client used for tab management.
@@ -416,7 +416,7 @@ impl BrowserSession {
         }
 
         let lookup = {
-            let registry = self.tabs.read().unwrap();
+            let registry = crate::util::sync::read(&self.tabs);
             if let Some(id) = tab_id {
                 if let Some(entry) = registry.tabs.get(&id) {
                     Lookup::Found(cdp_domains::cdp_target::CdpTarget::Tab(entry.tab.clone()))
@@ -435,7 +435,7 @@ impl BrowserSession {
         match lookup {
             Lookup::Found(target) => return Ok(target),
             Lookup::NotFound(id) => {
-                let registry = self.tabs.read().unwrap();
+                let registry = crate::util::sync::read(&self.tabs);
                 let available: Vec<_> = registry.tabs.keys().cloned().collect();
                 let avail_str = if available.is_empty() {
                     "none (if Chrome was restarted, previous tab IDs are no longer valid)"
@@ -472,7 +472,7 @@ impl BrowserSession {
         F: FnOnce(&chrome_instance::tab_registry::TabEntry) -> Arc<Mutex<T>>,
         G: FnOnce(&Self) -> Arc<Mutex<T>>,
     {
-        let registry = self.tabs.read().unwrap();
+        let registry = crate::util::sync::read(&self.tabs);
         if let Some(id) = tab_id {
             return if let Some(entry) = registry.tabs.get(&id) {
                 Ok(tab_extractor(entry))

@@ -28,14 +28,14 @@ impl CloseTabTool {
 
         // 1. Remove from registry first to prevent stale references
         let entry_opt = {
-            let mut registry = session.tabs.write().unwrap();
+            let mut registry = crate::util::sync::write(&session.tabs);
             registry.remove_tab(&args.tab_id)
         };
 
         let entry = match entry_opt {
             Some(e) => e,
             None => {
-                let registry = session.tabs.read().unwrap();
+                let registry = crate::util::sync::read(&session.tabs);
                 let available: Vec<_> = registry.tabs.keys().cloned().collect();
                 let avail_str = if available.is_empty() {
                     "none (if Chrome was restarted, previous tab IDs are no longer valid)"
@@ -60,7 +60,7 @@ impl CloseTabTool {
                 CallToolError::from_message(format!("Failed to close tab on browser: {}", e))
             })?;
 
-        let new_active = session.tabs.read().unwrap().active_tab_id.clone();
+        let new_active = crate::util::sync::read(&session.tabs).active_tab_id.clone();
 
         Ok(CallToolResult::text_content(vec![
             serde_json::json!({

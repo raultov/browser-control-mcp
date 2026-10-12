@@ -3,6 +3,7 @@
 pub mod js;
 #[cfg(test)]
 pub(crate) mod log_capture;
+pub mod sync;
 pub mod text;
 pub mod url;
 

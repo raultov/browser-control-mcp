@@ -298,17 +298,23 @@ impl FakeLauncher {
 #[async_trait]
 impl BrowserLauncher for FakeLauncher {
     async fn launch(&self, config: BrowserConfig) -> anyhow::Result<Box<dyn ManagedBrowser>> {
-        self.configs.lock().unwrap().push(config);
+        self.configs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(config);
         self.launch_count
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let next = self
             .next
             .lock()
-            .unwrap()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .pop_front()
             .ok_or_else(|| anyhow::anyhow!("FakeLauncher: no scripted FakeBrowser left"))?;
         let arc = std::sync::Arc::new(next);
-        self.launched.lock().unwrap().push(arc.clone());
+        self.launched
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(arc.clone());
         Ok(Box::new(FakeBrowserHandle(arc)))
     }
 

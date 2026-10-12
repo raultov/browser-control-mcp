@@ -60,7 +60,7 @@ impl OpenTabTool {
 
         // Register the tab in our TabRegistry
         let tab_id = {
-            let mut registry = session.tabs.write().unwrap();
+            let mut registry = crate::util::sync::write(&session.tabs);
             registry
                 .register_tab(
                     tab.clone(),
@@ -77,7 +77,7 @@ impl OpenTabTool {
         };
 
         let states = {
-            let registry = session.tabs.read().unwrap();
+            let registry = crate::util::sync::read(&session.tabs);
             registry
                 .tabs
                 .get(&tab_id)
@@ -94,11 +94,7 @@ impl OpenTabTool {
             // retroactively — and nothing re-triggers them once the page is
             // already loaded.
             let handles = cdp_domains::start_tab_listeners(&tab, states);
-            session
-                .tabs
-                .write()
-                .unwrap()
-                .attach_listeners(&tab_id, handles);
+            crate::util::sync::write(&session.tabs).attach_listeners(&tab_id, handles);
             cdp_domains::enable_tab_domains(&tab, &webmcp_state).await;
         }
 

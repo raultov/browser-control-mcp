@@ -50,11 +50,8 @@ impl SetBreakpointTool {
                 "scriptId": script_id,
                 "lineNumber": args.line_number,
             });
-            if let Some(col) = args.column_number {
-                location
-                    .as_object_mut()
-                    .unwrap()
-                    .insert("columnNumber".to_string(), json!(col));
+            if let (Some(col), Some(map)) = (args.column_number, location.as_object_mut()) {
+                map.insert("columnNumber".to_string(), json!(col));
             }
             target
                 .send_raw_command("Debugger.setBreakpoint", json!({ "location": location }))
@@ -64,11 +61,8 @@ impl SetBreakpointTool {
                 "url": url,
                 "lineNumber": args.line_number,
             });
-            if let Some(col) = args.column_number {
-                params
-                    .as_object_mut()
-                    .unwrap()
-                    .insert("columnNumber".to_string(), json!(col));
+            if let (Some(col), Some(map)) = (args.column_number, params.as_object_mut()) {
+                map.insert("columnNumber".to_string(), json!(col));
             }
             target
                 .send_raw_command("Debugger.setBreakpointByUrl", params)
@@ -78,11 +72,8 @@ impl SetBreakpointTool {
                 "scriptHash": script_hash,
                 "lineNumber": args.line_number,
             });
-            if let Some(col) = args.column_number {
-                params
-                    .as_object_mut()
-                    .unwrap()
-                    .insert("columnNumber".to_string(), json!(col));
+            if let (Some(col), Some(map)) = (args.column_number, params.as_object_mut()) {
+                map.insert("columnNumber".to_string(), json!(col));
             }
             target
                 .send_raw_command("Debugger.setBreakpointByUrl", params)

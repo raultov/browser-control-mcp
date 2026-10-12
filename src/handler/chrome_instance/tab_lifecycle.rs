@@ -60,7 +60,7 @@ async fn process_target_event(
             {
                 // Check whether it is already in our registry
                 let already_exists = {
-                    let registry = tabs.read().unwrap();
+                    let registry = crate::util::sync::read(tabs);
                     registry
                         .tabs
                         .values()
@@ -71,7 +71,7 @@ async fn process_target_event(
                     // Attach to the tab
                     if let Ok(tab) = browser_client.attach(target_id).await {
                         let registered = {
-                            let mut registry = tabs.write().unwrap();
+                            let mut registry = crate::util::sync::write(tabs);
                             if let Ok(tab_id) = registry.register_tab(
                                 tab.clone(),
                                 None,
@@ -96,7 +96,7 @@ async fn process_target_event(
                             // the only way to learn about tools it registered
                             // before we arrived.
                             let handles = cdp_domains::start_tab_listeners(&tab, states);
-                            tabs.write().unwrap().attach_listeners(&tab_id, handles);
+                            crate::util::sync::write(tabs).attach_listeners(&tab_id, handles);
                             cdp_domains::enable_tab_domains(&tab, &webmcp_state).await;
                         }
                     }
@@ -106,7 +106,7 @@ async fn process_target_event(
         "Target.targetDestroyed" => {
             if let Some(target_id) = params.get("targetId").and_then(|v| v.as_str()) {
                 let tab_id_to_remove = {
-                    let registry = tabs.read().unwrap();
+                    let registry = crate::util::sync::read(tabs);
                     registry
                         .tabs
                         .iter()
@@ -115,7 +115,7 @@ async fn process_target_event(
                 };
 
                 if let Some(tab_id) = tab_id_to_remove {
-                    let mut registry = tabs.write().unwrap();
+                    let mut registry = crate::util::sync::write(tabs);
                     registry.remove_tab(&tab_id);
                 }
             }

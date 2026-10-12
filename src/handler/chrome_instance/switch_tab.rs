@@ -30,11 +30,17 @@ impl SwitchTabTool {
 
         // 1. Look up the tab and set it as the active ID
         let tab = {
-            let mut registry = session.tabs.write().unwrap();
+            let mut registry = crate::util::sync::write(&session.tabs);
             registry
                 .switch_tab(&args.tab_id)
                 .map_err(|e| CallToolError::from_message(format!("Failed to switch tab: {}", e)))?;
-            registry.tabs.get(&args.tab_id).unwrap().tab.clone()
+            registry
+                .tabs
+                .get(&args.tab_id)
+                .map(|entry| entry.tab.clone())
+                .ok_or_else(|| {
+                    CallToolError::from_message(format!("Unknown tab id '{}'", args.tab_id))
+                })?
         };
 
         // 2. Bring it to the foreground in Chrome if requested

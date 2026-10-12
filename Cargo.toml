@@ -33,10 +33,8 @@ allow_attributes = "warn"
 allow_attributes_without_reason = "warn"
 
 # A panic in a server kills the agent's session: a bug the caller cannot handle.
-# F1 TEMPORARY RELAXATION (specs 01 §5, D22): the imported code has 38
-# unwrap/expect sites. Restored to "warn" in F2.8; never past the F2 gate.
-unwrap_used = "allow"
-expect_used = "allow"
+unwrap_used = "warn"
+expect_used = "warn"
 panic = "warn"
 
 # cdp-browser-lite needed `#[expect]` for these; this crate must pass clean.

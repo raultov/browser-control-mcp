@@ -140,7 +140,7 @@ mod tests {
                 .expect("attach to mock target");
 
             let tab_id = {
-                let mut registry = session.tabs.write().unwrap();
+                let mut registry = crate::util::sync::write(&session.tabs);
                 registry
                     .register_tab(tab, None, "https://example.test".into(), false)
                     .expect("register tab")
