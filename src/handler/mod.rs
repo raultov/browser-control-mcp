@@ -1,39 +1,7 @@
 pub mod cdp_domains;
 pub mod chrome_instance;
+mod registry;
 mod schema_compat;
-
-// use cdp_domains::debugger;
-use cdp_domains::custom::get_custom_events::GetCustomEventsTool;
-use cdp_domains::custom::send_cdp_command::SendCdpCommandTool;
-use cdp_domains::debugger::evaluate_on_call_frame::EvaluateOnCallFrameTool;
-use cdp_domains::debugger::pause_on_load::PauseOnLoadTool;
-use cdp_domains::debugger::remove_breakpoint::RemoveBreakpointTool;
-use cdp_domains::debugger::resume::ResumeTool;
-use cdp_domains::debugger::search_scripts::SearchScriptsTool;
-use cdp_domains::debugger::set_breakpoint::SetBreakpointTool;
-use cdp_domains::debugger::step_over::StepOverTool;
-use cdp_domains::fetch::enable_proxy_auth::EnableProxyAuthTool;
-use cdp_domains::input::click_element::ClickElementTool;
-use cdp_domains::input::fill_input::FillInputTool;
-use cdp_domains::log::get_console_logs::GetConsoleLogsTool;
-use cdp_domains::network::get_network_logs::GetNetworkLogsTool;
-use cdp_domains::page::capture_screenshot::CaptureScreenshotTool;
-use cdp_domains::page::navigate::NavigateTool;
-use cdp_domains::page::reload::ReloadTool;
-use cdp_domains::page::scroll::ScrollTool;
-use cdp_domains::performance::get_performance_metrics::GetPerformanceMetricsTool;
-use cdp_domains::runtime::evaluate_js::EvaluateJsTool;
-use cdp_domains::runtime::inspect_dom::InspectDomTool;
-use cdp_domains::tracing::profile_page_performance::ProfilePagePerformanceTool;
-use chrome_instance::close_instance::CloseInstanceTool;
-use chrome_instance::close_tab::CloseTabTool;
-use chrome_instance::list_instances::ListInstancesTool;
-use chrome_instance::list_tabs::ListTabsTool;
-use chrome_instance::open_instance::OpenInstanceTool;
-use chrome_instance::open_tab::OpenTabTool;
-use chrome_instance::restart_chrome::RestartChromeTool;
-use chrome_instance::stop_chrome::StopChromeTool;
-use chrome_instance::switch_tab::SwitchTabTool;
 
 use async_trait::async_trait;
 use cdp_browser_lite::CdpClient;
@@ -219,6 +187,22 @@ pub struct BrowserVersion {
     pub js_version: Option<String>,
 }
 
+/// `Browser.getVersion`, or `None` when it fails.
+async fn read_browser_version(client: &CdpClient) -> Option<BrowserVersion> {
+    let reply = client
+        .send_raw_command("Browser.getVersion", cdp_browser_lite::NoParams)
+        .await
+        .ok()?;
+    let result = reply.result?;
+    let field = |name: &str| result.get(name).and_then(|v| v.as_str()).map(String::from);
+    Some(BrowserVersion {
+        product: field("product"),
+        revision: field("revision"),
+        protocol_version: field("protocolVersion"),
+        js_version: field("jsVersion"),
+    })
+}
+
 pub(crate) fn parse_chrome_major(product: &str) -> Option<u32> {
     let prefix = if product.starts_with("HeadlessChrome/") {
         "HeadlessChrome/"
@@ -290,141 +274,103 @@ impl BrowserSession {
                 let manager = self.chrome_manager.lock().await;
                 manager.client().await
             };
-            match client_res {
-                Ok(client) => {
-                    let _ = client
-                        .send_raw_command("Runtime.enable", cdp_browser_lite::NoParams)
-                        .await;
-                    let _ = client
-                        .send_raw_command("Page.enable", cdp_browser_lite::NoParams)
-                        .await;
-                    let _ = client
-                        .send_raw_command("Network.enable", cdp_browser_lite::NoParams)
-                        .await;
-                    let _ = client
-                        .send_raw_command("Log.enable", cdp_browser_lite::NoParams)
-                        .await;
-                    let _ = client
-                        .send_raw_command("Performance.enable", cdp_browser_lite::NoParams)
-                        .await;
-
-                    if let Ok(ver_res) = client
-                        .send_raw_command("Browser.getVersion", cdp_browser_lite::NoParams)
-                        .await
-                        && let Some(res) = ver_res.result
-                    {
-                        let product = res
-                            .get("product")
-                            .and_then(|v| v.as_str())
-                            .map(String::from);
-                        let revision = res
-                            .get("revision")
-                            .and_then(|v| v.as_str())
-                            .map(String::from);
-                        let protocol_version = res
-                            .get("protocolVersion")
-                            .and_then(|v| v.as_str())
-                            .map(String::from);
-                        let js_version = res
-                            .get("jsVersion")
-                            .and_then(|v| v.as_str())
-                            .map(String::from);
-
-                        *self.browser_version.lock().await = Some(BrowserVersion {
-                            product,
-                            revision,
-                            protocol_version,
-                            js_version,
-                        });
-                    }
-
-                    let has_webmcp = self.enable_webmcp;
-                    if has_webmcp {
-                        let enable_res = client
-                            .send_raw_command("WebMCP.enable", cdp_browser_lite::NoParams)
-                            .await;
-                        let mut webmcp_st = self.webmcp_state.lock().await;
-                        if enable_res.is_ok() {
-                            webmcp_st.availability =
-                                cdp_domains::webmcp::WebmcpAvailability::Enabled;
-                        } else {
-                            webmcp_st.availability =
-                                cdp_domains::webmcp::WebmcpAvailability::Unsupported;
-                        }
-                    } else {
-                        let mut webmcp_st = self.webmcp_state.lock().await;
-                        webmcp_st.availability =
-                            cdp_domains::webmcp::WebmcpAvailability::NotRequested;
-                    }
-
-                    let target = cdp_domains::cdp_target::CdpTarget::Client(client.clone());
-
-                    let mut handles = cdp_domains::event_pump::ListenerHandles::default();
-                    handles.push(cdp_domains::debugger::start_debugger_listener(
-                        &target,
-                        self.debugger_state.clone(),
-                    ));
-
-                    handles.push(cdp_domains::network::start_network_listener(
-                        &target,
-                        self.network_state.clone(),
-                    ));
-
-                    handles.push(cdp_domains::page::start_page_listener(
-                        &target,
-                        self.network_state.clone(),
-                        has_webmcp.then(|| cdp_domains::webmcp::WebmcpNavSync {
-                            state: self.webmcp_state.clone(),
-                            target: target.clone(),
-                        }),
-                    ));
-
-                    handles.absorb(cdp_domains::log::start_log_listener(
-                        &target,
-                        self.log_state.clone(),
-                    ));
-                    handles.push(cdp_domains::tracing::start_tracing_listener(
-                        &target,
-                        self.tracing_state.clone(),
-                    ));
-                    if has_webmcp {
-                        handles.push(cdp_domains::webmcp::start_webmcp_listener(
-                            &target,
-                            self.webmcp_state.clone(),
-                        ));
-                    }
-
-                    let _ = client
-                        .send_raw_command("Debugger.enable", cdp_browser_lite::NoParams)
-                        .await;
-
-                    // Start the tab lifecycle listener (Target.*)
-                    if let Ok(browser_client) = {
-                        let manager = self.chrome_manager.lock().await;
-                        manager.browser_client().await
-                    } {
-                        handles.push(
-                            chrome_instance::tab_lifecycle::start_tab_lifecycle_listener(
-                                browser_client,
-                                self.tabs.clone(),
-                                self.enable_webmcp,
-                            ),
-                        );
-                    }
-
-                    *self.session_listeners.lock().await = handles;
-
-                    *client_lock = Some(client);
-                }
-                Err(e) => {
-                    return Err(CallToolError::from_message(format!(
-                        "Failed to connect to Chrome: {}",
-                        e
-                    )));
-                }
-            }
+            let client = client_res.map_err(|e| {
+                CallToolError::from_message(format!("Failed to connect to Chrome: {}", e))
+            })?;
+            self.prepare_client(&client).await;
+            *client_lock = Some(client);
         }
         Ok(client_lock)
+    }
+
+    /// First use of a session-level client: enable the domains, read the
+    /// version, start the listeners. The order matters (see each step).
+    async fn prepare_client(&self, client: &CdpClient) {
+        for domain in ["Runtime", "Page", "Network", "Log", "Performance"] {
+            let _ = client
+                .send_raw_command(&format!("{domain}.enable"), cdp_browser_lite::NoParams)
+                .await;
+        }
+        *self.browser_version.lock().await = read_browser_version(client).await;
+        self.enable_session_webmcp(client).await;
+
+        let target = cdp_domains::cdp_target::CdpTarget::Client(client.clone());
+        let mut handles = self.start_session_listeners(&target);
+        // Debugger.enable replays `scriptParsed`: the listener runs first.
+        let _ = client
+            .send_raw_command("Debugger.enable", cdp_browser_lite::NoParams)
+            .await;
+        // Start the tab lifecycle listener (Target.*)
+        if let Ok(browser_client) = {
+            let manager = self.chrome_manager.lock().await;
+            manager.browser_client().await
+        } {
+            handles.push(
+                chrome_instance::tab_lifecycle::start_tab_lifecycle_listener(
+                    browser_client,
+                    self.tabs.clone(),
+                    self.enable_webmcp,
+                ),
+            );
+        }
+        *self.session_listeners.lock().await = handles;
+    }
+
+    /// `WebMCP.enable` when the flag is on; records the resulting availability.
+    async fn enable_session_webmcp(&self, client: &CdpClient) {
+        use cdp_domains::webmcp::WebmcpAvailability;
+        let availability = if self.enable_webmcp {
+            match client
+                .send_raw_command("WebMCP.enable", cdp_browser_lite::NoParams)
+                .await
+            {
+                Ok(_) => WebmcpAvailability::Enabled,
+                Err(_) => WebmcpAvailability::Unsupported,
+            }
+        } else {
+            WebmcpAvailability::NotRequested
+        };
+        self.webmcp_state.lock().await.availability = availability;
+    }
+
+    /// The per-domain listeners of the session-level page client.
+    fn start_session_listeners(
+        &self,
+        target: &cdp_domains::cdp_target::CdpTarget,
+    ) -> cdp_domains::event_pump::ListenerHandles {
+        let mut handles = cdp_domains::event_pump::ListenerHandles::default();
+        handles.push(cdp_domains::debugger::start_debugger_listener(
+            target,
+            self.debugger_state.clone(),
+        ));
+        handles.push(cdp_domains::network::start_network_listener(
+            target,
+            self.network_state.clone(),
+        ));
+        handles.push(cdp_domains::page::start_page_listener(
+            target,
+            self.network_state.clone(),
+            self.enable_webmcp
+                .then(|| cdp_domains::webmcp::WebmcpNavSync {
+                    state: self.webmcp_state.clone(),
+                    target: target.clone(),
+                }),
+        ));
+        handles.absorb(cdp_domains::log::start_log_listener(
+            target,
+            self.log_state.clone(),
+        ));
+        handles.push(cdp_domains::tracing::start_tracing_listener(
+            target,
+            self.tracing_state.clone(),
+        ));
+        if self.enable_webmcp {
+            handles.push(cdp_domains::webmcp::start_webmcp_listener(
+                target,
+                self.webmcp_state.clone(),
+            ));
+        }
+        handles
     }
 
     pub(crate) async fn target(
@@ -859,56 +805,11 @@ impl ServerHandler for McpHandler {
         _request: Option<PaginatedRequestParams>,
         _runtime: Arc<dyn McpServer>,
     ) -> std::result::Result<ListToolsResult, RpcError> {
-        let mut tools = vec![
-            CaptureScreenshotTool::tool(),
-            ClickElementTool::tool(),
-            FillInputTool::tool(),
-            EvaluateJsTool::tool(),
-            NavigateTool::tool(),
-            InspectDomTool::tool(),
-            PauseOnLoadTool::tool(),
-            StepOverTool::tool(),
-            ResumeTool::tool(),
-            SearchScriptsTool::tool(),
-            SetBreakpointTool::tool(),
-            EvaluateOnCallFrameTool::tool(),
-            ReloadTool::tool(),
-            ScrollTool::tool(),
-            RemoveBreakpointTool::tool(),
-            RestartChromeTool::tool(),
-            StopChromeTool::tool(),
-            OpenInstanceTool::tool(),
-            ListInstancesTool::tool(),
-            CloseInstanceTool::tool(),
-            OpenTabTool::tool(),
-            ListTabsTool::tool(),
-            CloseTabTool::tool(),
-            SwitchTabTool::tool(),
-            GetNetworkLogsTool::tool(),
-            GetConsoleLogsTool::tool(),
-            GetPerformanceMetricsTool::tool(),
-            ProfilePagePerformanceTool::tool(),
-            SendCdpCommandTool::tool(),
-            GetCustomEventsTool::tool(),
-        ];
-
-        if self.proxy.proxy_server.is_some() {
-            tools.push(EnableProxyAuthTool::tool());
-        }
-
-        if self.flags.enable_webmcp {
-            tools.push(cdp_domains::webmcp::ListWebmcpToolsTool::tool());
-            tools.push(cdp_domains::webmcp::InvokeWebmcpToolTool::tool());
-            tools.push(cdp_domains::webmcp::GetWebmcpInvocationTool::tool());
-            tools.push(cdp_domains::webmcp::ListWebmcpInvocationsTool::tool());
-        }
-
+        let allow_cookie_import = self.flags.allow_cookie_import;
         Ok(ListToolsResult {
-            tools: tools
+            tools: registry::listed_tools(self)
                 .into_iter()
-                .map(|t| {
-                    schema_compat::normalize_tool_with_options(t, self.flags.allow_cookie_import)
-                })
+                .map(|t| schema_compat::normalize_tool_with_options(t, allow_cookie_import))
                 .collect(),
             meta: None,
             next_cursor: None,
@@ -920,104 +821,7 @@ impl ServerHandler for McpHandler {
         params: CallToolRequestParams,
         _runtime: Arc<dyn McpServer>,
     ) -> std::result::Result<CallToolResult, CallToolError> {
-        if params.name == "capture_screenshot" {
-            CaptureScreenshotTool::handle(params, self).await
-        } else if params.name == "click_element" {
-            ClickElementTool::handle(params, self).await
-        } else if params.name == "fill_input" {
-            FillInputTool::handle(params, self).await
-        } else if params.name == "evaluate_js" {
-            EvaluateJsTool::handle(params, self).await
-        } else if params.name == "navigate" {
-            NavigateTool::handle(params, self).await
-        } else if params.name == "inspect_dom" {
-            InspectDomTool::handle(params, self).await
-        } else if params.name == "pause_on_load" {
-            PauseOnLoadTool::handle(params, self).await
-        } else if params.name == "step_over" {
-            StepOverTool::handle(params, self).await
-        } else if params.name == "resume" {
-            ResumeTool::handle(params, self).await
-        } else if params.name == "search_scripts" {
-            SearchScriptsTool::handle(params, self).await
-        } else if params.name == "set_breakpoint" {
-            SetBreakpointTool::handle(params, self).await
-        } else if params.name == "evaluate_on_call_frame" {
-            EvaluateOnCallFrameTool::handle(params, self).await
-        } else if params.name == "remove_breakpoint" {
-            RemoveBreakpointTool::handle(params, self).await
-        } else if params.name == "reload" {
-            ReloadTool::handle(params, self).await
-        } else if params.name == "scroll" {
-            ScrollTool::handle(params, self).await
-        } else if params.name == "restart_chrome" {
-            RestartChromeTool::handle(params, self).await
-        } else if params.name == "stop_chrome" {
-            StopChromeTool::handle(params, self).await
-        } else if params.name == "open_instance" {
-            OpenInstanceTool::handle(params, self).await
-        } else if params.name == "list_instances" {
-            ListInstancesTool::handle(params, self).await
-        } else if params.name == "close_instance" {
-            CloseInstanceTool::handle(params, self).await
-        } else if params.name == "open_tab" {
-            OpenTabTool::handle(params, self).await
-        } else if params.name == "list_tabs" {
-            ListTabsTool::handle(params, self).await
-        } else if params.name == "close_tab" {
-            CloseTabTool::handle(params, self).await
-        } else if params.name == "switch_tab" {
-            SwitchTabTool::handle(params, self).await
-        } else if params.name == "get_network_logs" {
-            GetNetworkLogsTool::handle(params, self).await
-        } else if params.name == "get_console_logs" {
-            GetConsoleLogsTool::handle(params, self).await
-        } else if params.name == "get_performance_metrics" {
-            GetPerformanceMetricsTool::handle(params, self).await
-        } else if params.name == "profile_page_performance" {
-            ProfilePagePerformanceTool::handle(params, self).await
-        } else if params.name == "enable_proxy_auth" {
-            if self.proxy.proxy_server.is_none() {
-                return Err(CallToolError::from_message(
-                    "Tool 'enable_proxy_auth' is disabled. Start browser-control-mcp with --proxy-server to enable proxy support.",
-                ));
-            }
-            EnableProxyAuthTool::handle(params, self).await
-        } else if params.name == "send_cdp_command" {
-            SendCdpCommandTool::handle(params, self).await
-        } else if params.name == "get_custom_events" {
-            GetCustomEventsTool::handle(params, self).await
-        } else if params.name == "webmcp_list_tools" {
-            if !self.flags.enable_webmcp {
-                return Err(CallToolError::from_message(
-                    "Tool 'webmcp_list_tools' is disabled. Start browser-control-mcp with --enable-webmcp to enable WebMCP support.",
-                ));
-            }
-            cdp_domains::webmcp::ListWebmcpToolsTool::handle(params, self).await
-        } else if params.name == "webmcp_invoke_tool" {
-            if !self.flags.enable_webmcp {
-                return Err(CallToolError::from_message(
-                    "Tool 'webmcp_invoke_tool' is disabled. Start browser-control-mcp with --enable-webmcp to enable WebMCP support.",
-                ));
-            }
-            cdp_domains::webmcp::InvokeWebmcpToolTool::handle(params, self).await
-        } else if params.name == "webmcp_get_invocation" {
-            if !self.flags.enable_webmcp {
-                return Err(CallToolError::from_message(
-                    "Tool 'webmcp_get_invocation' is disabled. Start browser-control-mcp with --enable-webmcp to enable WebMCP support.",
-                ));
-            }
-            cdp_domains::webmcp::GetWebmcpInvocationTool::handle(params, self).await
-        } else if params.name == "webmcp_list_invocations" {
-            if !self.flags.enable_webmcp {
-                return Err(CallToolError::from_message(
-                    "Tool 'webmcp_list_invocations' is disabled. Start browser-control-mcp with --enable-webmcp to enable WebMCP support.",
-                ));
-            }
-            cdp_domains::webmcp::ListWebmcpInvocationsTool::handle(params, self).await
-        } else {
-            Err(CallToolError::unknown_tool(params.name))
-        }
+        registry::call(self, params).await
     }
 }
 
