@@ -254,6 +254,12 @@ error that names the new ones.
 
 ## Limitations and TODO
 
+- **TODO (priority)** Unified `navigate` response: Chrome returns the CDP ids
+  (`frameId`, `loaderId`) and Firefox `{navigation, url}`; both will return
+  the final URL in the same shape.
+- **TODO (priority)** Same default window size on both browsers (today
+  Chrome 921x648, Firefox 1280x887): the screen size when known, else
+  1920x1080.
 - **TODO** `pause_on_load` on Firefox: neither a preload `debugger;`
   statement nor an RDP interrupt pauses a reloading page (spike verdict).
 - **TODO** `rust-mcp-sdk` 2.0: the server stays on 1.1.0 (MCP protocol
