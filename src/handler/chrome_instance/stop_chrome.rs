@@ -5,7 +5,7 @@ use rust_mcp_sdk::{
 };
 
 #[macros::mcp_tool(
-    name = "stop_chrome",
+    name = "stop_browser",
     description = "Gracefully terminates the Chrome instance selected by 'instance_id' (the default instance when omitted) and closes all its debugging connections. Side effects: destructive - kills the Chrome process of that instance only; its open tabs are closed; unsaved data lost; other instances keep running. Prerequisites: the instance must be running. Returns: termination success confirmation. Use this to clean up resources, prevent zombie processes, or end a debugging session. Alternatives: 'restart_chrome' to restart instead of stop, 'close_instance' to also remove a secondary instance from the registry."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
@@ -54,7 +54,7 @@ mod tests {
     #[tokio::test]
     async fn test_stop_chrome_params_deserialization() {
         let params: Result<CallToolRequestParams, _> = serde_json::from_value(json!({
-            "name": "stop_chrome",
+            "name": "stop_browser",
             "arguments": {}
         }));
         assert!(params.is_ok());
@@ -74,7 +74,7 @@ mod tests {
             .chrome_manager = Arc::new(Mutex::new(MockChromeManager::new(9999)));
 
         let params: CallToolRequestParams = serde_json::from_value(json!({
-            "name": "stop_chrome",
+            "name": "stop_browser",
             "arguments": { "instance_id": "default" }
         }))
         .unwrap();

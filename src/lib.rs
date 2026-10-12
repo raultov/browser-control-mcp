@@ -13,62 +13,74 @@
 pub mod backend;
 pub mod cli;
 mod handler;
+pub mod server_info;
 pub mod util;
 
 pub use cli::Args;
 use handler::{HandlerParams, McpHandler};
-use rust_mcp_sdk::{error::SdkResult, mcp_server::server_runtime, schema::*, *};
+use rust_mcp_sdk::{mcp_server::server_runtime, *};
 
-/// Runs the MCP server over stdio until its transport ends.
-pub async fn run(args: Args) -> SdkResult<()> {
+/// Runs the MCP server over stdio until its transport ends or the process
+/// is asked to stop, then stops every browser it started (Firefox keeps an
+/// orphan automation session otherwise). The exit code reports failures.
+pub async fn run(args: Args) -> std::process::ExitCode {
     init_logging();
-
-    let instructions = concat!(
-        "Browser Control MCP Server Instructions:\n",
-        "- Chrome instances are launched lazily on the first tool call that requires connection.\n",
-        "- Instances: a 'default' instance always exists. To run additional isolated browser sessions, call `open_instance` with a unique 'label'; that label becomes the returned instance_id. Pass the instance_id as the 'instance_id' argument of any tool to address that instance (omit it for the default). Use `list_instances` to enumerate them and `close_instance` to stop one.\n",
-        "- Tabs: within an instance, create extra tabs with `open_tab` and enumerate them with `list_tabs`. Every tool accepts a 'tab_id' argument; omit it to target the active tab, and use `switch_tab` to change which tab is active. Per-tab state (console logs, breakpoints, network traffic) is isolated between tabs.\n",
-        "- Cookie import: when the server is launched with `--allow-cookie-import`, tools (`navigate`, `open_instance`, `restart_chrome`) support `copy_cookies: true` to populate isolated instances with the user's real Chrome session. Always ask the user before copying their real cookies.\n",
-        "- Proxy support: when the server is launched with `--proxy-server <URL>`, Chrome instances route traffic through the proxy and proxy tools (`enable_proxy_auth`) are exposed.\n",
-        "- WebMCP: when the server is launched with `--enable-webmcp`, Chrome instances enable WebMCP testing features and WebMCP tools (`webmcp_list_tools`, `webmcp_invoke_tool`, `webmcp_get_invocation`, `webmcp_list_invocations`) are exposed."
-    );
-
-    let server_info = InitializeResult {
-        server_info: Implementation {
-            name: env!("CARGO_PKG_NAME").into(),
-            version: env!("CARGO_PKG_VERSION").into(),
-            title: Some("Browser Control MCP".into()),
-            description: Some("Control and debug browsers at runtime (Chrome via CDP; Firefox support in progress).".into()),
-            icons: vec![],
-            website_url: None,
-        },
-        capabilities: ServerCapabilities {
-            tools: Some(ServerCapabilitiesTools { list_changed: None }),
-            ..Default::default()
-        },
-        protocol_version: ProtocolVersion::V2025_11_25.into(),
-        instructions: Some(instructions.to_string()),
-        meta: None,
+    let transport = match StdioTransport::new(TransportOptions::default()) {
+        Ok(transport) => transport,
+        Err(e) => {
+            tracing::error!(error = %e, "cannot open the stdio transport");
+            return std::process::ExitCode::FAILURE;
+        }
     };
-
-    let transport = StdioTransport::new(TransportOptions::default())?;
-
     let handler = build_handler(args);
-    let handler = handler.to_mcp_server_handler();
+    let shutdown = handler.shutdown_hook();
     let server = server_runtime::create_server(mcp_server::McpServerOptions {
-        server_details: server_info,
+        server_details: server_info::initialize_result(),
         transport,
-        handler,
+        handler: handler.to_mcp_server_handler(),
         task_store: None,
         client_task_store: None,
         message_observer: None,
     });
-
-    if let Err(e) = server.start().await {
+    let served = tokio::select! {
+        result = server.start() => result.map_err(|e| e.to_string()),
+        () = stop_signal() => Ok(()),
+    };
+    if let Err(e) = &served {
         tracing::error!(error = %e, "server stopped with an error");
-        return Err(e);
     }
-    Ok(())
+    let failures = shutdown.stop_all(std::time::Duration::from_secs(5)).await;
+    if served.is_ok() && failures.is_empty() {
+        std::process::ExitCode::SUCCESS
+    } else {
+        std::process::ExitCode::FAILURE
+    }
+}
+
+/// Ctrl-C on every OS, and SIGTERM on Unix. If a handler cannot be
+/// installed it never fires (the server then stops only with its transport).
+async fn stop_signal() {
+    let ctrl_c = async {
+        if tokio::signal::ctrl_c().await.is_err() {
+            std::future::pending::<()>().await;
+        }
+    };
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut signal) => {
+                signal.recv().await;
+            }
+            Err(_) => std::future::pending::<()>().await,
+        }
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+    tokio::select! {
+        () = ctrl_c => {},
+        () = terminate => {},
+    }
+    tracing::info!("stop requested; shutting down");
 }
 
 /// Logs go to stderr (stdout is the MCP channel), filtered by `RUST_LOG`
@@ -91,6 +103,7 @@ fn build_handler(args: Args) -> McpHandler {
     let handler = McpHandler::new_with_params(HandlerParams {
         host: args.host,
         port: args.port,
+        default_browser: args.browser_kind,
         browser: args.browser,
         server: args.server,
         proxy: args.proxy,

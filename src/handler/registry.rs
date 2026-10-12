@@ -5,6 +5,7 @@
 use super::McpHandler;
 use super::cdp_domains;
 use super::chrome_instance;
+use crate::backend::{BrowserKind, Capability};
 use rust_mcp_sdk::schema::{CallToolError, CallToolRequestParams, CallToolResult, Tool};
 use std::future::Future;
 use std::pin::Pin;
@@ -45,75 +46,158 @@ impl Gate {
     }
 }
 
+/// A tool implementation for one browser.
+pub(crate) type ToolHandler = for<'a> fn(CallToolRequestParams, &'a McpHandler) -> ToolFuture<'a>;
+
 /// One row of the tool table.
 pub(crate) struct ToolEntry {
     /// The tool's schema (name, description, input schema).
     pub(crate) tool: fn() -> Tool,
     /// The flag it needs.
     pub(crate) gate: Gate,
-    /// Its handler.
-    pub(crate) call: for<'a> fn(CallToolRequestParams, &'a McpHandler) -> ToolFuture<'a>,
+    /// What the target instance must be able to do (checked before dispatch).
+    pub(crate) needs: &'static [Capability],
+    /// The Chrome (CDP) implementation.
+    pub(crate) chrome: ToolHandler,
+    /// The Firefox (BiDi/RDP) implementation, once it exists.
+    pub(crate) firefox: Option<ToolHandler>,
 }
 
 macro_rules! entry {
-    ($tool:ty, $gate:expr) => {
+    ($tool:ty, $gate:expr, $needs:expr) => {
         ToolEntry {
             tool: <$tool>::tool,
             gate: $gate,
-            call: |params, handler| Box::pin(<$tool>::handle(params, handler)),
+            needs: $needs,
+            chrome: |params, handler| Box::pin(<$tool>::handle(params, handler)),
+            firefox: None,
         }
     };
 }
 
+/// Tools renamed from chrome-debug-mcp, with their new names.
+const RENAMED: &[(&str, &str)] = &[
+    ("restart_chrome", "restart_browser"),
+    ("stop_chrome", "stop_browser"),
+];
+
 /// Every tool, in listing order.
 pub(crate) fn table() -> Vec<ToolEntry> {
-    use Gate::{Always, ProxyServer, Webmcp};
-    use cdp_domains::{custom, debugger, fetch, input, log, network, page, performance, runtime};
+    let mut tools = page_tools();
+    tools.extend(instance_tools());
+    tools.extend(observation_tools());
+    tools.extend(gated_tools());
+    tools
+}
+
+fn page_tools() -> Vec<ToolEntry> {
+    use Capability::*;
+    use Gate::Always;
+    use cdp_domains::debugger::{
+        evaluate_on_call_frame as frame, pause_on_load, remove_breakpoint,
+    };
+    use cdp_domains::debugger::{resume, search_scripts, set_breakpoint, step_over};
+    use cdp_domains::{input, page, runtime};
     vec![
-        entry!(page::capture_screenshot::CaptureScreenshotTool, Always),
-        entry!(input::click_element::ClickElementTool, Always),
-        entry!(input::fill_input::FillInputTool, Always),
-        entry!(runtime::evaluate_js::EvaluateJsTool, Always),
-        entry!(page::navigate::NavigateTool, Always),
-        entry!(runtime::inspect_dom::InspectDomTool, Always),
-        entry!(debugger::pause_on_load::PauseOnLoadTool, Always),
-        entry!(debugger::step_over::StepOverTool, Always),
-        entry!(debugger::resume::ResumeTool, Always),
-        entry!(debugger::search_scripts::SearchScriptsTool, Always),
-        entry!(debugger::set_breakpoint::SetBreakpointTool, Always),
         entry!(
-            debugger::evaluate_on_call_frame::EvaluateOnCallFrameTool,
-            Always
+            page::capture_screenshot::CaptureScreenshotTool,
+            Always,
+            &[Screenshot]
         ),
-        entry!(page::reload::ReloadTool, Always),
-        entry!(page::scroll::ScrollTool, Always),
-        entry!(debugger::remove_breakpoint::RemoveBreakpointTool, Always),
-        entry!(chrome_instance::restart_chrome::RestartChromeTool, Always),
-        entry!(chrome_instance::stop_chrome::StopChromeTool, Always),
-        entry!(chrome_instance::open_instance::OpenInstanceTool, Always),
-        entry!(chrome_instance::list_instances::ListInstancesTool, Always),
-        entry!(chrome_instance::close_instance::CloseInstanceTool, Always),
-        entry!(chrome_instance::open_tab::OpenTabTool, Always),
-        entry!(chrome_instance::list_tabs::ListTabsTool, Always),
-        entry!(chrome_instance::close_tab::CloseTabTool, Always),
-        entry!(chrome_instance::switch_tab::SwitchTabTool, Always),
-        entry!(network::get_network_logs::GetNetworkLogsTool, Always),
-        entry!(log::get_console_logs::GetConsoleLogsTool, Always),
+        entry!(input::click_element::ClickElementTool, Always, &[Input]),
+        entry!(input::fill_input::FillInputTool, Always, &[Input]),
+        entry!(runtime::evaluate_js::EvaluateJsTool, Always, &[Evaluate]),
+        entry!(page::navigate::NavigateTool, Always, &[Navigation]),
+        entry!(runtime::inspect_dom::InspectDomTool, Always, &[Dom]),
         entry!(
-            performance::get_performance_metrics::GetPerformanceMetricsTool,
-            Always
+            pause_on_load::PauseOnLoadTool,
+            Always,
+            &[JsDebugger, PauseOnLoad]
+        ),
+        entry!(step_over::StepOverTool, Always, &[JsDebugger]),
+        entry!(resume::ResumeTool, Always, &[JsDebugger]),
+        entry!(search_scripts::SearchScriptsTool, Always, &[JsDebugger]),
+        entry!(set_breakpoint::SetBreakpointTool, Always, &[JsDebugger]),
+        entry!(frame::EvaluateOnCallFrameTool, Always, &[JsDebugger]),
+        entry!(page::reload::ReloadTool, Always, &[Navigation]),
+        entry!(page::scroll::ScrollTool, Always, &[Dom]),
+        entry!(
+            remove_breakpoint::RemoveBreakpointTool,
+            Always,
+            &[JsDebugger]
+        ),
+    ]
+}
+
+fn instance_tools() -> Vec<ToolEntry> {
+    use Capability::Tabs;
+    use Gate::Always;
+    use chrome_instance::{close_instance, close_tab, list_instances, list_tabs};
+    use chrome_instance::{open_instance, open_tab, restart_chrome, stop_chrome, switch_tab};
+    vec![
+        entry!(restart_chrome::RestartChromeTool, Always, &[]),
+        entry!(stop_chrome::StopChromeTool, Always, &[]),
+        entry!(open_instance::OpenInstanceTool, Always, &[]),
+        entry!(list_instances::ListInstancesTool, Always, &[]),
+        entry!(close_instance::CloseInstanceTool, Always, &[]),
+        entry!(open_tab::OpenTabTool, Always, &[Tabs]),
+        entry!(list_tabs::ListTabsTool, Always, &[Tabs]),
+        entry!(close_tab::CloseTabTool, Always, &[Tabs]),
+        entry!(switch_tab::SwitchTabTool, Always, &[Tabs]),
+    ]
+}
+
+fn observation_tools() -> Vec<ToolEntry> {
+    use Capability::*;
+    use Gate::Always;
+    use cdp_domains::performance::get_performance_metrics as metrics;
+    use cdp_domains::tracing::profile_page_performance as profile;
+    use cdp_domains::{custom, log, network};
+    vec![
+        entry!(
+            network::get_network_logs::GetNetworkLogsTool,
+            Always,
+            &[NetworkLogs]
         ),
         entry!(
-            cdp_domains::tracing::profile_page_performance::ProfilePagePerformanceTool,
-            Always
+            log::get_console_logs::GetConsoleLogsTool,
+            Always,
+            &[ConsoleLogs]
         ),
-        entry!(custom::send_cdp_command::SendCdpCommandTool, Always),
-        entry!(custom::get_custom_events::GetCustomEventsTool, Always),
-        entry!(fetch::enable_proxy_auth::EnableProxyAuthTool, ProxyServer),
-        entry!(cdp_domains::webmcp::ListWebmcpToolsTool, Webmcp),
-        entry!(cdp_domains::webmcp::InvokeWebmcpToolTool, Webmcp),
-        entry!(cdp_domains::webmcp::GetWebmcpInvocationTool, Webmcp),
-        entry!(cdp_domains::webmcp::ListWebmcpInvocationsTool, Webmcp),
+        entry!(
+            metrics::GetPerformanceMetricsTool,
+            Always,
+            &[PerformanceMetrics]
+        ),
+        entry!(profile::ProfilePagePerformanceTool, Always, &[Tracing]),
+        entry!(
+            custom::send_cdp_command::SendCdpCommandTool,
+            Always,
+            &[RawCdp]
+        ),
+        entry!(
+            custom::get_custom_events::GetCustomEventsTool,
+            Always,
+            &[CustomEvents]
+        ),
+    ]
+}
+
+fn gated_tools() -> Vec<ToolEntry> {
+    use cdp_domains::fetch::enable_proxy_auth::EnableProxyAuthTool;
+    use cdp_domains::webmcp::{GetWebmcpInvocationTool, InvokeWebmcpToolTool};
+    use cdp_domains::webmcp::{ListWebmcpInvocationsTool, ListWebmcpToolsTool};
+    const WEBMCP: &[Capability] = &[Capability::Webmcp];
+    vec![
+        entry!(
+            EnableProxyAuthTool,
+            Gate::ProxyServer,
+            &[Capability::ProxyAuth]
+        ),
+        entry!(ListWebmcpToolsTool, Gate::Webmcp, WEBMCP),
+        entry!(InvokeWebmcpToolTool, Gate::Webmcp, WEBMCP),
+        entry!(GetWebmcpInvocationTool, Gate::Webmcp, WEBMCP),
+        entry!(ListWebmcpInvocationsTool, Gate::Webmcp, WEBMCP),
     ]
 }
 
@@ -126,7 +210,9 @@ pub(crate) fn listed_tools(handler: &McpHandler) -> Vec<Tool> {
         .collect()
 }
 
-/// Runs the tool named in `params`, if it exists and its flag is set.
+/// Runs the tool named in `params`: flag gate, then the target instance's
+/// capabilities (so a refused call sends nothing), then the implementation of
+/// that instance's browser.
 pub(crate) async fn call(
     handler: &McpHandler,
     params: CallToolRequestParams,
@@ -134,13 +220,70 @@ pub(crate) async fn call(
     let entry = table()
         .into_iter()
         .find(|entry| (entry.tool)().name == params.name);
-    match entry {
-        None => Err(CallToolError::unknown_tool(params.name)),
-        Some(entry) if !entry.gate.is_open(handler) => Err(CallToolError::from_message(
+    let Some(entry) = entry else {
+        return Err(unknown_tool(params.name));
+    };
+    if !entry.gate.is_open(handler) {
+        return Err(CallToolError::from_message(
             entry.gate.disabled_message(&params.name),
-        )),
-        Some(entry) => (entry.call)(params, handler).await,
+        ));
     }
+    let browser = target_browser(handler, &params);
+    let needs = argument_needs(&params).chain(entry.needs.iter().copied());
+    handler
+        .capabilities(browser)
+        .require(&params.name, &needs.collect::<Vec<_>>())?;
+    match (browser, entry.firefox) {
+        (BrowserKind::Chrome, _) => (entry.chrome)(params, handler).await,
+        (BrowserKind::Firefox, Some(firefox)) => firefox(params, handler).await,
+        (BrowserKind::Firefox, None) => Err(CallToolError::from_message(format!(
+            "`{}` is not implemented for Firefox yet (see the README's TODO list)",
+            params.name
+        ))),
+    }
+}
+
+fn unknown_tool(name: String) -> CallToolError {
+    match RENAMED.iter().find(|(old, _)| *old == name) {
+        Some((old, new)) => CallToolError::from_message(format!(
+            "Tool '{old}' was renamed to '{new}' in browser-control-mcp."
+        )),
+        None => CallToolError::unknown_tool(name),
+    }
+}
+
+fn argument(params: &CallToolRequestParams, key: &str) -> Option<serde_json::Value> {
+    params.arguments.as_ref().and_then(|a| a.get(key)).cloned()
+}
+
+/// The browser the call addresses: `open_instance`'s `browser` argument (or
+/// the default browser), else the instance named by `instance_id`.
+fn target_browser(handler: &McpHandler, params: &CallToolRequestParams) -> BrowserKind {
+    if params.name == "open_instance" {
+        return argument(params, "browser")
+            .and_then(|v| serde_json::from_value(v).ok())
+            .unwrap_or(handler.default_browser);
+    }
+    let id = argument(params, "instance_id");
+    handler.browser_of(id.as_ref().and_then(|v| v.as_str()))
+}
+
+/// Capabilities some optional arguments need on top of the tool's own.
+fn argument_needs(params: &CallToolRequestParams) -> impl Iterator<Item = Capability> {
+    let cookies = argument(params, "copy_cookies") == Some(serde_json::Value::Bool(true));
+    let features = argument(params, "features")
+        .and_then(|v| v.as_array().map(|a| !a.is_empty()))
+        .unwrap_or(false);
+    let ws_only = argument(params, "type_filter")
+        .and_then(|v| v.as_str().map(|t| t.eq_ignore_ascii_case("websocket")))
+        .unwrap_or(false);
+    [
+        cookies.then_some(Capability::CookieImport),
+        features.then_some(Capability::LaunchFeatures),
+        ws_only.then_some(Capability::WebsocketFrames),
+    ]
+    .into_iter()
+    .flatten()
 }
 
 #[cfg(test)]
@@ -182,5 +325,123 @@ mod tests {
         let table_names: Vec<String> = table().iter().map(|e| (e.tool)().name).collect();
         assert_eq!(listed.len(), table_names.len());
         assert_eq!(names(listed), table_names.into_iter().collect());
+    }
+
+    fn params(name: &str, arguments: serde_json::Value) -> CallToolRequestParams {
+        serde_json::from_value(serde_json::json!({"name": name, "arguments": arguments})).unwrap()
+    }
+
+    /// A handler with a registered Firefox instance "ff" (no session behind it:
+    /// any dispatch to an implementation would fail with "not found").
+    fn handler_with_firefox() -> McpHandler {
+        let handler = McpHandler::new_test();
+        let mut desc =
+            crate::handler::chrome_instance::registry::InstanceDescriptor::default_instance(
+                0,
+                vec![],
+            );
+        desc.id = "ff".into();
+        desc.is_default = false;
+        desc.browser = BrowserKind::Firefox;
+        handler.registry.register_descriptor(desc);
+        handler
+    }
+
+    async fn error_of(handler: &McpHandler, name: &str, arguments: serde_json::Value) -> String {
+        let result = call(handler, params(name, arguments)).await;
+        format!("{:?}", result.expect_err("the call must fail"))
+    }
+
+    /// TOL-01: The tool list has the 0.1.0 names.
+    #[test]
+    fn tool_list_has_v0_1_names() {
+        let mut handler = McpHandler::new_test();
+        handler.proxy.proxy_server = Some("http://p:1".into());
+        handler.flags.enable_webmcp = true;
+        let listed = names(listed_tools(&handler));
+        assert_eq!(listed.len(), 35);
+        assert!(listed.contains("restart_browser") && listed.contains("stop_browser"));
+        assert!(!listed.contains("restart_chrome") && !listed.contains("stop_chrome"));
+    }
+
+    /// TOL-02: Old tool names are rejected with a hint.
+    #[tokio::test]
+    async fn old_tool_names_point_to_new_ones() {
+        let handler = McpHandler::new_test();
+        let message = error_of(&handler, "restart_chrome", serde_json::json!({})).await;
+        assert!(
+            message.contains("renamed to 'restart_browser'"),
+            "{message}"
+        );
+        let message = error_of(&handler, "stop_chrome", serde_json::json!({})).await;
+        assert!(message.contains("renamed to 'stop_browser'"), "{message}");
+    }
+
+    /// CAP-02: Every tool declares the capabilities it needs.
+    #[test]
+    fn every_tool_declares_its_capabilities() {
+        let instance_tools = [
+            "open_instance",
+            "close_instance",
+            "list_instances",
+            "restart_browser",
+            "stop_browser",
+        ];
+        for entry in table() {
+            let name = (entry.tool)().name;
+            assert_eq!(
+                entry.needs.is_empty(),
+                instance_tools.contains(&name.as_str()),
+                "{name}"
+            );
+        }
+    }
+
+    /// CAP-03: A tool the browser cannot serve fails with a capability error.
+    #[tokio::test]
+    async fn unsupported_tool_fails_without_touching_the_browser() {
+        // Given an instance backed by Firefox (BiDi)
+        let handler = handler_with_firefox();
+        // When the agent calls "profile_page_performance" on it
+        let message = error_of(
+            &handler,
+            "profile_page_performance",
+            serde_json::json!({"instance_id": "ff"}),
+        )
+        .await;
+        // Then the error names the tool and the browser, and no implementation ran
+        assert!(
+            message.contains("`profile_page_performance` is not available on Firefox (BiDi)"),
+            "{message}"
+        );
+    }
+
+    /// CAP-05: Optional arguments that need a capability are checked too.
+    #[tokio::test]
+    async fn capability_gated_arguments_are_checked() {
+        let mut handler = handler_with_firefox();
+        handler.flags.allow_cookie_import = true;
+        let open = serde_json::json!({"browser": "firefox", "features": ["WEBGL_SOFTWARE"]});
+        let message = error_of(&handler, "open_instance", open).await;
+        assert!(
+            message.contains("`open_instance` is not available on Firefox"),
+            "{message}"
+        );
+        let nav =
+            serde_json::json!({"instance_id": "ff", "url": "http://a/", "copy_cookies": true});
+        let message = error_of(&handler, "navigate", nav).await;
+        assert!(message.contains("cookie import"), "{message}");
+    }
+
+    /// CAP-06: Raw tools are bound to their protocol (CDP half; BiDi/RDP in F8).
+    #[tokio::test]
+    async fn raw_tools_are_bound_to_their_protocol() {
+        let handler = handler_with_firefox();
+        let raw = serde_json::json!({"instance_id": "ff", "method": "Page.reload"});
+        let message = error_of(&handler, "send_cdp_command", raw).await;
+        assert!(
+            message.contains("not available on Firefox (BiDi)"),
+            "{message}"
+        );
     }
 }

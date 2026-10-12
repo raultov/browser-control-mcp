@@ -9,6 +9,10 @@ use clap::Parser;
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 pub struct Args {
+    /// Browser of the default instance; `open_instance` can pick another one per instance.
+    #[arg(long = "browser", value_enum, default_value_t = crate::backend::BrowserKind::Chrome)]
+    pub browser_kind: crate::backend::BrowserKind,
+
     /// How browsers are launched.
     #[command(flatten)]
     pub browser: BrowserFlags,
@@ -232,5 +236,21 @@ mod tests {
         assert!(!text.contains("alice"), "username leaked: {text}");
         assert!(text.contains(REDACTED));
         assert!(text.contains("http://proxy:8080"), "{text}");
+    }
+
+    /// CLI-02: --browser accepts only chrome and firefox (CLI-01: default chrome).
+    #[test]
+    fn browser_flag_accepts_only_known_browsers() {
+        use crate::backend::BrowserKind;
+        let default = Args::parse_from(["browser-control-mcp"]);
+        assert_eq!(default.browser_kind, BrowserKind::Chrome);
+        let firefox = Args::parse_from(["browser-control-mcp", "--browser", "firefox"]);
+        assert_eq!(firefox.browser_kind, BrowserKind::Firefox);
+        let err = Args::try_parse_from(["browser-control-mcp", "--browser", "safari"]).unwrap_err();
+        let text = err.to_string();
+        assert!(
+            text.contains("chrome") && text.contains("firefox"),
+            "{text}"
+        );
     }
 }

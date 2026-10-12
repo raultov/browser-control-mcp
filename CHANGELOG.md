@@ -18,6 +18,16 @@ from a copy of its code: entries describe the differences from that release.
   copied without its history and renamed: crate and binary
   `browser-control-mcp`, server title "Browser Control MCP".
 
+- `--browser <chrome|firefox>` selects the browser of the default instance
+  and `open_instance` takes a `browser` argument (Firefox lands in later
+  tasks; until then a Firefox instance answers "not implemented yet").
+- Every tool declares what it needs; a tool an instance's browser cannot
+  serve fails with an error naming the tool and the browser, before anything
+  is sent. `list_instances` shows each instance's `browser` and
+  `capabilities`.
+- On exit (end of stdin, Ctrl-C, SIGTERM on Unix) the server stops every
+  browser it started; the exit code reports instances that did not stop.
+
 ### Changed
 - `cdp-browser-lite`'s test mocks are no longer linked into the binary.
 - Dependencies updated to their latest releases; unused test dependencies
@@ -31,6 +41,12 @@ from a copy of its code: entries describe the differences from that release.
   `set_breakpoint`, `remove_breakpoint` and `send_cdp_command` return the
   protocol reply as pretty JSON after their usual prefix, instead of the Rust
   `Debug` of the whole message (`WsResponse { .. }`).
+
+- **Renamed tools:** `restart_chrome` → `restart_browser`, `stop_chrome` →
+  `stop_browser`. Calling an old name returns an error naming the new one.
+- Generated instance ids carry the browser name (`chrome-2`, `firefox-3`).
+- Server title "Browser Control MCP"; new description and instructions that
+  cover both browsers.
 
 ### Fixed
 - `inspect_dom` no longer crashes the server when the context window around a

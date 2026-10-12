@@ -2,9 +2,8 @@
 
 use browser_control_mcp::{Args, run};
 use clap::Parser;
-use rust_mcp_sdk::error::SdkResult;
 
 #[tokio::main]
-async fn main() -> SdkResult<()> {
+async fn main() -> std::process::ExitCode {
     run(Args::parse()).await
 }

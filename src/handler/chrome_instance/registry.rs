@@ -10,6 +10,8 @@ pub type InstanceId = String;
 #[derive(Debug, Clone, ::serde::Serialize, ::serde::Deserialize)]
 pub struct InstanceDescriptor {
     pub id: InstanceId,
+    /// The browser this instance runs, for its whole life.
+    pub browser: crate::backend::BrowserKind,
     pub label: Option<String>,
     pub host: String,
     pub port: u16,
@@ -25,6 +27,7 @@ impl InstanceDescriptor {
     pub fn default_instance(port: u16, features: Vec<String>) -> Self {
         Self {
             id: "default".to_string(),
+            browser: crate::backend::BrowserKind::Chrome,
             label: None,
             host: "127.0.0.1".to_string(), // approximation
             port,
@@ -119,11 +122,26 @@ impl Registry {
             .collect()
     }
 
-    pub fn generate_id(&self) -> InstanceId {
+    /// A fresh `<browser>-N` id (D27).
+    pub fn generate_id(&self, browser: crate::backend::BrowserKind) -> InstanceId {
         let num = self
             .counter
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        format!("chrome-{}", num)
+        format!("{}-{}", browser.name(), num)
+    }
+
+    /// Every registered session with its id.
+    pub(crate) fn sessions(&self) -> Vec<(InstanceId, Arc<BrowserSession>)> {
+        read(&self.state)
+            .sessions
+            .iter()
+            .map(|(id, s)| (id.clone(), s.clone()))
+            .collect()
+    }
+
+    /// The browser of instance `id`, if it is registered.
+    pub fn browser_of(&self, id: &str) -> Option<crate::backend::BrowserKind> {
+        read(&self.state).descriptors.get(id).map(|d| d.browser)
     }
 }
 
@@ -135,6 +153,7 @@ mod tests {
     fn descriptor(id: &str) -> InstanceDescriptor {
         InstanceDescriptor {
             id: id.to_string(),
+            browser: crate::backend::BrowserKind::Chrome,
             label: Some(id.to_string()),
             host: "127.0.0.1".into(),
             port: 0,

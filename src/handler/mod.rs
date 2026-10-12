@@ -2,6 +2,7 @@ pub mod cdp_domains;
 pub mod chrome_instance;
 mod registry;
 mod schema_compat;
+pub(crate) mod shutdown;
 
 use async_trait::async_trait;
 use cdp_browser_lite::CdpClient;
@@ -592,6 +593,7 @@ impl BrowserSession {
 pub struct HandlerParams {
     pub host: String,
     pub port: u16,
+    pub default_browser: crate::backend::BrowserKind,
     pub browser: crate::cli::BrowserFlags,
     pub server: crate::cli::ServerFlags,
     pub proxy: crate::cli::ProxyArgs,
@@ -602,6 +604,7 @@ impl Default for HandlerParams {
         Self {
             host: "127.0.0.1".into(),
             port: 9222,
+            default_browser: Default::default(),
             browser: Default::default(),
             server: Default::default(),
             proxy: Default::default(),
@@ -617,9 +620,44 @@ pub struct McpHandler {
     pub(crate) flags: crate::cli::ServerFlags,
     pub(crate) proxy: crate::cli::ProxyArgs,
     pub(crate) is_test: bool,
+    /// Browser of the default instance (`--browser`).
+    pub(crate) default_browser: crate::backend::BrowserKind,
 }
 
 impl McpHandler {
+    /// What stops this handler's browsers once the handler is owned by the
+    /// MCP runtime.
+    pub(crate) fn shutdown_hook(&self) -> shutdown::ShutdownHook {
+        shutdown::ShutdownHook {
+            registry: self.registry.clone(),
+        }
+    }
+
+    /// The browser instance `id` runs (`None` = the default instance, which
+    /// may not be registered yet). An unknown id reports Chrome: the Chrome
+    /// handlers then answer with the list of valid ids.
+    pub(crate) fn browser_of(&self, id: Option<&str>) -> crate::backend::BrowserKind {
+        let id = id.unwrap_or("default");
+        match self.registry.browser_of(id) {
+            Some(browser) => browser,
+            None if id == "default" => self.default_browser,
+            None => crate::backend::BrowserKind::Chrome,
+        }
+    }
+
+    /// What an instance of `browser` can do under this server's flags.
+    pub(crate) fn capabilities(
+        &self,
+        browser: crate::backend::BrowserKind,
+    ) -> crate::backend::Capabilities {
+        let flags = crate::backend::capabilities::CapabilityFlags {
+            server: self.flags,
+            proxy: self.proxy.proxy_server.is_some(),
+            firefox_debugger: true,
+        };
+        crate::backend::Capabilities::new(browser, flags)
+    }
+
     pub async fn session(
         &self,
         id: Option<String>,
@@ -702,6 +740,7 @@ impl McpHandler {
             flags: options.server,
             proxy: options.proxy,
             is_test: false,
+            default_browser: options.default_browser,
         }
     }
 
@@ -738,6 +777,7 @@ impl McpHandler {
             flags: Default::default(),
             proxy: Default::default(),
             is_test: true,
+            default_browser: Default::default(),
         }
     }
 }
@@ -817,6 +857,21 @@ impl ServerHandler for McpHandler {
     ) -> std::result::Result<CallToolResult, CallToolError> {
         registry::call(self, params).await
     }
+}
+
+/// A handler on mock browsers, for tests of other modules.
+#[cfg(test)]
+pub(crate) fn test_handler() -> McpHandler {
+    McpHandler::new_test()
+}
+
+/// The names of the tools `handler` lists.
+#[cfg(test)]
+pub(crate) fn listed_tool_names(handler: &McpHandler) -> Vec<String> {
+    registry::listed_tools(handler)
+        .into_iter()
+        .map(|t| t.name)
+        .collect()
 }
 
 #[cfg(test)]
@@ -1008,6 +1063,7 @@ mod tests {
         let handler = McpHandler::new_with_params(HandlerParams {
             host: "127.0.0.1".into(),
             port: 9444,
+            default_browser: crate::backend::BrowserKind::Chrome,
             browser: crate::cli::BrowserFlags {
                 headless: false,
                 enable_automation: true,
@@ -1055,8 +1111,8 @@ mod tests {
         assert!(tool_names.contains(&"fill_input".to_string()));
         assert!(tool_names.contains(&"evaluate_js".to_string()));
         assert!(tool_names.contains(&"navigate".to_string()));
-        assert!(tool_names.contains(&"restart_chrome".to_string()));
-        assert!(tool_names.contains(&"stop_chrome".to_string()));
+        assert!(tool_names.contains(&"restart_browser".to_string()));
+        assert!(tool_names.contains(&"stop_browser".to_string()));
         assert!(tool_names.contains(&"get_console_logs".to_string()));
         assert!(tool_names.contains(&"get_performance_metrics".to_string()));
         assert!(tool_names.contains(&"profile_page_performance".to_string()));

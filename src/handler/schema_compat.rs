@@ -45,8 +45,30 @@ fn normalize_object(map: &mut Map<String, Value>) {
         normalize_value(child);
     }
     merge_variant_enums(map);
+    collapse_nullable_any_of(map);
     collapse_nullable_type(map);
     fix_array_items_type(map);
+}
+
+/// `anyOf: [<schema>, {"type": "null"}]` (an optional value) becomes
+/// `<schema>`; optionality is already expressed by `required`.
+fn collapse_nullable_any_of(map: &mut Map<String, Value>) {
+    let Some(Value::Array(variants)) = map.get("anyOf") else {
+        return;
+    };
+    let is_null = |v: &Value| v.get("type") == Some(&Value::String("null".into()));
+    let mut non_null = variants.iter().filter(|v| !is_null(v));
+    let (Some(Value::Object(only)), None) = (non_null.next(), non_null.next()) else {
+        return;
+    };
+    if variants.len() != 2 {
+        return;
+    }
+    let only = only.clone();
+    map.remove("anyOf");
+    for (key, value) in only {
+        map.entry(key).or_insert(value);
+    }
 }
 
 /// Collapses a `oneOf`/`anyOf` list of single-value `enum` objects into one

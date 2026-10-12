@@ -6,7 +6,7 @@ use rust_mcp_sdk::{
 };
 
 #[macros::mcp_tool(
-    name = "restart_chrome",
+    name = "restart_browser",
     description = "Stops and restarts the Chrome instance selected by 'instance_id' (the default instance when omitted) with remote debugging enabled, optionally configuring proxy and opt-in capability presets. Side effects: destructive - terminates that instance's Chrome process and all its open tabs; closes its debugging connection; other instances keep running. Prerequisites: requires CHROME_PATH environment variable or chrome in PATH. Returns: restart success confirmation listing the presets applied. Use this to reset browser state, apply proxy settings, enable experimental browser capabilities, recover from crashes. Alternatives: 'reload' to refresh page without restart, 'navigate' to load new content. Parameters: 'features' accepts a closed set - 'WEBGL_SOFTWARE' (forces SwiftShader software WebGL for GPU-less environments); arbitrary Chrome flags are not accepted."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
@@ -123,7 +123,7 @@ mod tests {
     #[tokio::test]
     async fn test_restart_chrome_params_deserialization() {
         let params: Result<CallToolRequestParams, _> = serde_json::from_value(json!({
-            "name": "restart_chrome",
+            "name": "restart_browser",
             "arguments": {}
         }));
         assert!(params.is_ok());
@@ -144,7 +144,7 @@ mod tests {
             .chrome_manager = Arc::new(Mutex::new(MockChromeManager::new(9999)));
 
         let params: CallToolRequestParams = serde_json::from_value(json!({
-            "name": "restart_chrome",
+            "name": "restart_browser",
             "arguments": { "instance_id": "default" }
         }))
         .unwrap();
@@ -170,7 +170,7 @@ mod tests {
             .chrome_manager = Arc::new(Mutex::new(MockChromeManager::new(9999)));
 
         let params: CallToolRequestParams = serde_json::from_value(json!({
-            "name": "restart_chrome",
+            "name": "restart_browser",
             "arguments": { "instance_id": "default", "features": ["WEBGL_SOFTWARE"] }
         }))
         .unwrap();
@@ -192,7 +192,7 @@ mod tests {
         let handler = McpHandler::new_test();
 
         let params: CallToolRequestParams = serde_json::from_value(json!({
-            "name": "restart_chrome",
+            "name": "restart_browser",
             "arguments": { "features": ["DISABLE_WEB_SECURITY"] }
         }))
         .unwrap();
@@ -212,7 +212,7 @@ mod tests {
             .chrome_manager = Arc::new(Mutex::new(MockChromeManager::new(9999)));
 
         let params: CallToolRequestParams = serde_json::from_value(json!({
-            "name": "restart_chrome",
+            "name": "restart_browser",
             "arguments": { "instance_id": "default" }
         }))
         .unwrap();

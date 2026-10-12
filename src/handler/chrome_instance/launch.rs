@@ -5,7 +5,7 @@ use rust_mcp_sdk::macros;
 /// the browser.
 ///
 /// This is deliberately a closed enum rather than free-form command line
-/// arguments: it keeps `restart_chrome` from becoming an arbitrary Chrome-flag
+/// arguments: it keeps `restart_browser` from becoming an arbitrary Chrome-flag
 /// injection point (`--disable-web-security`, `--load-extension`, ...).
 #[derive(
     Debug,

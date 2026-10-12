@@ -20,12 +20,13 @@ use std::collections::{BTreeMap, BTreeSet};
     serde::Deserialize,
     clap::ValueEnum,
 )]
-#[serde(rename_all = "lowercase")]
 pub enum BrowserKind {
     /// Chrome or Chromium over the Chrome DevTools Protocol.
     #[default]
+    #[serde(rename = "chrome")]
     Chrome,
     /// Firefox over WebDriver BiDi (and RDP for JavaScript debugging).
+    #[serde(rename = "firefox")]
     Firefox,
 }
 

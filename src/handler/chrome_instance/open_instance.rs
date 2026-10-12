@@ -13,10 +13,13 @@ use tokio::sync::Mutex;
 
 #[macros::mcp_tool(
     name = "open_instance",
-    description = "Opens a new independent Chrome instance. Side effects: launches a separate Chrome process with its own profile directory and remote-debugging port. Prerequisites: rejected when the server runs in --user-profile mode (Chrome's singleton profile lock). Returns: structured JSON with 'instance_id' (pass it as the 'instance_id' argument of other tools), 'host', 'port' and 'profile_dir'. Use this to isolate browsing sessions, cookies, proxies or WebMCP contexts from one another. Alternatives: 'open_tab' for additional tabs within an existing instance. Parameters: 'features' accepts a closed set - 'WEBGL_SOFTWARE' (forces SwiftShader software WebGL for GPU-less environments); 'headless' defaults to false (prefer false so the user can see the browser)."
+    description = "Opens a new independent browser instance (Chrome or Firefox, see 'browser'). Side effects: launches a separate browser process with its own profile directory and remote-debugging port. Prerequisites: rejected when the server runs in --user-profile mode (Chrome's singleton profile lock). Returns: structured JSON with 'instance_id' (pass it as the 'instance_id' argument of other tools), 'host', 'port' and 'profile_dir'. Use this to isolate browsing sessions, cookies, proxies or WebMCP contexts from one another. Alternatives: 'open_tab' for additional tabs within an existing instance. Parameters: 'features' accepts a closed set - 'WEBGL_SOFTWARE' (forces SwiftShader software WebGL for GPU-less environments); 'headless' defaults to false (prefer false so the user can see the browser)."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct OpenInstanceTool {
+    /// Browser of the new instance: "chrome" (CDP) or "firefox" (WebDriver BiDi + RDP debugger). Defaults to the server's --browser (Chrome unless configured). Choose Firefox only when the user asks for it or Chrome is unavailable. The instance keeps this browser for its whole life.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub browser: Option<BrowserArg>,
     /// Optional label to identify the instance. The label becomes the instance_id returned by this tool and accepted by the 'instance_id' argument of other tools. If omitted, a dynamic label is generated.
     pub label: Option<String>,
     /// Optional headless mode. Encouraged to be set to false so that the user can see what happens with the browser. Defaults to false.
@@ -29,6 +32,17 @@ pub struct OpenInstanceTool {
     pub copy_cookies: Option<bool>,
     /// Optional source profile name to copy cookies from (e.g. 'Default', 'Profile 1'). Defaults to the last used profile.
     pub source_profile: Option<String>,
+}
+
+/// The `browser` argument (schema twin of [`crate::backend::BrowserKind`]).
+#[derive(Debug, Clone, Copy, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
+pub enum BrowserArg {
+    /// Chrome or Chromium over CDP.
+    #[serde(rename = "chrome")]
+    Chrome,
+    /// Firefox over WebDriver BiDi, with the RDP debugger.
+    #[serde(rename = "firefox")]
+    Firefox,
 }
 
 impl OpenInstanceTool {
@@ -47,7 +61,9 @@ impl OpenInstanceTool {
         }
         let instance_id = match &args.label {
             Some(label) => label.clone(),
-            None => handler.registry.generate_id(),
+            None => handler
+                .registry
+                .generate_id(crate::backend::BrowserKind::Chrome),
         };
         let child_params = args.launch_params(handler);
         let seed_report = super::cookie_seed::prepare_seed_report(
@@ -136,6 +152,7 @@ async fn launch(
     })?;
     Ok(InstanceDescriptor {
         id: instance_id,
+        browser: crate::backend::BrowserKind::Chrome,
         label: args.label.clone(),
         host: "127.0.0.1".to_string(),
         port: mgr.get_port(),
@@ -148,4 +165,28 @@ async fn launch(
         is_default: false,
         browser_version: None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// TOL-04: open_instance exposes the browser selector.
+    #[test]
+    fn open_instance_schema_has_browser_enum() {
+        let tool = crate::handler::schema_compat::normalize_tool_with_options(
+            OpenInstanceTool::tool(),
+            true,
+        );
+        let schema = serde_json::to_value(&tool.input_schema).unwrap();
+        let browser = &schema["properties"]["browser"];
+        assert_eq!(browser["type"], "string", "{browser}");
+        assert_eq!(
+            browser["enum"],
+            serde_json::json!(["chrome", "firefox"]),
+            "{browser}"
+        );
+        let required = schema["required"].as_array().cloned().unwrap_or_default();
+        assert!(!required.contains(&serde_json::json!("browser")));
+    }
 }
