@@ -29,7 +29,11 @@ exclude_tests = true
 exclude = ["tests/", "/docs/", "integration_tests.rs", "bdd_tests.rs", "backend/mock.rs", "test_support"]
 
 # --- CI thresholds (consumed by `cargo dupes check`) ---
-max_exact_duplicates = 0
-max_near_duplicates = 0
-max_exact_percent = 0.0
-max_near_percent = 0.0
+# F1 baseline of the imported code (specs D22), measured 2026-10-12:
+# 2 exact groups (9 units, 105 lines), 2 near groups (5 units, 118 lines),
+# 2.2 % exact and 2.5 % near of 4,711 lines
+# (printed rounded; the limits are 2.3 / 2.6 because the gate compares unrounded). Target 0 / 0 / 0.0 / 0.0, F3.6.
+max_exact_duplicates = 2
+max_near_duplicates = 2
+max_exact_percent = 2.3
+max_near_percent = 2.6

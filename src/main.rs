@@ -1,7 +1,10 @@
 //! `browser-control-mcp` binary: a thin wrapper around [`browser_control_mcp::run`].
 
-use std::process::ExitCode;
+use browser_control_mcp::{Args, run};
+use clap::Parser;
+use rust_mcp_sdk::error::SdkResult;
 
-fn main() -> ExitCode {
-    browser_control_mcp::run()
+#[tokio::main]
+async fn main() -> SdkResult<()> {
+    run(Args::parse()).await
 }

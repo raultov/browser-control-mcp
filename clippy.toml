@@ -14,24 +14,33 @@
 #   cognitive_complexity  nursery     allow  -> enabled in Cargo.toml [lints.clippy]
 
 # clippy::too_many_arguments (default: 7). Counts &self: use small request structs.
-too-many-arguments-threshold = 4
+# F1 baseline (imported code): set from 4 to 5; target 4, ratcheted in F3
+too-many-arguments-threshold = 5
 
 # clippy::type_complexity (default: 250).
-type-complexity-threshold = 150
+# F1 baseline (imported code): set from 150 to 190; target 150, ratcheted in F3
+type-complexity-threshold = 190
 
 # clippy::excessive_nesting (default: 0 = disabled).
-excessive-nesting-threshold = 5
+# F1 baseline (imported code): set from 5 to 8; target 5, ratcheted in F3
+excessive-nesting-threshold = 8
 
 # clippy::too_many_lines (pedantic, default: 100). Applies to tests too: long
 # tests are split into Given/When/Then helpers.
-too-many-lines-threshold = 50
+# F1 baseline (imported code): set from 50 to 148; target 50, ratcheted in F3
+too-many-lines-threshold = 148
 
 # clippy::cognitive_complexity (nursery, default: 25). bidi-lite started at 15
 # and ratcheted to 12. NOTE: tracing macros may inflate the score; measure.
-cognitive-complexity-threshold = 12
+# F1 baseline (imported code): set from 12 to 26; target 12, ratcheted in F3
+cognitive-complexity-threshold = 26
 
 # Hygiene lints (Cargo.toml [lints.clippy]) are relaxed in test code only.
 # These are configuration, not #[allow] attributes.
+# clippy::struct_excessive_bools (pedantic, default 3). F1 baseline: Args and
+# HandlerParams have 6 bools; set to 6, target 3 (the default), ratcheted in F3.
+max-struct-bools = 6
+
 allow-unwrap-in-tests = true
 allow-expect-in-tests = true
 allow-panic-in-tests = true

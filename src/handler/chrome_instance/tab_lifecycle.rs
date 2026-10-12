@@ -1,0 +1,124 @@
+use crate::handler::cdp_domains;
+use crate::handler::chrome_instance::tab_registry::TabRegistry;
+use cdp_browser_lite::{BrowserClient, CdpResult, WsResponse};
+use std::sync::{Arc, RwLock};
+use tokio_stream::StreamExt;
+
+pub(crate) fn start_tab_lifecycle_listener(
+    browser_client: BrowserClient,
+    tabs: Arc<RwLock<TabRegistry>>,
+    enable_webmcp: bool,
+) -> tokio::task::JoinHandle<()> {
+    let mut target_events = browser_client.client().on_domain("Target");
+    let bc = browser_client.clone();
+    let tabs_clone = tabs.clone();
+
+    tokio::spawn(async move {
+        // Enable target discovery to receive targetCreated/targetDestroyed events
+        let _ = bc.set_discover_targets(true).await;
+
+        while let Some(item) = target_events.next().await {
+            match item {
+                Ok(event) => {
+                    let _ = process_target_event(&event, &bc, &tabs_clone, enable_webmcp).await;
+                }
+                Err(e) => {
+                    eprintln!("[browser-control-mcp] Target lifecycle event stream error: {e}");
+                }
+            }
+        }
+    })
+}
+
+async fn process_target_event(
+    event: &WsResponse,
+    browser_client: &BrowserClient,
+    tabs: &Arc<RwLock<TabRegistry>>,
+    enable_webmcp: bool,
+) -> CdpResult<()> {
+    let method = match event.method.as_deref() {
+        Some(m) => m,
+        None => return Ok(()),
+    };
+
+    let params = match &event.params {
+        Some(p) => p,
+        None => return Ok(()),
+    };
+
+    match method {
+        "Target.targetCreated" => {
+            if let Some(info) = params.get("targetInfo")
+                && let Some(target_id) = info.get("targetId").and_then(|v| v.as_str())
+                && let Some(ty) = info.get("type").and_then(|v| v.as_str())
+                && let Some(url) = info.get("url").and_then(|v| v.as_str())
+                && ty == "page"
+                && !url.starts_with("chrome-extension://")
+            {
+                // Check whether it is already in our registry
+                let already_exists = {
+                    let registry = tabs.read().unwrap();
+                    registry
+                        .tabs
+                        .values()
+                        .any(|entry| entry.tab.target_id() == target_id)
+                };
+
+                if !already_exists {
+                    // Attach to the tab
+                    if let Ok(tab) = browser_client.attach(target_id).await {
+                        let registered = {
+                            let mut registry = tabs.write().unwrap();
+                            if let Ok(tab_id) = registry.register_tab(
+                                tab.clone(),
+                                None,
+                                url.to_string(),
+                                enable_webmcp,
+                            ) {
+                                let states = registry
+                                    .tabs
+                                    .get(&tab_id)
+                                    .map(|entry| entry.domain_states());
+                                states.map(|st| (tab_id, st))
+                            } else {
+                                None
+                            }
+                        };
+
+                        if let Some((tab_id, states)) = registered {
+                            let webmcp_state = states.4.clone();
+                            // Same ordering rule as `open_tab`: subscribe first,
+                            // then enable. Attaching to an already-loaded page is
+                            // even more exposed — its `WebMCP.enable` replay is
+                            // the only way to learn about tools it registered
+                            // before we arrived.
+                            let handles = cdp_domains::start_tab_listeners(&tab, states);
+                            tabs.write().unwrap().attach_listeners(&tab_id, handles);
+                            cdp_domains::enable_tab_domains(&tab, &webmcp_state).await;
+                        }
+                    }
+                }
+            }
+        }
+        "Target.targetDestroyed" => {
+            if let Some(target_id) = params.get("targetId").and_then(|v| v.as_str()) {
+                let tab_id_to_remove = {
+                    let registry = tabs.read().unwrap();
+                    registry
+                        .tabs
+                        .iter()
+                        .find(|(_, entry)| entry.tab.target_id() == target_id)
+                        .map(|(id, _)| id.clone())
+                };
+
+                if let Some(tab_id) = tab_id_to_remove {
+                    let mut registry = tabs.write().unwrap();
+                    registry.remove_tab(&tab_id);
+                }
+            }
+        }
+        _ => {}
+    }
+
+    Ok(())
+}

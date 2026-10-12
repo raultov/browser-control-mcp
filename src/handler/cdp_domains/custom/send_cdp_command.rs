@@ -1,0 +1,235 @@
+use crate::handler::{McpHandler, is_local_address};
+use rust_mcp_sdk::{
+    macros,
+    schema::{CallToolError, CallToolRequestParams, CallToolResult},
+};
+
+#[macros::mcp_tool(
+    name = "send_cdp_command",
+    description = "EXPERIMENTAL: Sends raw Chrome DevTools Protocol (CDP) commands to the browser for advanced use cases not covered by specialized tools. Side effects: depends on command; may modify page state, DOM, or trigger navigation. Auth requirements: subject to local-only restrictions if enabled (Page.navigate checked). Prerequisites: requires knowledge of CDP protocol; active Chrome connection. Returns: raw CDP command response as JSON. Use this only when specialized tools inadequate. Alternatives: use domain-specific tools (navigate, click_element, evaluate_js)."
+)]
+#[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
+pub struct SendCdpCommandTool {
+    /// Chrome instance id from open_instance/list_instances. Omit for the default instance.
+    pub instance_id: Option<String>,
+    /// The Tab ID of the target tab. Omit to use the active tab.
+    pub tab_id: Option<String>,
+    /// CDP protocol method name (e.g., 'DOM.getDocument', 'Runtime.evaluate'). Constraints: valid CDP domain.method format. Interactions: method must be recognized by Chrome protocol version.
+    pub method: String,
+    /// JSON-formatted parameters for the CDP command. Constraints: valid JSON object string. Interactions: Page.navigate URLs subject to local-only restrictions; empty string or '{}' for no parameters. Defaults to: None.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub params: Option<String>,
+}
+
+impl SendCdpCommandTool {
+    pub async fn handle(
+        params: CallToolRequestParams,
+        handler: &McpHandler,
+    ) -> Result<CallToolResult, CallToolError> {
+        let tool: SendCdpCommandTool = serde_json::from_value(serde_json::Value::Object(
+            params.arguments.unwrap_or_default(),
+        ))
+        .map_err(|e| CallToolError::from_message(format!("Failed to parse arguments: {}", e)))?;
+        let session = handler.session(tool.instance_id.clone()).await?;
+
+        let parsed_params: serde_json::Value = match &tool.params {
+            Some(s) if !s.trim().is_empty() => serde_json::from_str(s).map_err(|e| {
+                CallToolError::from_message(format!("Invalid JSON in params: {}", e))
+            })?,
+            _ => serde_json::Value::Object(Default::default()),
+        };
+
+        if handler.local_only
+            && tool.method == "Page.navigate"
+            && let Some(url) = parsed_params.get("url").and_then(|v| v.as_str())
+            && !is_local_address(url)
+        {
+            return Err(CallToolError::from_message(format!(
+                "Navigation to '{}' via raw CDP command is blocked. This MCP server is running with the 'local' argument, which restricts navigation to local addresses only (localhost, 127.0.0.1, 192.168.x.x, or *.local). To allow navigation to external addresses, restart the MCP server without the 'local' argument.",
+                url
+            )));
+        }
+
+        let target = session.target(tool.tab_id.clone()).await?;
+
+        // Extract domain from method (e.g., "DOM" from "DOM.getDocument")
+        if let Some(domain) = tool.method.split('.').next() {
+            let custom_state = session.custom_state(tool.tab_id.clone())?;
+            super::ensure_domain_listener(&target, &custom_state, domain).await;
+        }
+
+        let response = target.send_raw_command(&tool.method, parsed_params).await;
+        match response {
+            Ok(res) => Ok(CallToolResult::text_content(vec![
+                format!(
+                    "Command '{}' executed successfully. Result: {:?}",
+                    tool.method, res
+                )
+                .into(),
+            ])),
+            Err(e) => Err(CallToolError::from_message(format!(
+                "Failed to execute CDP command '{}': {}",
+                tool.method, e
+            ))),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::handler::cdp_domains::tests::spawn_mock_chrome_server;
+    use crate::handler::chrome_instance::MockChromeManager;
+    use rust_mcp_sdk::schema::CallToolRequestParams;
+    use serde_json::json;
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+
+    #[tokio::test]
+    async fn test_send_cdp_command_schema() {
+        let tool_def = SendCdpCommandTool::tool();
+        println!("{}", serde_json::to_string_pretty(&tool_def).unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_send_cdp_command_params_deserialization() {
+        let params: Result<CallToolRequestParams, _> = serde_json::from_value(json!({
+            "name": "send_cdp_command",
+            "arguments": {
+                "method": "Runtime.enable",
+                "params": "{}"
+            }
+        }));
+        assert!(params.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_send_cdp_command_handle() {
+        let port = spawn_mock_chrome_server().await;
+
+        let mut handler = McpHandler::new_test();
+        Arc::get_mut(&mut handler.default_session)
+            .unwrap()
+            .chrome_manager = Arc::new(Mutex::new(MockChromeManager::new(port)));
+
+        let params: CallToolRequestParams = serde_json::from_value(json!({
+            "name": "send_cdp_command",
+            "arguments": {
+                "method": "Runtime.enable",
+                "params": "{}"
+            }
+        }))
+        .unwrap();
+
+        let result = SendCdpCommandTool::handle(params, &handler).await;
+        assert!(result.is_ok(), "Handle should succeed: {:?}", result.err());
+
+        let call_result = result.unwrap();
+        assert!(!call_result.content.is_empty());
+        let content_str = format!("{:?}", call_result.content);
+        assert!(
+            content_str.contains("Command 'Runtime.enable' executed successfully"),
+            "Content didn't match: {}",
+            content_str
+        );
+
+        // Verify active_domains has 'Runtime'
+        let st = handler.default_session.custom_state.lock().await;
+        assert!(st.active_domains.contains("Runtime"));
+    }
+
+    #[tokio::test]
+    async fn test_send_cdp_command_local_only_restriction() {
+        let mut handler = McpHandler::new_test();
+        handler.local_only = true;
+
+        let params: CallToolRequestParams = serde_json::from_value(json!({
+            "name": "send_cdp_command",
+            "arguments": {
+                "method": "Page.navigate",
+                "params": "{\"url\": \"https://google.com\"}"
+            }
+        }))
+        .unwrap();
+
+        let result = SendCdpCommandTool::handle(params, &handler).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("Navigation to 'https://google.com' via raw CDP command is blocked")
+        );
+
+        // Test with local address
+        let params_local: CallToolRequestParams = serde_json::from_value(json!({
+            "name": "send_cdp_command",
+            "arguments": {
+                "method": "Page.navigate",
+                "params": "{\"url\": \"http://localhost:3000\"}"
+            }
+        }))
+        .unwrap();
+
+        let port = spawn_mock_chrome_server().await;
+        let mut handler_local2 = McpHandler::new_test_with_port(port);
+        handler_local2.local_only = true;
+
+        let result_local = SendCdpCommandTool::handle(params_local, &handler_local2).await;
+        assert!(
+            result_local.is_ok(),
+            "Local navigation should succeed: {:?}",
+            result_local.err()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_send_cdp_command_routes_custom_state_to_tab() {
+        let handler = McpHandler::new_test();
+        let session = handler.session(None).await.unwrap();
+
+        // Register a real tab over the mock DevTools server so that
+        // session.target(tab_id) resolves to the tab's own CDP target.
+        let tab_id = {
+            use cdp_browser_lite::BrowserClient;
+            use std::time::Duration;
+
+            let port = spawn_mock_chrome_server().await;
+            let browser =
+                BrowserClient::connect(&format!("127.0.0.1:{}", port), Duration::from_secs(5))
+                    .await
+                    .expect("BrowserClient connect to mock");
+            let tab = browser.attach("T-page-1").await.expect("attach to mock");
+
+            session
+                .tabs
+                .write()
+                .unwrap()
+                .register_tab(tab, None, "https://example.test".into(), false)
+                .expect("register tab")
+        };
+
+        let params: CallToolRequestParams = serde_json::from_value(json!({
+            "name": "send_cdp_command",
+            "arguments": {
+                "tab_id": tab_id,
+                "method": "DOM.getDocument",
+                "params": "{}"
+            }
+        }))
+        .unwrap();
+
+        let result = SendCdpCommandTool::handle(params, &handler).await;
+        assert!(result.is_ok(), "Handle should succeed: {:?}", result.err());
+
+        // The custom listener must live in the TAB's state, not the session's.
+        let tab_custom_state = session.custom_state(Some(tab_id)).unwrap();
+        assert!(
+            tab_custom_state.lock().await.active_domains.contains("DOM"),
+            "custom listener must be registered in the tab's CustomState"
+        );
+        assert!(
+            session.custom_state.lock().await.active_domains.is_empty(),
+            "session CustomState must stay untouched when a tab was targeted"
+        );
+    }
+}

@@ -1,0 +1,323 @@
+use crate::handler::McpHandler;
+use crate::handler::chrome_instance::launch::ChromeFeature;
+use rust_mcp_sdk::{
+    macros,
+    schema::{CallToolError, CallToolRequestParams, CallToolResult},
+};
+
+#[macros::mcp_tool(
+    name = "restart_chrome",
+    description = "Stops and restarts the Chrome instance selected by 'instance_id' (the default instance when omitted) with remote debugging enabled, optionally configuring proxy and opt-in capability presets. Side effects: destructive - terminates that instance's Chrome process and all its open tabs; closes its debugging connection; other instances keep running. Prerequisites: requires CHROME_PATH environment variable or chrome in PATH. Returns: restart success confirmation listing the presets applied. Use this to reset browser state, apply proxy settings, enable experimental browser capabilities, recover from crashes. Alternatives: 'reload' to refresh page without restart, 'navigate' to load new content. Parameters: 'features' accepts a closed set - 'WEBGL_SOFTWARE' (forces SwiftShader software WebGL for GPU-less environments); arbitrary Chrome flags are not accepted."
+)]
+#[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
+pub struct RestartChromeTool {
+    /// Chrome instance id from open_instance/list_instances. Omit for the default instance.
+    pub instance_id: Option<String>,
+    /// Proxy server URL (e.g., `http://proxy.example.com:8080`). Constraints: valid proxy URL with protocol and port. Interactions: applied to new Chrome instance; requires 'enable_proxy_auth' for authenticated proxies. Defaults to: None (no proxy).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub proxy_server: Option<String>,
+
+    /// Chrome capability presets to enable on the new instance. Constraints: closed set - 'WEBGL_SOFTWARE' forces SwiftShader software WebGL for GPU-less environments. Arbitrary Chrome flags are not accepted. Interactions: presets apply only to the instance started by this call and are cleared by a later restart that omits them. Defaults to: [] (no presets).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub features: Option<Vec<ChromeFeature>>,
+
+    /// Optional flag to copy cookies from the user's real Chrome installation into this instance's isolated profile. Requires server running with --allow-cookie-import.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub copy_cookies: Option<bool>,
+
+    /// Optional source profile name to copy cookies from (e.g. 'Default', 'Profile 1'). Defaults to the last used profile.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_profile: Option<String>,
+}
+
+impl RestartChromeTool {
+    pub async fn handle(
+        params: CallToolRequestParams,
+        handler: &McpHandler,
+    ) -> Result<CallToolResult, CallToolError> {
+        let tool: RestartChromeTool = serde_json::from_value(serde_json::Value::Object(
+            params.arguments.unwrap_or_default(),
+        ))
+        .map_err(|e| CallToolError::from_message(format!("Failed to parse arguments: {}", e)))?;
+
+        let session = handler.session(tool.instance_id.clone()).await?;
+
+        let seed_report = super::cookie_seed::prepare_seed_report(
+            tool.copy_cookies == Some(true),
+            tool.source_profile.as_deref(),
+            handler.allow_cookie_import,
+            handler.base_params.user_profile,
+        )
+        .map_err(CallToolError::from_message)?;
+
+        let mut manager = session.chrome_manager.lock().await;
+
+        session.reset_connection_state().await;
+
+        if let Err(e) = manager.stop_instance().await {
+            return Err(CallToolError::from_message(format!(
+                "Failed to stop Chrome: {}",
+                e
+            )));
+        }
+
+        let proxy = tool.proxy_server.or_else(|| handler.proxy_server.clone());
+        manager.set_proxy(proxy);
+        manager.set_seed_profile(seed_report);
+
+        let features = tool.features.unwrap_or_else(|| manager.features().to_vec());
+        let summary = describe_features(&features);
+        manager.set_features(features.clone());
+
+        if let Err(e) = manager.ensure_instance().await {
+            return Err(CallToolError::from_message(format!(
+                "Failed to start Chrome: {}",
+                e
+            )));
+        }
+
+        // Update features in registry descriptor if descriptor exists
+        let instance_id_str = tool
+            .instance_id
+            .clone()
+            .unwrap_or_else(|| "default".to_string());
+        let descriptors_list = handler.registry.list_descriptors();
+        if let Some(desc) = descriptors_list.iter().find(|d| d.id == instance_id_str) {
+            let mut updated_desc = desc.clone();
+            updated_desc.features = features.iter().map(|f| f.as_name().to_string()).collect();
+            handler.registry.register_descriptor(updated_desc);
+        }
+
+        Ok(CallToolResult::text_content(vec![
+            format!("Chrome instance restarted successfully. Features: {summary}.").into(),
+        ]))
+    }
+}
+
+/// Renders the requested presets for the tool response so the caller can confirm
+/// what the restarted browser actually has enabled.
+fn describe_features(features: &[ChromeFeature]) -> String {
+    if features.is_empty() {
+        return "none".to_string();
+    }
+    features
+        .iter()
+        .map(|f| f.as_name().to_string())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::handler::chrome_instance::ChromeManager;
+    use crate::handler::chrome_instance::MockChromeManager;
+    use crate::handler::chrome_instance::open_instance::OpenInstanceTool;
+    use rust_mcp_sdk::schema::CallToolRequestParams;
+    use serde_json::json;
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+
+    #[tokio::test]
+    async fn test_restart_chrome_params_deserialization() {
+        let params: Result<CallToolRequestParams, _> = serde_json::from_value(json!({
+            "name": "restart_chrome",
+            "arguments": {}
+        }));
+        assert!(params.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_restart_chrome_tool_deserialization() {
+        let tool: Result<RestartChromeTool, _> = serde_json::from_value(json!({}));
+        assert!(tool.is_ok());
+        assert!(tool.unwrap().features.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_restart_chrome_handle() {
+        let mut handler = McpHandler::new_test();
+        Arc::get_mut(&mut handler.default_session)
+            .unwrap()
+            .chrome_manager = Arc::new(Mutex::new(MockChromeManager::new(9999)));
+
+        let params: CallToolRequestParams = serde_json::from_value(json!({
+            "name": "restart_chrome",
+            "arguments": { "instance_id": "default" }
+        }))
+        .unwrap();
+
+        let result = RestartChromeTool::handle(params, &handler).await;
+        assert!(result.is_ok(), "Handle should succeed: {:?}", result.err());
+
+        let call_result = result.unwrap();
+        assert!(!call_result.content.is_empty());
+        let content_str = format!("{:?}", call_result.content);
+        assert!(
+            content_str.contains("Chrome instance restarted successfully"),
+            "Content didn't match: {}",
+            content_str
+        );
+    }
+
+    #[tokio::test]
+    async fn given_known_feature_when_handling_then_manager_receives_it() {
+        let mut handler = McpHandler::new_test();
+        Arc::get_mut(&mut handler.default_session)
+            .unwrap()
+            .chrome_manager = Arc::new(Mutex::new(MockChromeManager::new(9999)));
+
+        let params: CallToolRequestParams = serde_json::from_value(json!({
+            "name": "restart_chrome",
+            "arguments": { "instance_id": "default", "features": ["WEBGL_SOFTWARE"] }
+        }))
+        .unwrap();
+
+        RestartChromeTool::handle(params, &handler)
+            .await
+            .expect("handle must succeed");
+
+        let manager = handler.default_session.chrome_manager.lock().await;
+        let mock = manager
+            .as_any()
+            .downcast_ref::<MockChromeManager>()
+            .expect("manager must be the MockChromeManager");
+        assert_eq!(mock.features(), &[ChromeFeature::WebglSoftware]);
+    }
+
+    #[tokio::test]
+    async fn given_unknown_feature_when_handling_then_it_is_rejected() {
+        let handler = McpHandler::new_test();
+
+        let params: CallToolRequestParams = serde_json::from_value(json!({
+            "name": "restart_chrome",
+            "arguments": { "features": ["DISABLE_WEB_SECURITY"] }
+        }))
+        .unwrap();
+
+        let result = RestartChromeTool::handle(params, &handler).await;
+        assert!(
+            result.is_err(),
+            "arbitrary presets must not reach the launcher"
+        );
+    }
+
+    #[tokio::test]
+    async fn given_no_features_when_handling_then_response_reports_none() {
+        let mut handler = McpHandler::new_test();
+        Arc::get_mut(&mut handler.default_session)
+            .unwrap()
+            .chrome_manager = Arc::new(Mutex::new(MockChromeManager::new(9999)));
+
+        let params: CallToolRequestParams = serde_json::from_value(json!({
+            "name": "restart_chrome",
+            "arguments": { "instance_id": "default" }
+        }))
+        .unwrap();
+
+        let call_result = RestartChromeTool::handle(params, &handler)
+            .await
+            .expect("handle must succeed");
+        let content_str = format!("{:?}", call_result.content);
+        assert!(content_str.contains("Features: none"), "{content_str}");
+    }
+
+    #[test]
+    fn given_tool_schema_when_listed_then_it_constrains_features_to_the_allowed_presets() {
+        let schema = serde_json::to_value(RestartChromeTool::tool().input_schema).unwrap();
+
+        // The description alone mentions the preset names, so assert on the
+        // machine-readable constraint instead. The derive emits one single-value
+        // `enum` per variant, so compare the flattened union.
+        let mut enumerations = Vec::new();
+        collect_enums(&schema, &mut enumerations);
+        let mut allowed: Vec<String> = enumerations.into_iter().flatten().collect();
+        allowed.sort();
+        allowed.dedup();
+
+        assert_eq!(
+            allowed,
+            vec!["WEBGL_SOFTWARE".to_string()],
+            "features must be schema-constrained to the closed preset list; schema was {schema:#}"
+        );
+
+        // Omitting the field must stay legal, otherwise a plain restart is
+        // schema-invalid for strict clients.
+        let required = schema
+            .get("required")
+            .and_then(|r| r.as_array())
+            .map(|r| r.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>())
+            .unwrap_or_default();
+        assert!(
+            !required.contains(&"features"),
+            "features must be optional; schema was {schema:#}"
+        );
+    }
+
+    /// Walks the schema collecting every `enum` array of strings, wherever the
+    /// derive decided to place it (inline, under `items`, or in `$defs`).
+    fn collect_enums(value: &serde_json::Value, out: &mut Vec<Vec<String>>) {
+        match value {
+            serde_json::Value::Object(map) => {
+                if let Some(serde_json::Value::Array(values)) = map.get("enum") {
+                    out.push(
+                        values
+                            .iter()
+                            .filter_map(|v| v.as_str().map(str::to_string))
+                            .collect(),
+                    );
+                }
+                for nested in map.values() {
+                    collect_enums(nested, out);
+                }
+            }
+            serde_json::Value::Array(items) => {
+                for nested in items {
+                    collect_enums(nested, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Every preset a client may pass in `features`.
+    ///
+    /// The explicit length makes adding a `ChromeFeature` variant a compile
+    /// error here, so a new preset cannot slip past the coverage test below.
+    const ALL_FEATURE_PRESETS: [ChromeFeature; 1] = [ChromeFeature::WebglSoftware];
+
+    #[test]
+    fn given_every_feature_preset_when_building_tool_descriptions_then_literal_is_documented() {
+        let open_instance_description = OpenInstanceTool::tool()
+            .description
+            .expect("open_instance must publish a tool description");
+        let restart_chrome_description = RestartChromeTool::tool()
+            .description
+            .expect("restart_chrome must publish a tool description");
+
+        for feature in ALL_FEATURE_PRESETS {
+            // Matched exhaustively on purpose: a new variant fails to compile
+            // until it is also listed in ALL_FEATURE_PRESETS.
+            let literal = match feature {
+                ChromeFeature::WebglSoftware => feature.as_name(),
+            };
+            assert!(
+                open_instance_description.contains(literal),
+                "open_instance description must name the '{literal}' preset; got: {open_instance_description}"
+            );
+            assert!(
+                restart_chrome_description.contains(literal),
+                "restart_chrome description must name the '{literal}' preset; got: {restart_chrome_description}"
+            );
+        }
+    }
+
+    #[test]
+    fn given_features_when_describing_then_names_are_joined() {
+        assert_eq!(describe_features(&[]), "none");
+        assert_eq!(
+            describe_features(&[ChromeFeature::WebglSoftware]),
+            "WEBGL_SOFTWARE"
+        );
+    }
+}

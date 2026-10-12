@@ -102,14 +102,19 @@ implements the semantic operations with its own protocol.
 
 ```
 src/
-├── main.rs           thin binary: calls browser_control_mcp::run()
-└── lib.rs            crate docs, run()
+├── main.rs           thin binary: parse Args, call browser_control_mcp::run()
+├── lib.rs            crate docs, run(): server info, handler, stdio server
+├── cli.rs            Args (clap)
+└── handler/          imported from chrome-debug-mcp 1.5.6 (CDP only, being reshaped)
+    ├── mod.rs            McpHandler, per-session state, tool dispatch
+    ├── schema_compat.rs  schema normalisation for strict tool-calling engines
+    ├── cdp_domains/      one dir per CDP domain + event pump
+    └── chrome_instance/  instance/tab registries, Chrome launch, cookie seeding
 ```
 
-Planned (specs 00 §5): `cli.rs`, `server_info.rs`, `handler/`, `instances/`,
-`backend/{cdp,bidi}/`, `tools/`, `util/`; `tests/` with fixtures, the stdio
-E2E driver and the browser scripts. This section is updated whenever the tree
-changes.
+Planned (specs 00 §5): `server_info.rs`, `instances/`, `backend/{cdp,bidi}/`,
+`tools/`, `util/`; `tests/` with fixtures, the stdio E2E driver and the
+browser scripts. This section is updated whenever the tree changes.
 
 ## Gates
 

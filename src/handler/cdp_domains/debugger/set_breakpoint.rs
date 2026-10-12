@@ -1,0 +1,168 @@
+use crate::handler::McpHandler;
+use rust_mcp_sdk::{
+    macros,
+    schema::{CallToolError, CallToolRequestParams, CallToolResult},
+};
+use serde_json::json;
+
+#[macros::mcp_tool(
+    name = "set_breakpoint",
+    description = "Sets a debugger breakpoint at a specific location, pausing execution when reached. Side effects: modifies debugger state (breakpoint added until removed). Prerequisites: requires an active Chrome tab; target script must be loaded. Returns: breakpoint identifier and location confirmation. Use this to debug specific code paths. Alternatives: 'pause_on_load' for early script execution, 'search_scripts' to find scripts by pattern."
+)]
+#[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
+pub struct SetBreakpointTool {
+    /// Chrome instance id from open_instance/list_instances. Omit for the default instance.
+    pub instance_id: Option<String>,
+    /// The Tab ID of the target tab. Omit to use the active tab.
+    pub tab_id: Option<String>,
+    /// Script hash to identify the target script. Constraints: one of 'script_hash', 'script_id', or 'url' must be provided. Defaults to: None.
+    pub script_hash: Option<String>,
+    /// Script ID (from Debugger.scriptParsed event). Constraints: one of 'script_hash', 'script_id', or 'url' must be provided. Interactions: mutually exclusive with 'script_hash' and 'url' (first match wins). Defaults to: None.
+    pub script_id: Option<String>,
+    /// Script URL to match. Constraints: one of 'script_hash', 'script_id', or 'url' must be provided. Interactions: mutually exclusive with 'script_hash' and 'script_id'. Defaults to: None.
+    pub url: Option<String>,
+    /// Line number where breakpoint is set (0-indexed). Constraints: non-negative integer, must be within script bounds. Interactions: required parameter; combined with 'column_number' to pinpoint exact location.
+    pub line_number: u32,
+    /// Column number within the line. Constraints: non-negative integer. Interactions: optional; narrower precision if provided. Defaults to: start of line (0).
+    pub column_number: Option<u32>,
+}
+
+impl SetBreakpointTool {
+    pub async fn handle(
+        params: CallToolRequestParams,
+        handler: &McpHandler,
+    ) -> Result<CallToolResult, CallToolError> {
+        let args_value = serde_json::Value::Object(params.arguments.unwrap_or_default());
+        let args: SetBreakpointTool = serde_json::from_value(args_value)
+            .map_err(|e| CallToolError::from_message(e.to_string()))?;
+        let session = handler.session(args.instance_id.clone()).await?;
+
+        if args.script_id.is_none() && args.url.is_none() && args.script_hash.is_none() {
+            return Err(CallToolError::from_message(
+                "Either script_id, url or script_hash must be provided",
+            ));
+        }
+
+        let target = session.target(args.tab_id.clone()).await?;
+
+        let response = if let Some(script_id) = args.script_id {
+            let mut location = json!({
+                "scriptId": script_id,
+                "lineNumber": args.line_number,
+            });
+            if let Some(col) = args.column_number {
+                location
+                    .as_object_mut()
+                    .unwrap()
+                    .insert("columnNumber".to_string(), json!(col));
+            }
+            target
+                .send_raw_command("Debugger.setBreakpoint", json!({ "location": location }))
+                .await
+        } else if let Some(url) = args.url {
+            let mut params = json!({
+                "url": url,
+                "lineNumber": args.line_number,
+            });
+            if let Some(col) = args.column_number {
+                params
+                    .as_object_mut()
+                    .unwrap()
+                    .insert("columnNumber".to_string(), json!(col));
+            }
+            target
+                .send_raw_command("Debugger.setBreakpointByUrl", params)
+                .await
+        } else if let Some(script_hash) = args.script_hash {
+            let mut params = json!({
+                "scriptHash": script_hash,
+                "lineNumber": args.line_number,
+            });
+            if let Some(col) = args.column_number {
+                params
+                    .as_object_mut()
+                    .unwrap()
+                    .insert("columnNumber".to_string(), json!(col));
+            }
+            target
+                .send_raw_command("Debugger.setBreakpointByUrl", params)
+                .await
+        } else {
+            return Err(CallToolError::from_message(
+                "Either script_id, url or script_hash must be provided.".to_string(),
+            ));
+        };
+
+        let response = response.map_err(|e| {
+            CallToolError::from_message(format!("Failed to set breakpoint: {:?}", e))
+        })?;
+
+        Ok(CallToolResult::text_content(vec![
+            format!("Breakpoint set successfully. Response: {:?}", response).into(),
+        ]))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::handler::cdp_domains::tests::spawn_mock_chrome_server;
+    use crate::handler::chrome_instance::MockChromeManager;
+    use rust_mcp_sdk::schema::CallToolRequestParams;
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+
+    #[tokio::test]
+    async fn test_set_breakpoint_validation() {
+        let handler = McpHandler::new_test();
+
+        // Missing all identifiers
+        let params: CallToolRequestParams = serde_json::from_value(json!({
+            "name": "set_breakpoint",
+            "arguments": {
+                "line_number": 10
+            }
+        }))
+        .unwrap();
+        let result = SetBreakpointTool::handle(params, &handler).await;
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Either script_id, url or script_hash must be provided")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_set_breakpoint_handle() {
+        let port = spawn_mock_chrome_server().await;
+
+        let mut handler = McpHandler::new_test();
+        Arc::get_mut(&mut handler.default_session)
+            .unwrap()
+            .chrome_manager = Arc::new(Mutex::new(MockChromeManager::new(port)));
+
+        let params: CallToolRequestParams = serde_json::from_value(json!({
+            "name": "set_breakpoint",
+            "arguments": {
+                "script_id": "1",
+                "line_number": 10,
+                "column_number": 5
+            }
+        }))
+        .unwrap();
+
+        let result = SetBreakpointTool::handle(params, &handler).await;
+        assert!(result.is_ok(), "Handle should succeed: {:?}", result.err());
+
+        let call_result = result.unwrap();
+        assert!(!call_result.content.is_empty());
+        let content_str = format!("{:?}", call_result.content);
+        assert!(
+            content_str.contains("Breakpoint set successfully"),
+            "Content didn't match: {}",
+            content_str
+        );
+    }
+}

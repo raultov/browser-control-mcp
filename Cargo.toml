@@ -33,10 +33,35 @@ allow_attributes = "warn"
 allow_attributes_without_reason = "warn"
 
 # A panic in a server kills the agent's session: a bug the caller cannot handle.
-unwrap_used = "warn"
-expect_used = "warn"
+# F1 TEMPORARY RELAXATION (specs 01 §5, D22): the imported code has 38
+# unwrap/expect sites. Restored to "warn" in F2.8; never past the F2 gate.
+unwrap_used = "allow"
+expect_used = "allow"
 panic = "warn"
 
 # cdp-browser-lite needed `#[expect]` for these; this crate must pass clean.
 struct_excessive_bools = "warn"
 fn_params_excessive_bools = "warn"
+
+[dependencies]
+anyhow = "1.0.104"
+async-trait = "0.1.92"
+cdp-browser-lite = "0.4"
+chrono = "0.4.45"
+clap = { version = "4.6.6", features = ["derive"] }
+rust-mcp-sdk = "1.0.1"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+tempfile = "3"
+tokio = { version = "1.53.1", features = ["full"] }
+tokio-stream = "0.1.19"
+url = "2.5"
+
+[dev-dependencies]
+# In-process DevTools mocks for the unit tests only (specs D31).
+cdp-browser-lite = { version = "0.4", features = ["test-support"] }
+futures-util = "0.3.32"
+http-body-util = "0.1.3"
+hyper = "1.0.0"
+hyper-util = "0.1.20"
+tokio-tungstenite = "0.30.0"
