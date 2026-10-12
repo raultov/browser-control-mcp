@@ -120,67 +120,64 @@ impl WebmcpState {
 }
 
 pub(crate) async fn process_webmcp_event(event: &WsResponse, state: &Arc<Mutex<WebmcpState>>) {
-    let method = match event.method.as_deref() {
-        Some(m) => m,
-        None => return,
+    let (Some(method), Some(params)) = (event.method.as_deref(), &event.params) else {
+        return;
     };
-
-    let params = match &event.params {
-        Some(p) => p,
-        None => return,
-    };
-
-    match method {
-        "WebMCP.toolsAdded" => {
-            if let Some(tools_arr) = params.get("tools").and_then(|v| v.as_array()) {
-                let mut st = state.lock().await;
-                for t_val in tools_arr {
-                    if let Ok(tool) = serde_json::from_value::<WebmcpTool>(t_val.clone()) {
-                        st.tools
-                            .entry(tool.frame_id.clone())
-                            .or_default()
-                            .insert(tool.name.clone(), tool);
-                    }
-                }
-            }
-        }
-        "WebMCP.toolsRemoved" => {
-            if let Some(tools_arr) = params.get("tools").and_then(|v| v.as_array()) {
-                let mut st = state.lock().await;
-                for t_val in tools_arr {
-                    if let Some(name) = t_val.get("name").and_then(|v| v.as_str())
-                        && let Some(frame_id) = t_val.get("frameId").and_then(|v| v.as_str())
-                        && let Some(frame_tools) = st.tools.get_mut(frame_id)
-                    {
-                        frame_tools.remove(name);
-                    }
-                }
-            }
-        }
-        "WebMCP.toolInvoked" => {
+    let tools = params.get("tools").and_then(|v| v.as_array());
+    let mut st = state.lock().await;
+    match (method, tools) {
+        ("WebMCP.toolsAdded", Some(tools)) => st.add_tools(tools),
+        ("WebMCP.toolsRemoved", Some(tools)) => st.remove_tools(tools),
+        ("WebMCP.toolInvoked", _) => {
             if let Ok(invocation) = serde_json::from_value::<WebmcpInvocation>(params.clone()) {
-                let mut st = state.lock().await;
                 st.invocations
                     .insert(invocation.invocation_id.clone(), invocation);
             }
         }
-        "WebMCP.toolResponded" => {
-            if let Some(invocation_id) = params.get("invocationId").and_then(|v| v.as_str()) {
-                let mut st = state.lock().await;
-                if let Some(inv) = st.invocations.get_mut(invocation_id) {
-                    inv.status = params
-                        .get("status")
-                        .and_then(|v| v.as_str())
-                        .map(String::from);
-                    inv.output = params.get("output").cloned();
-                    inv.error_text = params
-                        .get("errorText")
-                        .and_then(|v| v.as_str())
-                        .map(String::from);
-                }
+        ("WebMCP.toolResponded", _) => st.record_response(params),
+        _ => {}
+    }
+}
+
+impl WebmcpState {
+    fn add_tools(&mut self, tools: &[serde_json::Value]) {
+        for value in tools {
+            if let Ok(tool) = serde_json::from_value::<WebmcpTool>(value.clone()) {
+                self.tools
+                    .entry(tool.frame_id.clone())
+                    .or_default()
+                    .insert(tool.name.clone(), tool);
             }
         }
-        _ => {}
+    }
+
+    fn remove_tools(&mut self, tools: &[serde_json::Value]) {
+        for value in tools {
+            let name = value.get("name").and_then(|v| v.as_str());
+            let frame_id = value.get("frameId").and_then(|v| v.as_str());
+            if let (Some(name), Some(frame_id)) = (name, frame_id)
+                && let Some(frame_tools) = self.tools.get_mut(frame_id)
+            {
+                frame_tools.remove(name);
+            }
+        }
+    }
+
+    fn record_response(&mut self, params: &serde_json::Value) {
+        let Some(invocation_id) = params.get("invocationId").and_then(|v| v.as_str()) else {
+            return;
+        };
+        if let Some(inv) = self.invocations.get_mut(invocation_id) {
+            inv.status = params
+                .get("status")
+                .and_then(|v| v.as_str())
+                .map(String::from);
+            inv.output = params.get("output").cloned();
+            inv.error_text = params
+                .get("errorText")
+                .and_then(|v| v.as_str())
+                .map(String::from);
+        }
     }
 }
 

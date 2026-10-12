@@ -1,6 +1,3 @@
-use crate::handler::CustomState;
-use crate::handler::DebuggerState;
-use crate::handler::NetworkState;
 use crate::handler::cdp_domains;
 use crate::handler::chrome_instance::ChromeManager;
 use crate::handler::chrome_instance::cdp_browser_manager::{CdpBrowserManager, RealLauncher};
@@ -39,47 +36,20 @@ impl OpenInstanceTool {
         params: CallToolRequestParams,
         handler: &McpHandler,
     ) -> Result<CallToolResult, CallToolError> {
-        let args_value = serde_json::Value::Object(params.arguments.unwrap_or_default());
-        let args: OpenInstanceTool = serde_json::from_value(args_value)
-            .map_err(|e| CallToolError::from_message(e.to_string()))?;
-
-        // Guard: if handler base_params has user_profile = true, we reject second instance
-        // because of Chrome's singleton profile lock.
+        let args: OpenInstanceTool = crate::handler::parse_args(params)?;
+        // Chrome's singleton profile lock: --user-profile allows one instance.
+        if handler.base_params.browser.user_profile
+            && !handler.registry.list_descriptors().is_empty()
         {
-            let desc = handler.registry.list_descriptors();
-            if !desc.is_empty() && handler.base_params.browser.user_profile {
-                // Actually if user_profile mode is enabled, it uses UserDefault which has the lock.
-                return Err(CallToolError::from_message(
-                    "Cannot open multiple instances in --user-profile mode due to Chrome's profile lock".to_string()
-                ));
-            }
+            return Err(CallToolError::from_message(
+                "Cannot open multiple instances in --user-profile mode due to Chrome's profile lock",
+            ));
         }
-
-        let instance_id = if let Some(lbl) = &args.label {
-            lbl.clone()
-        } else {
-            handler.registry.generate_id()
+        let instance_id = match &args.label {
+            Some(label) => label.clone(),
+            None => handler.registry.generate_id(),
         };
-
-        // Construct dynamic parameters for this secondary instance
-        // Port 0: ephemeral, coordinated by the pool. No automation infobar,
-        // and never the user profile (it must allow multiple profile dirs).
-        let browser = crate::cli::BrowserFlags {
-            headless: args.headless.unwrap_or(false),
-            enable_automation: false,
-            user_profile: false,
-        };
-        let mut child_params = LaunchParams::new("127.0.0.1".into(), 0, browser);
-        child_params.secondary = true;
-        child_params.set_enable_webmcp(handler.flags.enable_webmcp);
-        if let Some(features) = args.features {
-            child_params.set_features(features);
-        }
-        let proxy = args.proxy.or_else(|| handler.proxy.proxy_server.clone());
-        if let Some(p) = proxy {
-            child_params.set_proxy(Some(p));
-        }
-
+        let child_params = args.launch_params(handler);
         let seed_report = super::cookie_seed::prepare_seed_report(
             args.copy_cookies == Some(true),
             args.source_profile.as_deref(),
@@ -87,94 +57,95 @@ impl OpenInstanceTool {
             handler.base_params.browser.user_profile,
         )
         .map_err(CallToolError::from_message)?;
-
-        let chrome_manager: Arc<Mutex<dyn ChromeManager>> = if handler.is_test {
-            let mock_port = 9000 + handler.registry.list_descriptors().len() as u16;
-            let mut mock_mgr = crate::handler::chrome_instance::MockChromeManager::new(mock_port);
-            mock_mgr.set_features(child_params.features().to_vec());
-            mock_mgr.set_seed_profile(seed_report);
-            Arc::new(Mutex::new(mock_mgr))
-        } else {
-            let mut manager = CdpBrowserManager::new(
-                child_params.clone(),
-                Box::new(RealLauncher {
-                    pool: handler.pool.clone(),
-                }),
-            );
-            manager.set_seed_profile(seed_report);
-            Arc::new(Mutex::new(manager))
-        };
-
-        let session = Arc::new(BrowserSession {
-            client: Arc::new(Mutex::new(None)),
-            debugger_state: Arc::new(Mutex::new(DebuggerState::default())),
-            network_state: Arc::new(Mutex::new(NetworkState::default())),
-            log_state: Arc::new(Mutex::new(cdp_domains::log::LogState::default())),
-            tracing_state: Arc::new(Mutex::new(cdp_domains::tracing::TracingState::default())),
-            custom_state: Arc::new(Mutex::new(CustomState::default())),
-            webmcp_state: Arc::new(Mutex::new(cdp_domains::webmcp::WebmcpState::default())),
-            chrome_manager,
-            tabs: Arc::new(std::sync::RwLock::new(
-                crate::handler::chrome_instance::tab_registry::TabRegistry::new(16),
-            )),
-            session_listeners: Arc::new(Mutex::new(
-                cdp_domains::event_pump::ListenerHandles::default(),
-            )),
-            browser_version: Arc::new(Mutex::new(None)),
-            proxy_auth_tasks: Default::default(),
-            enable_webmcp: handler.flags.enable_webmcp,
-        });
-
-        // Trigger ensure_instance to resolve the port
-        {
-            let mut mgr = session.chrome_manager.lock().await;
-            mgr.ensure_instance().await.map_err(|e| {
-                CallToolError::from_message(format!("Failed to spawn Chrome instance: {}", e))
-            })?;
-        }
-
-        let resolved_port = {
-            let mgr = session.chrome_manager.lock().await;
-            mgr.get_port()
-        };
-
-        // Resolve the real profile directory from the live browser: with
-        // ephemeral profiles the path is randomly generated at launch time and
-        // cannot be derived from the port.
-        let profile_dir = {
-            let mgr = session.chrome_manager.lock().await;
-            mgr.profile_dir().await
-        };
-
-        let desc = InstanceDescriptor {
-            id: instance_id.clone(),
-            label: args.label.clone(),
-            host: "127.0.0.1".to_string(),
-            port: resolved_port,
-            profile_dir,
-            features: child_params
-                .features()
-                .iter()
-                .map(|f| f.as_name().to_string())
-                .collect(),
-            is_default: false,
-            browser_version: None,
-        };
-
+        let session = Arc::new(BrowserSession::new(
+            new_manager(handler, &child_params, seed_report),
+            cdp_domains::webmcp::WebmcpAvailability::NotRequested,
+            handler.flags.enable_webmcp,
+        ));
+        let desc = launch(&session, instance_id, &args, &child_params).await?;
         handler
             .registry
             .add_session(desc.clone(), session)
             .map_err(CallToolError::from_message)?;
-
-        Ok(CallToolResult::text_content(vec![
-            serde_json::json!({
-                "instance_id": desc.id,
-                "host": desc.host,
-                "port": desc.port,
-                "profile_dir": desc.profile_dir,
-            })
-            .to_string()
-            .into(),
-        ]))
+        let reply = serde_json::json!({
+            "instance_id": desc.id,
+            "host": desc.host,
+            "port": desc.port,
+            "profile_dir": desc.profile_dir,
+        });
+        Ok(CallToolResult::text_content(vec![reply.to_string().into()]))
     }
+
+    /// Launch parameters of a secondary instance: port 0 (ephemeral,
+    /// coordinated by the pool), no automation infobar, never the user
+    /// profile (it must allow multiple profile dirs).
+    fn launch_params(&self, handler: &McpHandler) -> LaunchParams {
+        let browser = crate::cli::BrowserFlags {
+            headless: self.headless.unwrap_or(false),
+            enable_automation: false,
+            user_profile: false,
+        };
+        let mut params = LaunchParams::new("127.0.0.1".into(), 0, browser);
+        params.secondary = true;
+        params.set_enable_webmcp(handler.flags.enable_webmcp);
+        if let Some(features) = self.features.clone() {
+            params.set_features(features);
+        }
+        let proxy = self
+            .proxy
+            .clone()
+            .or_else(|| handler.proxy.proxy_server.clone());
+        if proxy.is_some() {
+            params.set_proxy(proxy);
+        }
+        params
+    }
+}
+
+fn new_manager(
+    handler: &McpHandler,
+    params: &LaunchParams,
+    seed_report: Option<super::cookie_seed::SeedReport>,
+) -> Arc<Mutex<dyn ChromeManager>> {
+    if handler.is_test {
+        let mock_port = 9000 + handler.registry.list_descriptors().len() as u16;
+        let mut mock_mgr = crate::handler::chrome_instance::MockChromeManager::new(mock_port);
+        mock_mgr.set_features(params.features().to_vec());
+        mock_mgr.set_seed_profile(seed_report);
+        return Arc::new(Mutex::new(mock_mgr));
+    }
+    let launcher = Box::new(RealLauncher {
+        pool: handler.pool.clone(),
+    });
+    let mut manager = CdpBrowserManager::new(params.clone(), launcher);
+    manager.set_seed_profile(seed_report);
+    Arc::new(Mutex::new(manager))
+}
+
+/// Launches the instance and describes it with its real port and profile
+/// directory (ephemeral profiles get a random path at launch time).
+async fn launch(
+    session: &BrowserSession,
+    instance_id: String,
+    args: &OpenInstanceTool,
+    params: &LaunchParams,
+) -> Result<InstanceDescriptor, CallToolError> {
+    let mut mgr = session.chrome_manager.lock().await;
+    mgr.ensure_instance().await.map_err(|e| {
+        CallToolError::from_message(format!("Failed to spawn Chrome instance: {}", e))
+    })?;
+    Ok(InstanceDescriptor {
+        id: instance_id,
+        label: args.label.clone(),
+        host: "127.0.0.1".to_string(),
+        port: mgr.get_port(),
+        profile_dir: mgr.profile_dir().await,
+        features: params
+            .features()
+            .iter()
+            .map(|f| f.as_name().to_string())
+            .collect(),
+        is_default: false,
+        browser_version: None,
+    })
 }

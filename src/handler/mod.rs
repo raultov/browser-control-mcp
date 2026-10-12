@@ -307,6 +307,35 @@ pub(crate) struct BrowserSession {
 }
 
 impl BrowserSession {
+    /// A session with empty per-domain states, launched lazily by `chrome_manager`.
+    pub(crate) fn new(
+        chrome_manager: Arc<Mutex<dyn chrome_instance::ChromeManager>>,
+        webmcp: cdp_domains::webmcp::WebmcpAvailability,
+        enable_webmcp: bool,
+    ) -> Self {
+        let webmcp_state = cdp_domains::webmcp::WebmcpState {
+            availability: webmcp,
+            ..Default::default()
+        };
+        Self {
+            client: Arc::new(Mutex::new(None)),
+            debugger_state: Default::default(),
+            network_state: Default::default(),
+            log_state: Default::default(),
+            tracing_state: Default::default(),
+            custom_state: Default::default(),
+            webmcp_state: Arc::new(Mutex::new(webmcp_state)),
+            chrome_manager,
+            tabs: Arc::new(std::sync::RwLock::new(
+                chrome_instance::tab_registry::TabRegistry::new(16),
+            )),
+            session_listeners: Default::default(),
+            browser_version: Default::default(),
+            proxy_auth_tasks: Default::default(),
+            enable_webmcp,
+        }
+    }
+
     /// Resets the cached CDP client and clears the tab registry so that the
     /// next tool call reconnects to a freshly launched Chrome instance.
     pub(crate) async fn reset_connection_state(&self) {
@@ -593,16 +622,10 @@ impl McpHandler {
                     .map(|f| f.as_name().to_string())
                     .collect::<Vec<_>>()
             };
-            let desc = chrome_instance::registry::InstanceDescriptor {
-                id: "default".to_string(),
-                label: None,
-                host: "127.0.0.1".to_string(),
-                port: self.base_params.configured_port(),
-                profile_dir: None,
-                features: default_features,
-                is_default: true,
-                browser_version: None,
-            };
+            let desc = chrome_instance::registry::InstanceDescriptor::default_instance(
+                self.base_params.configured_port(),
+                default_features,
+            );
             self.registry
                 .add_session(desc, self.default_session.clone())
                 .map_err(|e| {
@@ -642,50 +665,20 @@ impl McpHandler {
             params.clone(),
             Box::new(chrome_instance::cdp_browser_manager::RealLauncher { pool: pool.clone() }),
         );
-        let webmcp_st = cdp_domains::webmcp::WebmcpState {
-            availability: cdp_domains::webmcp::WebmcpAvailability::initial(
-                options.server.enable_webmcp,
-            ),
-            ..Default::default()
-        };
-        let session = Arc::new(BrowserSession {
-            client: Arc::new(Mutex::new(None)),
-            debugger_state: Arc::new(Mutex::new(DebuggerState::default())),
-            network_state: Arc::new(Mutex::new(NetworkState::default())),
-            log_state: Arc::new(Mutex::new(cdp_domains::log::LogState::default())),
-            tracing_state: Arc::new(Mutex::new(cdp_domains::tracing::TracingState::default())),
-            custom_state: Arc::new(Mutex::new(CustomState::default())),
-            webmcp_state: Arc::new(Mutex::new(webmcp_st)),
-            chrome_manager: Arc::new(Mutex::new(manager)),
-            tabs: Arc::new(std::sync::RwLock::new(
-                chrome_instance::tab_registry::TabRegistry::new(16),
-            )),
-            session_listeners: Arc::new(Mutex::new(
-                cdp_domains::event_pump::ListenerHandles::default(),
-            )),
-            browser_version: Arc::new(Mutex::new(None)),
-            proxy_auth_tasks: Default::default(),
-            enable_webmcp: options.server.enable_webmcp,
-        });
+        let enable_webmcp = options.server.enable_webmcp;
+        let session = Arc::new(BrowserSession::new(
+            Arc::new(Mutex::new(manager)),
+            cdp_domains::webmcp::WebmcpAvailability::initial(enable_webmcp),
+            enable_webmcp,
+        ));
 
-        let default_features = {
-            params
-                .features()
-                .iter()
-                .map(|f| f.as_name().to_string())
-                .collect::<Vec<_>>()
-        };
-        let desc = chrome_instance::registry::InstanceDescriptor {
-            id: "default".to_string(),
-            label: None,
-            host: "127.0.0.1".to_string(), // approximation
-            port,
-            profile_dir: None, // lazy
-            features: default_features,
-            is_default: true,
-            browser_version: None,
-        };
-        registry.register_descriptor(desc);
+        let features = params.features().iter().map(|f| f.as_name().to_string());
+        registry.register_descriptor(
+            chrome_instance::registry::InstanceDescriptor::default_instance(
+                port,
+                features.collect(),
+            ),
+        );
 
         Self {
             default_session: session,
@@ -713,40 +706,15 @@ impl McpHandler {
         let pool = Arc::new(cdp_browser_lite::BrowserPool::new());
         let registry = Arc::new(chrome_instance::registry::Registry::new(8));
 
-        let session = Arc::new(BrowserSession {
-            client: Arc::new(Mutex::new(None)),
-            debugger_state: Arc::new(Mutex::new(DebuggerState::default())),
-            network_state: Arc::new(Mutex::new(NetworkState::default())),
-            log_state: Arc::new(Mutex::new(cdp_domains::log::LogState::default())),
-            tracing_state: Arc::new(Mutex::new(cdp_domains::tracing::TracingState::default())),
-            custom_state: Arc::new(Mutex::new(CustomState::default())),
-            webmcp_state: Arc::new(Mutex::new(cdp_domains::webmcp::WebmcpState {
-                availability: cdp_domains::webmcp::WebmcpAvailability::initial(false),
-                ..Default::default()
-            })),
-            chrome_manager: Arc::new(Mutex::new(chrome_instance::MockChromeManager::new(port))),
-            tabs: Arc::new(std::sync::RwLock::new(
-                chrome_instance::tab_registry::TabRegistry::new(16),
-            )),
-            session_listeners: Arc::new(Mutex::new(
-                cdp_domains::event_pump::ListenerHandles::default(),
-            )),
-            browser_version: Arc::new(Mutex::new(None)),
-            proxy_auth_tasks: Default::default(),
-            enable_webmcp: false,
-        });
+        let session = Arc::new(BrowserSession::new(
+            Arc::new(Mutex::new(chrome_instance::MockChromeManager::new(port))),
+            cdp_domains::webmcp::WebmcpAvailability::initial(false),
+            false,
+        ));
 
-        let desc = chrome_instance::registry::InstanceDescriptor {
-            id: "default".to_string(),
-            label: None,
-            host: "127.0.0.1".to_string(),
-            port,
-            profile_dir: None,
-            features: vec![],
-            is_default: true,
-            browser_version: None,
-        };
-        registry.register_descriptor(desc);
+        registry.register_descriptor(
+            chrome_instance::registry::InstanceDescriptor::default_instance(port, vec![]),
+        );
 
         Self {
             default_session: session,

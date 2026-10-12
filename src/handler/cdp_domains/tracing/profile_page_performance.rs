@@ -74,24 +74,8 @@ impl ProfilePagePerformanceTool {
         let tracing_state = session.tracing_state(args.tab_id.clone())?;
         tracing_state.lock().await.completion_channel = Some(tx);
 
-        let start = json!({"transferMode": "ReturnAsStream", "categories": CATEGORIES});
-        crate::handler::send_or(&target, "Tracing.start", start, "Failed to start tracing").await?;
-        if args.action.as_deref() == Some("reload") {
-            let _ = target
-                .send_raw_command("Page.reload", json!({ "ignoreCache": disable_cache }))
-                .await;
-        }
-        tokio::time::sleep(Duration::from_millis(duration)).await;
-        let _ = target.send_raw_command("Tracing.end", json!({})).await;
-
-        let stream_handle = match tokio::time::timeout(Duration::from_secs(10), rx.recv()).await {
-            Ok(Some(handle)) => handle,
-            _ => {
-                return Err(CallToolError::from_message(
-                    "Timeout waiting for Tracing.tracingComplete",
-                ));
-            }
-        };
+        let reload = args.action.as_deref() == Some("reload");
+        let stream_handle = record(&target, &mut rx, (duration, reload, disable_cache)).await?;
         let raw_json_data = read_stream(&target, &stream_handle).await;
         if disable_cache {
             set_cache_disabled(&target, false).await;
@@ -143,6 +127,30 @@ impl ProfilePagePerformanceTool {
         long_tasks.truncate(10);
         summary.top_long_tasks = long_tasks;
         summary
+    }
+}
+
+/// Starts tracing, optionally reloads, waits `duration` ms, stops, and
+/// returns the trace stream handle announced by `Tracing.tracingComplete`.
+async fn record(
+    target: &Target,
+    completion: &mut mpsc::Receiver<String>,
+    (duration, reload, ignore_cache): (u64, bool, bool),
+) -> Result<String, CallToolError> {
+    let start = json!({"transferMode": "ReturnAsStream", "categories": CATEGORIES});
+    crate::handler::send_or(target, "Tracing.start", start, "Failed to start tracing").await?;
+    if reload {
+        let _ = target
+            .send_raw_command("Page.reload", json!({ "ignoreCache": ignore_cache }))
+            .await;
+    }
+    tokio::time::sleep(Duration::from_millis(duration)).await;
+    let _ = target.send_raw_command("Tracing.end", json!({})).await;
+    match tokio::time::timeout(Duration::from_secs(10), completion.recv()).await {
+        Ok(Some(handle)) => Ok(handle),
+        _ => Err(CallToolError::from_message(
+            "Timeout waiting for Tracing.tracingComplete",
+        )),
     }
 }
 

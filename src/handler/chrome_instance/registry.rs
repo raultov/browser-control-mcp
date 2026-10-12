@@ -20,6 +20,22 @@ pub struct InstanceDescriptor {
     pub browser_version: Option<BrowserVersion>,
 }
 
+impl InstanceDescriptor {
+    /// The descriptor of the lazily launched `default` instance.
+    pub fn default_instance(port: u16, features: Vec<String>) -> Self {
+        Self {
+            id: "default".to_string(),
+            label: None,
+            host: "127.0.0.1".to_string(), // approximation
+            port,
+            profile_dir: None, // lazy
+            features,
+            is_default: true,
+            browser_version: None,
+        }
+    }
+}
+
 /// Sessions and their descriptors behind **one** lock: two locks taken in
 /// different orders by different operations could deadlock.
 #[derive(Default)]

@@ -349,6 +349,7 @@ pub(crate) fn seed_cookies(
     env: &dyn EnvProvider,
     fs_probe: &dyn FsProbe,
 ) -> Result<SeedReport, String> {
+    let _ = env; // for future extensions if needed
     let cookies_db =
         locate_cookies_db(&source.root, &source.profile, fs_probe).ok_or_else(|| {
             format!(
@@ -357,89 +358,74 @@ pub(crate) fn seed_cookies(
                 source.root.display()
             )
         })?;
-
     let seed_dir = create_seed_dir()?;
     let dst_default = seed_dir.join("Default");
-
     fs::create_dir_all(&dst_default)
         .map_err(|e| format!("Failed to create seed subdirectory: {e}"))?;
 
-    let mut copied_files = Vec::new();
-
-    // Chrome reads the cookie DB from `<profile>/Cookies` (older layouts) or
-    // `<profile>/Network/Cookies` (current layouts). The spawned browser may
-    // use either layout regardless of where the source profile keeps it, so
-    // the DB is copied to both candidate paths; Chrome reads the one matching
-    // its layout and ignores the other.
     let relative = cookies_db
         .strip_prefix(source.root.join(&source.profile))
         .map(|p| p.to_path_buf())
         .ok();
-
-    let mut dst_candidates: Vec<PathBuf> = Vec::new();
-    if let Some(rel) = &relative {
-        dst_candidates.push(dst_default.join(rel));
+    for dst in cookie_destinations(&dst_default, relative.as_deref()) {
+        copy_cookie_db(&cookies_db, &dst)?;
+        copy_sidecars(&cookies_db, &dst, fs_probe);
     }
-    dst_candidates.push(dst_default.join("Cookies"));
-    dst_candidates.push(dst_default.join("Network").join("Cookies"));
-    dst_candidates.dedup();
+    merge_local_state(&source.root, &seed_dir, fs_probe);
+    Ok(SeedReport { dir: seed_dir })
+}
 
-    for dst in &dst_candidates {
-        if let Some(parent) = dst.parent() {
-            fs::create_dir_all(parent).map_err(|e| {
-                format!(
-                    "Failed to create seed subdirectory {}: {e}",
-                    parent.display()
-                )
-            })?;
+/// Chrome reads the cookie DB from `<profile>/Cookies` (older layouts) or
+/// `<profile>/Network/Cookies` (current layouts). The spawned browser may
+/// use either layout regardless of where the source profile keeps it, so
+/// the DB is copied to both candidate paths (plus the source's own relative
+/// path); Chrome reads the one matching its layout and ignores the other.
+fn cookie_destinations(dst_default: &Path, relative: Option<&Path>) -> Vec<PathBuf> {
+    let mut candidates: Vec<PathBuf> = relative
+        .map(|rel| dst_default.join(rel))
+        .into_iter()
+        .collect();
+    candidates.push(dst_default.join("Cookies"));
+    candidates.push(dst_default.join("Network").join("Cookies"));
+    candidates.dedup();
+    candidates
+}
+
+fn copy_cookie_db(cookies_db: &Path, dst: &Path) -> Result<(), String> {
+    if let Some(parent) = dst.parent() {
+        fs::create_dir_all(parent).map_err(|e| {
+            format!(
+                "Failed to create seed subdirectory {}: {e}",
+                parent.display()
+            )
+        })?;
+    }
+    fs::copy(cookies_db, dst)
+        .map(|_| ())
+        .map_err(|e| format!("Failed to copy Cookies DB to '{}': {e}", dst.display()))
+}
+
+/// Copies the sidecar files (journal/WAL) next to a copied DB so that
+/// unflushed transactions are not lost. Best effort.
+fn copy_sidecars(cookies_db: &Path, dst: &Path, fs_probe: &dyn FsProbe) {
+    for suffix in ["-journal", "-wal", "-shm"] {
+        let sidecar = cookies_db.with_file_name(format!("Cookies{suffix}"));
+        if fs_probe.is_file(&sidecar) {
+            let _ = fs::copy(&sidecar, dst.with_file_name(format!("Cookies{suffix}")));
         }
-        fs::copy(&cookies_db, dst)
-            .map_err(|e| format!("Failed to copy Cookies DB to '{}': {e}", dst.display()))?;
-        copied_files.push(format!(
-            "Default/{}",
-            dst.strip_prefix(&dst_default)
-                .map(|p| p.display().to_string())
-                .unwrap_or_default()
-        ));
     }
+}
 
-    // Copy the sidecar files (journal/WAL) for every copied DB path so that
-    // unflushed transactions are not lost regardless of the reader's layout.
-    for dst in &dst_candidates {
-        for suffix in ["-journal", "-wal", "-shm"] {
-            let sidecar = cookies_db.with_file_name(format!("Cookies{suffix}"));
-            if fs_probe.is_file(&sidecar) {
-                let dst_sidecar = dst.with_file_name(format!("Cookies{suffix}"));
-                if fs::copy(&sidecar, &dst_sidecar).is_ok() {
-                    copied_files.push(format!(
-                        "Default/{}",
-                        dst_sidecar
-                            .strip_prefix(&dst_default)
-                            .map(|p| p.display().to_string())
-                            .unwrap_or_default()
-                    ));
-                }
-            }
-        }
-    }
-
-    // Merge os_crypt into Local State
-    let src_local_state_path = source.root.join("Local State");
+/// Merges `os_crypt` from the source's `Local State` into the seed (needed to
+/// decrypt the cookies). Best effort.
+fn merge_local_state(root: &Path, seed_dir: &Path, fs_probe: &dyn FsProbe) {
+    let src_local_state_path = root.join("Local State");
     if fs_probe.is_file(&src_local_state_path)
         && let Ok(src_content) = fs_probe.read_to_string(&src_local_state_path)
+        && let Ok(merged_str) = serde_json::to_string_pretty(&merge_os_crypt(&src_content, None))
     {
-        let merged = merge_os_crypt(&src_content, None);
-        let dst_local_state_path = seed_dir.join("Local State");
-        if let Ok(merged_str) = serde_json::to_string_pretty(&merged)
-            && fs::write(&dst_local_state_path, merged_str).is_ok()
-        {
-            copied_files.push("Local State".to_string());
-        }
+        let _ = fs::write(seed_dir.join("Local State"), merged_str);
     }
-
-    let _ = env; // for future extensions if needed
-
-    Ok(SeedReport { dir: seed_dir })
 }
 
 /// Validates the cookie-import prerequisites and, when requested, seeds a

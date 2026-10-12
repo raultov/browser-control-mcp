@@ -63,78 +63,71 @@ impl InvokeWebmcpToolTool {
         ))
         .map_err(|e| CallToolError::from_message(format!("Failed to parse arguments: {}", e)))?;
         let session = handler.session(tool.instance_id.clone()).await?;
-
         let input_obj = parse_input_object(&tool.input)?;
-
         let target = session.target(tool.tab_id.clone()).await?;
-
         let invoke_params = serde_json::json!({
             "frameId": tool.frame_id,
             "toolName": tool.tool_name,
             "input": input_obj
         });
-
         let response = target
             .send_raw_command("WebMCP.invokeTool", invoke_params)
             .await
             .map_err(|e| {
                 CallToolError::from_message(format!("Failed to invoke WebMCP tool: {}", e))
             })?;
-
         let result_obj = response.result.unwrap_or_default();
         let invocation_id = result_obj
             .get("invocationId")
             .and_then(|id| id.as_str())
-            .ok_or_else(|| CallToolError::from_message("Did not receive invocationId".to_string()))?
+            .ok_or_else(|| CallToolError::from_message("Did not receive invocationId"))?
             .to_string();
 
         // Wait for the toolResponded event in the same tab's state
         let webmcp_state = session.webmcp_state(tool.tab_id.clone())?;
-        let mut attempts = 0;
-        loop {
+        // Timeout after 30 seconds (300 * 100ms)
+        for _ in 0..300 {
             tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-            attempts += 1;
-
-            // Timeout after 30 seconds (300 * 100ms)
-            if attempts > 300 {
-                return Err(CallToolError::from_message(format!(
-                    "Invocation '{}' is still pending after 30s (the page tool may be waiting for user consent, e.g. a confirmation dialog). It has NOT been canceled: use webmcp_get_invocation with invocationId=\"{}\" to poll its status, or webmcp_list_invocations to see all pending invocations.",
-                    tool.tool_name, invocation_id
-                )));
-            }
-
             let st = webmcp_state.lock().await;
-            if let Some(invocation) = st.invocations.get(&invocation_id)
-                && let Some(status) = &invocation.status
-            {
-                match status.as_str() {
-                    "Completed" => {
-                        let output = invocation.output.clone().unwrap_or(serde_json::json!({}));
-                        let content = serde_json::to_string_pretty(&output)
-                            .unwrap_or_else(|_| "{}".to_string());
-                        return Ok(CallToolResult::text_content(vec![content.into()]));
-                    }
-                    "Error" => {
-                        let error_text = invocation
-                            .error_text
-                            .clone()
-                            .unwrap_or_else(|| "Unknown error".to_string());
-                        return Err(CallToolError::from_message(format!(
-                            "Tool execution failed: {}",
-                            error_text
-                        )));
-                    }
-                    "Canceled" => {
-                        return Err(CallToolError::from_message(
-                            "Tool execution was canceled".to_string(),
-                        ));
-                    }
-                    _ => {
-                        // Still waiting or unknown state, continue loop
-                    }
-                }
+            let status = st.invocations.get(&invocation_id).and_then(|inv| {
+                inv.status
+                    .as_deref()
+                    .and_then(|status| invocation_outcome(status, inv))
+            });
+            if let Some(outcome) = status {
+                return outcome;
             }
         }
+        Err(CallToolError::from_message(format!(
+            "Invocation '{}' is still pending after 30s (the page tool may be waiting for user consent, e.g. a confirmation dialog). It has NOT been canceled: use webmcp_get_invocation with invocationId=\"{}\" to poll its status, or webmcp_list_invocations to see all pending invocations.",
+            tool.tool_name, invocation_id
+        )))
+    }
+}
+
+/// The tool result for a finished invocation; `None` while still pending.
+fn invocation_outcome(
+    status: &str,
+    invocation: &super::WebmcpInvocation,
+) -> Option<Result<CallToolResult, CallToolError>> {
+    match status {
+        "Completed" => {
+            let output = invocation.output.clone().unwrap_or(serde_json::json!({}));
+            let content =
+                serde_json::to_string_pretty(&output).unwrap_or_else(|_| "{}".to_string());
+            Some(Ok(CallToolResult::text_content(vec![content.into()])))
+        }
+        "Error" => {
+            let error_text = invocation.error_text.as_deref().unwrap_or("Unknown error");
+            Some(Err(CallToolError::from_message(format!(
+                "Tool execution failed: {}",
+                error_text
+            ))))
+        }
+        "Canceled" => Some(Err(CallToolError::from_message(
+            "Tool execution was canceled",
+        ))),
+        _ => None,
     }
 }
 
