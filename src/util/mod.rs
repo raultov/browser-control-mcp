@@ -1,5 +1,6 @@
 //! Small, protocol-neutral helpers shared by the tools and both backends.
 
+pub mod js;
 #[cfg(test)]
 pub(crate) mod log_capture;
 pub mod url;

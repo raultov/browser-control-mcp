@@ -37,18 +37,7 @@ impl ScrollTool {
         let target = session.target(args.tab_id.clone()).await?;
 
         let expression = if let Some(ref selector) = args.selector {
-            let safe_selector = selector.replace("\"", "\\\"");
-            format!(
-                "(function() {{
-                    const el = document.querySelector(\"{}\");
-                    if (el) {{
-                        el.scrollIntoView({{ behavior: 'instant', block: 'center' }});
-                        return true;
-                    }}
-                    return false;
-                }})()",
-                safe_selector
-            )
+            crate::util::js::scroll_into_view(selector)
         } else if let Some(pages) = args.pages {
             format!(
                 "window.scrollBy({{ left: 0, top: window.innerHeight * {}, behavior: 'instant' }})",

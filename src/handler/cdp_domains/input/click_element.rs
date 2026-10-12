@@ -30,21 +30,7 @@ impl ClickElementTool {
         let session = handler.session(args.instance_id.clone()).await?;
         let target = session.target(args.tab_id.clone()).await?;
 
-        // Escaping double quotes in the selector just in case
-        let safe_selector = args.selector.replace("\"", "\\\"");
-
-        let expression = format!(
-            "(function() {{
-                const el = document.querySelector(\"{}\");
-                if (!el) return null;
-                const rect = el.getBoundingClientRect();
-                return {{
-                    x: rect.left + rect.width / 2,
-                    y: rect.top + rect.height / 2
-                }};
-            }})()",
-            safe_selector
-        );
+        let expression = crate::util::js::element_center(&args.selector);
 
         let eval_result = target
             .send_raw_command(

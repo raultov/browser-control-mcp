@@ -39,4 +39,7 @@ from a copy of its code: entries describe the differences from that release.
   before enabling Fetch, so a refused call no longer leaves every request
   paused; enabling it again replaces the previous handler instead of stacking
   a second one; the pre-warm URL is logged as scheme and host only.
+- `scroll`, `click_element` and `fill_input` embed the CSS selector as a JSON
+  string literal; a selector with a backslash could break out of the
+  JavaScript string before.
 

@@ -32,18 +32,7 @@ impl FillInputTool {
         let session = handler.session(args.instance_id.clone()).await?;
         let target = session.target(args.tab_id.clone()).await?;
 
-        // Escaping double quotes in the selector just in case
-        let safe_selector = args.selector.replace("\"", "\\\"");
-
-        let expression = format!(
-            "(function() {{
-                const el = document.querySelector(\"{}\");
-                if (!el) return false;
-                el.focus();
-                return true;
-            }})()",
-            safe_selector
-        );
+        let expression = crate::util::js::focus_element(&args.selector);
 
         let eval_result = target
             .send_raw_command(
