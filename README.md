@@ -256,6 +256,9 @@ error that names the new ones.
 
 - **TODO** `pause_on_load` on Firefox: neither a preload `debugger;`
   statement nor an RDP interrupt pauses a reloading page (spike verdict).
+- **TODO** `rust-mcp-sdk` 2.0: the server stays on 1.1.0 (MCP protocol
+  2025-11-25). 2.0 moves to the stateless MCP protocol (2026-07-28), which
+  today's MCP clients probably do not speak yet; upgrade once the clients do.
 - `get_performance_metrics` and `profile_page_performance` are Chrome only:
   Firefox has no Performance or Tracing domain.
 - WebSocket frames in `get_network_logs` are Chrome only: WebDriver BiDi has
