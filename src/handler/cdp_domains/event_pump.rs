@@ -46,13 +46,15 @@ pub(crate) async fn pump_events_with_recovery<S, F, Fut, R, RFut>(
         match item {
             Ok(event) => process(event).await,
             Err(CdpError::Lagged { skipped }) => {
-                eprintln!(
-                    "[browser-control-mcp] {domain} event stream lagged, dropped {skipped} events, resynchronising"
-                );
+                tracing::warn!(domain, skipped, "event stream lagged; resynchronising");
                 recover(skipped).await;
             }
             Err(e) => {
-                eprintln!("[browser-control-mcp] {domain} event stream error, continuing: {e}");
+                tracing::warn!(
+                    domain,
+                    error = error_kind(&e),
+                    "event stream error; continuing"
+                );
             }
         }
     }
@@ -70,6 +72,15 @@ pub(crate) struct ListenerHandles(Vec<tokio::task::JoinHandle<()>>);
 impl ListenerHandles {
     pub(crate) fn push(&mut self, handle: tokio::task::JoinHandle<()>) {
         self.0.push(handle);
+    }
+
+    /// Handles that can abort or observe the tasks without owning them.
+    #[cfg(test)]
+    pub(crate) fn abort_handles(&self) -> Vec<tokio::task::AbortHandle> {
+        self.0
+            .iter()
+            .map(tokio::task::JoinHandle::abort_handle)
+            .collect()
     }
 
     pub(crate) fn absorb(&mut self, mut other: ListenerHandles) {
@@ -137,6 +148,25 @@ where
     Fut: Future<Output = ()> + Send + 'static,
 {
     tokio::spawn(drive(target.on_domain(domain)))
+}
+
+/// A loggable name for a CDP error. The `Display` of some variants embeds
+/// protocol text (a JSON parse error quotes the offending value), so logs only
+/// ever get the kind.
+pub(crate) fn error_kind(error: &CdpError) -> &'static str {
+    match error {
+        CdpError::Network(_) => "network",
+        CdpError::Ws(_) => "websocket",
+        CdpError::Json(_) => "invalid json",
+        CdpError::NotFound => "target not found",
+        CdpError::Timeout { .. } => "timeout",
+        CdpError::NoPageTargetFound(_) => "no page target",
+        CdpError::InternalError(_) => "internal",
+        CdpError::ProtocolError { .. } => "protocol error",
+        CdpError::Disconnected => "disconnected",
+        CdpError::Lagged { .. } => "lagged",
+        _ => "other",
+    }
 }
 
 #[cfg(test)]

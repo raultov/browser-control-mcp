@@ -23,7 +23,10 @@ pub(crate) fn start_tab_lifecycle_listener(
                     let _ = process_target_event(&event, &bc, &tabs_clone, enable_webmcp).await;
                 }
                 Err(e) => {
-                    eprintln!("[browser-control-mcp] Target lifecycle event stream error: {e}");
+                    tracing::warn!(
+                        error = crate::handler::cdp_domains::event_pump::error_kind(&e),
+                        "target lifecycle event stream error"
+                    );
                 }
             }
         }

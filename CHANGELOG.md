@@ -26,3 +26,17 @@ from a copy of its code: entries describe the differences from that release.
 - `rust-mcp-sdk` stays on 1.x (MCP 2025-11-25) with only its `server`,
   `macros` and `stdio` features: the binary no longer links the SDK's HTTP,
   SSE and OAuth client stack.
+
+### Security
+- The start-up log no longer prints the proxy password, username or a
+  `user:pass@` embedded in `--proxy-server` (chrome-debug-mcp printed every
+  argument). Logs now go through `tracing` to stderr (`RUST_LOG`, default
+  `info`) and carry ids, method names and error kinds, never payloads;
+  `cdp-lite`'s payload logging is capped at `info` whatever `RUST_LOG` says.
+- `enable_proxy_auth` answers only proxy (407) challenges; a site's 401 gets
+  the browser's default handling instead of the proxy credentials.
+- `enable_proxy_auth` checks the credentials and `--local` (pre-warm URL)
+  before enabling Fetch, so a refused call no longer leaves every request
+  paused; enabling it again replaces the previous handler instead of stacking
+  a second one; the pre-warm URL is logged as scheme and host only.
+

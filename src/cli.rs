@@ -3,7 +3,10 @@
 use clap::Parser;
 
 /// Command-line arguments of `browser-control-mcp`.
-#[derive(Parser, Debug)]
+///
+/// `Debug` is written by hand: it redacts the proxy credentials, including a
+/// `user:pass@` embedded in `--proxy-server`, so the arguments can be logged.
+#[derive(Parser)]
 #[command(author, version, about, long_about = None)]
 pub struct Args {
     /// Restricted to local addresses only (localhost, 127.0.0.1, 192.168.x.x, *.local)
@@ -55,6 +58,35 @@ pub struct Args {
     #[arg(long, alias = "webmcp")]
     pub enable_webmcp: bool,
 }
+
+impl std::fmt::Debug for Args {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let secret = |v: &Option<String>| v.as_ref().map(|_| REDACTED);
+        f.debug_struct("Args")
+            .field("local", &self.local)
+            .field("enable_automation", &self.enable_automation)
+            .field("user_profile", &self.user_profile)
+            .field("allow_cookie_import", &self.allow_cookie_import)
+            .field("headless", &self.headless)
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("max_instances", &self.max_instances)
+            .field(
+                "proxy_server",
+                &self
+                    .proxy_server
+                    .as_deref()
+                    .map(crate::util::url::without_userinfo),
+            )
+            .field("proxy_username", &secret(&self.proxy_username))
+            .field("proxy_password", &secret(&self.proxy_password))
+            .field("enable_webmcp", &self.enable_webmcp)
+            .finish()
+    }
+}
+
+/// What a secret prints as in logs and `Debug` output.
+pub const REDACTED: &str = "<redacted>";
 
 #[cfg(test)]
 mod tests {
@@ -165,5 +197,28 @@ mod tests {
         );
         assert_eq!(args.proxy_username, Some("user".to_string()));
         assert_eq!(args.proxy_password, Some("pass".to_string()));
+    }
+
+    /// SEC-01: Args Debug never prints secrets.
+    #[test]
+    fn args_debug_redacts_secrets() {
+        // Given arguments carrying proxy credentials in three places
+        let args = Args::parse_from([
+            "browser-control-mcp",
+            "--proxy-server",
+            "http://u:p@proxy:8080",
+            "--proxy-username",
+            "alice",
+            "--proxy-password",
+            "s3cr3t",
+        ]);
+        // When they are formatted with Debug
+        let text = format!("{args:?}");
+        // Then no secret is printed, the redaction marker and the proxy host are
+        assert!(!text.contains("s3cr3t"), "password leaked: {text}");
+        assert!(!text.contains("u:p@"), "userinfo leaked: {text}");
+        assert!(!text.contains("alice"), "username leaked: {text}");
+        assert!(text.contains(REDACTED));
+        assert!(text.contains("http://proxy:8080"), "{text}");
     }
 }

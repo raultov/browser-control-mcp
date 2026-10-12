@@ -12,6 +12,7 @@
 
 pub mod cli;
 mod handler;
+pub mod util;
 
 pub use cli::Args;
 use handler::{HandlerParams, McpHandler};
@@ -19,7 +20,7 @@ use rust_mcp_sdk::{error::SdkResult, mcp_server::server_runtime, schema::*, *};
 
 /// Runs the MCP server over stdio until its transport ends.
 pub async fn run(args: Args) -> SdkResult<()> {
-    eprintln!("[DEBUG] Starting with args: {:?}", args);
+    init_logging();
 
     let instructions = concat!(
         "Browser Control MCP Server Instructions:\n",
@@ -51,25 +52,7 @@ pub async fn run(args: Args) -> SdkResult<()> {
 
     let transport = StdioTransport::new(TransportOptions::default())?;
 
-    // Create handler with max_instances support
-    let handler_params = HandlerParams {
-        host: args.host,
-        port: args.port,
-        local_only: args.local,
-        enable_automation: args.enable_automation,
-        headless: args.headless,
-        user_profile: args.user_profile,
-        allow_cookie_import: args.allow_cookie_import,
-        proxy_server: args.proxy_server,
-        proxy_username: args.proxy_username,
-        proxy_password: args.proxy_password,
-        enable_webmcp: args.enable_webmcp,
-    };
-    let handler = McpHandler::new_with_params(handler_params);
-    handler
-        .registry
-        .max_instances
-        .store(args.max_instances, std::sync::atomic::Ordering::SeqCst);
+    let handler = build_handler(args);
     let handler = handler.to_mcp_server_handler();
     let server = server_runtime::create_server(mcp_server::McpServerOptions {
         server_details: server_info,
@@ -81,8 +64,71 @@ pub async fn run(args: Args) -> SdkResult<()> {
     });
 
     if let Err(e) = server.start().await {
-        eprintln!("Server error: {:?}", e);
+        tracing::error!(error = %e, "server stopped with an error");
         return Err(e);
     }
     Ok(())
+}
+
+/// Logs go to stderr (stdout is the MCP channel), filtered by `RUST_LOG`
+/// (default `info`). A second call is a no-op, which keeps tests simple.
+fn init_logging() {
+    let base = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(util::log_filter(base))
+        .with_writer(std::io::stderr)
+        .with_ansi(false)
+        .try_init();
+}
+
+/// Builds the MCP handler from the command line. Logs the arguments through
+/// their redacting `Debug` (never the raw values).
+fn build_handler(args: Args) -> McpHandler {
+    tracing::info!(args = ?args, "starting browser-control-mcp");
+    let max_instances = args.max_instances;
+    let handler = McpHandler::new_with_params(HandlerParams {
+        host: args.host,
+        port: args.port,
+        local_only: args.local,
+        enable_automation: args.enable_automation,
+        headless: args.headless,
+        user_profile: args.user_profile,
+        allow_cookie_import: args.allow_cookie_import,
+        proxy_server: args.proxy_server,
+        proxy_username: args.proxy_username,
+        proxy_password: args.proxy_password,
+        enable_webmcp: args.enable_webmcp,
+    });
+    handler
+        .registry
+        .max_instances
+        .store(max_instances, std::sync::atomic::Ordering::SeqCst);
+    handler
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    /// SEC-02: Startup logs never carry secrets.
+    #[test]
+    fn startup_logs_never_contain_the_proxy_password() {
+        // Given a captured subscriber and arguments with a proxy password
+        let (logs, _guard) = util::log_capture::capture();
+        let args = Args::parse_from([
+            "browser-control-mcp",
+            "--proxy-server",
+            "http://u:p@proxy:8080",
+            "--proxy-password",
+            "s3cr3t",
+        ]);
+        // When the start-up path builds the handler
+        let _handler = build_handler(args);
+        // Then the start-up line was logged without any secret
+        let text = logs.text();
+        assert!(text.contains("starting browser-control-mcp"), "{text}");
+        assert!(!text.contains("s3cr3t") && !text.contains("u:p@"), "{text}");
+    }
 }

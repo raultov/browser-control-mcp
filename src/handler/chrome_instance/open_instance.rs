@@ -120,6 +120,7 @@ impl OpenInstanceTool {
                 cdp_domains::event_pump::ListenerHandles::default(),
             )),
             browser_version: Arc::new(Mutex::new(None)),
+            proxy_auth_tasks: Default::default(),
             enable_webmcp: handler.enable_webmcp,
         });
 

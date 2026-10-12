@@ -224,6 +224,9 @@ pub(crate) struct BrowserSession {
     pub(crate) session_listeners: Arc<Mutex<cdp_domains::event_pump::ListenerHandles>>,
     pub(crate) browser_version: Arc<Mutex<Option<BrowserVersion>>>,
     pub(crate) enable_webmcp: bool,
+    /// Proxy-auth handler task per target (`None` = the session-level page),
+    /// so enabling it again replaces the previous handler instead of stacking.
+    pub(crate) proxy_auth_tasks: cdp_domains::fetch::ProxyAuthTasks,
 }
 
 impl BrowserSession {
@@ -233,6 +236,7 @@ impl BrowserSession {
         *self.client.lock().await = None;
         *self.session_listeners.lock().await = cdp_domains::event_pump::ListenerHandles::default();
         *self.browser_version.lock().await = None;
+        self.proxy_auth_tasks.lock().await.clear();
         cdp_domains::custom::clear_custom_listeners(&self.custom_state).await;
         self.tabs.write().unwrap().clear();
     }
@@ -699,6 +703,7 @@ impl McpHandler {
                 cdp_domains::event_pump::ListenerHandles::default(),
             )),
             browser_version: Arc::new(Mutex::new(None)),
+            proxy_auth_tasks: Default::default(),
             enable_webmcp: options.enable_webmcp,
         });
 
@@ -772,6 +777,7 @@ impl McpHandler {
                 cdp_domains::event_pump::ListenerHandles::default(),
             )),
             browser_version: Arc::new(Mutex::new(None)),
+            proxy_auth_tasks: Default::default(),
             enable_webmcp: false,
         });
 
