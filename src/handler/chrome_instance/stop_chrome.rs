@@ -25,9 +25,10 @@ impl StopChromeTool {
         .map_err(|e| CallToolError::from_message(format!("Failed to parse arguments: {}", e)))?;
 
         let session = handler.session(tool.instance_id.clone()).await?;
-        let mut manager = session.chrome_manager.lock().await;
-
+        // Before taking the manager: a first connection holds the client
+        // slot while it waits for the manager (one lock order everywhere).
         session.reset_connection_state().await;
+        let mut manager = session.chrome_manager.lock().await;
 
         if let Err(e) = manager.stop_instance().await {
             return Err(CallToolError::from_message(format!(
@@ -90,5 +91,35 @@ mod tests {
             "Content didn't match: {}",
             content_str
         );
+    }
+
+    /// REV-01: `stop_browser` takes the session locks in the same order as
+    /// a tool's first connection (client slot, then manager), so the two
+    /// cannot deadlock.
+    #[tokio::test]
+    async fn stop_while_a_tool_connects_does_not_deadlock() {
+        // Given a tool holding the client slot and about to take the manager
+        let mut handler = McpHandler::new_test();
+        Arc::get_mut(&mut handler.default_session)
+            .unwrap()
+            .chrome_manager = Arc::new(Mutex::new(MockChromeManager::new(9999)));
+        let session = handler.default_session.clone();
+        let connecting = tokio::spawn(async move {
+            let _client = session.client.lock().await;
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            let _manager = session.chrome_manager.lock().await;
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        // When stop_browser runs meanwhile
+        let params: CallToolRequestParams =
+            serde_json::from_value(json!({"name": "stop_browser", "arguments": {}})).unwrap();
+        let both = async {
+            let stopped = StopChromeTool::handle(params, &handler).await;
+            connecting.await.unwrap();
+            stopped
+        };
+        // Then both finish
+        let outcome = tokio::time::timeout(std::time::Duration::from_secs(2), both).await;
+        assert!(outcome.is_ok_and(|r| r.is_ok()), "deadlock");
     }
 }

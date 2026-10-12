@@ -52,6 +52,8 @@ pub(crate) struct Registry {
     state: RwLock<RegistryState>,
     counter: std::sync::atomic::AtomicUsize,
     pub(crate) max_instances: std::sync::atomic::AtomicUsize,
+    /// Set when the server starts shutting down: no tool may launch anything.
+    closing: std::sync::atomic::AtomicBool,
 }
 
 impl Registry {
@@ -63,7 +65,19 @@ impl Registry {
             state: RwLock::new(RegistryState::default()),
             counter: std::sync::atomic::AtomicUsize::new(2), // start at 2 since "default" is 1 conceptually
             max_instances: std::sync::atomic::AtomicUsize::new(max_instances),
+            closing: std::sync::atomic::AtomicBool::new(false),
         }
+    }
+
+    /// Marks the server as shutting down (irreversible).
+    pub(crate) fn close(&self) {
+        self.closing
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Whether the server is shutting down.
+    pub(crate) fn is_closing(&self) -> bool {
+        self.closing.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     pub fn get_session(&self, id: &str) -> Option<Arc<BrowserSession>> {
@@ -121,7 +135,11 @@ impl Registry {
         if state.sessions.len() + state.firefox.len() >= max {
             return Err(format!("Instance limit reached ({max})"));
         }
-        if state.sessions.contains_key(&desc.id) || state.firefox.contains_key(&desc.id) {
+        // The default instance's descriptor exists before its session: only
+        // the default instance itself may take that id.
+        let reserved = !desc.is_default && state.descriptors.contains_key(&desc.id);
+        if reserved || state.sessions.contains_key(&desc.id) || state.firefox.contains_key(&desc.id)
+        {
             return Err(format!("Instance id '{}' already exists", desc.id));
         }
         if let Some(ref label) = desc.label
@@ -231,6 +249,28 @@ mod tests {
             is_default: false,
             browser_version: None,
         }
+    }
+
+    /// REV-04: no other instance can take the id of the default instance
+    /// (registered before its browser is launched) or of any other one.
+    #[test]
+    fn default_and_known_ids_are_reserved() {
+        // Given a registry that knows the default instance
+        let registry = Registry::new(8);
+        registry.register_descriptor(InstanceDescriptor::default_instance(9222, vec![]));
+        let session = McpHandler::new_test().default_session.clone();
+        // When an instance labelled "default" is added
+        let taken = registry.add_session(descriptor("default"), session.clone());
+        // Then it is refused, and the default descriptor is untouched
+        assert!(taken.is_err_and(|e| e.contains("already exists")));
+        assert!(registry.list_descriptors().iter().any(|d| d.is_default));
+        // But the default instance itself still registers its session
+        let mut default = InstanceDescriptor::default_instance(9222, vec![]);
+        default.browser = crate::backend::BrowserKind::Firefox;
+        let firefox = Arc::new(crate::backend::bidi::session::FirefoxSession::new(
+            Default::default(),
+        ));
+        assert!(registry.add_firefox(default, firefox).is_ok());
     }
 
     /// SEC-14: Registry operations cannot deadlock.

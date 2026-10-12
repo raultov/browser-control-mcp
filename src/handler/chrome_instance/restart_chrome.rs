@@ -50,9 +50,10 @@ impl RestartChromeTool {
         )
         .map_err(CallToolError::from_message)?;
 
-        let mut manager = session.chrome_manager.lock().await;
-
+        // Before taking the manager: a first connection holds the client
+        // slot while it waits for the manager (one lock order everywhere).
         session.reset_connection_state().await;
+        let mut manager = session.chrome_manager.lock().await;
 
         if let Err(e) = manager.stop_instance().await {
             return Err(CallToolError::from_message(format!(

@@ -65,6 +65,15 @@ impl OpenInstanceTool {
                 .registry
                 .generate_id(crate::backend::BrowserKind::Chrome),
         };
+        // Checked before launching: a rejected instance must not leave a
+        // browser running that nothing tracks.
+        let mut planned = InstanceDescriptor::default_instance(0, Vec::new());
+        (planned.id, planned.label, planned.is_default) =
+            (instance_id.clone(), args.label.clone(), false);
+        handler
+            .registry
+            .can_add(&planned)
+            .map_err(CallToolError::from_message)?;
         let child_params = args.launch_params(handler);
         let seed_report = super::cookie_seed::prepare_seed_report(
             args.copy_cookies == Some(true),
@@ -79,10 +88,11 @@ impl OpenInstanceTool {
             handler.flags.enable_webmcp,
         ));
         let desc = launch(&session, instance_id, &args, &child_params).await?;
-        handler
-            .registry
-            .add_session(desc.clone(), session)
-            .map_err(CallToolError::from_message)?;
+        if let Err(e) = handler.registry.add_session(desc.clone(), session.clone()) {
+            // Lost a race with a concurrent open_instance.
+            let _ = session.chrome_manager.lock().await.stop_instance().await;
+            return Err(CallToolError::from_message(e));
+        }
         let reply = serde_json::json!({
             "instance_id": desc.id,
             "host": desc.host,

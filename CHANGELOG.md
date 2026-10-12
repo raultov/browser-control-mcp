@@ -91,6 +91,27 @@ from a copy of its code: entries describe the differences from that release.
   `remove_breakpoint` no longer claims the page must be paused.
 
 ### Fixed
+- `stop_browser` / `restart_browser` on Chrome could deadlock with a tool
+  making the instance's first connection (two locks taken in opposite order).
+- Chrome `open_instance` checks the instance limit and the label before
+  launching: a refused instance no longer leaves an untracked Chrome running.
+- No instance can take the id `default` (it hijacked the default instance).
+- `open_tab` checks the tab limit and the label before creating the page,
+  keeps labels unique when target discovery registered the page first, and
+  closes the page if it still cannot register it (Chrome and Firefox).
+- `close_tab` forgets a tab only once the browser closed it (Chrome and
+  Firefox).
+- Firefox: a lost WebSocket no longer leaves a dead event pump (empty console
+  and network logs): the next tool starts a new session.
+- Firefox: tab ids are not reused after `restart_browser`; the iframe map
+  forgets a destroyed context's whole subtree; debuggers of tabs closed by the
+  page are dropped.
+- Firefox `enable_proxy_auth` subscribes to `network.authRequired` before the
+  intercept exists, so no challenge is missed (and lags are logged).
+- Firefox `set_breakpoint` with `line_number` 4294967295 is an argument error
+  instead of an overflow.
+- Shutdown: tool calls are refused once the server is stopping, and a
+  debugger tool in flight no longer delays stopping Firefox past its budget.
 - The server exits on SIGTERM/Ctrl-C: it used to stop its browsers and then
   hang, waiting for a stdin read that only returns on input.
 - Chrome `profile_page_performance` no longer times out at random on tabs
@@ -139,6 +160,11 @@ from a copy of its code: entries describe the differences from that release.
   BiDi refuses page scripts: its first tab is moved to `about:blank`.
 
 ### Security
+- `--local` treats `192.168.x.x` only as an IP address: a domain name such
+  as `192.168.attacker.com` is no longer accepted as local.
+- `--local` also covers RDP `navigateTo` in `send_rdp_request`.
+- `send_bidi_command` refuses `session.unsubscribe` of the events the server
+  listens to (by event or module name), not only of its subscription id.
 - The start-up log no longer prints the proxy password, username or a
   `user:pass@` embedded in `--proxy-server` (chrome-debug-mcp printed every
   argument). Logs now go through `tracing` to stderr (`RUST_LOG`, default

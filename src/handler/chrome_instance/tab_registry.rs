@@ -93,25 +93,19 @@ impl TabRegistry {
         // the same target: the second one gets the existing id.
         let existing = self
             .tabs
-            .iter_mut()
-            .find(|(_, entry)| entry.tab.target_id() == tab.target_id());
-        if let Some((id, entry)) = existing {
+            .iter()
+            .find(|(_, entry)| entry.tab.target_id() == tab.target_id())
+            .map(|(id, _)| id.clone());
+        if let Some(id) = existing {
             if label.is_some() {
-                entry.label = label;
-            }
-            return Ok(id.clone());
-        }
-        if self.tabs.len() >= self.max_tabs {
-            return Err(format!("Tab limit reached ({})", self.max_tabs));
-        }
-
-        if let Some(ref lbl) = label {
-            for entry in self.tabs.values() {
-                if entry.label.as_ref() == Some(lbl) {
-                    return Err(format!("Label '{}' is already in use by another tab", lbl));
+                self.check_label(label.as_deref(), Some(&id))?;
+                if let Some(entry) = self.tabs.get_mut(&id) {
+                    entry.label = label;
                 }
             }
+            return Ok(id);
         }
+        self.check_new(label.as_deref())?;
 
         let tab_id = format!("tab-{}", self.counter);
         self.counter += 1;
@@ -140,6 +134,24 @@ impl TabRegistry {
         }
 
         Ok(tab_id)
+    }
+
+    /// Whether a new tab labelled `label` may be registered (under the cap,
+    /// label unused). `open_tab` checks before creating the page.
+    pub(crate) fn check_new(&self, label: Option<&str>) -> Result<(), String> {
+        if self.tabs.len() >= self.max_tabs {
+            return Err(format!("Tab limit reached ({})", self.max_tabs));
+        }
+        self.check_label(label, None)
+    }
+
+    /// Refuses `label` if a tab other than `except` uses it.
+    fn check_label(&self, label: Option<&str>, except: Option<&str>) -> Result<(), String> {
+        let labels = self
+            .tabs
+            .iter()
+            .map(|(id, e)| (id.as_str(), e.label.as_deref()));
+        crate::handler::chrome_instance::tab_registry::check_label(labels, label, except)
     }
 
     pub(crate) fn attach_listeners(&mut self, tab_id: &str, handles: ListenerHandles) {
@@ -181,6 +193,22 @@ impl TabRegistry {
         self.recent.clear();
         self.active_tab_id = None;
     }
+}
+
+/// Refuses `label` if a tab other than `except` uses it; `labels` yields
+/// `(tab id, label)` (shared by the Chrome and Firefox registries).
+pub(crate) fn check_label<'a>(
+    mut labels: impl Iterator<Item = (&'a str, Option<&'a str>)>,
+    label: Option<&str>,
+    except: Option<&str>,
+) -> Result<(), String> {
+    let Some(label) = label else {
+        return Ok(());
+    };
+    if labels.any(|(id, l)| Some(id) != except && l == Some(label)) {
+        return Err(format!("Label '{label}' is already in use by another tab"));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -236,5 +264,36 @@ mod tests {
         assert_eq!(first, second);
         assert_eq!(registry.tabs.len(), 1);
         assert_eq!(registry.tabs[&first].label.as_deref(), Some("mine"));
+    }
+
+    /// REV-06: a label taken by another tab is refused on the
+    /// already-registered path too, and `check_new` refuses it up front.
+    #[tokio::test]
+    async fn labels_stay_unique_when_a_target_registers_twice() {
+        // Given tab-1 labelled "x" and tab-2 registered by target discovery
+        let port = crate::handler::cdp_domains::tests::spawn_mock_chrome_server().await;
+        let browser = cdp_browser_lite::BrowserClient::connect(
+            &format!("127.0.0.1:{port}"),
+            std::time::Duration::from_secs(5),
+        )
+        .await
+        .unwrap();
+        let mut registry = TabRegistry::new(16);
+        let first = browser.attach("T-page-1").await.unwrap();
+        registry
+            .register_tab(first, NewTab::new(Some("x".into()), "about:blank"), false)
+            .unwrap();
+        let second = browser.attach("T-page-2").await.unwrap();
+        registry
+            .register_tab(second, NewTab::new(None, "about:blank"), false)
+            .unwrap();
+        // When open_tab registers T-page-2 again with the label "x"
+        let again = browser.attach("T-page-2").await.unwrap();
+        let taken =
+            registry.register_tab(again, NewTab::new(Some("x".into()), "about:blank"), false);
+        // Then it is refused, and so is a new tab with that label
+        assert!(taken.is_err());
+        assert!(registry.check_new(Some("x")).is_err());
+        assert!(registry.check_new(Some("y")).is_ok());
     }
 }

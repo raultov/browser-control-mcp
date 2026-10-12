@@ -16,6 +16,20 @@ pub struct CloseTabTool {
     pub tab_id: String,
 }
 
+/// The error for a tab id the instance does not know, listing the known ones.
+fn unknown_tab(session: &crate::handler::BrowserSession, tab_id: &str) -> CallToolError {
+    let registry = crate::util::sync::read(&session.tabs);
+    let available: Vec<_> = registry.tabs.keys().cloned().collect();
+    let avail_str = if available.is_empty() {
+        "none (if Chrome was restarted, previous tab IDs are no longer valid)".to_string()
+    } else {
+        available.join(", ")
+    };
+    CallToolError::from_message(format!(
+        "Tab ID '{tab_id}' not found. Available tabs: {avail_str}. Use 'list_tabs' to discover current tab IDs."
+    ))
+}
+
 impl CloseTabTool {
     pub async fn handle(
         params: CallToolRequestParams,
@@ -26,39 +40,24 @@ impl CloseTabTool {
             .map_err(|e| CallToolError::from_message(e.to_string()))?;
         let session = handler.session(args.instance_id.clone()).await?;
 
-        // 1. Remove from registry first to prevent stale references
-        let entry_opt = {
-            let mut registry = crate::util::sync::write(&session.tabs);
-            registry.remove_tab(&args.tab_id)
+        let target_id = {
+            let registry = crate::util::sync::read(&session.tabs);
+            registry
+                .tabs
+                .get(&args.tab_id)
+                .map(|e| e.tab.target_id().to_string())
+        };
+        let Some(target_id) = target_id else {
+            return Err(unknown_tab(&session, &args.tab_id));
         };
 
-        let entry = match entry_opt {
-            Some(e) => e,
-            None => {
-                let registry = crate::util::sync::read(&session.tabs);
-                let available: Vec<_> = registry.tabs.keys().cloned().collect();
-                let avail_str = if available.is_empty() {
-                    "none (if Chrome was restarted, previous tab IDs are no longer valid)"
-                        .to_string()
-                } else {
-                    available.join(", ")
-                };
-                return Err(CallToolError::from_message(format!(
-                    "Tab ID '{}' not found. Available tabs: {}. Use 'list_tabs' to discover current tab IDs.",
-                    args.tab_id, avail_str
-                )));
-            }
-        };
-
-        // 2. Instruct the browser client to close it
+        // Forgotten only once the browser closed it: a tab whose close
+        // failed stays reachable.
         let browser_client = session.browser_client().await?;
-
-        browser_client
-            .close_tab(entry.tab.target_id())
-            .await
-            .map_err(|e| {
-                CallToolError::from_message(format!("Failed to close tab on browser: {}", e))
-            })?;
+        browser_client.close_tab(&target_id).await.map_err(|e| {
+            CallToolError::from_message(format!("Failed to close tab on browser: {}", e))
+        })?;
+        crate::util::sync::write(&session.tabs).remove_tab(&args.tab_id);
 
         let new_active = crate::util::sync::read(&session.tabs).active_tab_id.clone();
 

@@ -26,6 +26,41 @@ fn deferred_navigation(url: &str) -> Option<&str> {
     (url != BLANK).then_some(url)
 }
 
+/// Creates a blank tab and registers it with its listeners. The label and
+/// the tab limit are checked first, and a tab that still fails to register
+/// is closed: no page is left open that no tab id reaches.
+async fn create_tab(
+    session: &crate::handler::BrowserSession,
+    label: Option<String>,
+    url: &str,
+) -> Result<(String, String), CallToolError> {
+    crate::util::sync::read(&session.tabs)
+        .check_new(label.as_deref())
+        .map_err(CallToolError::from_message)?;
+    let browser_client = session.browser_client().await?;
+    // The tab starts blank and navigates only once its listeners are
+    // enabled: created straight on `url`, the page's first requests (and
+    // their network events) were already gone.
+    let tab = browser_client
+        .new_tab(BLANK)
+        .await
+        .map_err(|e| CallToolError::from_message(format!("Failed to create new tab: {}", e)))?;
+    let target_id = tab.target_id().to_string();
+    let info = super::tab_registry::NewTab::new(label, url);
+    let registered =
+        super::tab_lifecycle::register_and_listen(&session.tabs, &tab, info, session.enable_webmcp)
+            .await;
+    match registered {
+        Ok(tab_id) => Ok((tab_id, target_id)),
+        Err(e) => {
+            let _ = browser_client.close_tab(&target_id).await;
+            Err(CallToolError::from_message(format!(
+                "Failed to register tab in registry: {e}"
+            )))
+        }
+    }
+}
+
 /// Navigates a registered blank tab to `url`, through the registered
 /// session: the target-discovery listener may have registered this page
 /// first, with its own session, and still be enabling its domains. Chrome
@@ -71,30 +106,7 @@ impl OpenTabTool {
             )));
         }
 
-        // Create the tab using the browser-level connection (browser_client)
-        let browser_client = session.browser_client().await?;
-
-        // The tab starts blank and navigates only once its listeners are
-        // enabled: created straight on `url`, the page's first requests
-        // (and their network events) were already gone.
-        let tab = browser_client
-            .new_tab(BLANK)
-            .await
-            .map_err(|e| CallToolError::from_message(format!("Failed to create new tab: {}", e)))?;
-
-        let target_id = tab.target_id().to_string();
-
-        let info = super::tab_registry::NewTab::new(args.label.clone(), url.clone());
-        let tab_id = super::tab_lifecycle::register_and_listen(
-            &session.tabs,
-            &tab,
-            info,
-            session.enable_webmcp,
-        )
-        .await
-        .map_err(|e| {
-            CallToolError::from_message(format!("Failed to register tab in registry: {}", e))
-        })?;
+        let (tab_id, target_id) = create_tab(&session, args.label.clone(), &url).await?;
         if let Some(url) = deferred_navigation(&url) {
             open_url(&session, &tab_id, url).await?;
         }

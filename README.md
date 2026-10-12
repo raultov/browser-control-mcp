@@ -269,6 +269,14 @@ error that names the new ones.
 - `--local` checks the URLs the server navigates to and the known navigation
   methods of the raw tools; JavaScript running in the page can still navigate
   anywhere.
+- Firefox: after a lost connection a launched Firefox gets a new session on
+  the next tool call; an attached Firefox keeps its orphan session, so
+  restart that Firefox.
+- Firefox debugger: it attaches to the tab Firefox has selected right after
+  activating the requested one; switching tabs at that very moment can bind
+  it to the wrong page.
+- `get_network_logs` with response bodies has no total size limit (each
+  Firefox body is capped at 2 MB): use `url_filter` on busy pages.
 - The Docker image is amd64 only.
 
 ## Untested

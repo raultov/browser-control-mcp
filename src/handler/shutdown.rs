@@ -16,6 +16,8 @@ impl ShutdownHook {
     /// for each. Returns `(instance id, reason)` for each failure; never
     /// panics. Logs ids only.
     pub(crate) async fn stop_all(&self, timeout: Duration) -> Vec<(String, String)> {
+        // First, so a call still in flight cannot launch a browser afterwards.
+        self.registry.close();
         let mut tasks = tokio::task::JoinSet::new();
         for (id, session) in self.registry.sessions() {
             tasks.spawn(async move { stop_one(session, timeout).await.err().map(|e| (id, e)) });

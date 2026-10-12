@@ -246,14 +246,24 @@ pub(crate) async fn open_tab(params: CallToolRequestParams, handler: &McpHandler
     check_local(handler, &url)?;
     let session = handler.firefox(args.instance_id.as_deref()).await?;
     let browser = session.browser().await?;
+    // Checked before creating the page; a page that still fails to
+    // register is closed, so none is left open without a tab id.
+    read(&session.tabs)
+        .check_new(args.label.as_deref())
+        .map_err(CallToolError::from_message)?;
     let tab = browser
         .new_tab(&url)
         .await
         .map_err(super::lifecycle_error)?;
     let context = tab.context_id().to_string();
-    let tab_id = write(&session.tabs)
-        .register(tab, args.label.clone(), &url)
-        .map_err(CallToolError::from_message)?;
+    let registered = write(&session.tabs).register(tab.clone(), args.label.clone(), &url);
+    let tab_id = match registered {
+        Ok(id) => id,
+        Err(e) => {
+            let _ = tab.close().await;
+            return Err(CallToolError::from_message(e));
+        }
+    };
     let reply = json!({"tab_id": tab_id, "target_id": context, "url": url, "label": args.label});
     Ok(text(reply.to_string()))
 }
@@ -263,12 +273,14 @@ pub(crate) async fn close_tab(params: CallToolRequestParams, handler: &McpHandle
     let args: crate::handler::chrome_instance::close_tab::CloseTabTool = parse_args(params)?;
     let session = handler.firefox(args.instance_id.as_deref()).await?;
     let (id, tab) = session.tab(Some(&args.tab_id)).await?;
-    super::debugger::detach_tab(&session, &id).await;
-    write(&session.tabs).remove(&id);
+    // Forgotten only once Firefox closed it: a tab whose close failed
+    // stays reachable.
     tab.tab
         .close()
         .await
         .map_err(|e| super::protocol_error("browsingContext.close", &e))?;
+    super::debugger::detach_tab(&session, &id).await;
+    write(&session.tabs).remove(&id);
     let active = read(&session.tabs).active.clone();
     Ok(text(
         json!({"closed_tab_id": id, "active_tab_id": active}).to_string(),

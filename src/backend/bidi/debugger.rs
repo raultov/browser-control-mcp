@@ -98,6 +98,13 @@ async fn with_debugger<T>(
 ) -> Result<T, BackendError> {
     let (id, tab) = session.tab(tab_id).await?;
     let mut debuggers = session.debuggers.lock().await;
+    // Tabs the page or the user closed leave their debugger behind.
+    let open: Vec<String> = crate::util::sync::read(&session.tabs)
+        .tabs
+        .keys()
+        .cloned()
+        .collect();
+    debuggers.retain(|tab_id, _| open.contains(tab_id));
     if !debuggers.contains_key(&id) {
         let browser = session.browser().await?;
         let rdp = browser.rdp_client().await.map_err(super::lifecycle_error)?;
@@ -155,9 +162,13 @@ pub(crate) async fn set_breakpoint(
             "On Firefox set breakpoints by `url` (script_id and script_hash are Chrome concepts)",
         ));
     };
+    // RDP lines are 1-based.
+    let Some(line) = args.line_number.checked_add(1) else {
+        return Err(CallToolError::from_message("line_number is out of range"));
+    };
     let location = BreakpointLocation {
         source_url: url.clone(),
-        line: args.line_number + 1,
+        line,
         column: args.column_number,
     };
     let session = handler.firefox(args.instance_id.as_deref()).await?;
@@ -383,6 +394,24 @@ pub(crate) async fn resolve_actor(
 mod tests {
     use super::*;
     use bidi_browser_lite::bidi_lite::rdp::protocol::RdpPacket;
+
+    /// REV-15: a line number at the top of the range is an argument error,
+    /// not an overflow, and nothing reaches the browser.
+    #[tokio::test]
+    async fn huge_line_number_is_an_argument_error() {
+        // Given a Firefox default instance that was never launched
+        let mut handler = crate::handler::test_handler();
+        handler.default_browser = crate::backend::BrowserKind::Firefox;
+        // When set_breakpoint asks for line u32::MAX
+        let args = serde_json::json!({"url": "http://127.0.0.1/app.js", "line_number": u32::MAX});
+        let call = serde_json::from_value(
+            serde_json::json!({"name": "set_breakpoint", "arguments": args}),
+        )
+        .unwrap();
+        let error = set_breakpoint(call, &handler).await.unwrap_err();
+        // Then the error names the argument
+        assert!(error.to_string().contains("line_number"), "{error}");
+    }
 
     fn packet(text: &str) -> RdpPacket {
         RdpPacket::parse(text).unwrap()

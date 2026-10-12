@@ -33,6 +33,8 @@ const RAW_NAVIGATION_METHODS: &[&str] = &[
     "Page.navigate",
     "Target.createTarget",
     "browsingContext.navigate",
+    // Firefox RDP (a target actor's request type).
+    "navigateTo",
 ];
 
 /// The URL a raw protocol command would navigate to, if it is one of the

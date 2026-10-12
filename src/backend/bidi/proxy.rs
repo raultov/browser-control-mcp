@@ -36,12 +36,25 @@ fn log_answer(request: &str, result: &BidiResult<WsResponse>) {
     }
 }
 
-async fn answer_challenges(client: BidiClient, credentials: ProxyCredentials) {
-    let mut events = client.subscribe();
+/// Answers `network.authRequired` events from `events`, a receiver created
+/// before the intercept was added (an event sent before the task subscribed
+/// would leave its request blocked).
+async fn answer_challenges(
+    client: BidiClient,
+    mut events: tokio::sync::broadcast::Receiver<WsResponse>,
+    credentials: ProxyCredentials,
+) {
     loop {
         let event = match events.recv().await {
             Ok(event) => event,
-            Err(RecvError::Lagged(_)) => continue,
+            Err(RecvError::Lagged(skipped)) => {
+                // Their requests stay blocked until Firefox times them out.
+                tracing::warn!(
+                    skipped,
+                    "Firefox proxy auth events lagged; requests may stall"
+                );
+                continue;
+            }
             Err(RecvError::Closed) => break,
         };
         if event.method.as_deref() != Some("network.authRequired") {
@@ -81,6 +94,7 @@ pub(crate) async fn enable_proxy_auth(
     let (_, tab) = session.tab(args.tab_id.as_deref()).await?;
     let client = tab.tab.client().clone();
     let protocol = |method: &'static str| move |e| super::protocol_error(method, &e);
+    let events = client.subscribe();
     client
         .subscribe_events(&["network.authRequired"], None)
         .await
@@ -91,7 +105,7 @@ pub(crate) async fn enable_proxy_auth(
         .await
         .map_err(protocol("network.addIntercept"))?;
     let mut tasks = ListenerHandles::default();
-    tasks.push(tokio::spawn(answer_challenges(client, credentials)));
+    tasks.push(tokio::spawn(answer_challenges(client, events, credentials)));
     // Replacing the previous handler aborts it (no stacked answers).
     *session.proxy_task.lock().await = tasks;
     tracing::info!(url = %crate::util::url::redacted(&prewarm), "Firefox proxy auth pre-warm navigation");

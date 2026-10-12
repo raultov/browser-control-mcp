@@ -858,28 +858,23 @@ impl Default for McpHandler {
 }
 
 pub(crate) fn is_local_address(url_str: &str) -> bool {
-    let url = match url::Url::parse(url_str) {
-        Ok(u) => u,
-        Err(_) => return false,
-    };
-
-    let host = match url.host_str() {
-        Some(h) => h,
-        None => return false,
-    };
-
-    // localhost, 127.0.0.1, [::1], 192.168.x.x, or .local
-    if host == "localhost"
-        || host == "127.0.0.1"
-        || host == "::1"
-        || host == "[::1]"
-        || host.ends_with(".local")
-        || host.starts_with("192.168.")
-    {
+    // A blank page loads nothing (the default page of `open_tab`).
+    if url_str == "about:blank" {
         return true;
     }
-
-    false
+    let Ok(url) = url::Url::parse(url_str) else {
+        return false;
+    };
+    // localhost, 127.0.0.1, [::1], 192.168.x.x (as an IP address, not a
+    // domain name that starts like one), or .local
+    match url.host() {
+        Some(url::Host::Domain(host)) => host == "localhost" || host.ends_with(".local"),
+        Some(url::Host::Ipv4(ip)) => {
+            ip.octets() == [127, 0, 0, 1] || ip.octets()[..2] == [192, 168]
+        }
+        Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+        None => false,
+    }
 }
 
 pub(crate) fn extract_from_value<'a>(
@@ -1060,6 +1055,8 @@ mod tests {
             "https://192.168.0.100/admin",
             "http://mydevice.local",
             "http://service.local:8000",
+            // REV-03: the default page of open_tab loads nothing.
+            "about:blank",
         ];
         let remote = [
             "http://google.com",
@@ -1069,6 +1066,9 @@ mod tests {
             "not a url",
             "http://local.com",
             "http://192.167.1.1",
+            // REV-02: a domain name that merely starts like a LAN address.
+            "http://192.168.attacker.com/",
+            "http://192.168.1.1.nip.io/",
         ];
         for url in local {
             assert!(is_local_address(url), "{url} must be local");

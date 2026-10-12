@@ -298,6 +298,11 @@ pub(crate) async fn call(
     handler: &McpHandler,
     params: CallToolRequestParams,
 ) -> Result<CallToolResult, CallToolError> {
+    if handler.registry.is_closing() {
+        return Err(CallToolError::from_message(
+            "The server is shutting down; no tool can run",
+        ));
+    }
     let entry = table()
         .into_iter()
         .find(|entry| (entry.tool)().name == params.name);
@@ -431,6 +436,22 @@ mod tests {
     async fn error_of(handler: &McpHandler, name: &str, arguments: serde_json::Value) -> String {
         let result = call(handler, params(name, arguments)).await;
         format!("{:?}", result.expect_err("the call must fail"))
+    }
+
+    /// REV-10: once shutdown started, tool calls are refused (a call in
+    /// flight would otherwise launch a browser nothing stops).
+    #[tokio::test]
+    async fn calls_after_shutdown_are_refused() {
+        // Given a handler whose browsers were stopped for shutdown
+        let handler = McpHandler::new_test();
+        handler
+            .shutdown_hook()
+            .stop_all(std::time::Duration::from_secs(1))
+            .await;
+        // When a tool is called
+        let message = error_of(&handler, "list_instances", serde_json::json!({})).await;
+        // Then it is refused
+        assert!(message.contains("shutting down"), "{message}");
     }
 
     /// TOL-01: The tool list has the 0.1.0 names.
