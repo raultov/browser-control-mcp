@@ -165,6 +165,8 @@ pub(crate) struct FirefoxSession {
     pub(crate) own_subscription: RwLock<Option<String>>,
     /// Modules the agent subscribed to through `send_bidi_command`.
     pub(crate) custom_modules: Arc<RwLock<Vec<String>>>,
+    /// The `enable_proxy_auth` handler, replaced (aborted) on a new call.
+    pub(crate) proxy_task: Mutex<ListenerHandles>,
 }
 
 impl FirefoxSession {
@@ -179,6 +181,7 @@ impl FirefoxSession {
             debuggers: Default::default(),
             own_subscription: RwLock::new(None),
             custom_modules: Default::default(),
+            proxy_task: Mutex::new(ListenerHandles::default()),
         }
     }
 
@@ -252,6 +255,8 @@ impl FirefoxSession {
     pub(crate) async fn stop(&self) -> Result<(), BackendError> {
         super::debugger::detach_all(self).await;
         *self.pump.lock().await = ListenerHandles::default();
+        *self.proxy_task.lock().await = ListenerHandles::default();
+        write(&self.custom_modules).clear();
         let browser = self.browser.lock().await.take();
         *write(&self.tabs) = FirefoxTabs::default();
         *write(&self.own_subscription) = None;

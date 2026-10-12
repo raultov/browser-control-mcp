@@ -48,6 +48,15 @@ from a copy of its code: entries describe the differences from that release.
   `--no-firefox-debugger`. `--enable-automation` is reported as ignored on
   Firefox instances by `list_instances`.
 
+- `send_bidi_command` (raw WebDriver BiDi; refuses `session.new`,
+  `session.end`, `browser.close` and removing the server's own subscription;
+  its `session.subscribe` events feed `get_custom_events`) and
+  `send_rdp_request` (raw Firefox RDP, with `thread`/`console`/`root`
+  shortcuts). Firefox only.
+- `enable_proxy_auth` on Firefox (`network.authRequired` →
+  `network.continueWithAuth`, credentials only for 407). **Untested against a
+  real authenticating proxy.**
+
 ### Changed
 - `cdp-browser-lite`'s test mocks are no longer linked into the binary.
 - Dependencies updated to their latest releases; unused test dependencies

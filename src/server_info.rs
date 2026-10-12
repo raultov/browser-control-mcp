@@ -20,7 +20,7 @@ pub const INSTRUCTIONS: &str = concat!(
     "- Browser limits: performance metrics, tracing, WebMCP, WebSocket frames, cookie import and launch features are Chrome only. A tool an instance cannot serve fails with an error naming the tool and the browser; nothing is sent to the browser.\n",
     "- Debugging: set_breakpoint, remove_breakpoint, resume, step_over, evaluate_on_call_frame and search_scripts work on Chrome and Firefox; pause_on_load is Chrome only for now. On Firefox they use the Firefox debugger port, enabled unless the server runs with --no-firefox-debugger; set breakpoints by script URL.\n",
     "- Firefox sessions: a Firefox allows one automation session at a time. Always stop Firefox instances with close_instance or stop_browser when done.\n",
-    "- Raw protocol: send_cdp_command (Chrome).\n",
+    "- Raw protocol: send_cdp_command (Chrome), send_bidi_command and send_rdp_request (Firefox).\n",
     "- Cookie import: with --allow-cookie-import, navigate, open_instance and restart_browser accept copy_cookies: true (Chrome only). Always ask the user before copying their real cookies.\n",
     "- Proxy: with --proxy-server, instances use the proxy and enable_proxy_auth answers proxy (407) authentication challenges.\n",
     "- WebMCP: with --enable-webmcp, Chrome instances expose webmcp_list_tools, webmcp_invoke_tool, webmcp_get_invocation and webmcp_list_invocations."

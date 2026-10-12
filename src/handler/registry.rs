@@ -83,6 +83,26 @@ macro_rules! entry {
     };
 }
 
+/// A Firefox-only tool: on Chrome the capability check refuses it first.
+macro_rules! firefox_only {
+    ($tool:ty, $needs:expr, $firefox:path) => {
+        ToolEntry {
+            tool: <$tool>::tool,
+            gate: Gate::Always,
+            needs: $needs,
+            chrome: |params, _| {
+                Box::pin(async move {
+                    Err(CallToolError::from_message(format!(
+                        "`{}` is Firefox only",
+                        params.name
+                    )))
+                })
+            },
+            firefox: Some(|params, handler| Box::pin($firefox(params, handler))),
+        }
+    };
+}
+
 /// Tools renamed from chrome-debug-mcp, with their new names.
 const RENAMED: &[(&str, &str)] = &[
     ("restart_chrome", "restart_browser"),
@@ -95,6 +115,7 @@ pub(crate) fn table() -> Vec<ToolEntry> {
     tools.extend(debugger_tools());
     tools.extend(instance_tools());
     tools.extend(observation_tools());
+    tools.extend(firefox_tools());
     tools.extend(gated_tools());
     tools
 }
@@ -226,6 +247,22 @@ fn observation_tools() -> Vec<ToolEntry> {
     ]
 }
 
+fn firefox_tools() -> Vec<ToolEntry> {
+    use crate::backend::bidi::raw::{self, SendBidiCommandTool, SendRdpRequestTool};
+    vec![
+        firefox_only!(
+            SendBidiCommandTool,
+            &[Capability::RawBidi],
+            raw::send_bidi_command
+        ),
+        firefox_only!(
+            SendRdpRequestTool,
+            &[Capability::RawRdp],
+            raw::send_rdp_request
+        ),
+    ]
+}
+
 fn gated_tools() -> Vec<ToolEntry> {
     use cdp_domains::fetch::enable_proxy_auth::EnableProxyAuthTool;
     use cdp_domains::webmcp::{GetWebmcpInvocationTool, InvokeWebmcpToolTool};
@@ -235,7 +272,8 @@ fn gated_tools() -> Vec<ToolEntry> {
         entry!(
             EnableProxyAuthTool,
             Gate::ProxyServer,
-            &[Capability::ProxyAuth]
+            &[Capability::ProxyAuth],
+            crate::backend::bidi::proxy::enable_proxy_auth
         ),
         entry!(ListWebmcpToolsTool, Gate::Webmcp, WEBMCP),
         entry!(InvokeWebmcpToolTool, Gate::Webmcp, WEBMCP),
@@ -402,7 +440,7 @@ mod tests {
         handler.proxy.proxy_server = Some("http://p:1".into());
         handler.flags.enable_webmcp = true;
         let listed = names(listed_tools(&handler));
-        assert_eq!(listed.len(), 35);
+        assert_eq!(listed.len(), 37);
         assert!(listed.contains("restart_browser") && listed.contains("stop_browser"));
         assert!(!listed.contains("restart_chrome") && !listed.contains("stop_chrome"));
     }
@@ -578,5 +616,27 @@ mod tests {
         let args = serde_json::json!({"instance_id": "ff", "type_filter": "websocket"});
         let message = error_of(&handler, "get_network_logs", args).await;
         assert!(message.contains("WebSocket frame"), "{message}");
+    }
+
+    /// RDP-13 / CAP-06: raw Firefox tools need their protocol and the debugger port.
+    #[tokio::test]
+    async fn raw_rdp_needs_rdp() {
+        let mut handler = handler_with_firefox();
+        handler.firefox_spec.firefox.no_firefox_debugger = true;
+        let args =
+            serde_json::json!({"instance_id": "ff", "to": "root", "request_type": "listTabs"});
+        let message = error_of(&handler, "send_rdp_request", args).await;
+        assert!(message.contains("--no-firefox-debugger"), "{message}");
+        let chrome = McpHandler::new_test();
+        let message = error_of(
+            &chrome,
+            "send_bidi_command",
+            serde_json::json!({"method": "x.y"}),
+        )
+        .await;
+        assert!(
+            message.contains("not available on Chrome (CDP)"),
+            "{message}"
+        );
     }
 }

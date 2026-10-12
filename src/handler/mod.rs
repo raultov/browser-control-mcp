@@ -1172,8 +1172,8 @@ mod tests {
         assert!(result.is_ok());
         let tools = result.unwrap().tools;
 
-        // Without proxy and webmcp, 30 tools are listed
-        assert_eq!(tools.len(), 30);
+        // Without proxy and webmcp, 32 tools are listed
+        assert_eq!(tools.len(), 32);
         let tool_names: Vec<String> = tools.into_iter().map(|t| t.name).collect();
         assert!(tool_names.contains(&"scroll".to_string()));
         assert!(tool_names.contains(&"capture_screenshot".to_string()));
@@ -1204,7 +1204,7 @@ mod tests {
         let tools = result.unwrap().tools;
 
         // With proxy configured (and webmcp disabled), 31 tools are listed
-        assert_eq!(tools.len(), 31);
+        assert_eq!(tools.len(), 33);
         let tool_names: Vec<String> = tools.into_iter().map(|t| t.name).collect();
         assert!(tool_names.contains(&"enable_proxy_auth".to_string()));
     }
@@ -1223,7 +1223,7 @@ mod tests {
         let tools = result.unwrap().tools;
 
         // With webmcp configured (30 + 4 = 34 tools)
-        assert_eq!(tools.len(), 34);
+        assert_eq!(tools.len(), 36);
         let tool_names: Vec<String> = tools.into_iter().map(|t| t.name).collect();
         assert!(tool_names.contains(&"webmcp_list_tools".to_string()));
         assert!(tool_names.contains(&"webmcp_invoke_tool".to_string()));

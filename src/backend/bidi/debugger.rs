@@ -355,6 +355,30 @@ pub(crate) async fn detach_tab(session: &FirefoxSession, tab_id: &str) {
     }
 }
 
+/// An RDP actor id, with the shortcuts `thread`, `console` (the tab's
+/// debugger, attached if needed) and `root`.
+pub(crate) async fn resolve_actor(
+    session: &FirefoxSession,
+    tab_id: Option<&str>,
+    to: &str,
+) -> Result<String, BackendError> {
+    match to {
+        "thread" => {
+            with_debugger(session, tab_id, async |entry| {
+                Ok(entry.debugger.thread_actor())
+            })
+            .await
+        }
+        "console" => {
+            with_debugger(session, tab_id, async |entry| {
+                Ok(entry.debugger.console_actor())
+            })
+            .await
+        }
+        other => Ok(other.to_string()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -36,12 +36,12 @@ pub struct EnableProxyAuthTool {
 
 /// Credentials handed to the browser for proxy (407) challenges only.
 #[derive(Clone)]
-struct ProxyCredentials {
-    username: String,
-    password: String,
+pub(crate) struct ProxyCredentials {
+    pub(crate) username: String,
+    pub(crate) password: String,
 }
 
-const DEFAULT_PREWARM_URL: &str = "http://api.ipify.org?format=json";
+pub(crate) const DEFAULT_PREWARM_URL: &str = "http://api.ipify.org?format=json";
 
 impl EnableProxyAuthTool {
     pub async fn handle(
@@ -89,7 +89,10 @@ impl EnableProxyAuthTool {
     }
 
     /// Tool arguments first, then the command line.
-    fn credentials(&self, handler: &McpHandler) -> Result<ProxyCredentials, CallToolError> {
+    pub(crate) fn credentials(
+        &self,
+        handler: &McpHandler,
+    ) -> Result<ProxyCredentials, CallToolError> {
         let username = self
             .username
             .clone()
