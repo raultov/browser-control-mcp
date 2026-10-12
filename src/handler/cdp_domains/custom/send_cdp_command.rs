@@ -37,7 +37,7 @@ impl SendCdpCommandTool {
             _ => serde_json::Value::Object(Default::default()),
         };
 
-        if handler.local_only
+        if handler.flags.local
             && let Some(url) = crate::util::url::raw_navigation_url(&tool.method, &parsed_params)
             && !is_local_address(url)
         {
@@ -139,7 +139,7 @@ mod tests {
     #[tokio::test]
     async fn test_send_cdp_command_local_only_restriction() {
         let mut handler = McpHandler::new_test();
-        handler.local_only = true;
+        handler.flags.local = true;
 
         let params: CallToolRequestParams = serde_json::from_value(json!({
             "name": "send_cdp_command",
@@ -170,7 +170,7 @@ mod tests {
 
         let port = spawn_mock_chrome_server().await;
         let mut handler_local2 = McpHandler::new_test_with_port(port);
-        handler_local2.local_only = true;
+        handler_local2.flags.local = true;
 
         let result_local = SendCdpCommandTool::handle(params_local, &handler_local2).await;
         assert!(
@@ -202,7 +202,14 @@ mod tests {
                 .tabs
                 .write()
                 .unwrap()
-                .register_tab(tab, None, "https://example.test".into(), false)
+                .register_tab(
+                    tab,
+                    crate::handler::chrome_instance::tab_registry::NewTab::new(
+                        None,
+                        "https://example.test",
+                    ),
+                    false,
+                )
                 .expect("register tab")
         };
 
@@ -237,7 +244,7 @@ mod tests {
         for method in ["Page.navigate", "Target.createTarget"] {
             // Given --local and a browser nobody can reach (any command would fail)
             let mut handler = McpHandler::new_test_with_port(0);
-            handler.local_only = true;
+            handler.flags.local = true;
             // When a raw navigation to an external URL is sent
             let call: CallToolRequestParams = serde_json::from_value(serde_json::json!({
                 "name": "send_cdp_command",

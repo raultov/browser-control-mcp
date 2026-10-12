@@ -14,12 +14,10 @@
 #   cognitive_complexity  nursery     allow  -> enabled in Cargo.toml [lints.clippy]
 
 # clippy::too_many_arguments (default: 7). Counts &self: use small request structs.
-# F1 baseline (imported code): set from 4 to 5; target 4, ratcheted in F3
-too-many-arguments-threshold = 5
+too-many-arguments-threshold = 4
 
 # clippy::type_complexity (default: 250).
-# F1 baseline (imported code): set from 150 to 190; target 150, ratcheted in F3
-type-complexity-threshold = 190
+type-complexity-threshold = 150
 
 # clippy::excessive_nesting (default: 0 = disabled).
 # F1 baseline (imported code): set from 5 to 8; target 5, ratcheted in F3
@@ -37,9 +35,8 @@ cognitive-complexity-threshold = 26
 
 # Hygiene lints (Cargo.toml [lints.clippy]) are relaxed in test code only.
 # These are configuration, not #[allow] attributes.
-# clippy::struct_excessive_bools (pedantic, default 3). F1 baseline: Args and
-# HandlerParams have 6 bools; set to 6, target 3 (the default), ratcheted in F3.
-max-struct-bools = 6
+# clippy::struct_excessive_bools (pedantic): default `max-struct-bools = 3`
+# (F1 baseline 6 ratcheted back in F3 by grouping flags into small structs).
 
 allow-unwrap-in-tests = true
 allow-expect-in-tests = true

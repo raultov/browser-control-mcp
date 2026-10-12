@@ -4,31 +4,18 @@ use clap::Parser;
 
 /// Command-line arguments of `browser-control-mcp`.
 ///
-/// `Debug` is written by hand: it redacts the proxy credentials, including a
-/// `user:pass@` embedded in `--proxy-server`, so the arguments can be logged.
-#[derive(Parser)]
+/// Flags are grouped in small structs (`--help` lists them all the same):
+/// what the browser looks like, what the server allows, and the proxy.
+#[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 pub struct Args {
-    /// Restricted to local addresses only (localhost, 127.0.0.1, 192.168.x.x, *.local)
-    #[arg(long)]
-    pub local: bool,
+    /// How browsers are launched.
+    #[command(flatten)]
+    pub browser: BrowserFlags,
 
-    /// Enables the 'Chrome is being controlled by automated test software' infobar
-    #[arg(long)]
-    pub enable_automation: bool,
-
-    /// Use the default user profile (sessions, cookies, etc.) instead of a fresh one.
-    /// This starts Chrome without --user-data-dir.
-    #[arg(long)]
-    pub user_profile: bool,
-
-    /// Allows tools to copy cookies from the user's real Chrome installation into isolated profile instances.
-    #[arg(long)]
-    pub allow_cookie_import: bool,
-
-    /// Run Chrome in headless mode (no GUI). Required for Docker environments.
-    #[arg(long)]
-    pub headless: bool,
+    /// What the server allows the agent to do.
+    #[command(flatten)]
+    pub server: ServerFlags,
 
     /// Target host for Chrome remote debugging (default: 127.0.0.1)
     #[arg(long, default_value = "127.0.0.1")]
@@ -42,6 +29,48 @@ pub struct Args {
     #[arg(long, default_value_t = 8)]
     pub max_instances: usize,
 
+    /// Proxy every browser goes through.
+    #[command(flatten)]
+    pub proxy: ProxyArgs,
+}
+
+/// Launch flags shared by every browser instance.
+#[derive(clap::Args, Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct BrowserFlags {
+    /// Run Chrome in headless mode (no GUI). Required for Docker environments.
+    #[arg(long)]
+    pub headless: bool,
+
+    /// Enables the 'Chrome is being controlled by automated test software' infobar
+    #[arg(long)]
+    pub enable_automation: bool,
+
+    /// Use the default user profile (sessions, cookies, etc.) instead of a fresh one.
+    /// This starts Chrome without --user-data-dir.
+    #[arg(long)]
+    pub user_profile: bool,
+}
+
+/// Server-wide permissions and optional tool groups.
+#[derive(clap::Args, Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ServerFlags {
+    /// Restricted to local addresses only (localhost, 127.0.0.1, 192.168.x.x, *.local)
+    #[arg(long)]
+    pub local: bool,
+
+    /// Allows tools to copy cookies from the user's real Chrome installation into isolated profile instances.
+    #[arg(long)]
+    pub allow_cookie_import: bool,
+
+    /// Enables WebMCP testing features in Chrome (--enable-features=WebMCPTesting,DevToolsWebMCPSupport) and exposes WebMCP tools.
+    #[arg(long, alias = "webmcp")]
+    pub enable_webmcp: bool,
+}
+
+/// Proxy settings. `Debug` redacts the credentials, including a
+/// `user:pass@` embedded in the server URL, so they can be logged.
+#[derive(clap::Args, Clone, Default, PartialEq, Eq)]
+pub struct ProxyArgs {
     /// Proxy server URL (e.g. `http://proxy.example.com:8080`). When configured, Chrome instances route traffic through this proxy and proxy tools are exposed.
     #[arg(long, alias = "proxy")]
     pub proxy_server: Option<String>,
@@ -53,34 +82,19 @@ pub struct Args {
     /// Proxy authentication password
     #[arg(long)]
     pub proxy_password: Option<String>,
-
-    /// Enables WebMCP testing features in Chrome (--enable-features=WebMCPTesting,DevToolsWebMCPSupport) and exposes WebMCP tools.
-    #[arg(long, alias = "webmcp")]
-    pub enable_webmcp: bool,
 }
 
-impl std::fmt::Debug for Args {
+impl std::fmt::Debug for ProxyArgs {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let secret = |v: &Option<String>| v.as_ref().map(|_| REDACTED);
-        f.debug_struct("Args")
-            .field("local", &self.local)
-            .field("enable_automation", &self.enable_automation)
-            .field("user_profile", &self.user_profile)
-            .field("allow_cookie_import", &self.allow_cookie_import)
-            .field("headless", &self.headless)
-            .field("host", &self.host)
-            .field("port", &self.port)
-            .field("max_instances", &self.max_instances)
-            .field(
-                "proxy_server",
-                &self
-                    .proxy_server
-                    .as_deref()
-                    .map(crate::util::url::without_userinfo),
-            )
+        let server = self
+            .proxy_server
+            .as_deref()
+            .map(crate::util::url::without_userinfo);
+        f.debug_struct("ProxyArgs")
+            .field("proxy_server", &server)
             .field("proxy_username", &secret(&self.proxy_username))
             .field("proxy_password", &secret(&self.proxy_password))
-            .field("enable_webmcp", &self.enable_webmcp)
             .finish()
     }
 }
@@ -99,39 +113,39 @@ mod tests {
         assert_eq!(args.port, 9222);
         assert_eq!(args.host, "127.0.0.1");
         assert_eq!(args.max_instances, 8);
-        assert!(!args.local);
-        assert!(!args.enable_automation);
-        assert!(!args.headless);
-        assert!(!args.user_profile);
-        assert!(!args.allow_cookie_import);
-        assert!(!args.enable_webmcp);
-        assert_eq!(args.proxy_server, None);
-        assert_eq!(args.proxy_username, None);
-        assert_eq!(args.proxy_password, None);
+        assert!(!args.server.local);
+        assert!(!args.browser.enable_automation);
+        assert!(!args.browser.headless);
+        assert!(!args.browser.user_profile);
+        assert!(!args.server.allow_cookie_import);
+        assert!(!args.server.enable_webmcp);
+        assert_eq!(args.proxy.proxy_server, None);
+        assert_eq!(args.proxy.proxy_username, None);
+        assert_eq!(args.proxy.proxy_password, None);
     }
 
     #[test]
     fn test_args_parsing_allow_cookie_import() {
         let args = Args::parse_from(["browser-control-mcp", "--allow-cookie-import"]);
-        assert!(args.allow_cookie_import);
+        assert!(args.server.allow_cookie_import);
     }
 
     #[test]
     fn test_args_parsing_enable_automation() {
         let args = Args::parse_from(["browser-control-mcp", "--enable-automation"]);
-        assert!(args.enable_automation);
+        assert!(args.browser.enable_automation);
     }
 
     #[test]
     fn test_args_parsing_user_profile() {
         let args = Args::parse_from(["browser-control-mcp", "--user-profile"]);
-        assert!(args.user_profile);
+        assert!(args.browser.user_profile);
     }
 
     #[test]
     fn test_args_parsing_local() {
         let args = Args::parse_from(["browser-control-mcp", "--local"]);
-        assert!(args.local);
+        assert!(args.server.local);
     }
 
     #[test]
@@ -143,7 +157,7 @@ mod tests {
     #[test]
     fn test_args_parsing_headless() {
         let args = Args::parse_from(["browser-control-mcp", "--headless"]);
-        assert!(args.headless);
+        assert!(args.browser.headless);
     }
 
     #[test]
@@ -166,7 +180,7 @@ mod tests {
             "http://proxy.example.com:8080",
         ]);
         assert_eq!(
-            args.proxy_server,
+            args.proxy.proxy_server,
             Some("http://proxy.example.com:8080".to_string())
         );
     }
@@ -174,10 +188,10 @@ mod tests {
     #[test]
     fn test_args_parsing_enable_webmcp() {
         let args = Args::parse_from(["browser-control-mcp", "--enable-webmcp"]);
-        assert!(args.enable_webmcp);
+        assert!(args.server.enable_webmcp);
 
         let args_alias = Args::parse_from(["browser-control-mcp", "--webmcp"]);
-        assert!(args_alias.enable_webmcp);
+        assert!(args_alias.server.enable_webmcp);
     }
 
     #[test]
@@ -192,11 +206,11 @@ mod tests {
             "pass",
         ]);
         assert_eq!(
-            args.proxy_server,
+            args.proxy.proxy_server,
             Some("http://proxy.example.com:8080".to_string())
         );
-        assert_eq!(args.proxy_username, Some("user".to_string()));
-        assert_eq!(args.proxy_password, Some("pass".to_string()));
+        assert_eq!(args.proxy.proxy_username, Some("user".to_string()));
+        assert_eq!(args.proxy.proxy_password, Some("pass".to_string()));
     }
 
     /// SEC-01: Args Debug never prints secrets.

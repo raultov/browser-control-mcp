@@ -238,7 +238,14 @@ mod tests {
             .tabs
             .write()
             .unwrap()
-            .register_tab(tab, None, "https://example.test".into(), false)
+            .register_tab(
+                tab,
+                crate::handler::chrome_instance::tab_registry::NewTab::new(
+                    None,
+                    "https://example.test",
+                ),
+                false,
+            )
             .expect("register tab")
     }
 

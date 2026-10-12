@@ -41,7 +41,7 @@ impl OpenTabTool {
             .url
             .clone()
             .unwrap_or_else(|| "about:blank".to_string());
-        if handler.local_only && !crate::handler::is_local_address(&url) {
+        if handler.flags.local && !crate::handler::is_local_address(&url) {
             return Err(CallToolError::from_message(format!(
                 "Navigation to '{}' is blocked by local-only restrictions.",
                 url
@@ -64,8 +64,7 @@ impl OpenTabTool {
             registry
                 .register_tab(
                     tab.clone(),
-                    args.label.clone(),
-                    url.clone(),
+                    super::tab_registry::NewTab::new(args.label.clone(), url.clone()),
                     session.enable_webmcp,
                 )
                 .map_err(|e| {

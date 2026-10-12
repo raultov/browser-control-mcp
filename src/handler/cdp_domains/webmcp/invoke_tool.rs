@@ -246,7 +246,14 @@ mod tests {
 
             let mut registry = crate::util::sync::write(&session.tabs);
             registry
-                .register_tab(tab, None, "https://example.test".into(), false)
+                .register_tab(
+                    tab,
+                    crate::handler::chrome_instance::tab_registry::NewTab::new(
+                        None,
+                        "https://example.test",
+                    ),
+                    false,
+                )
                 .expect("register tab")
         };
 

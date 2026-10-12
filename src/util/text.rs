@@ -1,17 +1,19 @@
 //! Text helpers that must never panic on multi-byte input.
 
-/// The slice of `text` from `before` bytes ahead of `pos` to `after` bytes
-/// past `pos + len`, widened to the nearest UTF-8 character boundaries so it
-/// can never split a character (slicing by raw byte offsets panicked).
-pub fn context_window(text: &str, pos: usize, len: usize, before: usize, after: usize) -> &str {
-    let mut start = pos.saturating_sub(before).min(text.len());
+/// The slice of `text` from `before` bytes ahead of `matched` to `after`
+/// bytes past it, widened to the nearest UTF-8 character boundaries so it can
+/// never split a character (slicing by raw byte offsets panicked).
+pub fn context_window(
+    text: &str,
+    matched: std::ops::Range<usize>,
+    before: usize,
+    after: usize,
+) -> &str {
+    let mut start = matched.start.saturating_sub(before).min(text.len());
     while !text.is_char_boundary(start) {
         start -= 1;
     }
-    let mut end = pos
-        .saturating_add(len)
-        .saturating_add(after)
-        .min(text.len());
+    let mut end = matched.end.saturating_add(after).min(text.len());
     while !text.is_char_boundary(end) {
         end += 1;
     }
@@ -31,7 +33,7 @@ pub fn dom_query_report(html: &str, query: Option<&str>, before: usize, after: u
             pos,
             before,
             after,
-            context_window(html, pos, query.len(), before, after)
+            context_window(html, pos..pos + query.len(), before, after)
         ),
         None => format!("Query '{}' not found in the DOM.", query),
     }
@@ -57,7 +59,7 @@ mod tests {
 
     #[test]
     fn context_window_clamps_to_the_text() {
-        assert_eq!(context_window("abc", 1, 1, 10, 10), "abc");
-        assert_eq!(context_window("abcdef", 2, 2, 1, 1), "bcde");
+        assert_eq!(context_window("abc", 1..2, 10, 10), "abc");
+        assert_eq!(context_window("abcdef", 2..4, 1, 1), "bcde");
     }
 }

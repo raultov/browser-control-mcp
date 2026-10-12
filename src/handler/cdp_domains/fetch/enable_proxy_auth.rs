@@ -59,7 +59,7 @@ impl EnableProxyAuthTool {
             .prewarm_url
             .clone()
             .unwrap_or_else(|| DEFAULT_PREWARM_URL.to_string());
-        if handler.local_only && !crate::handler::is_local_address(&prewarm_url) {
+        if handler.flags.local && !crate::handler::is_local_address(&prewarm_url) {
             return Err(CallToolError::from_message(format!(
                 "Navigation to '{prewarm_url}' is blocked: the server runs with --local"
             )));
@@ -93,7 +93,7 @@ impl EnableProxyAuthTool {
         let username = self
             .username
             .clone()
-            .or_else(|| handler.proxy_username.clone())
+            .or_else(|| handler.proxy.proxy_username.clone())
             .ok_or_else(|| {
                 CallToolError::from_message(
                     "Proxy credentials missing: username required. Provide 'username' in tool arguments or start browser-control-mcp with --proxy-username.",
@@ -102,7 +102,7 @@ impl EnableProxyAuthTool {
         let password = self
             .password
             .clone()
-            .or_else(|| handler.proxy_password.clone())
+            .or_else(|| handler.proxy.proxy_password.clone())
             .ok_or_else(|| {
                 CallToolError::from_message(
                     "Proxy credentials missing: password required. Provide 'password' in tool arguments or start browser-control-mcp with --proxy-password.",
@@ -281,7 +281,7 @@ mod tests {
         let port = spawn_mock_chrome_server().await;
 
         let mut handler = McpHandler::new_test();
-        handler.proxy_server = Some("http://proxy.example.com:8080".into());
+        handler.proxy.proxy_server = Some("http://proxy.example.com:8080".into());
         Arc::get_mut(&mut handler.default_session)
             .unwrap()
             .chrome_manager = Arc::new(Mutex::new(MockChromeManager::new(port)));
@@ -313,9 +313,9 @@ mod tests {
         let port = spawn_mock_chrome_server().await;
 
         let mut handler = McpHandler::new_test();
-        handler.proxy_server = Some("http://proxy.example.com:8080".into());
-        handler.proxy_username = Some("cli_user".into());
-        handler.proxy_password = Some("cli_pass".into());
+        handler.proxy.proxy_server = Some("http://proxy.example.com:8080".into());
+        handler.proxy.proxy_username = Some("cli_user".into());
+        handler.proxy.proxy_password = Some("cli_pass".into());
         Arc::get_mut(&mut handler.default_session)
             .unwrap()
             .chrome_manager = Arc::new(Mutex::new(MockChromeManager::new(port)));
@@ -340,7 +340,7 @@ mod tests {
 
     fn proxy_handler(port: u16) -> McpHandler {
         let mut handler = McpHandler::new_test();
-        handler.proxy_server = Some("http://proxy.example.com:8080".into());
+        handler.proxy.proxy_server = Some("http://proxy.example.com:8080".into());
         Arc::get_mut(&mut handler.default_session)
             .unwrap()
             .chrome_manager = Arc::new(Mutex::new(MockChromeManager::new(port)));
@@ -409,7 +409,7 @@ mod tests {
     async fn local_mode_blocks_prewarm_url() {
         // Given --local and a browser nobody can reach (any command would fail)
         let mut handler = proxy_handler(dead_port());
-        handler.local_only = true;
+        handler.flags.local = true;
         // When enable_proxy_auth gets a non-local pre-warm URL
         let args = json!({"username": "u", "password": "p", "prewarm_url": "https://example.com"});
         let result = EnableProxyAuthTool::handle(call(args), &handler).await;

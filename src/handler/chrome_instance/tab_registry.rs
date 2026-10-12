@@ -44,6 +44,23 @@ impl TabEntry {
     }
 }
 
+/// What the caller knows about a tab it registers.
+pub(crate) struct NewTab {
+    /// Optional unique label chosen by the agent.
+    pub(crate) label: Option<String>,
+    /// URL at registration time.
+    pub(crate) url: String,
+}
+
+impl NewTab {
+    pub(crate) fn new(label: Option<String>, url: impl Into<String>) -> Self {
+        Self {
+            label,
+            url: url.into(),
+        }
+    }
+}
+
 pub(crate) struct TabRegistry {
     pub(crate) tabs: HashMap<TabId, TabEntry>,
     pub(crate) active_tab_id: Option<TabId>,
@@ -64,10 +81,10 @@ impl TabRegistry {
     pub(crate) fn register_tab(
         &mut self,
         tab: Tab,
-        label: Option<String>,
-        url: String,
+        info: NewTab,
         enable_webmcp: bool,
     ) -> Result<TabId, String> {
+        let NewTab { label, url } = info;
         if self.tabs.len() >= self.max_tabs {
             return Err(format!("Tab limit reached ({})", self.max_tabs));
         }

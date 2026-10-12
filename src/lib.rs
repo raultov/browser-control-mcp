@@ -90,15 +90,9 @@ fn build_handler(args: Args) -> McpHandler {
     let handler = McpHandler::new_with_params(HandlerParams {
         host: args.host,
         port: args.port,
-        local_only: args.local,
-        enable_automation: args.enable_automation,
-        headless: args.headless,
-        user_profile: args.user_profile,
-        allow_cookie_import: args.allow_cookie_import,
-        proxy_server: args.proxy_server,
-        proxy_username: args.proxy_username,
-        proxy_password: args.proxy_password,
-        enable_webmcp: args.enable_webmcp,
+        browser: args.browser,
+        server: args.server,
+        proxy: args.proxy,
     });
     handler
         .registry

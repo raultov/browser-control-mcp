@@ -74,8 +74,7 @@ async fn process_target_event(
                             let mut registry = crate::util::sync::write(tabs);
                             if let Ok(tab_id) = registry.register_tab(
                                 tab.clone(),
-                                None,
-                                url.to_string(),
+                                super::tab_registry::NewTab::new(None, url),
                                 enable_webmcp,
                             ) {
                                 let states = registry

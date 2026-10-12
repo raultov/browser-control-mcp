@@ -45,8 +45,8 @@ impl RestartChromeTool {
         let seed_report = super::cookie_seed::prepare_seed_report(
             tool.copy_cookies == Some(true),
             tool.source_profile.as_deref(),
-            handler.allow_cookie_import,
-            handler.base_params.user_profile,
+            handler.flags.allow_cookie_import,
+            handler.base_params.browser.user_profile,
         )
         .map_err(CallToolError::from_message)?;
 
@@ -61,7 +61,9 @@ impl RestartChromeTool {
             )));
         }
 
-        let proxy = tool.proxy_server.or_else(|| handler.proxy_server.clone());
+        let proxy = tool
+            .proxy_server
+            .or_else(|| handler.proxy.proxy_server.clone());
         manager.set_proxy(proxy);
         manager.set_seed_profile(seed_report);
 

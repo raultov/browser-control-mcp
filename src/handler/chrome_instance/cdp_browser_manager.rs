@@ -360,7 +360,14 @@ mod tests {
     use crate::handler::chrome_instance::launch::LaunchParams;
 
     fn params(port: u16) -> LaunchParams {
-        LaunchParams::new("127.0.0.1".into(), port, false, true, false)
+        LaunchParams::new(
+            "127.0.0.1".into(),
+            port,
+            crate::cli::BrowserFlags {
+                headless: true,
+                ..Default::default()
+            },
+        )
     }
 
     #[tokio::test]

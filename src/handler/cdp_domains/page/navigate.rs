@@ -38,7 +38,7 @@ impl NavigateTool {
             .map_err(|e| CallToolError::from_message(e.to_string()))?;
         let session = handler.session(args.instance_id.clone()).await?;
 
-        if handler.local_only && !is_local_address(&args.url) {
+        if handler.flags.local && !is_local_address(&args.url) {
             return Err(CallToolError::from_message(format!(
                 "Navigation to '{}' is blocked. This MCP server is running with the 'local' argument, which restricts navigation to local addresses only (localhost, 127.0.0.1, 192.168.x.x, or *.local). To allow navigation to external addresses, restart the MCP server without the 'local' argument.",
                 args.url
@@ -46,12 +46,12 @@ impl NavigateTool {
         }
 
         if args.copy_cookies == Some(true) {
-            if !handler.allow_cookie_import {
+            if !handler.flags.allow_cookie_import {
                 return Err(CallToolError::from_message(
                     "Cookie import is disabled. Restart the MCP server with the '--allow-cookie-import' argument to enable it.".to_string()
                 ));
             }
-            if handler.base_params.user_profile {
+            if handler.base_params.browser.user_profile {
                 return Err(CallToolError::from_message(
                     "Cookie import is redundant when running in --user-profile mode, as the user's real profile is already in use.".to_string()
                 ));
@@ -212,7 +212,7 @@ mod tests {
     #[tokio::test]
     async fn test_navigate_local_only_restriction() {
         let mut handler = McpHandler::new_test();
-        handler.local_only = true;
+        handler.flags.local = true;
 
         let params: CallToolRequestParams = serde_json::from_value(json!({
             "name": "navigate",
@@ -241,7 +241,7 @@ mod tests {
 
         let port = spawn_mock_chrome_server().await;
         let mut handler_local = McpHandler::new_test_with_port(port);
-        handler_local.local_only = true;
+        handler_local.flags.local = true;
 
         let result_local = NavigateTool::handle(params_local, &handler_local).await;
         assert!(
@@ -254,7 +254,7 @@ mod tests {
     #[tokio::test]
     async fn test_navigate_local_only_addresses() {
         let mut handler = McpHandler::new_test();
-        handler.local_only = true;
+        handler.flags.local = true;
         let port = spawn_mock_chrome_server().await;
         Arc::get_mut(&mut handler.default_session)
             .unwrap()
@@ -320,8 +320,8 @@ mod tests {
     #[tokio::test]
     async fn test_navigate_cookie_import_user_profile_error() {
         let mut handler = McpHandler::new_test();
-        handler.allow_cookie_import = true;
-        handler.base_params.user_profile = true;
+        handler.flags.allow_cookie_import = true;
+        handler.base_params.browser.user_profile = true;
 
         let params: CallToolRequestParams = serde_json::from_value(json!({
             "name": "navigate",

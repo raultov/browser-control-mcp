@@ -42,7 +42,14 @@ const TIMEOUT_30S: Duration = Duration::from_secs(30);
 const POLL_INTERVAL: Duration = Duration::from_millis(200);
 
 fn local_params(port: u16) -> LaunchParams {
-    LaunchParams::new("127.0.0.1".into(), port, false, true, false)
+    LaunchParams::new(
+        "127.0.0.1".into(),
+        port,
+        crate::cli::BrowserFlags {
+            headless: true,
+            ..Default::default()
+        },
+    )
 }
 
 async fn wait_for_port_close(host: &str, port: u16, timeout: Duration) -> bool {
@@ -317,7 +324,10 @@ async fn given_real_chrome_when_multiple_tabs_opened_then_console_logs_are_isola
     let handler = crate::handler::McpHandler::new_with_params(crate::handler::HandlerParams {
         host: "127.0.0.1".into(),
         port,
-        headless: true,
+        browser: crate::cli::BrowserFlags {
+            headless: true,
+            ..Default::default()
+        },
         ..Default::default()
     });
 

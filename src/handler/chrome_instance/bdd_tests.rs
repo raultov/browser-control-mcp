@@ -146,7 +146,10 @@ mod tests {
     async fn given_user_profile_mode_when_opening_second_instance_then_rejected_with_reason() {
         // Start handler with --user-profile
         let handler = McpHandler::new_with_params(HandlerParams {
-            user_profile: true,
+            browser: crate::cli::BrowserFlags {
+                user_profile: true,
+                ..Default::default()
+            },
             ..Default::default()
         });
 

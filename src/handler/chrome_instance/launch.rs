@@ -48,10 +48,8 @@ impl ChromeFeature {
 pub(crate) struct LaunchParams {
     host: String,
     port: u16,
-    headless: bool,
-    enable_automation: bool,
+    pub(crate) browser: crate::cli::BrowserFlags,
     pub(crate) enable_webmcp: bool,
-    pub(crate) user_profile: bool,
     pub(crate) secondary: bool,
     proxy: Option<String>,
     features: Vec<ChromeFeature>,
@@ -66,19 +64,11 @@ pub(crate) struct LaunchPlan {
 }
 
 impl LaunchParams {
-    pub(crate) fn new(
-        host: String,
-        port: u16,
-        enable_automation: bool,
-        headless: bool,
-        user_profile: bool,
-    ) -> Self {
+    pub(crate) fn new(host: String, port: u16, browser: crate::cli::BrowserFlags) -> Self {
         Self {
             host,
             port,
-            enable_automation,
-            headless,
-            user_profile,
+            browser,
             enable_webmcp: false,
             secondary: false,
             proxy: None,
@@ -121,7 +111,7 @@ impl LaunchParams {
         };
         let profile = if let Some(dir) = &self.seed_profile {
             ProfileMode::Persistent(dir.clone())
-        } else if self.user_profile {
+        } else if self.browser.user_profile {
             ProfileMode::UserDefault
         } else {
             // Fresh profile per launch: no cookies, storage, or session state
@@ -133,7 +123,7 @@ impl LaunchParams {
 
         let _port = if self.secondary { 0 } else { self.port };
 
-        let mut extra_args = if self.enable_automation {
+        let mut extra_args = if self.browser.enable_automation {
             Vec::new()
         } else {
             vec!["--disable-infobars".to_string()]
@@ -167,8 +157,8 @@ impl LaunchParams {
             .mode(plan.mode.clone())
             .host(self.host.clone())
             .port(self.resolve_port())
-            .headless(self.headless)
-            .enable_automation(self.enable_automation)
+            .headless(self.browser.headless)
+            .enable_automation(self.browser.enable_automation)
             .profile(plan.profile.clone())
             .args(plan.extra_args.iter().cloned())
             .keep_alive_on_drop(false)
@@ -200,13 +190,26 @@ fn is_local_host(host: &str) -> bool {
 mod tests {
     use super::*;
 
+    /// Launch flags in the order the imported tests listed them.
+    fn flags(
+        enable_automation: bool,
+        headless: bool,
+        user_profile: bool,
+    ) -> crate::cli::BrowserFlags {
+        crate::cli::BrowserFlags {
+            headless,
+            enable_automation,
+            user_profile,
+        }
+    }
+
     fn default_params() -> LaunchParams {
-        LaunchParams::new("127.0.0.1".into(), 9222, false, true, false)
+        LaunchParams::new("127.0.0.1".into(), 9222, flags(false, true, false))
     }
 
     #[test]
     fn given_secondary_params_when_planning_then_mode_is_launch_new_with_ephemeral_port() {
-        let mut params = LaunchParams::new("127.0.0.1".into(), 9222, false, false, false);
+        let mut params = LaunchParams::new("127.0.0.1".into(), 9222, flags(false, false, false));
         params.secondary = true;
         let plan = params.plan();
         assert_eq!(plan.mode, LaunchMode::LaunchNew);
@@ -216,7 +219,7 @@ mod tests {
 
     #[test]
     fn given_primary_params_on_local_host_when_planning_then_mode_is_auto() {
-        let params = LaunchParams::new("127.0.0.1".into(), 9222, false, false, false);
+        let params = LaunchParams::new("127.0.0.1".into(), 9222, flags(false, false, false));
         let plan = params.plan();
         assert_eq!(plan.mode, LaunchMode::Auto);
     }
@@ -224,7 +227,7 @@ mod tests {
     #[test]
     fn given_local_host_when_planning_then_mode_is_auto() {
         for host in ["127.0.0.1", "localhost", "::1", "LOCALHOST"] {
-            let params = LaunchParams::new(host.into(), 9222, false, false, false);
+            let params = LaunchParams::new(host.into(), 9222, flags(false, false, false));
             assert_eq!(
                 params.plan().mode,
                 LaunchMode::Auto,
@@ -241,7 +244,7 @@ mod tests {
             "example.com",
             "host.docker.internal",
         ] {
-            let params = LaunchParams::new(host.into(), 9222, false, false, false);
+            let params = LaunchParams::new(host.into(), 9222, flags(false, false, false));
             assert_eq!(
                 params.plan().mode,
                 LaunchMode::AttachOnly,
@@ -260,7 +263,7 @@ mod tests {
 
     #[test]
     fn given_user_profile_when_planning_then_profile_mode_is_user_default() {
-        let params = LaunchParams::new("127.0.0.1".into(), 9222, false, false, true);
+        let params = LaunchParams::new("127.0.0.1".into(), 9222, flags(false, false, true));
         assert_eq!(params.plan().profile, ProfileMode::UserDefault);
     }
 
@@ -282,7 +285,7 @@ mod tests {
 
     #[test]
     fn given_automation_enabled_when_planning_then_no_extra_args() {
-        let params = LaunchParams::new("127.0.0.1".into(), 9222, true, false, false);
+        let params = LaunchParams::new("127.0.0.1".into(), 9222, flags(true, false, false));
         assert!(params.plan().extra_args.is_empty());
     }
 
@@ -320,7 +323,7 @@ mod tests {
 
     #[test]
     fn given_webgl_software_feature_when_planning_then_its_switches_are_appended() {
-        let mut params = LaunchParams::new("127.0.0.1".into(), 9222, true, true, false);
+        let mut params = LaunchParams::new("127.0.0.1".into(), 9222, flags(true, true, false));
         params.set_features(vec![ChromeFeature::WebglSoftware]);
         assert_eq!(
             params.plan().extra_args,

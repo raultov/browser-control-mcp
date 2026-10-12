@@ -187,9 +187,12 @@ pub(crate) fn desktop_session_env() -> Vec<(String, String)> {
     desktop_session_env_with(&lookup, uid)
 }
 
+/// Reads one environment variable (injectable for tests).
+pub(crate) type EnvLookup<'a> = &'a dyn Fn(&str) -> Option<String>;
+
 /// Pure core of [`desktop_session_env`], injectable for tests.
 pub(crate) fn desktop_session_env_with(
-    lookup: &dyn Fn(&str) -> Option<String>,
+    lookup: EnvLookup<'_>,
     uid: Option<u32>,
 ) -> Vec<(String, String)> {
     if cfg!(not(target_os = "linux")) {

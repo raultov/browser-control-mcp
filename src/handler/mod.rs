@@ -591,15 +591,9 @@ impl BrowserSession {
 pub struct HandlerParams {
     pub host: String,
     pub port: u16,
-    pub local_only: bool,
-    pub enable_automation: bool,
-    pub headless: bool,
-    pub user_profile: bool,
-    pub allow_cookie_import: bool,
-    pub proxy_server: Option<String>,
-    pub proxy_username: Option<String>,
-    pub proxy_password: Option<String>,
-    pub enable_webmcp: bool,
+    pub browser: crate::cli::BrowserFlags,
+    pub server: crate::cli::ServerFlags,
+    pub proxy: crate::cli::ProxyArgs,
 }
 
 impl Default for HandlerParams {
@@ -607,15 +601,9 @@ impl Default for HandlerParams {
         Self {
             host: "127.0.0.1".into(),
             port: 9222,
-            local_only: false,
-            enable_automation: false,
-            headless: false,
-            user_profile: false,
-            allow_cookie_import: false,
-            proxy_server: None,
-            proxy_username: None,
-            proxy_password: None,
-            enable_webmcp: false,
+            browser: Default::default(),
+            server: Default::default(),
+            proxy: Default::default(),
         }
     }
 }
@@ -625,12 +613,8 @@ pub struct McpHandler {
     pub(crate) registry: Arc<chrome_instance::registry::Registry>,
     pub(crate) pool: Arc<cdp_browser_lite::BrowserPool>,
     pub(crate) base_params: chrome_instance::launch::LaunchParams,
-    pub(crate) local_only: bool,
-    pub(crate) allow_cookie_import: bool,
-    pub(crate) proxy_server: Option<String>,
-    pub(crate) proxy_username: Option<String>,
-    pub(crate) proxy_password: Option<String>,
-    pub(crate) enable_webmcp: bool,
+    pub(crate) flags: crate::cli::ServerFlags,
+    pub(crate) proxy: crate::cli::ProxyArgs,
     pub(crate) is_test: bool,
 }
 
@@ -687,15 +671,10 @@ impl McpHandler {
 
     pub fn new_with_params(options: HandlerParams) -> Self {
         let port = options.port;
-        let mut params = chrome_instance::launch::LaunchParams::new(
-            options.host,
-            options.port,
-            options.enable_automation,
-            options.headless,
-            options.user_profile,
-        );
-        params.set_enable_webmcp(options.enable_webmcp);
-        if let Some(proxy) = &options.proxy_server {
+        let mut params =
+            chrome_instance::launch::LaunchParams::new(options.host, options.port, options.browser);
+        params.set_enable_webmcp(options.server.enable_webmcp);
+        if let Some(proxy) = &options.proxy.proxy_server {
             params.set_proxy(Some(proxy.clone()));
         }
         let pool = Arc::new(cdp_browser_lite::BrowserPool::new());
@@ -706,7 +685,9 @@ impl McpHandler {
             Box::new(chrome_instance::cdp_browser_manager::RealLauncher { pool: pool.clone() }),
         );
         let webmcp_st = cdp_domains::webmcp::WebmcpState {
-            availability: cdp_domains::webmcp::WebmcpAvailability::initial(options.enable_webmcp),
+            availability: cdp_domains::webmcp::WebmcpAvailability::initial(
+                options.server.enable_webmcp,
+            ),
             ..Default::default()
         };
         let session = Arc::new(BrowserSession {
@@ -726,7 +707,7 @@ impl McpHandler {
             )),
             browser_version: Arc::new(Mutex::new(None)),
             proxy_auth_tasks: Default::default(),
-            enable_webmcp: options.enable_webmcp,
+            enable_webmcp: options.server.enable_webmcp,
         });
 
         let default_features = {
@@ -753,12 +734,8 @@ impl McpHandler {
             registry,
             pool,
             base_params: params,
-            local_only: options.local_only,
-            allow_cookie_import: options.allow_cookie_import,
-            proxy_server: options.proxy_server,
-            proxy_username: options.proxy_username,
-            proxy_password: options.proxy_password,
-            enable_webmcp: options.enable_webmcp,
+            flags: options.server,
+            proxy: options.proxy,
             is_test: false,
         }
     }
@@ -773,9 +750,7 @@ impl McpHandler {
         let params = chrome_instance::launch::LaunchParams::new(
             "127.0.0.1".into(),
             port,
-            false,
-            false,
-            false,
+            crate::cli::BrowserFlags::default(),
         );
         let pool = Arc::new(cdp_browser_lite::BrowserPool::new());
         let registry = Arc::new(chrome_instance::registry::Registry::new(8));
@@ -820,12 +795,8 @@ impl McpHandler {
             registry,
             pool,
             base_params: params,
-            local_only: false,
-            allow_cookie_import: false,
-            proxy_server: None,
-            proxy_username: None,
-            proxy_password: None,
-            enable_webmcp: false,
+            flags: Default::default(),
+            proxy: Default::default(),
             is_test: true,
         }
     }
@@ -921,11 +892,11 @@ impl ServerHandler for McpHandler {
             GetCustomEventsTool::tool(),
         ];
 
-        if self.proxy_server.is_some() {
+        if self.proxy.proxy_server.is_some() {
             tools.push(EnableProxyAuthTool::tool());
         }
 
-        if self.enable_webmcp {
+        if self.flags.enable_webmcp {
             tools.push(cdp_domains::webmcp::ListWebmcpToolsTool::tool());
             tools.push(cdp_domains::webmcp::InvokeWebmcpToolTool::tool());
             tools.push(cdp_domains::webmcp::GetWebmcpInvocationTool::tool());
@@ -935,7 +906,9 @@ impl ServerHandler for McpHandler {
         Ok(ListToolsResult {
             tools: tools
                 .into_iter()
-                .map(|t| schema_compat::normalize_tool_with_options(t, self.allow_cookie_import))
+                .map(|t| {
+                    schema_compat::normalize_tool_with_options(t, self.flags.allow_cookie_import)
+                })
                 .collect(),
             meta: None,
             next_cursor: None,
@@ -1004,7 +977,7 @@ impl ServerHandler for McpHandler {
         } else if params.name == "profile_page_performance" {
             ProfilePagePerformanceTool::handle(params, self).await
         } else if params.name == "enable_proxy_auth" {
-            if self.proxy_server.is_none() {
+            if self.proxy.proxy_server.is_none() {
                 return Err(CallToolError::from_message(
                     "Tool 'enable_proxy_auth' is disabled. Start browser-control-mcp with --proxy-server to enable proxy support.",
                 ));
@@ -1015,28 +988,28 @@ impl ServerHandler for McpHandler {
         } else if params.name == "get_custom_events" {
             GetCustomEventsTool::handle(params, self).await
         } else if params.name == "webmcp_list_tools" {
-            if !self.enable_webmcp {
+            if !self.flags.enable_webmcp {
                 return Err(CallToolError::from_message(
                     "Tool 'webmcp_list_tools' is disabled. Start browser-control-mcp with --enable-webmcp to enable WebMCP support.",
                 ));
             }
             cdp_domains::webmcp::ListWebmcpToolsTool::handle(params, self).await
         } else if params.name == "webmcp_invoke_tool" {
-            if !self.enable_webmcp {
+            if !self.flags.enable_webmcp {
                 return Err(CallToolError::from_message(
                     "Tool 'webmcp_invoke_tool' is disabled. Start browser-control-mcp with --enable-webmcp to enable WebMCP support.",
                 ));
             }
             cdp_domains::webmcp::InvokeWebmcpToolTool::handle(params, self).await
         } else if params.name == "webmcp_get_invocation" {
-            if !self.enable_webmcp {
+            if !self.flags.enable_webmcp {
                 return Err(CallToolError::from_message(
                     "Tool 'webmcp_get_invocation' is disabled. Start browser-control-mcp with --enable-webmcp to enable WebMCP support.",
                 ));
             }
             cdp_domains::webmcp::GetWebmcpInvocationTool::handle(params, self).await
         } else if params.name == "webmcp_list_invocations" {
-            if !self.enable_webmcp {
+            if !self.flags.enable_webmcp {
                 return Err(CallToolError::from_message(
                     "Tool 'webmcp_list_invocations' is disabled. Start browser-control-mcp with --enable-webmcp to enable WebMCP support.",
                 ));
@@ -1209,16 +1182,20 @@ mod tests {
         let handler = McpHandler::new_with_params(HandlerParams {
             host: "host.docker.internal".into(),
             port: 9222,
-            local_only: true,
-            enable_automation: true,
-            headless: true,
-            user_profile: false,
-            allow_cookie_import: false,
+            browser: crate::cli::BrowserFlags {
+                headless: true,
+                enable_automation: true,
+                user_profile: false,
+            },
+            server: crate::cli::ServerFlags {
+                local: true,
+                ..Default::default()
+            },
             ..Default::default()
         });
-        assert!(handler.local_only);
-        assert!(!handler.allow_cookie_import);
-        assert_eq!(handler.proxy_server, None);
+        assert!(handler.flags.local);
+        assert!(!handler.flags.allow_cookie_import);
+        assert_eq!(handler.proxy.proxy_server, None);
     }
 
     #[test]
@@ -1226,24 +1203,30 @@ mod tests {
         let handler = McpHandler::new_with_params(HandlerParams {
             host: "127.0.0.1".into(),
             port: 9444,
-            local_only: true,
-            enable_automation: true,
-            headless: false,
-            user_profile: true,
-            allow_cookie_import: false,
-            proxy_server: Some("http://proxy.example.com:8080".into()),
-            proxy_username: Some("user".into()),
-            proxy_password: Some("pass".into()),
-            enable_webmcp: true,
+            browser: crate::cli::BrowserFlags {
+                headless: false,
+                enable_automation: true,
+                user_profile: true,
+            },
+            server: crate::cli::ServerFlags {
+                local: true,
+                allow_cookie_import: false,
+                enable_webmcp: true,
+            },
+            proxy: crate::cli::ProxyArgs {
+                proxy_server: Some("http://proxy.example.com:8080".into()),
+                proxy_username: Some("user".into()),
+                proxy_password: Some("pass".into()),
+            },
         });
-        assert!(handler.local_only);
-        assert!(handler.enable_webmcp);
+        assert!(handler.flags.local);
+        assert!(handler.flags.enable_webmcp);
         assert_eq!(
-            handler.proxy_server,
+            handler.proxy.proxy_server,
             Some("http://proxy.example.com:8080".into())
         );
-        assert_eq!(handler.proxy_username, Some("user".into()));
-        assert_eq!(handler.proxy_password, Some("pass".into()));
+        assert_eq!(handler.proxy.proxy_username, Some("user".into()));
+        assert_eq!(handler.proxy.proxy_password, Some("pass".into()));
     }
 
     #[tokio::test]
@@ -1279,7 +1262,7 @@ mod tests {
     #[tokio::test]
     async fn test_handle_list_tools_request_with_proxy() {
         let mut handler = McpHandler::new_test();
-        handler.proxy_server = Some("http://proxy.example.com:8080".to_string());
+        handler.proxy.proxy_server = Some("http://proxy.example.com:8080".to_string());
         let mock_server = Arc::new(DummyMcpServer {});
 
         let result = handler
@@ -1298,7 +1281,7 @@ mod tests {
     #[tokio::test]
     async fn test_handle_list_tools_request_with_webmcp() {
         let mut handler = McpHandler::new_test();
-        handler.enable_webmcp = true;
+        handler.flags.enable_webmcp = true;
         let mock_server = Arc::new(DummyMcpServer {});
 
         let result = handler

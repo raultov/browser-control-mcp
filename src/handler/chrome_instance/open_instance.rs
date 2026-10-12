@@ -47,7 +47,7 @@ impl OpenInstanceTool {
         // because of Chrome's singleton profile lock.
         {
             let desc = handler.registry.list_descriptors();
-            if !desc.is_empty() && handler.base_params.user_profile {
+            if !desc.is_empty() && handler.base_params.browser.user_profile {
                 // Actually if user_profile mode is enabled, it uses UserDefault which has the lock.
                 return Err(CallToolError::from_message(
                     "Cannot open multiple instances in --user-profile mode due to Chrome's profile lock".to_string()
@@ -62,19 +62,20 @@ impl OpenInstanceTool {
         };
 
         // Construct dynamic parameters for this secondary instance
-        let mut child_params = LaunchParams::new(
-            "127.0.0.1".into(),
-            0,     // ephemeral port coordination via pool
-            false, // enable_automation default
-            args.headless.unwrap_or(false),
-            false, // user_profile (must be false to allow multiple profile dirs)
-        );
+        // Port 0: ephemeral, coordinated by the pool. No automation infobar,
+        // and never the user profile (it must allow multiple profile dirs).
+        let browser = crate::cli::BrowserFlags {
+            headless: args.headless.unwrap_or(false),
+            enable_automation: false,
+            user_profile: false,
+        };
+        let mut child_params = LaunchParams::new("127.0.0.1".into(), 0, browser);
         child_params.secondary = true;
-        child_params.set_enable_webmcp(handler.enable_webmcp);
+        child_params.set_enable_webmcp(handler.flags.enable_webmcp);
         if let Some(features) = args.features {
             child_params.set_features(features);
         }
-        let proxy = args.proxy.or_else(|| handler.proxy_server.clone());
+        let proxy = args.proxy.or_else(|| handler.proxy.proxy_server.clone());
         if let Some(p) = proxy {
             child_params.set_proxy(Some(p));
         }
@@ -82,8 +83,8 @@ impl OpenInstanceTool {
         let seed_report = super::cookie_seed::prepare_seed_report(
             args.copy_cookies == Some(true),
             args.source_profile.as_deref(),
-            handler.allow_cookie_import,
-            handler.base_params.user_profile,
+            handler.flags.allow_cookie_import,
+            handler.base_params.browser.user_profile,
         )
         .map_err(CallToolError::from_message)?;
 
@@ -121,7 +122,7 @@ impl OpenInstanceTool {
             )),
             browser_version: Arc::new(Mutex::new(None)),
             proxy_auth_tasks: Default::default(),
-            enable_webmcp: handler.enable_webmcp,
+            enable_webmcp: handler.flags.enable_webmcp,
         });
 
         // Trigger ensure_instance to resolve the port
