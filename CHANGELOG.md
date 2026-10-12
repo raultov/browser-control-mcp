@@ -88,6 +88,8 @@ from a copy of its code: entries describe the differences from that release.
   `remove_breakpoint` no longer claims the page must be paused.
 
 ### Fixed
+- `reload` right after `navigate` on Chrome no longer fails with "Not attached
+  to an active page": the transient error is retried once after 500 ms.
 - `inspect_dom` no longer crashes the server when the context window around a
   match falls inside a multi-byte character.
 

@@ -22,19 +22,31 @@ impl ReloadTool {
         params: CallToolRequestParams,
         handler: &McpHandler,
     ) -> Result<CallToolResult, CallToolError> {
-        let method = "Page.reload";
-        let failure = "Failed to reload page";
-        let command = crate::handler::Command {
-            method,
-            params: json!({}),
-            failure,
-        };
-        let ids = crate::handler::parse_args(params)?;
-        let resp = crate::handler::run_on_target(handler, ids, command).await?;
+        let ids: crate::handler::TargetArgs = crate::handler::parse_args(params)?;
+        let target = crate::handler::resolve_target(handler, ids.instance_id, ids.tab_id).await?;
+        // Right after a navigation Chrome may still be committing the new
+        // document and refuse with "Not attached to an active page": retry
+        // once after a short pause.
+        let mut reply = target.send_raw_command("Page.reload", json!({})).await;
+        if reply
+            .as_ref()
+            .is_err_and(|e| is_transient(&format!("{e:?}")))
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            reply = target.send_raw_command("Page.reload", json!({})).await;
+        }
+        let resp = reply
+            .map_err(|e| CallToolError::from_message(format!("Failed to reload page: {e:?}")))?;
         Ok(CallToolResult::text_content(vec![
             crate::handler::reply_text("Page reloaded.", &resp).into(),
         ]))
     }
+}
+
+/// Whether a `Page.reload` error is the transient one Chrome returns while
+/// it is still committing a navigation, worth one retry.
+fn is_transient(error: &str) -> bool {
+    error.contains("Not attached to an active page")
 }
 
 #[cfg(test)]
@@ -88,5 +100,17 @@ mod tests {
             "Content didn't match: {}",
             content_str
         );
+    }
+
+    /// PAG-RL1: reload right after navigate retries the transient
+    /// "Not attached to an active page" error, and only that one.
+    #[test]
+    fn reload_retries_only_the_not_attached_error() {
+        // Given the error Chrome returns mid-navigation and an unrelated one
+        let transient = r#"Protocol { code: -32000, message: "Not attached to an active page" }"#;
+        let other = r#"Protocol { code: -32601, message: "'Page.reload' wasn't found" }"#;
+        // When / Then only the first is retried
+        assert!(is_transient(transient));
+        assert!(!is_transient(other));
     }
 }
