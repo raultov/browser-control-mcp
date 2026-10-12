@@ -32,7 +32,7 @@ impl ReloadTool {
         let ids = crate::handler::parse_args(params)?;
         let resp = crate::handler::run_on_target(handler, ids, command).await?;
         Ok(CallToolResult::text_content(vec![
-            format!("Page reloaded: {:?}", resp).into(),
+            crate::handler::reply_text("Page reloaded.", &resp).into(),
         ]))
     }
 }

@@ -41,7 +41,7 @@ impl SetBreakpointTool {
         let failure = "Failed to set breakpoint";
         let response = crate::handler::send_or(&target, method, params, failure).await?;
         Ok(CallToolResult::text_content(vec![
-            format!("Breakpoint set successfully. Response: {:?}", response).into(),
+            crate::handler::reply_text("Breakpoint set successfully.", &response).into(),
         ]))
     }
 

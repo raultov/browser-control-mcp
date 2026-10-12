@@ -31,7 +31,7 @@ impl RemoveBreakpointTool {
         let resp =
             crate::handler::send_or(&target, "Debugger.removeBreakpoint", params, failure).await?;
         Ok(CallToolResult::text_content(vec![
-            format!("Breakpoint removed: {:?}", resp).into(),
+            crate::handler::reply_text("Breakpoint removed.", &resp).into(),
         ]))
     }
 }

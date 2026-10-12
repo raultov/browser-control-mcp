@@ -59,9 +59,9 @@ impl SendCdpCommandTool {
         let response = target.send_raw_command(&tool.method, parsed_params).await;
         match response {
             Ok(res) => Ok(CallToolResult::text_content(vec![
-                format!(
-                    "Command '{}' executed successfully. Result: {:?}",
-                    tool.method, res
+                crate::handler::reply_text(
+                    &format!("Command '{}' executed successfully.", tool.method),
+                    &res,
                 )
                 .into(),
             ])),

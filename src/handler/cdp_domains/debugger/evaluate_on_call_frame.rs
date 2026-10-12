@@ -58,7 +58,7 @@ impl EvaluateOnCallFrameTool {
             .map_err(|e| CallToolError::from_message(format!("Evaluation failed: {:?}", e)))?;
 
         Ok(CallToolResult::text_content(vec![
-            format!("{:?}", expression_result).into(),
+            crate::handler::reply_text("", &expression_result).into(),
         ]))
     }
 }

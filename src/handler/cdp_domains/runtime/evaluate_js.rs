@@ -41,7 +41,7 @@ impl EvaluateJsTool {
         };
         let val = crate::handler::run_on_target(handler, ids, command).await?;
         Ok(CallToolResult::text_content(vec![
-            format!("{:?}", val).into(),
+            crate::handler::reply_text("", &val).into(),
         ]))
     }
 }
@@ -117,8 +117,16 @@ mod tests {
 
         let call_result = result.unwrap();
         assert!(!call_result.content.is_empty());
-        let content_str = format!("{:?}", call_result.content);
-        // Checking if the basic success output format is returned
-        assert!(content_str.contains("WsResponse"));
+        // TOL-08: the reply is JSON, not the Rust Debug of the protocol message
+        let text = call_result.content[0]
+            .as_text_content()
+            .unwrap()
+            .text
+            .clone();
+        assert!(!text.contains("WsResponse"), "{text}");
+        assert!(
+            serde_json::from_str::<serde_json::Value>(&text).is_ok(),
+            "{text}"
+        );
     }
 }

@@ -27,6 +27,11 @@ from a copy of its code: entries describe the differences from that release.
   `macros` and `stdio` features: the binary no longer links the SDK's HTTP,
   SSE and OAuth client stack.
 
+- `navigate`, `reload`, `evaluate_js`, `evaluate_on_call_frame`,
+  `set_breakpoint`, `remove_breakpoint` and `send_cdp_command` return the
+  protocol reply as pretty JSON after their usual prefix, instead of the Rust
+  `Debug` of the whole message (`WsResponse { .. }`).
+
 ### Fixed
 - `inspect_dom` no longer crashes the server when the context window around a
   match falls inside a multi-byte character.

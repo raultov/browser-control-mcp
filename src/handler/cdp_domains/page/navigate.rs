@@ -49,7 +49,7 @@ impl NavigateTool {
         let params = json!({"url": args.url});
         let val = crate::handler::send_or(&target, "Page.navigate", params, "CDP Error").await?;
         Ok(CallToolResult::text_content(vec![
-            format!("Navigated to {}. Protocol Response: {:?}", args.url, val).into(),
+            crate::handler::reply_text(&format!("Navigated to {}.", args.url), &val).into(),
         ]))
     }
 
@@ -330,5 +330,32 @@ mod tests {
             err.to_string()
                 .contains("redundant when running in --user-profile mode")
         );
+    }
+
+    /// TOL-08: Protocol replies are returned as JSON, not Rust Debug.
+    #[tokio::test]
+    async fn protocol_replies_are_json() {
+        // Given a browser (mock) answering Page.navigate
+        let port = spawn_mock_chrome_server().await;
+        let mut handler = McpHandler::new_test();
+        Arc::get_mut(&mut handler.default_session)
+            .unwrap()
+            .chrome_manager = Arc::new(Mutex::new(MockChromeManager::new(port)));
+        // When navigate is called
+        let params: CallToolRequestParams = serde_json::from_value(
+            json!({"name": "navigate", "arguments": {"url": "https://example.com"}}),
+        )
+        .unwrap();
+        let result = NavigateTool::handle(params, &handler).await.unwrap();
+        // Then the text is the prefix followed by a JSON object
+        let text = result.content[0].as_text_content().unwrap().text.clone();
+        let (prefix, body) = text.split_once('\n').unwrap();
+        assert_eq!(prefix, "Navigated to https://example.com.");
+        assert!(
+            serde_json::from_str::<serde_json::Value>(body)
+                .unwrap()
+                .is_object()
+        );
+        assert!(!text.contains("WsResponse"));
     }
 }

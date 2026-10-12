@@ -187,6 +187,20 @@ pub struct BrowserVersion {
     pub js_version: Option<String>,
 }
 
+/// A tool's text for a protocol reply: `prefix` then the reply's `result` as
+/// pretty JSON (chrome-debug-mcp printed the Rust `Debug` of the whole
+/// message, unreadable for agents and tied to CDP; specs D24).
+pub(crate) fn reply_text(prefix: &str, reply: &cdp_browser_lite::WsResponse) -> String {
+    let empty = serde_json::json!({});
+    let body =
+        serde_json::to_string_pretty(reply.result.as_ref().unwrap_or(&empty)).unwrap_or_default();
+    if prefix.is_empty() {
+        body
+    } else {
+        format!("{prefix}\n{body}")
+    }
+}
+
 /// Parses a tool's arguments into its argument struct.
 pub(crate) fn parse_args<T: serde::de::DeserializeOwned>(
     params: CallToolRequestParams,
