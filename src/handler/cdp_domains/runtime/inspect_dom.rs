@@ -54,28 +54,13 @@ impl InspectDomTool {
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
 
-                if let Some(query) = &args.query {
-                    if let Some(pos) = html.find(query) {
-                        let before = args.before.unwrap_or(200) as usize;
-                        let after = args.after.unwrap_or(200) as usize;
-
-                        let start = pos.saturating_sub(before);
-                        let end = std::cmp::min(pos + query.len() + after, html.len());
-
-                        let snippet = &html[start..end];
-                        let message = format!(
-                            "Found '{}' at position {}. Context (before={}, after={}):\n\n[...]\n{}\n[...]",
-                            query, pos, before, after, snippet
-                        );
-                        Ok(CallToolResult::text_content(vec![message.into()]))
-                    } else {
-                        Ok(CallToolResult::text_content(vec![
-                            format!("Query '{}' not found in the DOM.", query).into(),
-                        ]))
-                    }
-                } else {
-                    Ok(CallToolResult::text_content(vec![html.to_string().into()]))
-                }
+                let report = crate::util::text::dom_query_report(
+                    html,
+                    args.query.as_deref(),
+                    args.before.unwrap_or(200) as usize,
+                    args.after.unwrap_or(200) as usize,
+                );
+                Ok(CallToolResult::text_content(vec![report.into()]))
             }
             Err(e) => Err(CallToolError::from_message(format!("CDP Error: {:?}", e))),
         }

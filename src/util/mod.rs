@@ -3,6 +3,7 @@
 pub mod js;
 #[cfg(test)]
 pub(crate) mod log_capture;
+pub mod text;
 pub mod url;
 
 /// Applies the directives that keep secrets out of the logs whatever the

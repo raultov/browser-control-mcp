@@ -27,6 +27,10 @@ from a copy of its code: entries describe the differences from that release.
   `macros` and `stdio` features: the binary no longer links the SDK's HTTP,
   SSE and OAuth client stack.
 
+### Fixed
+- `inspect_dom` no longer crashes the server when the context window around a
+  match falls inside a multi-byte character.
+
 ### Security
 - The start-up log no longer prints the proxy password, username or a
   `user:pass@` embedded in `--proxy-server` (chrome-debug-mcp printed every
