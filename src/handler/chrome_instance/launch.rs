@@ -186,6 +186,28 @@ fn is_local_host(host: &str) -> bool {
     matches!(h, "127.0.0.1" | "::1" | "[::1]") || h.eq_ignore_ascii_case("localhost")
 }
 
+/// A Chrome launch failure for the agent; when Chrome is missing and
+/// `firefox` (a discovered Firefox) exists, it suggests asking the user
+/// whether to use Firefox instead.
+pub(crate) fn launch_failure(error: &str, firefox: Option<&std::path::Path>) -> String {
+    match firefox {
+        Some(path) if error.contains("Chrome executable not found") => format!(
+            "{error}. A Firefox was found at {}: ask the user whether to use it, then call open_instance with \"browser\": \"firefox\" (or restart the server with --browser firefox).",
+            path.display()
+        ),
+        _ => error.to_string(),
+    }
+}
+
+/// [`launch_failure`] with this machine's Firefox discovery.
+pub(crate) fn describe_launch_failure(error: &str) -> String {
+    let firefox = error
+        .contains("Chrome executable not found")
+        .then(bidi_browser_lite::discovery::discover_default)
+        .and_then(Result::ok);
+    launch_failure(error, firefox.as_deref())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -366,5 +388,25 @@ mod tests {
     fn given_unknown_feature_name_when_deserializing_then_it_is_rejected() {
         let parsed: Result<ChromeFeature, _> = serde_json::from_str(r#""DISABLE_WEB_SECURITY""#);
         assert!(parsed.is_err(), "unknown presets must not deserialize");
+    }
+
+    /// BKD-12: Chrome not found suggests Firefox when Firefox is installed.
+    #[test]
+    fn missing_chrome_suggests_installed_firefox() {
+        // Given Chrome discovery failed
+        let error = "Chrome executable not found; searched: [\"/usr/bin/google-chrome\"]";
+        // When Firefox discovery found a binary
+        let firefox = std::path::Path::new("/usr/bin/firefox");
+        let hint = launch_failure(error, Some(firefox));
+        // Then the error keeps the searched paths and suggests asking for Firefox
+        assert!(hint.contains("/usr/bin/google-chrome"), "{hint}");
+        assert!(
+            hint.contains("/usr/bin/firefox") && hint.contains("\"browser\": \"firefox\""),
+            "{hint}"
+        );
+        assert!(hint.contains("ask the user"), "{hint}");
+        // And without Firefox, or for another failure, there is no hint
+        assert_eq!(launch_failure(error, None), error);
+        assert_eq!(launch_failure("port in use", Some(firefox)), "port in use");
     }
 }

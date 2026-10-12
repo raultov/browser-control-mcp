@@ -518,6 +518,20 @@ mod tests {
         );
     }
 
+    /// RDP-01: Debugger tools need the Firefox debugger port.
+    #[tokio::test]
+    async fn debugger_tools_need_rdp() {
+        // Given a Firefox instance started with --no-firefox-debugger
+        let mut handler = handler_with_firefox();
+        handler.firefox_spec.firefox.no_firefox_debugger = true;
+        // When a debugger tool is called on it
+        let args =
+            serde_json::json!({"instance_id": "ff", "url": "http://x/a.js", "line_number": 0});
+        let message = error_of(&handler, "set_breakpoint", args).await;
+        // Then the capability error names the missing debugger port
+        assert!(message.contains("debugger port"), "{message}");
+    }
+
     /// CAP-05: Optional arguments that need a capability are checked too.
     #[tokio::test]
     async fn capability_gated_arguments_are_checked() {

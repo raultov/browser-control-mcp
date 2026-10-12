@@ -11,6 +11,8 @@ from a copy of its code: entries describe the differences from that release.
 ## [Unreleased]
 
 ### Added
+- When Chrome is not installed and a Firefox is, the launch error says so
+  and tells the agent to ask the user before using `"browser": "firefox"`.
 - E2E smoke over stdio MCP against real, visible Chrome and Firefox
   (`make e2e`: launched and attach modes, SIGTERM and relaunch), with
   `tests/chrome.sh` and `tests/firefox.sh` for dedicated test browsers.

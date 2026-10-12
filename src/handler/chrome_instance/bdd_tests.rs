@@ -63,6 +63,7 @@ mod tests {
         assert!(checkout_desc.is_some());
     }
 
+    /// BKD-10: A duplicate label is refused (checked before launching).
     #[tokio::test]
     async fn given_existing_label_when_opening_duplicate_then_error_and_no_spawn() {
         let handler = McpHandler::new_test();
@@ -192,6 +193,7 @@ mod tests {
         assert!(result.err().unwrap().to_string().contains("limit reached"));
     }
 
+    /// BKD-07: Unknown ids list the valid ones.
     #[tokio::test]
     async fn given_unknown_instance_id_when_tool_invoked_then_error_lists_valid_ids() {
         let handler = McpHandler::new_test();

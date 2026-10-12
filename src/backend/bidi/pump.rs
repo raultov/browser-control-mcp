@@ -308,6 +308,33 @@ mod tests {
         assert_eq!(messages[0].source, "console-api");
     }
 
+    /// BKD-08: tab events register and drop tabs.
+    #[tokio::test]
+    async fn tab_events_register_and_drop_tabs() {
+        // Given one known tab
+        let mock = MockBidi::start(MockBidiBehavior::Ready).await.unwrap();
+        let (client, state) = one_tab(&mock).await;
+        // When the page opens a top-level context
+        let created = json!({"context": "ctx-7", "url": "http://127.0.0.1/"});
+        route(
+            &event("browsingContext.contextCreated", created),
+            &client,
+            &state,
+        )
+        .await;
+        // Then it becomes a tab
+        assert_eq!(read(&state.tabs).tabs.len(), 2);
+        // And when it is destroyed, the tab goes away
+        let destroyed = json!({"context": "ctx-7"});
+        route(
+            &event("browsingContext.contextDestroyed", destroyed),
+            &client,
+            &state,
+        )
+        .await;
+        assert_eq!(read(&state.tabs).tabs.len(), 1);
+    }
+
     /// BID-08 / BID-09: iframe events route to their tab; iframes are not tabs.
     #[tokio::test]
     async fn iframe_events_route_to_top_level() {

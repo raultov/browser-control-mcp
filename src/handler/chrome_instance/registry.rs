@@ -251,6 +251,49 @@ mod tests {
         }
     }
 
+    /// BKD-05 / BKD-04 / BKD-01: generated ids carry the browser name; an
+    /// instance keeps its browser; the default one follows `--browser`.
+    #[test]
+    fn instance_ids_and_browsers() {
+        // Given a registry
+        let registry = Registry::new(8);
+        // When ids are generated and a Firefox instance is registered
+        let chrome = registry.generate_id(crate::backend::BrowserKind::Chrome);
+        let firefox = registry.generate_id(crate::backend::BrowserKind::Firefox);
+        let mut desc = descriptor(&firefox);
+        desc.browser = crate::backend::BrowserKind::Firefox;
+        let session = Arc::new(crate::backend::bidi::session::FirefoxSession::new(
+            Default::default(),
+        ));
+        registry.add_firefox(desc, session).unwrap();
+        // Then the ids name their browser and the instance stays Firefox
+        assert!(chrome.starts_with("chrome-") && firefox.starts_with("firefox-"));
+        assert_eq!(
+            registry.browser_of(&firefox),
+            Some(crate::backend::BrowserKind::Firefox)
+        );
+        use clap::Parser;
+        let args = crate::Args::parse_from(["browser-control-mcp", "--browser", "firefox"]);
+        let handler = crate::build_handler(args);
+        assert_eq!(
+            handler.browser_of(None),
+            crate::backend::BrowserKind::Firefox
+        );
+    }
+
+    /// BKD-09: The instance cap is checked before launching.
+    #[test]
+    fn instance_cap_checked_before_launch() {
+        // Given a registry full at one instance
+        let registry = Registry::new(1);
+        let session = McpHandler::new_test().default_session.clone();
+        registry.add_session(descriptor("a"), session).unwrap();
+        // When another instance is planned
+        let planned = registry.can_add(&descriptor("b"));
+        // Then it is refused before anything is launched
+        assert!(planned.is_err_and(|e| e.contains("limit")));
+    }
+
     /// REV-04: no other instance can take the id of the default instance
     /// (registered before its browser is launched) or of any other one.
     #[test]

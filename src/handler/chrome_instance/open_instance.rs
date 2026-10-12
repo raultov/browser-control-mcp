@@ -158,7 +158,10 @@ async fn launch(
 ) -> Result<InstanceDescriptor, CallToolError> {
     let mut mgr = session.chrome_manager.lock().await;
     mgr.ensure_instance().await.map_err(|e| {
-        CallToolError::from_message(format!("Failed to spawn Chrome instance: {}", e))
+        CallToolError::from_message(format!(
+            "Failed to spawn Chrome instance: {}",
+            super::launch::describe_launch_failure(&e.to_string())
+        ))
     })?;
     Ok(InstanceDescriptor {
         id: instance_id,

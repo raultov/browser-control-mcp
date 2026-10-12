@@ -94,7 +94,10 @@ impl OpenTabTool {
         {
             let mut manager = session.chrome_manager.lock().await;
             manager.ensure_instance().await.map_err(|e| {
-                CallToolError::from_message(format!("Failed to ensure Chrome instance: {}", e))
+                CallToolError::from_message(format!(
+                    "Failed to ensure Chrome instance: {}",
+                    super::launch::describe_launch_failure(&e.to_string())
+                ))
             })?;
         }
 

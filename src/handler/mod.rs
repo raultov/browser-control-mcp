@@ -392,7 +392,10 @@ impl BrowserSession {
         {
             let mut manager = self.chrome_manager.lock().await;
             manager.ensure_instance().await.map_err(|e| {
-                CallToolError::from_message(format!("Failed to ensure Chrome instance: {}", e))
+                CallToolError::from_message(format!(
+                    "Failed to ensure Chrome instance: {}",
+                    chrome_instance::launch::describe_launch_failure(&e.to_string())
+                ))
             })?;
         }
 
@@ -1234,6 +1237,7 @@ mod tests {
     /// Gemini rejects a function declaration whose `items` sits next to a
     /// non-scalar `type`, so every published schema must use a single type
     /// name and give any array an `items` subschema.
+    /// TOL-05: Every listed schema stays strict.
     #[tokio::test]
     async fn given_listed_tools_when_inspecting_schemas_then_types_are_scalar_and_arrays_are_typed()
     {

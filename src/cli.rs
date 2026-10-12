@@ -142,6 +142,7 @@ mod tests {
     use super::*;
     use clap::Parser;
 
+    /// IMP-05 / BKD-02: the defaults parse, Chrome is the default browser.
     #[test]
     fn test_args_parsing_defaults() {
         let args = Args::parse_from(["browser-control-mcp"]);
@@ -155,6 +156,7 @@ mod tests {
         );
         assert_eq!(args.server, ServerFlags::default(), "every server flag off");
         assert_eq!(args.proxy, ProxyArgs::default(), "no proxy");
+        assert_eq!(args.browser_kind, crate::backend::BrowserKind::Chrome);
     }
 
     #[test]
