@@ -264,6 +264,9 @@ error that names the new ones.
   `remove_breakpoint` and `step_over` answer differently on Chrome and
   Firefox (and Firefox's `step_over` location uses a 1-based line); both
   will return the same shape with 0-based lines.
+- **TODO (priority)** Partial performance on Firefox from the standard Web
+  Performance APIs (navigation timings, FCP, LCP), stating what Firefox
+  cannot give (long tasks, CLS, JS heap).
 - **TODO (priority)** Same default window size on both browsers (today
   Chrome 921x648, Firefox 1280x887): the screen size when known, else
   1920x1080.
