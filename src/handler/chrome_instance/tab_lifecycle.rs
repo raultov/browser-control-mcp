@@ -114,7 +114,14 @@ pub(crate) async fn register_and_listen(
     let (tab_id, states) = {
         let mut registry = crate::util::sync::write(tabs);
         let tab_id = registry.register_tab(tab.clone(), info, enable_webmcp)?;
-        let states = registry.tabs.get(&tab_id).map(|e| e.domain_states());
+        // Only the registration whose session the entry kept wires it: the
+        // other one (same target, another session) would replace the
+        // listeners with ones deaf to the events of the session in use.
+        let states = registry
+            .tabs
+            .get(&tab_id)
+            .filter(|e| e.tab.session_id() == tab.session_id())
+            .map(|e| e.domain_states());
         (tab_id, states)
     };
     if let Some(states) = states {
@@ -124,4 +131,49 @@ pub(crate) async fn register_and_listen(
         cdp_domains::enable_tab_domains(tab, &webmcp_state).await;
     }
     Ok(tab_id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::handler::chrome_instance::tab_registry::NewTab;
+    use std::time::Duration;
+
+    /// TAB-RACE1: `open_tab` and the `Target.targetCreated` listener attach
+    /// the same page twice (two sessions). The losing registration must not
+    /// replace the winner's listeners: commands go through the winner's
+    /// session, so events answered there (`Tracing.tracingComplete`) would
+    /// be lost.
+    #[tokio::test]
+    async fn second_registration_of_a_target_keeps_the_first_listeners() {
+        // Given one page attached twice and the first attachment registered
+        let port = crate::handler::cdp_domains::tests::spawn_mock_chrome_server().await;
+        let browser = BrowserClient::connect(&format!("127.0.0.1:{port}"), Duration::from_secs(2))
+            .await
+            .expect("connect");
+        let first = browser.attach("T-tab-1").await.expect("first attach");
+        let second = browser.attach("T-tab-1").await.expect("second attach");
+        assert_ne!(first.session_id(), second.session_id());
+        let tabs = Arc::new(RwLock::new(TabRegistry::new(8)));
+        let id = register_and_listen(&tabs, &first, NewTab::new(None, "about:blank"), false)
+            .await
+            .expect("first registration");
+        let winners = crate::util::sync::read(&tabs).tabs[&id]
+            .listeners
+            .as_ref()
+            .expect("listeners")
+            .abort_handles();
+
+        // When the second attachment registers the same target
+        let again = register_and_listen(&tabs, &second, NewTab::new(None, "about:blank"), false)
+            .await
+            .expect("second registration");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // Then it gets the same id and the first listeners keep running
+        assert_eq!(again, id);
+        assert!(winners.iter().all(|h| !h.is_finished()));
+        let registry = crate::util::sync::read(&tabs);
+        assert_eq!(registry.tabs[&id].tab.session_id(), first.session_id());
+    }
 }

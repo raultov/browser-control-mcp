@@ -18,6 +18,35 @@ pub struct OpenTabTool {
     pub label: Option<String>,
 }
 
+/// The page a new tab is created on.
+const BLANK: &str = "about:blank";
+
+/// The URL to navigate a freshly created (blank) tab to, if any.
+fn deferred_navigation(url: &str) -> Option<&str> {
+    (url != BLANK).then_some(url)
+}
+
+/// Navigates a registered blank tab to `url`, through the registered
+/// session: the target-discovery listener may have registered this page
+/// first, with its own session, and still be enabling its domains. Chrome
+/// answers a session's commands in order, so once this (idempotent)
+/// `Network.enable` replies, the page's first requests will be recorded.
+async fn open_url(
+    session: &crate::handler::BrowserSession,
+    tab_id: &str,
+    url: &str,
+) -> Result<(), CallToolError> {
+    let registered = session.target(Some(tab_id.to_string())).await?;
+    let _ = registered
+        .send_raw_command("Network.enable", serde_json::json!({}))
+        .await;
+    registered
+        .send_raw_command("Page.navigate", serde_json::json!({ "url": url }))
+        .await
+        .map_err(|e| CallToolError::from_message(format!("Failed to open {url}: {e:?}")))?;
+    Ok(())
+}
+
 impl OpenTabTool {
     pub async fn handle(
         params: CallToolRequestParams,
@@ -34,10 +63,7 @@ impl OpenTabTool {
             })?;
         }
 
-        let url = args
-            .url
-            .clone()
-            .unwrap_or_else(|| "about:blank".to_string());
+        let url = args.url.clone().unwrap_or_else(|| BLANK.to_string());
         if handler.flags.local && !crate::handler::is_local_address(&url) {
             return Err(CallToolError::from_message(format!(
                 "Navigation to '{}' is blocked by local-only restrictions.",
@@ -48,8 +74,11 @@ impl OpenTabTool {
         // Create the tab using the browser-level connection (browser_client)
         let browser_client = session.browser_client().await?;
 
+        // The tab starts blank and navigates only once its listeners are
+        // enabled: created straight on `url`, the page's first requests
+        // (and their network events) were already gone.
         let tab = browser_client
-            .new_tab(&url)
+            .new_tab(BLANK)
             .await
             .map_err(|e| CallToolError::from_message(format!("Failed to create new tab: {}", e)))?;
 
@@ -66,6 +95,9 @@ impl OpenTabTool {
         .map_err(|e| {
             CallToolError::from_message(format!("Failed to register tab in registry: {}", e))
         })?;
+        if let Some(url) = deferred_navigation(&url) {
+            open_url(&session, &tab_id, url).await?;
+        }
 
         Ok(CallToolResult::text_content(vec![
             serde_json::json!({
@@ -77,5 +109,24 @@ impl OpenTabTool {
             .to_string()
             .into(),
         ]))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// TAB-OPEN1: `open_tab` with a URL creates a blank tab and navigates it
+    /// after its listeners are enabled, so the first requests are captured.
+    #[test]
+    fn open_tab_navigates_only_after_creating_a_blank_tab() {
+        // Given a URL and the default blank page
+        // When the deferred navigation is computed
+        // Then only the real URL is navigated to
+        assert_eq!(
+            deferred_navigation("http://127.0.0.1/"),
+            Some("http://127.0.0.1/")
+        );
+        assert_eq!(deferred_navigation(BLANK), None);
     }
 }

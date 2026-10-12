@@ -163,7 +163,7 @@ async fn record(
             .await;
     }
     tokio::time::sleep(Duration::from_millis(duration)).await;
-    let _ = target.send_raw_command("Tracing.end", json!({})).await;
+    crate::handler::send_or(target, "Tracing.end", json!({}), "Failed to stop tracing").await?;
     match tokio::time::timeout(COMPLETION_TIMEOUT, completion.recv()).await {
         Ok(Some(handle)) => Ok(handle),
         _ => Err(CallToolError::from_message(

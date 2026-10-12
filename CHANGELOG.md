@@ -11,6 +11,9 @@ from a copy of its code: entries describe the differences from that release.
 ## [Unreleased]
 
 ### Added
+- E2E smoke over stdio MCP against real, visible Chrome and Firefox
+  (`make e2e`: launched and attach modes, SIGTERM and relaunch), with
+  `tests/chrome.sh` and `tests/firefox.sh` for dedicated test browsers.
 - Project scaffolding: quality gates (`make check`: format, clippy with
   warnings as errors, tests, docs, duplication, packaging and version
   consistency), CI on Linux, macOS and Windows, `AGENTS.md`, MIT licence.
@@ -88,6 +91,16 @@ from a copy of its code: entries describe the differences from that release.
   `remove_breakpoint` no longer claims the page must be paused.
 
 ### Fixed
+- The server exits on SIGTERM/Ctrl-C: it used to stop its browsers and then
+  hang, waiting for a stdin read that only returns on input.
+- Chrome `profile_page_performance` no longer times out at random on tabs
+  opened with `open_tab`: when target discovery and `open_tab` both attached
+  the page, the second registration replaced the tab's listeners with ones on
+  a session nobody sent commands to.
+- Chrome `open_tab` with a URL records the page's first requests: the tab is
+  created blank and navigated once its domains are enabled.
+- `profile_page_performance` reports a failed `Tracing.end` instead of a
+  timeout.
 - `reload` right after `navigate` on Chrome no longer fails with "Not attached
   to an active page": the transient error is retried once after 500 ms.
 - `inspect_dom` no longer crashes the server when the context window around a
