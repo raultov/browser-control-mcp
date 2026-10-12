@@ -260,6 +260,10 @@ error that names the new ones.
 - **TODO (priority)** Unified `evaluate_js` result: Chrome wraps the value in
   the CDP `RemoteObject` (`{"result": {"type", "value"}}`) and Firefox
   returns the bare value; both will return the same shape.
+- **TODO (priority)** Unified debugger replies: `set_breakpoint`,
+  `remove_breakpoint` and `step_over` answer differently on Chrome and
+  Firefox (and Firefox's `step_over` location uses a 1-based line); both
+  will return the same shape with 0-based lines.
 - **TODO (priority)** Same default window size on both browsers (today
   Chrome 921x648, Firefox 1280x887): the screen size when known, else
   1920x1080.
