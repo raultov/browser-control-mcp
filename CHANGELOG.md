@@ -10,6 +10,25 @@ from a copy of its code: entries describe the differences from that release.
 
 ## [Unreleased]
 
+## [0.1.1-beta.1] - 2026-10-12
+
+Public **BETA**: known bugs and Chrome/Firefox differences are listed in the
+README ("Limitations and TODO"). The GitHub Release, the shell/PowerShell
+installers, the MSI and the npm package start with this version (0.1.0 was
+only published to crates.io).
+
+### Changed
+- README: per-platform installation section (shell and PowerShell
+  installers, npm/npx, Homebrew, MSI, Cargo/binstall, manual download,
+  Docker, source) and a one-prompt install for AI agents.
+- Releases of beta versions are published as the latest GitHub Release and
+  with the npm `latest` tag, so `releases/latest/download/...` installers
+  and `npm install -g @raultov/browser-control-mcp` get them.
+
+### Fixed
+- A Windows-only unit test failure (path separator in the cookie-import
+  error assertion).
+
 ## [0.1.0] - 2026-10-12
 
 First public release, **BETA**: known bugs and Chrome/Firefox differences are
