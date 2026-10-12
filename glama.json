@@ -1,0 +1,45 @@
+{
+  "$schema": "https://glama.ai/mcp/schemas/server.json",
+  "maintainers": [
+    "raultov"
+  ],
+  "docker": {
+    "source": "repository",
+    "file": "Dockerfile"
+  },
+  "runtime": {
+    "command": "browser-control-mcp",
+    "args": [
+      {
+        "name": "--headless",
+        "description": "Run the browsers headless (recommended for Docker)",
+        "type": "boolean",
+        "default": true
+      },
+      {
+        "name": "--browser",
+        "description": "Browser of the default instance: chrome (CDP) or firefox (WebDriver BiDi + RDP debugger)",
+        "type": "string",
+        "default": "chrome"
+      },
+      {
+        "name": "--host",
+        "description": "Target host for Chrome remote debugging",
+        "type": "string",
+        "default": "127.0.0.1"
+      },
+      {
+        "name": "--enable-automation",
+        "description": "Enable Chrome's automation infobar",
+        "type": "boolean",
+        "default": false
+      },
+      {
+        "name": "--no-firefox-debugger",
+        "description": "Launch Firefox without its debugger port (no JavaScript debugger tools on Firefox)",
+        "type": "boolean",
+        "default": false
+      }
+    ]
+  }
+}

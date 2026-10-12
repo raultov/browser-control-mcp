@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.98"
 authors = ["raultov <raultov@protonmail.com>"]
-description = "MCP server to control and debug Chrome and Firefox at runtime (work in progress)."
+description = "MCP server to control and debug Chrome and Firefox at runtime: breakpoints, call frames and stepping over CDP and WebDriver BiDi/RDP, plus navigation, DOM, input, screenshots, console and network capture."
 readme = "README.md"
 homepage = "https://github.com/raultov/browser-control-mcp"
 repository = "https://github.com/raultov/browser-control-mcp"
@@ -12,9 +12,21 @@ license = "MIT"
 keywords = ["mcp", "browser", "debugging", "devtools", "firefox"]
 categories = ["development-tools::debugging", "web-programming", "command-line-utilities"]
 exclude = [
-    ".gitignore", ".github/*", "docs/*", "tests/*", "wix/*", "Makefile", "dupes.toml",
+    ".gitignore", ".dockerignore", ".github/*", "docs/*", "tests/*", "wix/*", "Makefile", "dupes.toml",
     "clippy.toml", "AGENTS.md", "package.json", "glama.json", "Dockerfile", "dist-workspace.toml",
 ]
+
+[package.metadata.wix]
+# Fresh GUIDs: reusing chrome-debug-mcp's would make this MSI "upgrade" (replace) it.
+upgrade-guid = "CC54DD67-004D-42FC-8418-5DCB785929E6"
+path-guid = "7723A5F2-1962-4FA1-A182-0E04249DD61C"
+license = false
+eula = false
+
+# The profile that 'dist' builds with
+[profile.dist]
+inherits = "release"
+lto = "thin"
 
 [lints.rust]
 # No-unsafe policy (AGENTS.md). `deny` rather than `forbid`: an audited

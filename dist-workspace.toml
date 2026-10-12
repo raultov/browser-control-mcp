@@ -1,0 +1,27 @@
+[workspace]
+members = ["cargo:."]
+
+# Config for 'dist'
+[dist]
+# The preferred dist version to use in CI (Cargo.toml SemVer syntax)
+cargo-dist-version = "0.32.0"
+# CI backends to support
+ci = "github"
+# The installers to generate for each app
+installers = ["shell", "powershell", "npm", "homebrew", "msi"]
+# Target platforms to build apps for (Rust target-triple syntax)
+targets = ["aarch64-apple-darwin", "aarch64-unknown-linux-gnu", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]
+# Path that installers should place binaries in
+install-path = "CARGO_HOME"
+# Whether to install an updater program
+install-updater = false
+# The hand-edited jobs (preflight, gates, docker) are kept on regeneration
+allow-dirty = ["ci"]
+# Publish the Homebrew formula to our custom tap on every stable release
+tap = "raultov/homebrew-tap"
+# Publish the npm installer package to the @raultov scope on every stable release
+# (the plain "browser-control-mcp" name on npm is taken by a third party)
+npm-scope = "@raultov"
+publish-jobs = ["homebrew", "npm"]
+# Pin the actions dist uses by commit SHA
+github-action-commits = { "actions/checkout" = "3d3c42e5aac5ba805825da76410c181273ba90b1", "actions/download-artifact" = "9000827ccba6bdab643e8b6fd33ac0654aef8333", "actions/setup-node" = "249970729cb0ef3589644e2896645e5dc5ba9c38", "actions/upload-artifact" = "cf430e030ddbb5b0abf93d22962f4752f3646cd9" }

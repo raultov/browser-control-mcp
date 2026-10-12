@@ -13,6 +13,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use tokio::sync::Mutex;
 
+/// Firefox's own start pages, where page scripts need system access.
+fn is_privileged_start_page(url: &str) -> bool {
+    matches!(url, "about:home" | "about:newtab" | "about:welcome")
+}
+
 /// Largest response body Firefox keeps for `get_network_logs` (bytes).
 const BODY_LIMIT: u64 = 2_000_000;
 
@@ -232,6 +237,12 @@ impl FirefoxSession {
         let _ = client
             .send_raw_command("network.addDataCollector", collector)
             .await;
+        self.register_initial_tabs(browser).await
+    }
+
+    /// Registers the tabs already open (moving a launched Firefox off its
+    /// privileged start page).
+    async fn register_initial_tabs(&self, browser: &Browser) -> Result<(), BackendError> {
         let urls: HashMap<String, String> = browser
             .list_tabs()
             .await
@@ -239,12 +250,24 @@ impl FirefoxSession {
             .into_iter()
             .map(|info| (info.context, info.url))
             .collect();
+        let launched = self.spec.lock().await.firefox.firefox_port.is_none();
         for tab in browser
             .attach_to_all_tabs()
             .await
             .map_err(lifecycle_error)?
         {
-            let url = urls.get(tab.context_id()).cloned().unwrap_or_default();
+            let mut url = urls.get(tab.context_id()).cloned().unwrap_or_default();
+            // A fresh Firefox opens about:home, a privileged page where BiDi
+            // refuses scripts without -remote-allow-system-access: start
+            // from about:blank instead (only in instances we launched).
+            if launched && is_privileged_start_page(&url) {
+                let blank = tab
+                    .navigate("about:blank", bidi_browser_lite::ReadinessState::Complete)
+                    .await;
+                if blank.is_ok() {
+                    url = "about:blank".to_string();
+                }
+            }
             let _ = write(&self.tabs).register(tab, None, &url);
         }
         Ok(())

@@ -57,6 +57,12 @@ from a copy of its code: entries describe the differences from that release.
   `network.continueWithAuth`, credentials only for 407). **Untested against a
   real authenticating proxy.**
 
+- Distribution: cargo-dist release workflow (shell, PowerShell, npm
+  `@raultov/browser-control-mcp`, Homebrew, MSI with its own GUIDs) behind a
+  preflight that refuses a tag not matching `Cargo.toml`/`package.json` or
+  without a CHANGELOG section; release notes are that section. Docker image
+  with Google Chrome and Firefox (amd64). glama.json exposes `--browser`.
+
 ### Changed
 - `cdp-browser-lite`'s test mocks are no longer linked into the binary.
 - Dependencies updated to their latest releases; unused test dependencies
@@ -113,6 +119,9 @@ from a copy of its code: entries describe the differences from that release.
   with `open_tab` can no longer be registered twice.
 - The session-level WebMCP listener starts before `WebMCP.enable`, so the
   initial tool list is not missed.
+
+- A Firefox launched by the server no longer starts on `about:home`, where
+  BiDi refuses page scripts: its first tab is moved to `about:blank`.
 
 ### Security
 - The start-up log no longer prints the proxy password, username or a
