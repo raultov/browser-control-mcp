@@ -21,20 +21,17 @@ impl StepOverTool {
         params: CallToolRequestParams,
         handler: &McpHandler,
     ) -> Result<CallToolResult, CallToolError> {
-        let args_value = serde_json::Value::Object(params.arguments.unwrap_or_default());
-        let args: StepOverTool = serde_json::from_value(args_value)
-            .map_err(|e| CallToolError::from_message(e.to_string()))?;
-        let session = handler.session(args.instance_id.clone()).await?;
-        let target = session.target(args.tab_id.clone()).await?;
-
-        let _ = target
-            .send_raw_command("Debugger.stepOver", cdp_browser_lite::NoParams)
-            .await
-            .map_err(|e| CallToolError::from_message(format!("Failed to step over: {:?}", e)))?;
-
-        Ok(CallToolResult::text_content(vec![
-            "Stepped over to the next expression in the debugger.".into(),
-        ]))
+        let method = "Debugger.stepOver";
+        let failure = "Failed to step over";
+        let command = crate::handler::Command {
+            method,
+            params: serde_json::json!({}),
+            failure,
+        };
+        let ids = crate::handler::parse_args(params)?;
+        crate::handler::run_on_target(handler, ids, command).await?;
+        let done = "Stepped over to the next expression in the debugger.";
+        Ok(CallToolResult::text_content(vec![done.into()]))
     }
 }
 

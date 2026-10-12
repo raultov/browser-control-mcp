@@ -122,6 +122,22 @@ where
     })
 }
 
+/// [`spawn_domain_listener`] for the common case: every event of `domain`
+/// is handed, with a clone of `state`, to `process`.
+pub(crate) fn spawn_state_listener<S, F, Fut>(
+    target: &crate::handler::cdp_domains::cdp_target::CdpTarget,
+    domain: &'static str,
+    state: std::sync::Arc<tokio::sync::Mutex<S>>,
+    process: F,
+) -> tokio::task::JoinHandle<()>
+where
+    S: Send + 'static,
+    F: Fn(WsResponse, std::sync::Arc<tokio::sync::Mutex<S>>) -> Fut + Send + 'static,
+    Fut: Future<Output = ()> + Send + 'static,
+{
+    spawn_domain_listener(target, domain, move |event| process(event, state.clone()))
+}
+
 /// Like [`spawn_domain_listener`], with a `recover` hook that runs whenever the
 /// domain's event stream lags. See [`pump_events_with_recovery`].
 pub(crate) fn spawn_domain_listener_with_recovery<F, Fut, R, RFut>(

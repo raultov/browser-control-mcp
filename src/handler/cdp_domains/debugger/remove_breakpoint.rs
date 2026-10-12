@@ -24,28 +24,15 @@ impl RemoveBreakpointTool {
         params: CallToolRequestParams,
         handler: &McpHandler,
     ) -> Result<CallToolResult, CallToolError> {
-        let args_value = serde_json::Value::Object(params.arguments.unwrap_or_default());
-        let args: RemoveBreakpointTool = serde_json::from_value(args_value)
-            .map_err(|e| CallToolError::from_message(e.to_string()))?;
-        let session = handler.session(args.instance_id.clone()).await?;
-        let target = session.target(args.tab_id.clone()).await?;
-
-        let response = target
-            .send_raw_command(
-                "Debugger.removeBreakpoint",
-                json!({ "breakpointId": args.breakpoint_id }),
-            )
-            .await;
-
-        match response {
-            Ok(resp) => Ok(CallToolResult::text_content(vec![
-                format!("Breakpoint removed: {:?}", resp).into(),
-            ])),
-            Err(e) => Err(CallToolError::from_message(format!(
-                "Failed to remove breakpoint: {:?}",
-                e
-            ))),
-        }
+        let args: RemoveBreakpointTool = crate::handler::parse_args(params)?;
+        let target = crate::handler::resolve_target(handler, args.instance_id, args.tab_id).await?;
+        let params = json!({ "breakpointId": args.breakpoint_id });
+        let failure = "Failed to remove breakpoint";
+        let resp =
+            crate::handler::send_or(&target, "Debugger.removeBreakpoint", params, failure).await?;
+        Ok(CallToolResult::text_content(vec![
+            format!("Breakpoint removed: {:?}", resp).into(),
+        ]))
     }
 }
 

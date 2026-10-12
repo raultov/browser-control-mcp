@@ -187,6 +187,64 @@ pub struct BrowserVersion {
     pub js_version: Option<String>,
 }
 
+/// Parses a tool's arguments into its argument struct.
+pub(crate) fn parse_args<T: serde::de::DeserializeOwned>(
+    params: CallToolRequestParams,
+) -> std::result::Result<T, CallToolError> {
+    let value = serde_json::Value::Object(params.arguments.unwrap_or_default());
+    serde_json::from_value(value).map_err(|e| CallToolError::from_message(e.to_string()))
+}
+
+/// The CDP target of `instance_id` / `tab_id` (defaults: the default
+/// instance, its active tab).
+pub(crate) async fn resolve_target(
+    handler: &McpHandler,
+    instance_id: Option<String>,
+    tab_id: Option<String>,
+) -> std::result::Result<cdp_domains::cdp_target::CdpTarget, CallToolError> {
+    // Two statements: the error type is not `Send` across an await.
+    let session = handler.session(instance_id).await?;
+    session.target(tab_id).await
+}
+
+/// The `instance_id` / `tab_id` pair every tool accepts (other fields of the
+/// arguments are ignored when parsing into this).
+#[derive(Debug, Default, serde::Deserialize)]
+pub(crate) struct TargetArgs {
+    pub(crate) instance_id: Option<String>,
+    pub(crate) tab_id: Option<String>,
+}
+
+/// One protocol command and the message prefix used if it fails.
+pub(crate) struct Command<'a> {
+    pub(crate) method: &'a str,
+    pub(crate) params: serde_json::Value,
+    pub(crate) failure: &'a str,
+}
+
+/// Resolves the target of `ids` and sends `command` to it.
+pub(crate) async fn run_on_target(
+    handler: &McpHandler,
+    ids: TargetArgs,
+    command: Command<'_>,
+) -> std::result::Result<cdp_browser_lite::WsResponse, CallToolError> {
+    let target = resolve_target(handler, ids.instance_id, ids.tab_id).await?;
+    send_or(&target, command.method, command.params, command.failure).await
+}
+
+/// Sends one command; a failure becomes `"<failure>: <error>"`.
+pub(crate) async fn send_or(
+    target: &cdp_domains::cdp_target::CdpTarget,
+    method: &str,
+    params: serde_json::Value,
+    failure: &str,
+) -> std::result::Result<cdp_browser_lite::WsResponse, CallToolError> {
+    target
+        .send_raw_command(method, params)
+        .await
+        .map_err(|e| CallToolError::from_message(format!("{failure}: {e:?}")))
+}
+
 /// `Browser.getVersion`, or `None` when it fails.
 async fn read_browser_version(client: &CdpClient) -> Option<BrowserVersion> {
     let reply = client
@@ -215,6 +273,19 @@ pub(crate) fn parse_chrome_major(product: &str) -> Option<u32> {
     let rest = &product[prefix.len()..];
     let major_str = rest.split('.').next()?;
     major_str.parse::<u32>().ok()
+}
+
+/// `fn <field>(&self, tab_id)`: the tab's copy of a per-domain state, or the
+/// session-level one when no tab is registered (same field name in both).
+macro_rules! state_accessor {
+    ($field:ident, $ty:ty) => {
+        pub(crate) fn $field(
+            &self,
+            tab_id: Option<String>,
+        ) -> std::result::Result<Arc<Mutex<$ty>>, CallToolError> {
+            self.tab_or_fallback_state(tab_id, |e| e.$field.clone(), |s| s.$field.clone())
+        }
+    };
 }
 
 pub(crate) struct BrowserSession {
@@ -466,71 +537,12 @@ impl BrowserSession {
         Ok(fallback_extractor(self))
     }
 
-    pub(crate) fn debugger_state(
-        &self,
-        tab_id: Option<String>,
-    ) -> std::result::Result<Arc<Mutex<DebuggerState>>, CallToolError> {
-        self.tab_or_fallback_state(
-            tab_id,
-            |entry| entry.debugger_state.clone(),
-            |s| s.debugger_state.clone(),
-        )
-    }
-
-    pub(crate) fn network_state(
-        &self,
-        tab_id: Option<String>,
-    ) -> std::result::Result<Arc<Mutex<NetworkState>>, CallToolError> {
-        self.tab_or_fallback_state(
-            tab_id,
-            |entry| entry.network_state.clone(),
-            |s| s.network_state.clone(),
-        )
-    }
-
-    pub(crate) fn log_state(
-        &self,
-        tab_id: Option<String>,
-    ) -> std::result::Result<Arc<Mutex<cdp_domains::log::LogState>>, CallToolError> {
-        self.tab_or_fallback_state(
-            tab_id,
-            |entry| entry.log_state.clone(),
-            |s| s.log_state.clone(),
-        )
-    }
-
-    pub(crate) fn tracing_state(
-        &self,
-        tab_id: Option<String>,
-    ) -> std::result::Result<Arc<Mutex<cdp_domains::tracing::TracingState>>, CallToolError> {
-        self.tab_or_fallback_state(
-            tab_id,
-            |entry| entry.tracing_state.clone(),
-            |s| s.tracing_state.clone(),
-        )
-    }
-
-    pub(crate) fn custom_state(
-        &self,
-        tab_id: Option<String>,
-    ) -> std::result::Result<Arc<Mutex<CustomState>>, CallToolError> {
-        self.tab_or_fallback_state(
-            tab_id,
-            |entry| entry.custom_state.clone(),
-            |s| s.custom_state.clone(),
-        )
-    }
-
-    pub(crate) fn webmcp_state(
-        &self,
-        tab_id: Option<String>,
-    ) -> std::result::Result<Arc<Mutex<cdp_domains::webmcp::WebmcpState>>, CallToolError> {
-        self.tab_or_fallback_state(
-            tab_id,
-            |entry| entry.webmcp_state.clone(),
-            |s| s.webmcp_state.clone(),
-        )
-    }
+    state_accessor!(debugger_state, DebuggerState);
+    state_accessor!(network_state, NetworkState);
+    state_accessor!(log_state, cdp_domains::log::LogState);
+    state_accessor!(tracing_state, cdp_domains::tracing::TracingState);
+    state_accessor!(custom_state, CustomState);
+    state_accessor!(webmcp_state, cdp_domains::webmcp::WebmcpState);
 }
 
 #[derive(Debug, Clone)]

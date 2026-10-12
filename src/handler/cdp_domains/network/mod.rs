@@ -3,164 +3,93 @@ pub mod get_network_logs;
 use crate::handler::NetworkRequest;
 use crate::handler::NetworkState;
 use crate::handler::WebSocketFrame;
+use crate::util::json::str_field;
 use cdp_browser_lite::WsResponse;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
 pub(crate) async fn process_network_event(event: &WsResponse, state: &Arc<Mutex<NetworkState>>) {
-    let method = match event.method.as_deref() {
-        Some(m) => m,
-        None => return,
+    let (Some(method), Some(params)) = (event.method.as_deref(), &event.params) else {
+        return;
     };
-
-    let params = match &event.params {
-        Some(p) => p,
-        None => return,
+    let Some(request_id) = str_field(params, "requestId") else {
+        return;
     };
-
+    let mut st = state.lock().await;
     match method {
-        "Network.requestWillBeSent" => {
-            if let Some(request_id) = params.get("requestId").and_then(|v| v.as_str())
-                && let Some(req) = params.get("request")
-            {
-                let url = req
-                    .get("url")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let method = req
-                    .get("method")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let headers = req.get("headers").cloned();
-                let post_data = req
-                    .get("postData")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string());
-
-                let mut st = state.lock().await;
-                st.insert_request(
-                    request_id.to_string(),
-                    NetworkRequest {
-                        url,
-                        method,
-                        resource_type: None,
-                        request_headers: headers,
-                        request_post_data: post_data,
-                        response_status: None,
-                        response_status_text: None,
-                        response_headers: None,
-                        response_body: None,
-                    },
-                );
-            }
-        }
-        "Network.responseReceived" => {
-            if let Some(request_id) = params.get("requestId").and_then(|v| v.as_str()) {
-                let r_type = params
-                    .get("type")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string());
-                if let Some(res) = params.get("response") {
-                    let status = res.get("status").and_then(|v| v.as_i64());
-                    let status_text = res
-                        .get("statusText")
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string());
-                    let headers = res.get("headers").cloned();
-
-                    let mut st = state.lock().await;
-                    if let Some(req) = st.find_request_mut(request_id) {
-                        req.response_status = status;
-                        req.response_status_text = status_text;
-                        req.response_headers = headers;
-                        if req.resource_type.is_none() {
-                            req.resource_type = r_type;
-                        }
-                    }
-                }
-            }
-        }
+        "Network.requestWillBeSent" => on_request(&mut st, request_id, params),
+        "Network.responseReceived" => on_response(&mut st, request_id, params),
         "Network.webSocketCreated" => {
-            if let Some(request_id) = params.get("requestId").and_then(|v| v.as_str()) {
-                let url = params
-                    .get("url")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let mut st = state.lock().await;
-                st.insert_ws_connection(request_id.to_string(), url);
-            }
+            let url = str_field(params, "url").unwrap_or("").to_string();
+            st.insert_ws_connection(request_id.to_string(), url);
         }
-        "Network.webSocketFrameSent" => {
-            if let Some(request_id) = params.get("requestId").and_then(|v| v.as_str())
-                && let Some(response) = params.get("response")
-            {
-                let payload_data = response
-                    .get("payloadData")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let mut st = state.lock().await;
-                let url = st
-                    .ws_connections
-                    .get(request_id)
-                    .cloned()
-                    .unwrap_or_default();
-                st.push_ws_frame(
-                    request_id.to_string(),
-                    WebSocketFrame {
-                        url,
-                        payload_data,
-                        is_sent: true,
-                    },
-                );
-            }
-        }
-        "Network.webSocketFrameReceived" => {
-            if let Some(request_id) = params.get("requestId").and_then(|v| v.as_str())
-                && let Some(response) = params.get("response")
-            {
-                let payload_data = response
-                    .get("payloadData")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let mut st = state.lock().await;
-                let url = st
-                    .ws_connections
-                    .get(request_id)
-                    .cloned()
-                    .unwrap_or_default();
-                st.push_ws_frame(
-                    request_id.to_string(),
-                    WebSocketFrame {
-                        url,
-                        payload_data,
-                        is_sent: false,
-                    },
-                );
-            }
-        }
+        "Network.webSocketFrameSent" => on_ws_frame(&mut st, request_id, params, true),
+        "Network.webSocketFrameReceived" => on_ws_frame(&mut st, request_id, params, false),
         _ => {}
     }
 }
 
+fn on_request(st: &mut NetworkState, request_id: &str, params: &serde_json::Value) {
+    let Some(req) = params.get("request") else {
+        return;
+    };
+    st.insert_request(
+        request_id.to_string(),
+        NetworkRequest {
+            url: str_field(req, "url").unwrap_or("").to_string(),
+            method: str_field(req, "method").unwrap_or("").to_string(),
+            resource_type: None,
+            request_headers: req.get("headers").cloned(),
+            request_post_data: str_field(req, "postData").map(str::to_string),
+            response_status: None,
+            response_status_text: None,
+            response_headers: None,
+            response_body: None,
+        },
+    );
+}
+
+fn on_response(st: &mut NetworkState, request_id: &str, params: &serde_json::Value) {
+    let Some(res) = params.get("response") else {
+        return;
+    };
+    let Some(req) = st.find_request_mut(request_id) else {
+        return;
+    };
+    req.response_status = res.get("status").and_then(|v| v.as_i64());
+    req.response_status_text = str_field(res, "statusText").map(str::to_string);
+    req.response_headers = res.get("headers").cloned();
+    if req.resource_type.is_none() {
+        req.resource_type = str_field(params, "type").map(str::to_string);
+    }
+}
+
+fn on_ws_frame(st: &mut NetworkState, request_id: &str, params: &serde_json::Value, is_sent: bool) {
+    let Some(response) = params.get("response") else {
+        return;
+    };
+    let payload_data = str_field(response, "payloadData").unwrap_or("").to_string();
+    let url = st
+        .ws_connections
+        .get(request_id)
+        .cloned()
+        .unwrap_or_default();
+    st.push_ws_frame(
+        request_id.to_string(),
+        WebSocketFrame {
+            url,
+            payload_data,
+            is_sent,
+        },
+    );
+}
+
 pub(crate) fn start_network_listener(
     target: &crate::handler::cdp_domains::cdp_target::CdpTarget,
-    state_clone: Arc<Mutex<NetworkState>>,
+    state: Arc<Mutex<NetworkState>>,
 ) -> tokio::task::JoinHandle<()> {
-    crate::handler::cdp_domains::event_pump::spawn_domain_listener(
-        target,
-        "Network",
-        move |event| {
-            let state = state_clone.clone();
-            async move {
-                process_network_event(&event, &state).await;
-            }
-        },
-    )
+    let process = |event, state| async move { process_network_event(&event, &state).await };
+    crate::handler::cdp_domains::event_pump::spawn_state_listener(target, "Network", state, process)
 }
 
 #[cfg(test)]

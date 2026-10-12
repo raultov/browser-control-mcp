@@ -1,9 +1,11 @@
-use crate::handler::McpHandler;
+use crate::handler::cdp_domains::cdp_target::CdpTarget;
+use crate::handler::{McpHandler, NetworkRequest, WebSocketFrame};
 use rust_mcp_sdk::{
     macros,
     schema::{CallToolError, CallToolRequestParams, CallToolResult},
 };
 use serde_json::json;
+use std::collections::{HashMap, HashSet, VecDeque};
 
 #[macros::mcp_tool(
     name = "get_network_logs",
@@ -48,6 +50,51 @@ pub struct GetNetworkLogsTool {
     pub current_navigation_only: Option<bool>,
 }
 
+type Requests = HashMap<String, NetworkRequest>;
+type Frames = HashMap<String, VecDeque<WebSocketFrame>>;
+
+/// The parsed filters of one call, all lowercase.
+struct Filters {
+    want_rest: bool,
+    want_ws: bool,
+    url: String,
+    ws_direction: String,
+    ws_content: String,
+    include_details: bool,
+}
+
+impl Filters {
+    fn new(args: &GetNetworkLogsTool) -> Self {
+        let lower =
+            |v: &Option<String>, default: &str| v.as_deref().unwrap_or(default).to_lowercase();
+        let type_filter = lower(&args.type_filter, "both");
+        Self {
+            want_rest: type_filter == "rest" || type_filter == "both",
+            want_ws: type_filter == "websocket" || type_filter == "both",
+            url: lower(&args.url_filter, ""),
+            ws_direction: lower(&args.ws_direction_filter, "both"),
+            ws_content: lower(&args.ws_content_filter, ""),
+            include_details: args.include_details.unwrap_or(true),
+        }
+    }
+
+    fn url_matches(&self, url: &str) -> bool {
+        self.url.is_empty() || url.to_lowercase().contains(&self.url)
+    }
+
+    fn frame_matches(&self, frame: &WebSocketFrame) -> bool {
+        let direction_ok = match self.ws_direction.as_str() {
+            "sent" => frame.is_sent,
+            "received" => !frame.is_sent,
+            _ => true,
+        };
+        direction_ok
+            && self.url_matches(&frame.url)
+            && (self.ws_content.is_empty()
+                || frame.payload_data.to_lowercase().contains(&self.ws_content))
+    }
+}
+
 impl GetNetworkLogsTool {
     pub async fn handle(
         params: CallToolRequestParams,
@@ -57,162 +104,127 @@ impl GetNetworkLogsTool {
         let args: GetNetworkLogsTool = serde_json::from_value(args_value)
             .map_err(|e| CallToolError::from_message(e.to_string()))?;
         let session = handler.session(args.instance_id.clone()).await?;
+        let filters = Filters::new(&args);
+        let (mut requests, mut ws_frames, current_ids) = args.snapshot(&session).await?;
 
-        let type_filter = args
-            .type_filter
-            .unwrap_or_else(|| "both".to_string())
-            .to_lowercase();
-        let want_rest = type_filter == "rest" || type_filter == "both";
-        let want_ws = type_filter == "websocket" || type_filter == "both";
-        let url_filter = args.url_filter.unwrap_or_default().to_lowercase();
-        let ws_dir_filter = args
-            .ws_direction_filter
-            .unwrap_or_else(|| "both".to_string())
-            .to_lowercase();
-        let ws_content_filter = args.ws_content_filter.unwrap_or_default().to_lowercase();
-        let include_details = args.include_details.unwrap_or(true);
-
-        let current_only = args.current_navigation_only.unwrap_or(false);
-
-        let (mut requests, mut ws_frames, current_ids) = {
-            let network_state = session.network_state(args.tab_id.clone())?;
-            let mut st = network_state.lock().await;
-            let reqs = if current_only {
-                st.iter_current()
-            } else {
-                st.iter_all()
-            };
-            let c_ids = st.current_ids();
-            let ws: std::collections::HashMap<_, _> = st.ws_frames.clone().into_iter().collect();
-            if args.clear.unwrap_or(false) {
-                st.clear_all();
-            }
-            (reqs, ws, c_ids)
-        };
-
-        if !want_rest {
+        if !filters.want_rest {
             requests.clear();
         } else {
-            requests.retain(|_, req| {
-                if !url_filter.is_empty() && !req.url.to_lowercase().contains(&url_filter) {
-                    return false;
-                }
-                true
-            });
-
-            if include_details {
-                let target_opt = session.target(args.tab_id.clone()).await.ok();
-                if let Some(target) = target_opt {
-                    for (req_id, req) in requests.iter_mut() {
-                        if current_ids.contains(req_id)
-                            && req.response_status.is_some()
-                            && req.response_body.is_none()
-                            && let Ok(body_resp) = target
-                                .send_raw_command(
-                                    "Network.getResponseBody",
-                                    json!({"requestId": req_id}),
-                                )
-                                .await
-                            && let Some(body) = body_resp
-                                .result
-                                .as_ref()
-                                .and_then(|r| r.get("body"))
-                                .and_then(|b| b.as_str())
-                        {
-                            req.response_body = Some(body.to_string());
-                        }
-                    }
-                }
+            requests.retain(|_, req| filters.url_matches(&req.url));
+            // `.ok()` first: the error type is not `Send` across the next await.
+            let target = match filters.include_details {
+                true => session.target(args.tab_id.clone()).await.ok(),
+                false => None,
+            };
+            if let Some(target) = target {
+                fetch_bodies(&target, &mut requests, &current_ids).await;
             }
         }
-
-        if !want_ws {
+        if !filters.want_ws {
             ws_frames.clear();
         } else {
             ws_frames.retain(|_, frames| {
-                frames.retain(|f| {
-                    if !url_filter.is_empty() && !f.url.to_lowercase().contains(&url_filter) {
-                        return false;
-                    }
-                    if ws_dir_filter == "sent" && !f.is_sent {
-                        return false;
-                    }
-                    if ws_dir_filter == "received" && f.is_sent {
-                        return false;
-                    }
-                    if !ws_content_filter.is_empty()
-                        && !f.payload_data.to_lowercase().contains(&ws_content_filter)
-                    {
-                        return false;
-                    }
-                    true
-                });
+                frames.retain(|f| filters.frame_matches(f));
                 !frames.is_empty()
             });
         }
-
-        let output_requests = if include_details {
-            if !args.include_sensitive_headers.unwrap_or(false) {
-                redact_requests(&mut requests);
-            }
-            serde_json::to_value(&requests).unwrap_or_default()
-        } else {
-            let mut min_reqs = serde_json::Map::new();
-            for (id, req) in requests {
-                min_reqs.insert(
-                    id,
-                    json!({
-                        "url": req.url,
-                        "method": req.method,
-                        "status": req.response_status,
-                        "statusText": req.response_status_text,
-                        "resourceType": req.resource_type
-                    }),
-                );
-            }
-            serde_json::Value::Object(min_reqs)
-        };
-
-        let output_ws = if include_details {
-            serde_json::to_value(&ws_frames).unwrap_or_default()
-        } else {
-            let mut min_ws = serde_json::Map::new();
-            for (id, frames) in ws_frames {
-                let min_frames: Vec<_> = frames
-                    .into_iter()
-                    .map(|f| {
-                        json!({
-                            "url": f.url,
-                            "is_sent": f.is_sent,
-                            "payload_len": f.payload_data.len()
-                        })
-                    })
-                    .collect();
-                min_ws.insert(id, serde_json::to_value(min_frames).unwrap_or_default());
-            }
-            serde_json::Value::Object(min_ws)
-        };
+        if filters.include_details && !args.include_sensitive_headers.unwrap_or(false) {
+            redact_requests(&mut requests);
+        }
 
         let mut output = serde_json::Map::new();
-        if want_rest {
-            output.insert("requests".to_string(), output_requests);
+        if filters.want_rest {
+            output.insert(
+                "requests".into(),
+                requests_json(requests, filters.include_details),
+            );
         }
-        if want_ws {
-            output.insert("websocket_frames".to_string(), output_ws);
+        if filters.want_ws {
+            output.insert(
+                "websocket_frames".into(),
+                frames_json(ws_frames, filters.include_details),
+            );
         }
-
         Ok(CallToolResult::text_content(vec![
             serde_json::to_string_pretty(&output)
                 .unwrap_or_default()
                 .into(),
         ]))
     }
+
+    /// Copies the requested part of the tab's buffers (and clears them if asked).
+    async fn snapshot(
+        &self,
+        session: &crate::handler::BrowserSession,
+    ) -> Result<(Requests, Frames, HashSet<String>), CallToolError> {
+        let network_state = session.network_state(self.tab_id.clone())?;
+        let mut st = network_state.lock().await;
+        let requests = if self.current_navigation_only.unwrap_or(false) {
+            st.iter_current()
+        } else {
+            st.iter_all()
+        };
+        let current_ids = st.current_ids();
+        let frames: Frames = st.ws_frames.clone().into_iter().collect();
+        if self.clear.unwrap_or(false) {
+            st.clear_all();
+        }
+        Ok((requests, frames, current_ids))
+    }
+}
+
+/// `Network.getResponseBody` for answered requests of the current navigation
+/// (bodies are only kept in the returned copy).
+async fn fetch_bodies(target: &CdpTarget, requests: &mut Requests, current: &HashSet<String>) {
+    for (req_id, req) in requests.iter_mut() {
+        if !current.contains(req_id) || req.response_status.is_none() || req.response_body.is_some()
+        {
+            continue;
+        }
+        let reply = target
+            .send_raw_command("Network.getResponseBody", json!({"requestId": req_id}))
+            .await;
+        if let Ok(reply) = reply
+            && let Some(body) = reply.result.as_ref().and_then(|r| r.get("body"))
+        {
+            req.response_body = body.as_str().map(str::to_string);
+        }
+    }
+}
+
+fn requests_json(requests: Requests, include_details: bool) -> serde_json::Value {
+    if include_details {
+        return serde_json::to_value(&requests).unwrap_or_default();
+    }
+    let summary = requests.into_iter().map(|(id, req)| {
+        let row = json!({
+            "url": req.url,
+            "method": req.method,
+            "status": req.response_status,
+            "statusText": req.response_status_text,
+            "resourceType": req.resource_type
+        });
+        (id, row)
+    });
+    serde_json::Value::Object(summary.collect())
+}
+
+fn frames_json(frames: Frames, include_details: bool) -> serde_json::Value {
+    if include_details {
+        return serde_json::to_value(&frames).unwrap_or_default();
+    }
+    let summary = frames.into_iter().map(|(id, frames)| {
+        let rows: Vec<_> = frames
+            .into_iter()
+            .map(|f| json!({"url": f.url, "is_sent": f.is_sent, "payload_len": f.payload_data.len()}))
+            .collect();
+        (id, serde_json::Value::Array(rows))
+    });
+    serde_json::Value::Object(summary.collect())
 }
 
 /// Hides the values of credential-carrying headers in every request.
-fn redact_requests(
-    requests: &mut std::collections::HashMap<String, crate::handler::NetworkRequest>,
-) {
+fn redact_requests(requests: &mut Requests) {
     for request in requests.values_mut() {
         for headers in [&mut request.request_headers, &mut request.response_headers]
             .into_iter()

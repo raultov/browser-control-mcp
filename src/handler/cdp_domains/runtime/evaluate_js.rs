@@ -24,30 +24,25 @@ impl EvaluateJsTool {
         params: CallToolRequestParams,
         handler: &McpHandler,
     ) -> Result<CallToolResult, CallToolError> {
-        let args_value = serde_json::Value::Object(params.arguments.unwrap_or_default());
-        let args: EvaluateJsTool = serde_json::from_value(args_value)
-            .map_err(|e| CallToolError::from_message(e.to_string()))?;
-        let session = handler.session(args.instance_id.clone()).await?;
-        let target = session.target(args.tab_id.clone()).await?;
-
-        let result = target
-            .send_raw_command(
-                "Runtime.evaluate",
-                json!({
-                    "expression": args.expression,
-                    "returnByValue": true,
-                    "awaitPromise": true
-                }),
-            )
-            .await;
-
-        match result {
-            Ok(val) => {
-                let formatted = format!("{:?}", val);
-                Ok(CallToolResult::text_content(vec![formatted.into()]))
-            }
-            Err(e) => Err(CallToolError::from_message(format!("CDP Error: {:?}", e))),
-        }
+        let args: EvaluateJsTool = crate::handler::parse_args(params)?;
+        let ids = crate::handler::TargetArgs {
+            instance_id: args.instance_id,
+            tab_id: args.tab_id,
+        };
+        let params = json!({
+            "expression": args.expression,
+            "returnByValue": true,
+            "awaitPromise": true
+        });
+        let command = crate::handler::Command {
+            method: "Runtime.evaluate",
+            params,
+            failure: "CDP Error",
+        };
+        let val = crate::handler::run_on_target(handler, ids, command).await?;
+        Ok(CallToolResult::text_content(vec![
+            format!("{:?}", val).into(),
+        ]))
     }
 }
 

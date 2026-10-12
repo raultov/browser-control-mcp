@@ -3,6 +3,7 @@
 pub mod bounded;
 pub mod headers;
 pub mod js;
+pub mod json;
 #[cfg(test)]
 pub(crate) mod log_capture;
 pub mod sync;

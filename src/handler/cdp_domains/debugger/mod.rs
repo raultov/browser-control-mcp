@@ -54,17 +54,11 @@ pub(crate) async fn process_debugger_event(event: &WsResponse, state: &Arc<Mutex
 
 pub(crate) fn start_debugger_listener(
     target: &crate::handler::cdp_domains::cdp_target::CdpTarget,
-    state_clone: Arc<Mutex<DebuggerState>>,
+    state: Arc<Mutex<DebuggerState>>,
 ) -> tokio::task::JoinHandle<()> {
-    crate::handler::cdp_domains::event_pump::spawn_domain_listener(
-        target,
-        "Debugger",
-        move |event| {
-            let state = state_clone.clone();
-            async move {
-                process_debugger_event(&event, &state).await;
-            }
-        },
+    let process = |event, state| async move { process_debugger_event(&event, &state).await };
+    crate::handler::cdp_domains::event_pump::spawn_state_listener(
+        target, "Debugger", state, process,
     )
 }
 

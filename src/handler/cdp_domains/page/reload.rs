@@ -22,23 +22,18 @@ impl ReloadTool {
         params: CallToolRequestParams,
         handler: &McpHandler,
     ) -> Result<CallToolResult, CallToolError> {
-        let args_value = serde_json::Value::Object(params.arguments.unwrap_or_default());
-        let args: ReloadTool = serde_json::from_value(args_value)
-            .map_err(|e| CallToolError::from_message(e.to_string()))?;
-        let session = handler.session(args.instance_id.clone()).await?;
-        let target = session.target(args.tab_id.clone()).await?;
-
-        let response = target.send_raw_command("Page.reload", json!({})).await;
-
-        match response {
-            Ok(resp) => Ok(CallToolResult::text_content(vec![
-                format!("Page reloaded: {:?}", resp).into(),
-            ])),
-            Err(e) => Err(CallToolError::from_message(format!(
-                "Failed to reload page: {:?}",
-                e
-            ))),
-        }
+        let method = "Page.reload";
+        let failure = "Failed to reload page";
+        let command = crate::handler::Command {
+            method,
+            params: json!({}),
+            failure,
+        };
+        let ids = crate::handler::parse_args(params)?;
+        let resp = crate::handler::run_on_target(handler, ids, command).await?;
+        Ok(CallToolResult::text_content(vec![
+            format!("Page reloaded: {:?}", resp).into(),
+        ]))
     }
 }
 

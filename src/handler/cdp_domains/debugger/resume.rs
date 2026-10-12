@@ -21,19 +21,15 @@ impl ResumeTool {
         params: CallToolRequestParams,
         handler: &McpHandler,
     ) -> Result<CallToolResult, CallToolError> {
-        let args_value = serde_json::Value::Object(params.arguments.unwrap_or_default());
-        let args: ResumeTool = serde_json::from_value(args_value)
-            .map_err(|e| CallToolError::from_message(e.to_string()))?;
-        let session = handler.session(args.instance_id.clone()).await?;
-        let target = session.target(args.tab_id.clone()).await?;
-
-        let _ = target
-            .send_raw_command("Debugger.resume", cdp_browser_lite::NoParams)
-            .await
-            .map_err(|e| {
-                CallToolError::from_message(format!("Failed to resume execution: {:?}", e))
-            })?;
-
+        let method = "Debugger.resume";
+        let failure = "Failed to resume execution";
+        let command = crate::handler::Command {
+            method,
+            params: serde_json::json!({}),
+            failure,
+        };
+        let ids = crate::handler::parse_args(params)?;
+        crate::handler::run_on_target(handler, ids, command).await?;
         Ok(CallToolResult::text_content(vec![
             "Debugger execution resumed.".into(),
         ]))
