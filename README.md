@@ -260,6 +260,10 @@ error that names the new ones.
 - **TODO (priority)** Same default window size on both browsers (today
   Chrome 921x648, Firefox 1280x887): the screen size when known, else
   1920x1080.
+- **TODO (priority)** Firefox WebSocket frames and the full console natively
+  over the Firefox debugger (RDP watcher `websocket`, `error-message` and
+  `css-message` resources), so both browsers return the same shape without
+  any page injection.
 - **TODO** `pause_on_load` on Firefox: neither a preload `debugger;`
   statement nor an RDP interrupt pauses a reloading page (spike verdict).
 - **TODO** `rust-mcp-sdk` 2.0: the server stays on 1.1.0 (MCP protocol
