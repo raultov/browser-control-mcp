@@ -1,0 +1,40 @@
+name: CI
+on:
+  push:
+    branches: [ "master", "phase-*" ]
+  pull_request: { branches: [ "master" ] }
+env:
+  CARGO_TERM_COLOR: always
+jobs:
+  check:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: Test
+        run: cargo test --all-features
+      - name: Doc
+        shell: bash
+        run: RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features --document-private-items
+      - name: Version check
+        shell: bash
+        run: make version-check
+  dupes:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Duplication
+        run: make dupes
+  publish-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Package
+        run: cargo publish --dry-run --locked
