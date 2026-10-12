@@ -264,6 +264,9 @@ error that names the new ones.
   `remove_breakpoint` and `step_over` answer differently on Chrome and
   Firefox (and Firefox's `step_over` location uses a 1-based line); both
   will return the same shape with 0-based lines.
+- **TODO (priority)** Known bug: on Chrome `get_performance_metrics` returns
+  `{}` because the Performance domain is never enabled. Workaround:
+  `send_cdp_command` with `Performance.enable` first.
 - **TODO (priority)** Partial performance on Firefox from the standard Web
   Performance APIs (navigation timings, FCP, LCP), stating what Firefox
   cannot give (long tasks, CLS, JS heap).
