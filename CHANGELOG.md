@@ -20,4 +20,6 @@ from a copy of its code: entries describe the differences from that release.
 
 ### Changed
 - `cdp-browser-lite`'s test mocks are no longer linked into the binary.
-
+- Dependencies updated to their latest releases; unused test dependencies
+  (`hyper`, `hyper-util`, `http-body-util`, `futures-util`,
+  `tokio-tungstenite`) removed.
