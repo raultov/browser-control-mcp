@@ -611,6 +611,7 @@ pub struct HandlerParams {
     pub browser: crate::cli::BrowserFlags,
     pub server: crate::cli::ServerFlags,
     pub proxy: crate::cli::ProxyArgs,
+    pub firefox: crate::cli::FirefoxArgs,
 }
 
 impl Default for HandlerParams {
@@ -622,6 +623,7 @@ impl Default for HandlerParams {
             browser: Default::default(),
             server: Default::default(),
             proxy: Default::default(),
+            firefox: Default::default(),
         }
     }
 }
@@ -636,9 +638,51 @@ pub struct McpHandler {
     pub(crate) is_test: bool,
     /// Browser of the default instance (`--browser`).
     pub(crate) default_browser: crate::backend::BrowserKind,
+    /// How Firefox instances are launched (from the command line).
+    pub(crate) firefox_spec: crate::backend::bidi::launch::FirefoxSpec,
 }
 
 impl McpHandler {
+    /// The Firefox instance `id` (`None` = the default instance, created on
+    /// first use when `--browser firefox`).
+    pub(crate) async fn firefox(
+        &self,
+        id: Option<&str>,
+    ) -> std::result::Result<Arc<crate::backend::bidi::session::FirefoxSession>, CallToolError>
+    {
+        use crate::backend::bidi::session::FirefoxSession;
+        let id = id.unwrap_or("default");
+        if let Some(session) = self.registry.get_firefox(id) {
+            return Ok(session);
+        }
+        if id != "default" || self.default_browser != crate::backend::BrowserKind::Firefox {
+            let ids: Vec<_> = self
+                .registry
+                .list_descriptors()
+                .into_iter()
+                .map(|d| d.id)
+                .collect();
+            return Err(CallToolError::from_message(format!(
+                "Instance id '{id}' not found. Available instances: {}. Use 'list_instances' to discover instance IDs.",
+                ids.join(", ")
+            )));
+        }
+        let session = Arc::new(FirefoxSession::new(self.firefox_spec.clone()));
+        let mut desc = chrome_instance::registry::InstanceDescriptor::default_instance(
+            self.firefox_spec.firefox.firefox_port.unwrap_or(0),
+            Vec::new(),
+        );
+        desc.browser = crate::backend::BrowserKind::Firefox;
+        // Two first calls may race: the loser takes the winner's session.
+        match self.registry.add_firefox(desc, session.clone()) {
+            Ok(()) => Ok(session),
+            Err(e) => self
+                .registry
+                .get_firefox(id)
+                .ok_or_else(|| CallToolError::from_message(e)),
+        }
+    }
+
     /// What stops this handler's browsers once the handler is owned by the
     /// MCP runtime.
     pub(crate) fn shutdown_hook(&self) -> shutdown::ShutdownHook {
@@ -667,7 +711,7 @@ impl McpHandler {
         let flags = crate::backend::capabilities::CapabilityFlags {
             server: self.flags,
             proxy: self.proxy.proxy_server.is_some(),
-            firefox_debugger: true,
+            firefox_debugger: self.firefox_spec.has_debugger(),
         };
         crate::backend::Capabilities::new(browser, flags)
     }
@@ -739,12 +783,21 @@ impl McpHandler {
         ));
 
         let features = params.features().iter().map(|f| f.as_name().to_string());
-        registry.register_descriptor(
-            chrome_instance::registry::InstanceDescriptor::default_instance(
-                port,
-                features.collect(),
-            ),
+        let mut default = chrome_instance::registry::InstanceDescriptor::default_instance(
+            port,
+            features.collect(),
         );
+        if options.default_browser == crate::backend::BrowserKind::Firefox {
+            default.browser = crate::backend::BrowserKind::Firefox;
+            default.port = options.firefox.firefox_port.unwrap_or(0);
+            default.features = Vec::new();
+        }
+        registry.register_descriptor(default);
+        let firefox_spec = crate::backend::bidi::launch::FirefoxSpec {
+            browser: options.browser,
+            proxy: options.proxy.proxy_server.clone(),
+            firefox: options.firefox,
+        };
 
         Self {
             default_session: session,
@@ -755,6 +808,7 @@ impl McpHandler {
             proxy: options.proxy,
             is_test: false,
             default_browser: options.default_browser,
+            firefox_spec,
         }
     }
 
@@ -792,6 +846,7 @@ impl McpHandler {
             proxy: Default::default(),
             is_test: true,
             default_browser: Default::default(),
+            firefox_spec: Default::default(),
         }
     }
 }
@@ -1093,6 +1148,7 @@ mod tests {
                 proxy_username: Some("user".into()),
                 proxy_password: Some("pass".into()),
             },
+            firefox: Default::default(),
         });
         assert!(handler.flags.local);
         assert!(handler.flags.enable_webmcp);

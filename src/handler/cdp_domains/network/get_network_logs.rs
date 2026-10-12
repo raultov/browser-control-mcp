@@ -95,81 +95,110 @@ impl Filters {
     }
 }
 
+/// A filtered copy of a tab's network buffers.
+pub(crate) struct NetworkSnapshot {
+    pub(crate) requests: Requests,
+    pub(crate) frames: Frames,
+    /// Ids of the current navigation's requests.
+    pub(crate) current_ids: HashSet<String>,
+}
+
 impl GetNetworkLogsTool {
     pub async fn handle(
         params: CallToolRequestParams,
         handler: &McpHandler,
     ) -> Result<CallToolResult, CallToolError> {
-        let args_value = serde_json::Value::Object(params.arguments.unwrap_or_default());
-        let args: GetNetworkLogsTool = serde_json::from_value(args_value)
-            .map_err(|e| CallToolError::from_message(e.to_string()))?;
+        let args: GetNetworkLogsTool = crate::handler::parse_args(params)?;
         let session = handler.session(args.instance_id.clone()).await?;
-        let filters = Filters::new(&args);
-        let (mut requests, mut ws_frames, current_ids) = args.snapshot(&session).await?;
-
-        if !filters.want_rest {
-            requests.clear();
-        } else {
-            requests.retain(|_, req| filters.url_matches(&req.url));
-            // `.ok()` first: the error type is not `Send` across the next await.
-            let target = match filters.include_details {
-                true => session.target(args.tab_id.clone()).await.ok(),
-                false => None,
-            };
-            if let Some(target) = target {
-                fetch_bodies(&target, &mut requests, &current_ids).await;
-            }
+        let network_state = session.network_state(args.tab_id.clone())?;
+        let mut snapshot = args.collect(&network_state).await;
+        // `.ok()` first: the error type is not `Send` across the next await.
+        let target = match args.wants_bodies() {
+            true => session.target(args.tab_id.clone()).await.ok(),
+            false => None,
+        };
+        if let Some(target) = target {
+            fetch_bodies(&target, &mut snapshot.requests, &snapshot.current_ids).await;
         }
-        if !filters.want_ws {
-            ws_frames.clear();
+        Ok(args.finish(snapshot, Vec::new()))
+    }
+
+    /// Whether response bodies should be fetched (REST requests with details).
+    pub(crate) fn wants_bodies(&self) -> bool {
+        let filters = Filters::new(self);
+        filters.want_rest && filters.include_details
+    }
+
+    /// Copies the tab's buffers (clearing them if asked) and applies the
+    /// type, URL, direction and content filters. Shared by every browser.
+    pub(crate) async fn collect(
+        &self,
+        network_state: &std::sync::Arc<tokio::sync::Mutex<crate::handler::NetworkState>>,
+    ) -> NetworkSnapshot {
+        let filters = Filters::new(self);
+        let mut snapshot = {
+            let mut st = network_state.lock().await;
+            let requests = if self.current_navigation_only.unwrap_or(false) {
+                st.iter_current()
+            } else {
+                st.iter_all()
+            };
+            let snapshot = NetworkSnapshot {
+                requests,
+                frames: st.ws_frames.clone().into_iter().collect(),
+                current_ids: st.current_ids(),
+            };
+            if self.clear.unwrap_or(false) {
+                st.clear_all();
+            }
+            snapshot
+        };
+        if filters.want_rest {
+            snapshot
+                .requests
+                .retain(|_, req| filters.url_matches(&req.url));
         } else {
-            ws_frames.retain(|_, frames| {
+            snapshot.requests.clear();
+        }
+        if filters.want_ws {
+            snapshot.frames.retain(|_, frames| {
                 frames.retain(|f| filters.frame_matches(f));
                 !frames.is_empty()
             });
+        } else {
+            snapshot.frames.clear();
         }
-        if filters.include_details && !args.include_sensitive_headers.unwrap_or(false) {
-            redact_requests(&mut requests);
-        }
+        snapshot
+    }
 
+    /// The tool's output: redacted unless asked otherwise; `notes` (browser
+    /// limits, lost events) are listed under `notes`.
+    pub(crate) fn finish(
+        &self,
+        mut snapshot: NetworkSnapshot,
+        notes: Vec<String>,
+    ) -> CallToolResult {
+        let filters = Filters::new(self);
+        if filters.include_details && !self.include_sensitive_headers.unwrap_or(false) {
+            redact_requests(&mut snapshot.requests);
+        }
         let mut output = serde_json::Map::new();
         if filters.want_rest {
-            output.insert(
-                "requests".into(),
-                requests_json(requests, filters.include_details),
-            );
+            let requests = requests_json(snapshot.requests, filters.include_details);
+            output.insert("requests".into(), requests);
         }
         if filters.want_ws {
-            output.insert(
-                "websocket_frames".into(),
-                frames_json(ws_frames, filters.include_details),
-            );
+            let frames = frames_json(snapshot.frames, filters.include_details);
+            output.insert("websocket_frames".into(), frames);
         }
-        Ok(CallToolResult::text_content(vec![
+        if !notes.is_empty() {
+            output.insert("notes".into(), json!(notes));
+        }
+        CallToolResult::text_content(vec![
             serde_json::to_string_pretty(&output)
                 .unwrap_or_default()
                 .into(),
-        ]))
-    }
-
-    /// Copies the requested part of the tab's buffers (and clears them if asked).
-    async fn snapshot(
-        &self,
-        session: &crate::handler::BrowserSession,
-    ) -> Result<(Requests, Frames, HashSet<String>), CallToolError> {
-        let network_state = session.network_state(self.tab_id.clone())?;
-        let mut st = network_state.lock().await;
-        let requests = if self.current_navigation_only.unwrap_or(false) {
-            st.iter_current()
-        } else {
-            st.iter_all()
-        };
-        let current_ids = st.current_ids();
-        let frames: Frames = st.ws_frames.clone().into_iter().collect();
-        if self.clear.unwrap_or(false) {
-            st.clear_all();
-        }
-        Ok((requests, frames, current_ids))
+        ])
     }
 }
 

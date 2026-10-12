@@ -24,6 +24,35 @@ pub struct GetConsoleLogsTool {
 }
 
 impl GetConsoleLogsTool {
+    /// The tool's output for a tab's console buffer (shared by every
+    /// browser); `note` (e.g. lost events) is added as a second block.
+    pub(crate) async fn report(
+        &self,
+        log_state: &std::sync::Arc<tokio::sync::Mutex<super::LogState>>,
+        note: Option<String>,
+    ) -> CallToolResult {
+        let mut logs: Vec<_> = {
+            let mut st = log_state.lock().await;
+            let current_logs = st.messages.iter().cloned().collect();
+            if self.clear.unwrap_or(false) {
+                st.messages.clear();
+            }
+            current_logs
+        };
+        if let Some(level) = &self.level_filter {
+            let level_lower = level.to_lowercase();
+            logs.retain(|msg: &super::ConsoleMessage| msg.level.to_lowercase() == level_lower);
+        }
+        let result_json = serde_json::to_value(&logs).unwrap_or_default();
+        let mut content = vec![
+            serde_json::to_string_pretty(&result_json)
+                .unwrap_or_default()
+                .into(),
+        ];
+        content.extend(note.map(Into::into));
+        CallToolResult::text_content(content)
+    }
+
     pub async fn handle(
         params: CallToolRequestParams,
         handler: &McpHandler,
@@ -33,26 +62,7 @@ impl GetConsoleLogsTool {
             .map_err(|e| CallToolError::from_message(e.to_string()))?;
         let session = handler.session(args.instance_id.clone()).await?;
 
-        let mut logs: Vec<_> = {
-            let log_state = session.log_state(args.tab_id.clone())?;
-            let mut st = log_state.lock().await;
-            let current_logs = st.messages.iter().cloned().collect();
-            if args.clear.unwrap_or(false) {
-                st.messages.clear();
-            }
-            current_logs
-        };
-
-        if let Some(level) = args.level_filter {
-            let level_lower = level.to_lowercase();
-            logs.retain(|msg| msg.level.to_lowercase() == level_lower);
-        }
-
-        let result_json = serde_json::to_value(&logs).unwrap_or_default();
-        Ok(CallToolResult::text_content(vec![
-            serde_json::to_string_pretty(&result_json)
-                .unwrap_or_default()
-                .into(),
-        ]))
+        let log_state = session.log_state(args.tab_id.clone())?;
+        Ok(args.report(&log_state, None).await)
     }
 }

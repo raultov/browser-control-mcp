@@ -123,6 +123,41 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ac07cdecf99051d9a5238b80f35af32cdeba5b336e55d957b318b50137e18da5"
 
 [[package]]
+name = "bidi-browser-lite"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e5900791ef4d562a8b4a73d7e5e838e79e92d1b420431d2d857e22ed8d9ee5f0"
+dependencies = [
+ "bidi-lite",
+ "futures-util",
+ "nix",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tokio-tungstenite 0.30.0",
+ "tracing",
+]
+
+[[package]]
+name = "bidi-lite"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d8473411a1653f35ac16d4709bc8f67b6aee4f59655cd8df564d6c66817cf468"
+dependencies = [
+ "futures-util",
+ "oneshot 0.2.1",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tokio-stream",
+ "tokio-tungstenite 0.30.0",
+ "tracing",
+]
+
+[[package]]
 name = "bitflags"
 version = "2.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -151,6 +186,7 @@ name = "browser-control-mcp"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "bidi-browser-lite",
  "cdp-browser-lite",
  "chrono",
  "clap",
@@ -215,7 +251,7 @@ checksum = "8a385c1cb889451b0aac6269880848f42c931a0bfb2b0bed5e2d827958976ee8"
 dependencies = [
  "futures-util",
  "log",
- "oneshot",
+ "oneshot 0.1.13",
  "reqwest",
  "serde",
  "serde_json",
@@ -1198,6 +1234,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "269bca4c2591a28585d6bf10d9ed0332b7d76900a1b02bec41bdc3a2cdcda107"
 
 [[package]]
+name = "oneshot"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cfe21416a02c693fb9f980befcb230ecc70b0b3d1cc4abf88b9675c4c1457f0c"
+
+[[package]]
 name = "openssl"
 version = "0.10.81"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2133,7 +2175,9 @@ checksum = "17a073bfed563fa236697a068031408a93cd9522e08abf9933ead3e73411bd71"
 dependencies = [
  "futures-util",
  "log",
+ "native-tls",
  "tokio",
+ "tokio-native-tls",
  "tungstenite 0.30.0",
 ]
 
@@ -2292,6 +2336,7 @@ dependencies = [
  "http",
  "httparse",
  "log",
+ "native-tls",
  "rand 0.10.3",
  "sha1 0.11.0",
  "thiserror",

@@ -27,6 +27,29 @@ fn default_limit() -> u32 {
 }
 
 impl GetCustomEventsTool {
+    /// The tool's output for a tab's custom-event buffer (every browser).
+    pub(crate) async fn report(
+        &self,
+        custom_state: &std::sync::Arc<tokio::sync::Mutex<crate::handler::CustomState>>,
+    ) -> CallToolResult {
+        let st = custom_state.lock().await;
+        let filtered_events: Vec<_> = st
+            .events
+            .iter()
+            .filter(|e| self.filter_method.as_ref().is_none_or(|f| &e.method == f))
+            .take(effective_limit(self.limit))
+            .cloned()
+            .collect();
+        CallToolResult::text_content(vec![
+            format!(
+                "Found {} custom events. Captured events: {}",
+                filtered_events.len(),
+                serde_json::to_string_pretty(&filtered_events).unwrap_or_default()
+            )
+            .into(),
+        ])
+    }
+
     pub async fn handle(
         params: CallToolRequestParams,
         handler: &McpHandler,
@@ -38,29 +61,7 @@ impl GetCustomEventsTool {
 
         let session = handler.session(tool.instance_id.clone()).await?;
         let custom_state = session.custom_state(tool.tab_id.clone())?;
-        let st = custom_state.lock().await;
-        let filtered_events: Vec<_> = st
-            .events
-            .iter()
-            .filter(|e| {
-                if let Some(filter) = &tool.filter_method {
-                    &e.method == filter
-                } else {
-                    true
-                }
-            })
-            .take(effective_limit(tool.limit))
-            .cloned()
-            .collect();
-
-        Ok(CallToolResult::text_content(vec![
-            format!(
-                "Found {} custom events. Captured events: {}",
-                filtered_events.len(),
-                serde_json::to_string_pretty(&filtered_events).unwrap_or_default()
-            )
-            .into(),
-        ]))
+        Ok(tool.report(&custom_state).await)
     }
 }
 

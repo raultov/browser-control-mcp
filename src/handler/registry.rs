@@ -75,6 +75,12 @@ macro_rules! entry {
             firefox: None,
         }
     };
+    ($tool:ty, $gate:expr, $needs:expr, $firefox:path) => {
+        ToolEntry {
+            firefox: Some(|params, handler| Box::pin($firefox(params, handler))),
+            ..entry!($tool, $gate, $needs)
+        }
+    };
 }
 
 /// Tools renamed from chrome-debug-mcp, with their new names.
@@ -86,6 +92,7 @@ const RENAMED: &[(&str, &str)] = &[
 /// Every tool, in listing order.
 pub(crate) fn table() -> Vec<ToolEntry> {
     let mut tools = page_tools();
+    tools.extend(debugger_tools());
     tools.extend(instance_tools());
     tools.extend(observation_tools());
     tools.extend(gated_tools());
@@ -93,63 +100,94 @@ pub(crate) fn table() -> Vec<ToolEntry> {
 }
 
 fn page_tools() -> Vec<ToolEntry> {
+    use crate::backend::bidi::tools as ff;
     use Capability::*;
     use Gate::Always;
-    use cdp_domains::debugger::{
-        evaluate_on_call_frame as frame, pause_on_load, remove_breakpoint,
+    use cdp_domains::input::{
+        click_element::ClickElementTool as Click, fill_input::FillInputTool as Fill,
     };
-    use cdp_domains::debugger::{resume, search_scripts, set_breakpoint, step_over};
-    use cdp_domains::{input, page, runtime};
+    use cdp_domains::page::{
+        capture_screenshot::CaptureScreenshotTool as Shot, navigate::NavigateTool as Nav,
+    };
+    use cdp_domains::page::{reload::ReloadTool as Reload, scroll::ScrollTool as Scroll};
+    use cdp_domains::runtime::{
+        evaluate_js::EvaluateJsTool as Eval, inspect_dom::InspectDomTool as Dom_,
+    };
     vec![
-        entry!(
-            page::capture_screenshot::CaptureScreenshotTool,
-            Always,
-            &[Screenshot]
-        ),
-        entry!(input::click_element::ClickElementTool, Always, &[Input]),
-        entry!(input::fill_input::FillInputTool, Always, &[Input]),
-        entry!(runtime::evaluate_js::EvaluateJsTool, Always, &[Evaluate]),
-        entry!(page::navigate::NavigateTool, Always, &[Navigation]),
-        entry!(runtime::inspect_dom::InspectDomTool, Always, &[Dom]),
-        entry!(
-            pause_on_load::PauseOnLoadTool,
-            Always,
-            &[JsDebugger, PauseOnLoad]
-        ),
-        entry!(step_over::StepOverTool, Always, &[JsDebugger]),
-        entry!(resume::ResumeTool, Always, &[JsDebugger]),
-        entry!(search_scripts::SearchScriptsTool, Always, &[JsDebugger]),
-        entry!(set_breakpoint::SetBreakpointTool, Always, &[JsDebugger]),
-        entry!(frame::EvaluateOnCallFrameTool, Always, &[JsDebugger]),
-        entry!(page::reload::ReloadTool, Always, &[Navigation]),
-        entry!(page::scroll::ScrollTool, Always, &[Dom]),
-        entry!(
-            remove_breakpoint::RemoveBreakpointTool,
-            Always,
-            &[JsDebugger]
-        ),
+        entry!(Shot, Always, &[Screenshot], ff::capture_screenshot),
+        entry!(Click, Always, &[Input], ff::click_element),
+        entry!(Fill, Always, &[Input], ff::fill_input),
+        entry!(Eval, Always, &[Evaluate], ff::evaluate_js),
+        entry!(Nav, Always, &[Navigation], ff::navigate),
+        entry!(Dom_, Always, &[Dom], ff::inspect_dom),
+        entry!(Reload, Always, &[Navigation], ff::reload),
+        entry!(Scroll, Always, &[Dom], ff::scroll),
+    ]
+}
+
+fn debugger_tools() -> Vec<ToolEntry> {
+    use crate::backend::bidi::debugger as ff;
+    use Capability::{JsDebugger, PauseOnLoad};
+    use Gate::Always;
+    use cdp_domains::debugger::evaluate_on_call_frame::EvaluateOnCallFrameTool as Frame;
+    use cdp_domains::debugger::pause_on_load::PauseOnLoadTool as PauseLoad;
+    use cdp_domains::debugger::remove_breakpoint::RemoveBreakpointTool as Remove;
+    use cdp_domains::debugger::{resume::ResumeTool as Resume, step_over::StepOverTool as Step};
+    use cdp_domains::debugger::{
+        search_scripts::SearchScriptsTool as Search, set_breakpoint::SetBreakpointTool as Set,
+    };
+    vec![
+        entry!(PauseLoad, Always, &[JsDebugger, PauseOnLoad]),
+        entry!(Step, Always, &[JsDebugger], ff::step_over),
+        entry!(Resume, Always, &[JsDebugger], ff::resume),
+        entry!(Search, Always, &[JsDebugger], ff::search_scripts),
+        entry!(Set, Always, &[JsDebugger], ff::set_breakpoint),
+        entry!(Frame, Always, &[JsDebugger], ff::evaluate_on_call_frame),
+        entry!(Remove, Always, &[JsDebugger], ff::remove_breakpoint),
     ]
 }
 
 fn instance_tools() -> Vec<ToolEntry> {
+    use crate::backend::bidi::tools as ff;
     use Capability::Tabs;
     use Gate::Always;
     use chrome_instance::{close_instance, close_tab, list_instances, list_tabs};
     use chrome_instance::{open_instance, open_tab, restart_chrome, stop_chrome, switch_tab};
     vec![
-        entry!(restart_chrome::RestartChromeTool, Always, &[]),
-        entry!(stop_chrome::StopChromeTool, Always, &[]),
-        entry!(open_instance::OpenInstanceTool, Always, &[]),
-        entry!(list_instances::ListInstancesTool, Always, &[]),
-        entry!(close_instance::CloseInstanceTool, Always, &[]),
-        entry!(open_tab::OpenTabTool, Always, &[Tabs]),
-        entry!(list_tabs::ListTabsTool, Always, &[Tabs]),
-        entry!(close_tab::CloseTabTool, Always, &[Tabs]),
-        entry!(switch_tab::SwitchTabTool, Always, &[Tabs]),
+        entry!(
+            restart_chrome::RestartChromeTool,
+            Always,
+            &[],
+            ff::restart_browser
+        ),
+        entry!(stop_chrome::StopChromeTool, Always, &[], ff::stop_browser),
+        entry!(
+            open_instance::OpenInstanceTool,
+            Always,
+            &[],
+            ff::open_instance
+        ),
+        entry!(
+            list_instances::ListInstancesTool,
+            Always,
+            &[],
+            list_instances::ListInstancesTool::handle
+        ),
+        entry!(
+            close_instance::CloseInstanceTool,
+            Always,
+            &[],
+            ff::close_instance
+        ),
+        entry!(open_tab::OpenTabTool, Always, &[Tabs], ff::open_tab),
+        entry!(list_tabs::ListTabsTool, Always, &[Tabs], ff::list_tabs),
+        entry!(close_tab::CloseTabTool, Always, &[Tabs], ff::close_tab),
+        entry!(switch_tab::SwitchTabTool, Always, &[Tabs], ff::switch_tab),
     ]
 }
 
 fn observation_tools() -> Vec<ToolEntry> {
+    use crate::backend::bidi::tools as ff;
     use Capability::*;
     use Gate::Always;
     use cdp_domains::performance::get_performance_metrics as metrics;
@@ -159,12 +197,14 @@ fn observation_tools() -> Vec<ToolEntry> {
         entry!(
             network::get_network_logs::GetNetworkLogsTool,
             Always,
-            &[NetworkLogs]
+            &[NetworkLogs],
+            ff::network_logs
         ),
         entry!(
             log::get_console_logs::GetConsoleLogsTool,
             Always,
-            &[ConsoleLogs]
+            &[ConsoleLogs],
+            ff::console_logs
         ),
         entry!(
             metrics::GetPerformanceMetricsTool,
@@ -180,7 +220,8 @@ fn observation_tools() -> Vec<ToolEntry> {
         entry!(
             custom::get_custom_events::GetCustomEventsTool,
             Always,
-            &[CustomEvents]
+            &[CustomEvents],
+            ff::custom_events
         ),
     ]
 }

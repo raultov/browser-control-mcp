@@ -28,6 +28,26 @@ from a copy of its code: entries describe the differences from that release.
 - On exit (end of stdin, Ctrl-C, SIGTERM on Unix) the server stops every
   browser it started; the exit code reports instances that did not stop.
 
+- **Firefox support** over WebDriver BiDi (`--browser firefox`, or
+  `open_instance` with `browser: "firefox"`): tabs, `navigate`, `reload`,
+  `evaluate_js` (values as plain JSON), `inspect_dom`, `scroll`,
+  `click_element` (real pointer input), `fill_input` (real key input),
+  `capture_screenshot`, `get_console_logs`, `get_network_logs` (with response
+  bodies; no WebSocket frames) and `get_custom_events`; instance tools
+  (`open_instance`, `close_instance`, `restart_browser`, `stop_browser`,
+  `list_instances` with the Firefox version). Events of iframes are kept with
+  their tab. Firefox instances are launched with an ephemeral profile, or
+  attached with `--firefox-port`.
+- **JavaScript debugging on Firefox** over the Firefox Remote Debugging
+  Protocol: `set_breakpoint` (by `url`), `remove_breakpoint`, `resume`,
+  `step_over` (reports the new location), `evaluate_on_call_frame` and
+  `search_scripts`. The debugger port is on by default for launched Firefox
+  instances; `--no-firefox-debugger` turns it off. `pause_on_load` is Chrome
+  only for now.
+- Firefox flags: `--firefox-path`, `--firefox-port`, `--firefox-rdp-port`,
+  `--no-firefox-debugger`. `--enable-automation` is reported as ignored on
+  Firefox instances by `list_instances`.
+
 ### Changed
 - `cdp-browser-lite`'s test mocks are no longer linked into the binary.
 - Dependencies updated to their latest releases; unused test dependencies

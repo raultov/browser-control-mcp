@@ -26,6 +26,22 @@ pub struct ScrollTool {
 }
 
 impl ScrollTool {
+    /// The JavaScript that performs the scroll (shared by every browser).
+    /// Precedence: selector, then pages, then x/y.
+    pub(crate) fn expression(&self) -> String {
+        if let Some(selector) = &self.selector {
+            crate::util::js::scroll_into_view(selector)
+        } else if let Some(pages) = self.pages {
+            format!(
+                "window.scrollBy({{ left: 0, top: window.innerHeight * {}, behavior: 'instant' }})",
+                pages
+            )
+        } else {
+            let (dx, dy) = (self.x.unwrap_or(0), self.y.unwrap_or(0));
+            format!("window.scrollBy({{ left: {dx}, top: {dy}, behavior: 'instant' }})")
+        }
+    }
+
     pub async fn handle(
         params: CallToolRequestParams,
         handler: &McpHandler,
@@ -36,21 +52,7 @@ impl ScrollTool {
         let session = handler.session(args.instance_id.clone()).await?;
         let target = session.target(args.tab_id.clone()).await?;
 
-        let expression = if let Some(ref selector) = args.selector {
-            crate::util::js::scroll_into_view(selector)
-        } else if let Some(pages) = args.pages {
-            format!(
-                "window.scrollBy({{ left: 0, top: window.innerHeight * {}, behavior: 'instant' }})",
-                pages
-            )
-        } else {
-            let dx = args.x.unwrap_or(0);
-            let dy = args.y.unwrap_or(0);
-            format!(
-                "window.scrollBy({{ left: {}, top: {}, behavior: 'instant' }})",
-                dx, dy
-            )
-        };
+        let expression = args.expression();
 
         let result = target
             .send_raw_command(

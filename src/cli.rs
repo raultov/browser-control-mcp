@@ -36,6 +36,37 @@ pub struct Args {
     /// Proxy every browser goes through.
     #[command(flatten)]
     pub proxy: ProxyArgs,
+
+    /// Firefox-only settings.
+    #[command(flatten)]
+    pub firefox: FirefoxArgs,
+}
+
+/// Firefox-only settings (ignored by Chrome instances).
+#[derive(clap::Args, Debug, Clone, Default, PartialEq, Eq)]
+pub struct FirefoxArgs {
+    /// Firefox binary to launch (default: discovered; also FIREFOX_PATH).
+    #[arg(long)]
+    pub firefox_path: Option<std::path::PathBuf>,
+
+    /// Attach to a running Firefox's WebDriver BiDi port instead of launching one
+    /// (start it with --remote-debugging-port).
+    #[arg(long)]
+    pub firefox_port: Option<u16>,
+
+    /// Debugger (RDP) port of the attached Firefox (its --start-debugger-server);
+    /// without it the debugger tools are unavailable in attach mode.
+    #[arg(
+        long,
+        requires = "firefox_port",
+        conflicts_with = "no_firefox_debugger"
+    )]
+    pub firefox_rdp_port: Option<u16>,
+
+    /// Launch Firefox without its debugger port: no debugger tools, but no local
+    /// port that grants chrome privileges either.
+    #[arg(long)]
+    pub no_firefox_debugger: bool,
 }
 
 /// Launch flags shared by every browser instance.
@@ -251,6 +282,43 @@ mod tests {
         assert!(
             text.contains("chrome") && text.contains("firefox"),
             "{text}"
+        );
+    }
+
+    /// CLI-01: New flags parse with their defaults.
+    #[test]
+    fn new_flags_have_defaults() {
+        let args = Args::parse_from(["browser-control-mcp"]);
+        assert_eq!(args.firefox, FirefoxArgs::default());
+    }
+
+    /// CLI-03: Firefox attach flags are validated.
+    #[test]
+    fn firefox_attach_flags_are_validated() {
+        let alone = Args::try_parse_from(["browser-control-mcp", "--firefox-rdp-port", "6000"]);
+        assert!(alone.is_err(), "--firefox-rdp-port needs --firefox-port");
+        let both = Args::try_parse_from([
+            "browser-control-mcp",
+            "--firefox-port",
+            "9222",
+            "--firefox-rdp-port",
+            "6000",
+            "--no-firefox-debugger",
+        ]);
+        assert!(
+            both.is_err(),
+            "--no-firefox-debugger conflicts with --firefox-rdp-port"
+        );
+        let ok = Args::parse_from([
+            "browser-control-mcp",
+            "--firefox-port",
+            "9222",
+            "--firefox-rdp-port",
+            "6000",
+        ]);
+        assert_eq!(
+            (ok.firefox.firefox_port, ok.firefox.firefox_rdp_port),
+            (Some(9222), Some(6000))
         );
     }
 }

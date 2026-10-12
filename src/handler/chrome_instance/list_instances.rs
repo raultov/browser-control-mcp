@@ -17,12 +17,23 @@ impl ListInstancesTool {
         handler: &McpHandler,
     ) -> Result<CallToolResult, CallToolError> {
         let descriptors = handler.registry.list_descriptors();
-        let warnings: Vec<String> = descriptors.iter().filter_map(version_warning).collect();
+        let mut warnings: Vec<String> = descriptors.iter().filter_map(version_warning).collect();
+        warnings.extend(firefox_warnings(handler, &descriptors));
 
-        let rows: Vec<serde_json::Value> = descriptors
-            .iter()
-            .map(|desc| describe(handler, desc))
-            .collect();
+        let mut rows = Vec::new();
+        for desc in &descriptors {
+            let mut row = describe(handler, desc);
+            if let Some(session) = handler.registry.get_firefox(&desc.id)
+                && let (Some(version), Some(map)) = (session.version().await, row.as_object_mut())
+            {
+                let product = format!("Firefox/{version}");
+                map.insert(
+                    "browser_version".into(),
+                    serde_json::json!({ "product": product }),
+                );
+            }
+            rows.push(row);
+        }
         let result_json = serde_json::to_string_pretty(&rows)
             .map_err(|e| CallToolError::from_message(e.to_string()))?;
 
@@ -34,6 +45,24 @@ impl ListInstancesTool {
         Ok(CallToolResult::text_content(content))
     }
 }
+/// CLI-05: flags that do nothing on Firefox are reported, not silently dropped.
+fn firefox_warnings(
+    handler: &McpHandler,
+    descriptors: &[super::registry::InstanceDescriptor],
+) -> Vec<String> {
+    let enable_automation = handler.base_params.browser.enable_automation;
+    descriptors
+        .iter()
+        .filter(|d| enable_automation && d.browser == crate::backend::BrowserKind::Firefox)
+        .map(|d| {
+            format!(
+                "[Note] Instance '{}': --enable-automation is ignored on Firefox.",
+                d.id
+            )
+        })
+        .collect()
+}
+
 /// The descriptor as JSON plus the instance's capabilities.
 fn describe(handler: &McpHandler, desc: &super::registry::InstanceDescriptor) -> serde_json::Value {
     let mut row = serde_json::to_value(desc).unwrap_or_default();
@@ -89,5 +118,17 @@ mod tests {
         let ff_caps = row("ff")["capabilities"].as_array().unwrap().clone();
         assert!(ff_caps.contains(&serde_json::json!("raw_bidi")));
         assert!(!ff_caps.contains(&serde_json::json!("tracing")));
+    }
+
+    /// CLI-05: --enable-automation on Firefox is reported, not silently dropped.
+    #[test]
+    fn enable_automation_warns_on_firefox() {
+        let mut handler = McpHandler::new_test();
+        handler.base_params.browser.enable_automation = true;
+        let mut ff = super::super::registry::InstanceDescriptor::default_instance(0, vec![]);
+        (ff.id, ff.browser) = ("ff".into(), crate::backend::BrowserKind::Firefox);
+        let warnings = firefox_warnings(&handler, &[ff]);
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("--enable-automation is ignored on Firefox"));
     }
 }

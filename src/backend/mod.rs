@@ -5,6 +5,7 @@
 //! [`Capabilities`] before dispatching to that browser's implementation, so
 //! a tool an instance cannot serve fails before anything is sent.
 
+pub mod bidi;
 pub mod capabilities;
 pub mod error;
 

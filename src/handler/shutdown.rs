@@ -20,6 +20,16 @@ impl ShutdownHook {
         for (id, session) in self.registry.sessions() {
             tasks.spawn(async move { stop_one(session, timeout).await.err().map(|e| (id, e)) });
         }
+        for (id, session) in self.registry.firefox_sessions() {
+            tasks.spawn(async move {
+                let stop = tokio::time::timeout(timeout, session.stop()).await;
+                match stop {
+                    Ok(Ok(())) => None,
+                    Ok(Err(e)) => Some((id, e.to_string())),
+                    Err(_) => Some((id, format!("did not stop within {timeout:?}"))),
+                }
+            });
+        }
         let mut failures = Vec::new();
         while let Some(joined) = tasks.join_next().await {
             match joined {

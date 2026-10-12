@@ -44,6 +44,7 @@ impl InstanceDescriptor {
 #[derive(Default)]
 struct RegistryState {
     sessions: HashMap<InstanceId, Arc<BrowserSession>>,
+    firefox: HashMap<InstanceId, Arc<crate::backend::bidi::session::FirefoxSession>>,
     descriptors: HashMap<InstanceId, InstanceDescriptor>,
 }
 
@@ -74,15 +75,55 @@ impl Registry {
         desc: InstanceDescriptor,
         session: Arc<BrowserSession>,
     ) -> Result<(), String> {
+        self.add_with(desc, |state, id| {
+            state.sessions.insert(id, session);
+        })
+    }
+
+    /// Registers a Firefox instance (same checks as Chrome ones).
+    pub(crate) fn add_firefox(
+        &self,
+        desc: InstanceDescriptor,
+        session: Arc<crate::backend::bidi::session::FirefoxSession>,
+    ) -> Result<(), String> {
+        self.add_with(desc, |state, id| {
+            state.firefox.insert(id, session);
+        })
+    }
+
+    /// Checks, records the descriptor and lets `insert` store the session,
+    /// all under one lock.
+    fn add_with(
+        &self,
+        desc: InstanceDescriptor,
+        insert: impl FnOnce(&mut RegistryState, InstanceId),
+    ) -> Result<(), String> {
         let mut state = write(&self.state);
+        self.check_can_add(&state, &desc)?;
+        let id = desc.id.clone();
+        state.descriptors.insert(id.clone(), desc);
+        insert(&mut state, id);
+        Ok(())
+    }
+
+    /// Whether an instance like `desc` may be added: under the cap, with a
+    /// new id and an unused label. Callers check before launching anything.
+    pub(crate) fn can_add(&self, desc: &InstanceDescriptor) -> Result<(), String> {
+        self.check_can_add(&read(&self.state), desc)
+    }
+
+    fn check_can_add(
+        &self,
+        state: &RegistryState,
+        desc: &InstanceDescriptor,
+    ) -> Result<(), String> {
         let max = self.max_instances.load(std::sync::atomic::Ordering::SeqCst);
-        if state.sessions.len() >= max {
+        if state.sessions.len() + state.firefox.len() >= max {
             return Err(format!("Instance limit reached ({max})"));
         }
-        if state.sessions.contains_key(&desc.id) {
+        if state.sessions.contains_key(&desc.id) || state.firefox.contains_key(&desc.id) {
             return Err(format!("Instance id '{}' already exists", desc.id));
         }
-        // Also check if label is already used by another instance
         if let Some(ref label) = desc.label
             && let Some(existing) = state
                 .descriptors
@@ -94,14 +135,42 @@ impl Registry {
                 label, existing.id
             ));
         }
-        state.descriptors.insert(desc.id.clone(), desc.clone());
-        state.sessions.insert(desc.id, session);
         Ok(())
+    }
+
+    /// The Firefox session `id`, if registered.
+    pub(crate) fn get_firefox(
+        &self,
+        id: &str,
+    ) -> Option<Arc<crate::backend::bidi::session::FirefoxSession>> {
+        read(&self.state).firefox.get(id).cloned()
+    }
+
+    /// Every registered Firefox session with its id.
+    pub(crate) fn firefox_sessions(
+        &self,
+    ) -> Vec<(
+        InstanceId,
+        Arc<crate::backend::bidi::session::FirefoxSession>,
+    )> {
+        read(&self.state)
+            .firefox
+            .iter()
+            .map(|(id, s)| (id.clone(), s.clone()))
+            .collect()
+    }
+
+    /// Updates a descriptor in place (e.g. port and profile once launched).
+    pub(crate) fn update_descriptor(&self, id: &str, update: impl FnOnce(&mut InstanceDescriptor)) {
+        if let Some(desc) = write(&self.state).descriptors.get_mut(id) {
+            update(desc);
+        }
     }
 
     pub fn remove_session(&self, id: &str) -> Option<Arc<BrowserSession>> {
         let mut state = write(&self.state);
         state.descriptors.remove(id);
+        state.firefox.remove(id);
         state.sessions.remove(id)
     }
 
