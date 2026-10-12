@@ -321,4 +321,35 @@ mod tests {
             (Some(9222), Some(6000))
         );
     }
+
+    /// DOC-03: Every CLI flag is documented with its per-browser behaviour.
+    #[test]
+    fn readme_documents_every_flag() {
+        use clap::CommandFactory;
+        // Given the README flags table
+        let readme = include_str!("../README.md");
+        let start = readme.find("## CLI flags").expect("CLI flags section");
+        let table = &readme[start..];
+        let table = &table[..table[3..].find("\n## ").map_or(table.len(), |i| i + 3)];
+        // When every long flag of Args is looked up
+        for arg in Args::command().get_arguments() {
+            let Some(long) = arg.get_long() else { continue };
+            if matches!(long, "help" | "version") {
+                continue;
+            }
+            let prefix = format!("| `--{long}");
+            let row = table.lines().find(|l| {
+                l.strip_prefix(&prefix)
+                    .is_some_and(|rest| rest.starts_with(['`', ' ']))
+            });
+            // Then it has a row with a Chrome and a Firefox cell
+            let row = row.unwrap_or_else(|| panic!("--{long} missing from the README"));
+            let cells: Vec<&str> = row.split('|').map(str::trim).collect();
+            assert!(cells.len() >= 6, "--{long}: {row}");
+            assert!(
+                !cells[3].is_empty() && !cells[4].is_empty(),
+                "--{long}: {row}"
+            );
+        }
+    }
 }

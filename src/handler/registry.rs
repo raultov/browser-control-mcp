@@ -552,21 +552,24 @@ mod tests {
         table().into_iter().map(|e| (e.tool)()).collect()
     }
 
+    /// The capabilities of `browser` with every server flag on.
+    fn all_flags(browser: BrowserKind) -> Capabilities {
+        let flags = CapabilityFlags {
+            server: crate::cli::ServerFlags {
+                allow_cookie_import: true,
+                enable_webmcp: true,
+                local: false,
+            },
+            proxy: true,
+            firefox_debugger: true,
+        };
+        Capabilities::new(browser, flags)
+    }
+
     /// TOL-03: Chrome-only tools say so in their description.
     #[test]
     fn browser_limited_tools_say_so() {
-        let firefox = Capabilities::new(
-            BrowserKind::Firefox,
-            CapabilityFlags {
-                server: crate::cli::ServerFlags {
-                    allow_cookie_import: true,
-                    enable_webmcp: true,
-                    local: false,
-                },
-                proxy: true,
-                firefox_debugger: true,
-            },
-        );
+        let firefox = all_flags(BrowserKind::Firefox);
         for entry in table() {
             let tool = (entry.tool)();
             let description = tool.description.unwrap_or_default();
@@ -638,5 +641,48 @@ mod tests {
             message.contains("not available on Chrome (CDP)"),
             "{message}"
         );
+    }
+
+    /// The section of the README that starts at `heading`.
+    fn readme_section<'a>(readme: &'a str, heading: &str) -> &'a str {
+        let start = readme.find(heading).expect(heading);
+        let rest = &readme[start + heading.len()..];
+        &rest[..rest.find("\n## ").unwrap_or(rest.len())]
+    }
+
+    /// DOC-02: The README feature matrix matches the tool table, and every
+    /// tool Firefox cannot serve is listed under "Limitations and TODO".
+    #[test]
+    fn readme_matrix_matches_tool_table() {
+        // Given the README and the capabilities of each browser
+        let readme = include_str!("../../README.md");
+        let matrix = readme_section(readme, "## Feature matrix");
+        let limitations = readme_section(readme, "## Limitations and TODO");
+        let (chrome, firefox) = (
+            all_flags(BrowserKind::Chrome),
+            all_flags(BrowserKind::Firefox),
+        );
+        for entry in table() {
+            let name = (entry.tool)().name;
+            // When the tool's matrix row is read
+            let rows: Vec<&str> = matrix
+                .lines()
+                .filter(|l| l.starts_with(&format!("| `{name}` |")))
+                .collect();
+            assert_eq!(rows.len(), 1, "{name} appears once in the matrix");
+            let cells: Vec<&str> = rows[0].split('|').map(str::trim).collect();
+            // Then each verdict matches what the browser can serve
+            let serves = |caps: &Capabilities| entry.needs.iter().all(|c| caps.has(*c));
+            let firefox_ok =
+                serves(&firefox) && (entry.firefox.is_some() || entry.needs.is_empty());
+            assert_eq!(cells[2] != "✗", serves(&chrome), "{name}: Chrome cell");
+            assert_eq!(cells[3] != "✗", firefox_ok, "{name}: Firefox cell");
+            if !firefox_ok {
+                assert!(
+                    limitations.contains(&format!("`{name}`")),
+                    "{name} not in Limitations"
+                );
+            }
+        }
     }
 }

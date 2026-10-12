@@ -57,3 +57,9 @@ allow-panic-in-tests = true
 #   too_many_arguments: 4 -> 0 | 3 -> 14
 #   excessive_nesting: 5 -> 0 | 4 -> 12 | 3 -> 113
 #   type_complexity: 150 -> 0 | 100 -> 4
+# Phase 10 (2026-10-12, final; 344 lib tests + 4 E2E): every threshold at its target, 0 violations.
+#   too_many_lines: 50 -> 0 | 40 -> 23 | 30 -> 70
+#   cognitive_complexity: 12 -> 0 | 10 -> 7 | 8 -> 17
+#   too_many_arguments: 4 -> 0 | 3 -> 18
+#   excessive_nesting: 5 -> 0 | 4 -> 19 | 3 -> 149
+#   type_complexity: 150 -> 0 | 100 -> 6
