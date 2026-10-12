@@ -1,0 +1,42 @@
+[package]
+name = "browser-control-mcp"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+authors = ["raultov <raultov@protonmail.com>"]
+description = "MCP server to control and debug Chrome and Firefox at runtime (work in progress)."
+readme = "README.md"
+homepage = "https://github.com/raultov/browser-control-mcp"
+repository = "https://github.com/raultov/browser-control-mcp"
+license = "MIT"
+keywords = ["mcp", "browser", "debugging", "devtools", "firefox"]
+categories = ["development-tools::debugging", "web-programming", "command-line-utilities"]
+exclude = [
+    ".gitignore", ".github/*", "docs/*", "tests/*", "wix/*", "Makefile", "dupes.toml",
+    "clippy.toml", "AGENTS.md", "package.json", "glama.json", "Dockerfile", "dist-workspace.toml",
+]
+
+[lints.rust]
+# No-unsafe policy (AGENTS.md). `deny` rather than `forbid`: an audited
+# exception would need `#[expect(unsafe_code, reason = "...")]`.
+unsafe_code = "deny"
+missing_docs = "warn"
+
+[lints.clippy]
+# Readability gates. Thresholds live in clippy.toml; these two are
+# allow-by-default (pedantic/nursery), so they are inert without this.
+too_many_lines = "warn"
+cognitive_complexity = "warn"
+
+# Ban bare `#[allow]` in favour of `#[expect(..., reason = "...")]`.
+allow_attributes = "warn"
+allow_attributes_without_reason = "warn"
+
+# A panic in a server kills the agent's session: a bug the caller cannot handle.
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+
+# cdp-browser-lite needed `#[expect]` for these; this crate must pass clean.
+struct_excessive_bools = "warn"
+fn_params_excessive_bools = "warn"

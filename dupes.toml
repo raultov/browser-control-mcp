@@ -1,0 +1,35 @@
+# Duplication thresholds for browser-control-mcp (cargo-dupes 0.2.1).
+#
+# Copied from bidi-lite on 2026-10-12. The ratchet target is ZERO. The single
+# exception is the F1 baseline of the imported code (specs D22), brought back
+# to zero in F3.
+#
+# IMPORTANT: cargo-dupes reads this file ONLY from the analysed directory (no
+# parent lookup) and `cargo dupes check` silently passes when none is found.
+# The Makefile refuses to run the gate without it.
+#
+# NOTE: cargo-dupes normalises the AST (identifiers become positional
+# placeholders, literal VALUES are erased). Two functions that differ only in
+# the string literals they embed collapse into one fingerprint. Fix those by
+# extracting a parameterised helper. Only a genuine false positive goes to
+# .dupes-ignore.toml, always with a `reason`; never raise the thresholds.
+
+# --- Analysis scope ---
+min_lines = 10
+min_nodes = 10
+similarity_threshold = 0.8
+
+# --- Exclusions ---
+# Test code is repetitive by design (Given/When/Then). exclude_tests drops
+# #[test] functions and #[cfg(test)] modules. Test-only modules declared
+# #[cfg(test)] at their `mod` line cannot be seen as such from inside the
+# file, hence the explicit patterns. docs/ holds the gitignored specs and the
+# throw-away spike probe crate. Patterns are plain substring matches.
+exclude_tests = true
+exclude = ["tests/", "/docs/", "integration_tests.rs", "bdd_tests.rs", "backend/mock.rs", "test_support"]
+
+# --- CI thresholds (consumed by `cargo dupes check`) ---
+max_exact_duplicates = 0
+max_near_duplicates = 0
+max_exact_percent = 0.0
+max_near_percent = 0.0

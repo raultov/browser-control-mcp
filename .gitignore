@@ -1,0 +1,11 @@
+/target/
+**/target/
+.idea/
+.knot/
+.fastembed_cache/
+/docs/specs/
+/PROMPT.md
+/opencode.json
+logs/
+out.json
+out.err

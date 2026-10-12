@@ -1,0 +1,41 @@
+# Clippy thresholds for browser-control-mcp.
+#
+# Copied from bidi-lite's final values on 2026-10-12 (its targets).
+# POLICY: values may only ever be TIGHTENED, never loosened. The single
+# exception is the F1 baseline of the imported chrome-debug-mcp code (specs
+# D22): thresholds may be SET to the measured values there and F3 brings them
+# back to these targets. Each phase gate re-measures the curves below.
+#
+# NOTE: a threshold here does NOT enable a lint, it only parametrises it:
+#   too_many_arguments    complexity  warn   -> active out of the box
+#   type_complexity       complexity  warn   -> active out of the box
+#   excessive_nesting     complexity  warn   -> active once threshold > 0
+#   too_many_lines        pedantic    allow  -> enabled in Cargo.toml [lints.clippy]
+#   cognitive_complexity  nursery     allow  -> enabled in Cargo.toml [lints.clippy]
+
+# clippy::too_many_arguments (default: 7). Counts &self: use small request structs.
+too-many-arguments-threshold = 4
+
+# clippy::type_complexity (default: 250).
+type-complexity-threshold = 150
+
+# clippy::excessive_nesting (default: 0 = disabled).
+excessive-nesting-threshold = 5
+
+# clippy::too_many_lines (pedantic, default: 100). Applies to tests too: long
+# tests are split into Given/When/Then helpers.
+too-many-lines-threshold = 50
+
+# clippy::cognitive_complexity (nursery, default: 25). bidi-lite started at 15
+# and ratcheted to 12. NOTE: tracing macros may inflate the score; measure.
+cognitive-complexity-threshold = 12
+
+# Hygiene lints (Cargo.toml [lints.clippy]) are relaxed in test code only.
+# These are configuration, not #[allow] attributes.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+
+# --- Measured curves (appended at every phase gate) ---
+# Format: <lint>: <value> -> <violations> | ... (date, phase)
+# Measured with a temporary CLIPPY_CONF_DIR copy, counting by message text.

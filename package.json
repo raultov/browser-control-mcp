@@ -1,0 +1,18 @@
+{
+  "name": "@raultov/browser-control-mcp",
+  "version": "0.1.0",
+  "description": "MCP server to control and debug Chrome and Firefox at runtime (work in progress).",
+  "license": "MIT",
+  "homepage": "https://github.com/raultov/browser-control-mcp",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/raultov/browser-control-mcp.git"
+  },
+  "bugs": {
+    "url": "https://github.com/raultov/browser-control-mcp/issues"
+  },
+  "keywords": ["mcp", "browser", "debugging", "devtools", "chrome", "firefox", "cdp", "webdriver-bidi"],
+  "scripts": {
+    "prepublishOnly": "echo 'The npm package is built and published by cargo-dist; do not publish from the repo root.' && exit 1"
+  }
+}
