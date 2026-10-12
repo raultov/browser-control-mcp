@@ -257,6 +257,9 @@ error that names the new ones.
 - **TODO (priority)** Unified `navigate` response: Chrome returns the CDP ids
   (`frameId`, `loaderId`) and Firefox `{navigation, url}`; both will return
   the final URL in the same shape.
+- **TODO (priority)** Unified `evaluate_js` result: Chrome wraps the value in
+  the CDP `RemoteObject` (`{"result": {"type", "value"}}`) and Firefox
+  returns the bare value; both will return the same shape.
 - **TODO (priority)** Same default window size on both browsers (today
   Chrome 921x648, Firefox 1280x887): the screen size when known, else
   1920x1080.
