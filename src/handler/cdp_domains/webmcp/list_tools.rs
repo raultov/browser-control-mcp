@@ -125,45 +125,15 @@ mod tests {
         }
 
         // Register a tab and put a different tool in the TAB state.
-        let tab_state = {
-            use cdp_browser_lite::BrowserClient;
-            use std::time::Duration;
-
-            let port = crate::handler::cdp_domains::tests::spawn_mock_chrome_server().await;
-            let browser =
-                BrowserClient::connect(&format!("127.0.0.1:{}", port), Duration::from_secs(5))
-                    .await
-                    .expect("BrowserClient connect to mock");
-            let tab = browser
-                .attach("T-page-1")
-                .await
-                .expect("attach to mock target");
-
-            let tab_id = {
-                let mut registry = crate::util::sync::write(&session.tabs);
-                registry
-                    .register_tab(
-                        tab,
-                        crate::handler::chrome_instance::tab_registry::NewTab::new(
-                            None,
-                            "https://example.test",
-                        ),
-                        false,
-                    )
-                    .expect("register tab")
-            };
-
-            let state = session.webmcp_state(Some(tab_id.clone())).unwrap();
-            {
-                let mut st = state.lock().await;
-                st.tools
-                    .entry("frame-t".into())
-                    .or_default()
-                    .insert("tabTool".into(), make_tool("tabTool", "frame-t"));
-            }
-            (tab_id, state)
-        };
-        let (tab_id, _) = tab_state;
+        let tab_id = crate::handler::cdp_domains::tests::register_mock_tab(&session).await;
+        let state = session.webmcp_state(Some(tab_id.clone())).unwrap();
+        state
+            .lock()
+            .await
+            .tools
+            .entry("frame-t".into())
+            .or_default()
+            .insert("tabTool".into(), make_tool("tabTool", "frame-t"));
 
         // Explicit tab_id: must return the TAB tool, not the session tool.
         let params: CallToolRequestParams = serde_json::from_value(json!({

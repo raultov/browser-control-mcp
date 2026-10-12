@@ -202,71 +202,41 @@ mod tests {
         );
     }
 
+    fn completed(id: &str, from: &str) -> crate::handler::cdp_domains::webmcp::WebmcpInvocation {
+        crate::handler::cdp_domains::webmcp::WebmcpInvocation {
+            tool_name: "myTool".into(),
+            frame_id: "frame-1".into(),
+            invocation_id: id.into(),
+            input: "{}".into(),
+            status: Some("Completed".into()),
+            output: Some(json!({ "from": from })),
+            error_text: None,
+        }
+    }
+
     #[tokio::test]
     async fn test_invoke_tool_uses_tab_state_not_session_state() {
-        use crate::handler::cdp_domains::webmcp::WebmcpInvocation;
-        use std::time::Duration;
-
         let handler = McpHandler::new_test();
         let session = handler.session(None).await.unwrap();
 
         // Put a COMPLETED invocation in the SESSION state under a decoy id.
-        {
-            let mut st = session.webmcp_state.lock().await;
-            st.invocations.insert(
-                "decoy".into(),
-                WebmcpInvocation {
-                    tool_name: "myTool".into(),
-                    frame_id: "frame-1".into(),
-                    invocation_id: "decoy".into(),
-                    input: "{}".into(),
-                    status: Some("Completed".into()),
-                    output: Some(json!({"from": "session"})),
-                    error_text: None,
-                },
-            );
-        }
+        let decoy = completed("decoy", "session");
+        session
+            .webmcp_state
+            .lock()
+            .await
+            .invocations
+            .insert("decoy".into(), decoy);
 
-        // Register a real tab.
-        let tab_id = {
-            use cdp_browser_lite::BrowserClient;
-            let port = crate::handler::cdp_domains::tests::spawn_mock_chrome_server().await;
-            let browser =
-                BrowserClient::connect(&format!("127.0.0.1:{}", port), Duration::from_secs(5))
-                    .await
-                    .expect("BrowserClient connect to mock");
-            let tab = browser.attach("T-page-1").await.expect("attach to mock");
-
-            let mut registry = crate::util::sync::write(&session.tabs);
-            registry
-                .register_tab(
-                    tab,
-                    crate::handler::chrome_instance::tab_registry::NewTab::new(
-                        None,
-                        "https://example.test",
-                    ),
-                    false,
-                )
-                .expect("register tab")
-        };
-
-        // Put a COMPLETED invocation in the TAB state with a known id.
-        {
-            let state = session.webmcp_state(Some(tab_id.clone())).unwrap();
-            let mut st = state.lock().await;
-            st.invocations.insert(
-                "tab-inv".into(),
-                WebmcpInvocation {
-                    tool_name: "myTool".into(),
-                    frame_id: "frame-1".into(),
-                    invocation_id: "tab-inv".into(),
-                    input: "{}".into(),
-                    status: Some("Completed".into()),
-                    output: Some(json!({"from": "tab"})),
-                    error_text: None,
-                },
-            );
-        }
+        // Register a real tab and put a COMPLETED invocation in its state.
+        let tab_id = crate::handler::cdp_domains::tests::register_mock_tab(&session).await;
+        let state = session.webmcp_state(Some(tab_id.clone())).unwrap();
+        let tab_inv = completed("tab-inv", "tab");
+        state
+            .lock()
+            .await
+            .invocations
+            .insert("tab-inv".into(), tab_inv);
 
         // The handle() will try to send WebMCP.invokeTool through the mock
         // target; the mock returns {} so it fails with "Did not receive

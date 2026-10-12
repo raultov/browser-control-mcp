@@ -113,15 +113,13 @@ mod tests {
         assert_eq!(args.port, 9222);
         assert_eq!(args.host, "127.0.0.1");
         assert_eq!(args.max_instances, 8);
-        assert!(!args.server.local);
-        assert!(!args.browser.enable_automation);
-        assert!(!args.browser.headless);
-        assert!(!args.browser.user_profile);
-        assert!(!args.server.allow_cookie_import);
-        assert!(!args.server.enable_webmcp);
-        assert_eq!(args.proxy.proxy_server, None);
-        assert_eq!(args.proxy.proxy_username, None);
-        assert_eq!(args.proxy.proxy_password, None);
+        assert_eq!(
+            args.browser,
+            BrowserFlags::default(),
+            "every launch flag off"
+        );
+        assert_eq!(args.server, ServerFlags::default(), "every server flag off");
+        assert_eq!(args.proxy, ProxyArgs::default(), "no proxy");
     }
 
     #[test]

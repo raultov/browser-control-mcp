@@ -20,18 +20,15 @@ too-many-arguments-threshold = 4
 type-complexity-threshold = 150
 
 # clippy::excessive_nesting (default: 0 = disabled).
-# F1 baseline (imported code): set from 5 to 8; target 5, ratcheted in F3
-excessive-nesting-threshold = 8
+excessive-nesting-threshold = 5
 
 # clippy::too_many_lines (pedantic, default: 100). Applies to tests too: long
 # tests are split into Given/When/Then helpers.
-# F1 baseline (imported code): set from 50 to 148; target 50, ratcheted in F3
-too-many-lines-threshold = 148
+too-many-lines-threshold = 50
 
 # clippy::cognitive_complexity (nursery, default: 25). bidi-lite started at 15
 # and ratcheted to 12. NOTE: tracing macros may inflate the score; measure.
-# F1 baseline (imported code): set from 12 to 26; target 12, ratcheted in F3
-cognitive-complexity-threshold = 26
+cognitive-complexity-threshold = 12
 
 # Hygiene lints (Cargo.toml [lints.clippy]) are relaxed in test code only.
 # These are configuration, not #[allow] attributes.
@@ -54,3 +51,9 @@ allow-panic-in-tests = true
 # Phase 2 (2026-10-12, security and hygiene; 276 tests) at the TARGET values:
 #   too_many_lines(50) 23 | cognitive(12) 11 | nesting(5) 31 | arguments(4) 3 |
 #   type_complexity(150) 1 | struct_bools(3) 4
+# Phase 3 (2026-10-12, ratchet done; 279 tests): every threshold at its target, 0 violations.
+#   too_many_lines: 50 -> 0 | 40 -> 21 | 30 -> 53
+#   cognitive_complexity: 12 -> 0 | 10 -> 3 | 8 -> 9
+#   too_many_arguments: 4 -> 0 | 3 -> 14
+#   excessive_nesting: 5 -> 0 | 4 -> 12 | 3 -> 113
+#   type_complexity: 150 -> 0 | 100 -> 4

@@ -17,31 +17,7 @@ impl ListInstancesTool {
         handler: &McpHandler,
     ) -> Result<CallToolResult, CallToolError> {
         let descriptors = handler.registry.list_descriptors();
-        let mut warnings = Vec::new();
-
-        for desc in &descriptors {
-            if let Some(product) = desc
-                .browser_version
-                .as_ref()
-                .and_then(|ver| ver.product.as_ref())
-            {
-                if let Some(major) = parse_chrome_major(product) {
-                    if major < MIN_SUPPORTED_CHROME_MAJOR {
-                        warnings.push(format!(
-                            "[Warning] Instance '{}' is running an outdated browser ({}, major {} < minimum supported {}). Some DevTools features may not work as expected.",
-                            desc.id, product, major, MIN_SUPPORTED_CHROME_MAJOR
-                        ));
-                    }
-                } else if !desc.features.is_empty() {
-                    warnings.push(format!(
-                        "[Note] Instance '{}' is running an unrecognized browser product ('{}'). Requested feature presets ({}) cannot be verified.",
-                        desc.id,
-                        product,
-                        desc.features.join(", ")
-                    ));
-                }
-            }
-        }
+        let warnings: Vec<String> = descriptors.iter().filter_map(version_warning).collect();
 
         let result_json = serde_json::to_string_pretty(&descriptors)
             .map_err(|e| CallToolError::from_message(e.to_string()))?;
@@ -52,5 +28,23 @@ impl ListInstancesTool {
         }
 
         Ok(CallToolResult::text_content(content))
+    }
+}
+/// A warning for an outdated browser, or a note when the product is not
+/// recognised but feature presets were requested.
+fn version_warning(desc: &super::registry::InstanceDescriptor) -> Option<String> {
+    let product = desc.browser_version.as_ref()?.product.as_ref()?;
+    match parse_chrome_major(product) {
+        Some(major) if major < MIN_SUPPORTED_CHROME_MAJOR => Some(format!(
+            "[Warning] Instance '{}' is running an outdated browser ({}, major {} < minimum supported {}). Some DevTools features may not work as expected.",
+            desc.id, product, major, MIN_SUPPORTED_CHROME_MAJOR
+        )),
+        None if !desc.features.is_empty() => Some(format!(
+            "[Note] Instance '{}' is running an unrecognized browser product ('{}'). Requested feature presets ({}) cannot be verified.",
+            desc.id,
+            product,
+            desc.features.join(", ")
+        )),
+        _ => None,
     }
 }

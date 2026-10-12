@@ -155,14 +155,7 @@ mod tests {
         let tasks: Vec<_> = (0..8)
             .map(|t| {
                 let (registry, session) = (registry.clone(), session.clone());
-                tokio::task::spawn_blocking(move || {
-                    for i in 0..1000 {
-                        let id = format!("i-{t}-{i}");
-                        let _ = registry.add_session(descriptor(&id), session.clone());
-                        let _ = registry.list_descriptors();
-                        let _ = registry.remove_session(&id);
-                    }
-                })
+                tokio::task::spawn_blocking(move || churn(&registry, &session, t))
             })
             .collect();
         // Then all complete within 5 seconds and nothing is left behind
@@ -171,6 +164,15 @@ mod tests {
             .await
             .expect("registry operations deadlocked");
         assert!(registry.list_descriptors().is_empty());
+    }
+
+    fn churn(registry: &Registry, session: &Arc<BrowserSession>, task: usize) {
+        for i in 0..1000 {
+            let id = format!("i-{task}-{i}");
+            let _ = registry.add_session(descriptor(&id), session.clone());
+            let _ = registry.list_descriptors();
+            let _ = registry.remove_session(&id);
+        }
     }
 
     async fn futures_join(tasks: Vec<tokio::task::JoinHandle<()>>) {

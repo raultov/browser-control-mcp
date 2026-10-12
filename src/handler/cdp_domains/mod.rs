@@ -18,6 +18,24 @@ pub(crate) mod tests {
     use serde_json::json;
     use std::time::Duration;
 
+    /// Attaches to the mock's page target and registers it as a tab of
+    /// `session`; returns the tab id. The mock must outlive the test.
+    pub(crate) async fn register_mock_tab(session: &crate::handler::BrowserSession) -> String {
+        let port = spawn_mock_chrome_server().await;
+        let address = format!("127.0.0.1:{port}");
+        let browser = cdp_browser_lite::BrowserClient::connect(&address, Duration::from_secs(5))
+            .await
+            .expect("BrowserClient connect to mock");
+        let tab = browser.attach("T-page-1").await.expect("attach to mock");
+        let info = crate::handler::chrome_instance::tab_registry::NewTab::new(
+            None,
+            "https://example.test",
+        );
+        crate::util::sync::write(&session.tabs)
+            .register_tab(tab, info, false)
+            .expect("register tab")
+    }
+
     pub(crate) fn make_event(method: &str, params: serde_json::Value) -> WsResponse {
         WsResponse {
             method: Some(method.to_string()),

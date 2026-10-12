@@ -1,3 +1,4 @@
+use serde_json::json;
 use std::time::Duration;
 
 use crate::handler::chrome_instance::ChromeManager;
@@ -73,46 +74,41 @@ async fn wait_for_port_close(host: &str, port: u16, timeout: Duration) -> bool {
 async fn wait_for_cdp_ready(host: &str, port: u16, timeout: Duration) -> bool {
     let start = std::time::Instant::now();
     while start.elapsed() < timeout {
-        let probe = async {
-            let Ok(addr) = format!("{host}:{port}").parse::<std::net::SocketAddr>() else {
-                return false;
-            };
-            let mut stream = match tokio::net::TcpStream::connect(&addr).await {
-                Ok(s) => s,
-                Err(_) => return false,
-            };
-            use tokio::io::{AsyncReadExt, AsyncWriteExt};
-            let req = format!(
-                "GET /json/version HTTP/1.1\r\nHost: {host}:{port}\r\nConnection: close\r\n\r\n"
-            );
-            if stream.write_all(req.as_bytes()).await.is_err() {
-                return false;
-            }
-            let mut response = String::new();
-            let mut buf = [0u8; 1024];
-            loop {
-                match stream.read(&mut buf).await {
-                    Ok(0) => break,
-                    Ok(n) => {
-                        response.push_str(&String::from_utf8_lossy(&buf[..n]));
-                        if response.contains("Browser") || response.contains("WebKit-Version") {
-                            return true;
-                        }
-                        if response.len() > 64 * 1024 {
-                            break;
-                        }
-                    }
-                    Err(_) => break,
-                }
-            }
-            response.contains("Browser") || response.contains("WebKit-Version")
-        };
-        if probe.await {
+        if probe_version(host, port).await {
             return true;
         }
         tokio::time::sleep(POLL_INTERVAL).await;
     }
     false
+}
+
+/// One `GET /json/version`; true when the reply looks like Chrome's.
+async fn probe_version(host: &str, port: u16) -> bool {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let Ok(addr) = format!("{host}:{port}").parse::<std::net::SocketAddr>() else {
+        return false;
+    };
+    let Ok(mut stream) = tokio::net::TcpStream::connect(&addr).await else {
+        return false;
+    };
+    let req =
+        format!("GET /json/version HTTP/1.1\r\nHost: {host}:{port}\r\nConnection: close\r\n\r\n");
+    if stream.write_all(req.as_bytes()).await.is_err() {
+        return false;
+    }
+    let looks_like_chrome = |r: &str| r.contains("Browser") || r.contains("WebKit-Version");
+    let mut response = String::new();
+    let mut buf = [0u8; 1024];
+    while let Ok(n) = stream.read(&mut buf).await {
+        if n == 0 || response.len() > 64 * 1024 {
+            break;
+        }
+        response.push_str(&String::from_utf8_lossy(&buf[..n]));
+        if looks_like_chrome(&response) {
+            return true;
+        }
+    }
+    looks_like_chrome(&response)
 }
 
 #[tokio::test]
@@ -320,182 +316,88 @@ async fn given_managed_instance_when_stopped_then_ephemeral_profile_dir_is_remov
 #[tokio::test]
 #[ignore = "requires a real Chrome installation"]
 async fn given_real_chrome_when_multiple_tabs_opened_then_console_logs_are_isolated() {
-    let port = TEST_PORT_BASE + 6;
     let handler = crate::handler::McpHandler::new_with_params(crate::handler::HandlerParams {
         host: "127.0.0.1".into(),
-        port,
+        port: TEST_PORT_BASE + 6,
         browser: crate::cli::BrowserFlags {
             headless: true,
             ..Default::default()
         },
         ..Default::default()
     });
-
-    // Ensure it connects
     let session = handler.session(None).await.expect("default session");
     let _ = session.get_or_connect().await.expect("connect");
-
-    // 1. Open Tab A
-    let params_a: rust_mcp_sdk::schema::CallToolRequestParams =
-        serde_json::from_value(serde_json::json!({
-            "name": "open_tab",
-            "arguments": {
-                "url": "about:blank",
-                "label": "tab-a"
-            }
-        }))
-        .unwrap();
-
-    let open_a_res =
-        crate::handler::chrome_instance::open_tab::OpenTabTool::handle(params_a, &handler)
-            .await
-            .expect("open tab A");
 
     // The TabRegistry assigns opaque IDs; the initial tab may be discovered
     // asynchronously and consume an ID between two opens, so we capture the
     // actual IDs instead of assuming 'tab-1'/'tab-2'.
-    let tab_id_a = extract_tab_id(&open_a_res);
-
-    // 2. Open Tab B
-    let params_b: rust_mcp_sdk::schema::CallToolRequestParams =
-        serde_json::from_value(serde_json::json!({
-            "name": "open_tab",
-            "arguments": {
-                "url": "about:blank",
-                "label": "tab-b"
-            }
-        }))
-        .unwrap();
-
-    let open_b_res =
-        crate::handler::chrome_instance::open_tab::OpenTabTool::handle(params_b, &handler)
-            .await
-            .expect("open tab B");
-
-    let tab_id_b = extract_tab_id(&open_b_res);
+    let open = |label: &'static str| {
+        call(
+            &handler,
+            "open_tab",
+            json!({"url": "about:blank", "label": label}),
+        )
+    };
+    let tab_a = extract_tab_id(&open("tab-a").await);
+    let tab_b = extract_tab_id(&open("tab-b").await);
     assert_ne!(
-        tab_id_a, tab_id_b,
+        tab_a, tab_b,
         "tab A and tab B must be registered under distinct IDs"
     );
 
-    // 3. Emit a console log in Tab A
-    let params_eval: rust_mcp_sdk::schema::CallToolRequestParams =
-        serde_json::from_value(serde_json::json!({
-            "name": "evaluate_js",
-            "arguments": {
-                "tab_id": tab_id_a,
-                "expression": "console.error('hello from tab A')"
-            }
-        }))
-        .unwrap();
-
-    let _ = crate::handler::cdp_domains::runtime::evaluate_js::EvaluateJsTool::handle(
-        params_eval,
-        &handler,
-    )
-    .await
-    .expect("evaluate JS tab A");
-
+    let log = json!({"tab_id": tab_a, "expression": "console.error('hello from tab A')"});
+    call(&handler, "evaluate_js", log).await;
     // Give the event listener's async threads a brief moment to process the log
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    // 4. Verify the log appears only in Tab A and not in Tab B
-    let params_logs_a: rust_mcp_sdk::schema::CallToolRequestParams =
-        serde_json::from_value(serde_json::json!({
-            "name": "get_console_logs",
-            "arguments": {
-                "tab_id": tab_id_a
-            }
-        }))
-        .unwrap();
-
-    let logs_a_res =
-        crate::handler::cdp_domains::log::get_console_logs::GetConsoleLogsTool::handle(
-            params_logs_a,
-            &handler,
-        )
-        .await
-        .expect("get logs A");
-
-    let logs_a = format!("{:?}", logs_a_res.content);
+    let logs = |tab: &String| call(&handler, "get_console_logs", json!({ "tab_id": tab }));
+    let logs_a = format!("{:?}", logs(&tab_a).await.content);
     assert!(
         logs_a.contains("hello from tab A"),
         "Tab A must contain its own log"
     );
-
-    let params_logs_b: rust_mcp_sdk::schema::CallToolRequestParams =
-        serde_json::from_value(serde_json::json!({
-            "name": "get_console_logs",
-            "arguments": {
-                "tab_id": tab_id_b
-            }
-        }))
-        .unwrap();
-
-    let logs_b_res =
-        crate::handler::cdp_domains::log::get_console_logs::GetConsoleLogsTool::handle(
-            params_logs_b,
-            &handler,
-        )
-        .await
-        .expect("get logs B");
-
-    let logs_b = format!("{:?}", logs_b_res.content);
+    let logs_b = format!("{:?}", logs(&tab_b).await.content);
     assert!(
         !logs_b.contains("hello from tab A"),
         "Tab B must not contain tab A's log"
     );
 
-    // 5. Close Tab A and verify it is removed
-    let params_close: rust_mcp_sdk::schema::CallToolRequestParams =
-        serde_json::from_value(serde_json::json!({
-            "name": "close_tab",
-            "arguments": {
-                "tab_id": tab_id_a
-            }
-        }))
-        .unwrap();
-
-    let _ =
-        crate::handler::chrome_instance::close_tab::CloseTabTool::handle(params_close, &handler)
-            .await
-            .expect("close tab A");
-
-    let params_list: rust_mcp_sdk::schema::CallToolRequestParams =
-        serde_json::from_value(serde_json::json!({
-            "name": "list_tabs"
-        }))
-        .unwrap();
-
-    let list_res =
-        crate::handler::chrome_instance::list_tabs::ListTabsTool::handle(params_list, &handler)
-            .await
-            .expect("list tabs");
-
-    let list_text = list_res.content[0]
-        .as_text()
-        .expect("list_tabs returns text");
-    let list_json: serde_json::Value =
-        serde_json::from_str(list_text).expect("list_tabs returns JSON");
-    let tab_ids: Vec<String> = list_json["tabs"]
-        .as_array()
-        .expect("tabs must be an array")
-        .iter()
-        .map(|t| {
-            t["tab_id"]
-                .as_str()
-                .expect("tab_id must be a string")
-                .to_string()
-        })
-        .collect();
+    call(&handler, "close_tab", json!({ "tab_id": tab_a })).await;
+    let tab_ids = listed_tab_ids(&handler).await;
     assert!(
-        !tab_ids.contains(&tab_id_a),
+        !tab_ids.contains(&tab_a),
         "tab A must be removed from the list"
     );
-    assert!(tab_ids.contains(&tab_id_b), "tab B must remain in the list");
+    assert!(tab_ids.contains(&tab_b), "tab B must remain in the list");
 
     // Cleanup Chrome
     let _ = session.chrome_manager.lock().await.stop_instance().await;
+}
+
+/// The tab ids `list_tabs` reports.
+async fn listed_tab_ids(handler: &crate::handler::McpHandler) -> Vec<String> {
+    let list = call(handler, "list_tabs", json!({})).await;
+    let json: serde_json::Value =
+        serde_json::from_str(list.content[0].as_text().expect("text")).expect("JSON");
+    json["tabs"]
+        .as_array()
+        .expect("tabs must be an array")
+        .iter()
+        .filter_map(|t| t["tab_id"].as_str().map(str::to_string))
+        .collect()
+}
+
+/// Calls a tool through the handler's table and expects success.
+async fn call(
+    handler: &crate::handler::McpHandler,
+    name: &str,
+    arguments: serde_json::Value,
+) -> CallToolResult {
+    let params: rust_mcp_sdk::schema::CallToolRequestParams =
+        serde_json::from_value(json!({"name": name, "arguments": arguments})).unwrap();
+    crate::handler::registry::call(handler, params)
+        .await
+        .unwrap_or_else(|e| panic!("{name} failed: {e:?}"))
 }
 
 /// Extracts the tab_id from an open_tab response body, e.g.

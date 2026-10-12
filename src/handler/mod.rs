@@ -911,26 +911,33 @@ mod tests {
     }
     #[test]
     fn test_is_local_address() {
-        // Positive cases
-        assert!(is_local_address("http://localhost"));
-        assert!(is_local_address("https://localhost:8080"));
-        assert!(is_local_address("http://127.0.0.1"));
-        assert!(is_local_address("http://127.0.0.1:3000/path"));
-        assert!(is_local_address("http://[::1]"));
-        assert!(is_local_address("http://[::1]:5173"));
-        assert!(is_local_address("http://192.168.1.1"));
-        assert!(is_local_address("https://192.168.0.100/admin"));
-        assert!(is_local_address("http://mydevice.local"));
-        assert!(is_local_address("http://service.local:8000"));
-
-        // Negative cases
-        assert!(!is_local_address("http://google.com"));
-        assert!(!is_local_address("https://github.com/raultov"));
-        assert!(!is_local_address("http://8.8.8.8"));
-        assert!(!is_local_address("http://10.0.0.1"));
-        assert!(!is_local_address("not a url"));
-        assert!(!is_local_address("http://local.com"));
-        assert!(!is_local_address("http://192.167.1.1"));
+        let local = [
+            "http://localhost",
+            "https://localhost:8080",
+            "http://127.0.0.1",
+            "http://127.0.0.1:3000/path",
+            "http://[::1]",
+            "http://[::1]:5173",
+            "http://192.168.1.1",
+            "https://192.168.0.100/admin",
+            "http://mydevice.local",
+            "http://service.local:8000",
+        ];
+        let remote = [
+            "http://google.com",
+            "https://github.com/raultov",
+            "http://8.8.8.8",
+            "http://10.0.0.1",
+            "not a url",
+            "http://local.com",
+            "http://192.167.1.1",
+        ];
+        for url in local {
+            assert!(is_local_address(url), "{url} must be local");
+        }
+        for url in remote {
+            assert!(!is_local_address(url), "{url} must not be local");
+        }
     }
 
     #[test]

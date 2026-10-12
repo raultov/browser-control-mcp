@@ -1,5 +1,4 @@
 use crate::handler::McpHandler;
-use crate::handler::cdp_domains;
 use rust_mcp_sdk::{
     macros,
     schema::{CallToolError, CallToolRequestParams, CallToolResult},
@@ -24,9 +23,7 @@ impl OpenTabTool {
         params: CallToolRequestParams,
         handler: &McpHandler,
     ) -> Result<CallToolResult, CallToolError> {
-        let args_value = serde_json::Value::Object(params.arguments.unwrap_or_default());
-        let args: OpenTabTool = serde_json::from_value(args_value)
-            .map_err(|e| CallToolError::from_message(e.to_string()))?;
+        let args: OpenTabTool = crate::handler::parse_args(params)?;
         let session = handler.session(args.instance_id.clone()).await?;
 
         // Ensure the instance is running
@@ -58,44 +55,17 @@ impl OpenTabTool {
 
         let target_id = tab.target_id().to_string();
 
-        // Register the tab in our TabRegistry
-        let tab_id = {
-            let mut registry = crate::util::sync::write(&session.tabs);
-            registry
-                .register_tab(
-                    tab.clone(),
-                    super::tab_registry::NewTab::new(args.label.clone(), url.clone()),
-                    session.enable_webmcp,
-                )
-                .map_err(|e| {
-                    CallToolError::from_message(format!(
-                        "Failed to register tab in registry: {}",
-                        e
-                    ))
-                })?
-        };
-
-        let states = {
-            let registry = crate::util::sync::read(&session.tabs);
-            registry
-                .tabs
-                .get(&tab_id)
-                .map(|entry| entry.domain_states())
-        };
-
-        if let Some(states) = states {
-            let webmcp_state = states.4.clone();
-            // Listeners must be running before any domain is enabled: enabling
-            // is what makes Chrome emit its authoritative replay (`WebMCP.enable`
-            // re-emits the whole tool list, `Debugger.enable` replays
-            // `scriptParsed`, ...). A subscriber created afterwards never sees
-            // those events — tokio's broadcast channel delivers nothing
-            // retroactively — and nothing re-triggers them once the page is
-            // already loaded.
-            let handles = cdp_domains::start_tab_listeners(&tab, states);
-            crate::util::sync::write(&session.tabs).attach_listeners(&tab_id, handles);
-            cdp_domains::enable_tab_domains(&tab, &webmcp_state).await;
-        }
+        let info = super::tab_registry::NewTab::new(args.label.clone(), url.clone());
+        let tab_id = super::tab_lifecycle::register_and_listen(
+            &session.tabs,
+            &tab,
+            info,
+            session.enable_webmcp,
+        )
+        .await
+        .map_err(|e| {
+            CallToolError::from_message(format!("Failed to register tab in registry: {}", e))
+        })?;
 
         Ok(CallToolResult::text_content(vec![
             serde_json::json!({
