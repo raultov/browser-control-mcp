@@ -10,6 +10,11 @@ from a copy of its code: entries describe the differences from that release.
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-10-12
+
+First public release, **BETA**: known bugs and Chrome/Firefox differences are
+listed in the README ("Limitations and TODO").
+
 ### Added
 - When Chrome is not installed and a Firefox is, the launch error says so
   and tells the agent to ask the user before using `"browser": "firefox"`.
