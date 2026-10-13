@@ -44,7 +44,12 @@ impl SetBreakpointTool {
         let reply = response.result.unwrap_or_default();
         let native = reply["breakpointId"]
             .as_str()
-            .unwrap_or_default()
+            .filter(|id| !id.is_empty())
+            .ok_or_else(|| {
+                CallToolError::from_message(
+                    "Chrome set no breakpoint (its reply has no breakpointId)",
+                )
+            })?
             .to_string();
         let state = session.debugger_state(args.tab_id.clone())?;
         let mut state = state.lock().await;

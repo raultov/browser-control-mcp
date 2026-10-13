@@ -149,7 +149,8 @@ async fn on_navigation(method: &str, params: &Value, state: &PumpState) {
         // history navigations have their own events.
         "browsingContext.navigationCommitted" => {
             if let Some(url) = str_field(params, "url") {
-                log.lock().await.on_document_committed(url);
+                let at = params.get("timestamp").and_then(Value::as_f64);
+                log.lock().await.on_document_committed(url, at);
             }
         }
         _ => {}

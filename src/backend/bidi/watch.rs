@@ -89,9 +89,19 @@ pub(crate) fn on_websocket(network: &mut NetworkState, resource: &Value) {
             if !matches!(data.get("opCode").and_then(Value::as_u64), Some(1 | 2)) {
                 return;
             }
+            // Large payloads come as a long string grip: its first part,
+            // marked with the full length (as `evaluate_on_call_frame` does).
+            let payload = match data.get("payload") {
+                Some(Value::String(s)) => s.clone(),
+                Some(grip) => match super::grip::to_json(grip) {
+                    Value::String(s) => s,
+                    _ => String::new(),
+                },
+                None => String::new(),
+            };
             let frame = WebSocketFrame {
                 url: network.ws_connections.get(&id).cloned().unwrap_or_default(),
-                payload_data: text(data, "payload").unwrap_or_default(),
+                payload_data: payload,
                 is_sent: kind == "frameSent",
             };
             network.push_ws_frame(id, frame);
@@ -224,6 +234,20 @@ mod tests {
             ]
         );
         assert!(frames.iter().all(|f| f.url == "ws://127.0.0.1:8808/"));
+    }
+
+    /// FWS-01: a long payload (a long string grip) keeps its first part
+    /// and says how long it was, never an empty payload.
+    #[test]
+    fn long_websocket_payloads_are_marked() {
+        let mut network = NetworkState::default();
+        let opened = &resources(fixtures::RDP_RESOURCES_WEBSOCKET)[0];
+        on_websocket(&mut network, opened);
+        let long = serde_json::json!({"httpChannelId": 38, "wsMessageType": "frameReceived",
+            "data": {"opCode": 1, "type": "received", "payload": {"type": "longString", "initial": "abc", "length": 70000, "actor": "a"}}});
+        on_websocket(&mut network, &long);
+        let frames = network.ws_frames.get("38").unwrap();
+        assert_eq!(frames[0].payload_data, "abc…(70000 chars)");
     }
 
     /// FWS-03 (F-04): page errors and CSS warnings become console messages

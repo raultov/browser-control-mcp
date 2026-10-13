@@ -231,12 +231,23 @@ impl FirefoxSession {
         }
     }
 
-    /// The running `Browser`, launching or attaching it on first use.
+    /// The running `Browser`, launching or attaching it on first use. A
+    /// session that (re)started watches its tabs once the slot is free.
     pub(crate) async fn browser(&self) -> Result<Arc<Browser>, BackendError> {
+        let (browser, started) = self.browser_slot().await?;
+        if started && self.spec.lock().await.has_debugger() {
+            // Boxed for the same layout-depth reason as the restart below.
+            Box::pin(self.watch_initial_tabs(&browser)).await;
+        }
+        Ok(browser)
+    }
+
+    /// The running `Browser` and whether this call started its session.
+    async fn browser_slot(&self) -> Result<(Arc<Browser>, bool), BackendError> {
         let mut slot = self.browser.lock().await;
         if let Some(browser) = slot.clone() {
             if self.connected() {
-                return Ok(browser);
+                return Ok((browser, false));
             }
             // The WebSocket was lost: `Browser` opens a new session on next
             // use, but the pump, subscription and tab handles belong to the
@@ -245,7 +256,7 @@ impl FirefoxSession {
             // Boxed: inlined, this future nests every debugger and launch
             // future and overflows rustc's layout query depth.
             Box::pin(self.restart_session(&browser)).await?;
-            return Ok(browser);
+            return Ok((browser, true));
         }
         let config = self
             .spec
@@ -256,7 +267,7 @@ impl FirefoxSession {
         let browser = Arc::new(Browser::ensure(config).await.map_err(lifecycle_error)?);
         self.start(&browser).await?;
         *slot = Some(browser.clone());
-        Ok(browser)
+        Ok((browser, true))
     }
 
     /// Whether the pump's connection to Firefox is still open.
@@ -296,24 +307,21 @@ impl FirefoxSession {
         let _ = client
             .send_raw_command("network.addDataCollector", collector)
             .await;
-        self.register_initial_tabs(browser).await?;
-        self.watch_initial_tabs(browser).await;
-        Ok(())
+        self.register_initial_tabs(browser).await
     }
 
-    /// Attaches the debugger of every registered tab in the background
-    /// (WebSocket frames and page errors from the first page load on).
+    /// Attaches the debugger of every registered tab (WebSocket frames and
+    /// page errors from the first page load on). Runs once a session
+    /// started, after the browser slot is released: attaching takes the
+    /// debuggers lock, which debugger tools take after the slot.
     async fn watch_initial_tabs(&self, browser: &Browser) {
-        if !self.spec.lock().await.has_debugger() {
-            return;
-        }
         let tabs: Vec<(String, FirefoxTab)> = read(&self.tabs)
             .tabs
             .iter()
             .map(|(id, tab)| (id.clone(), tab.clone()))
             .collect();
         for (id, tab) in tabs {
-            super::debugger::watch_tab(&self.debuggers, browser, &id, &tab).await;
+            super::debugger::watch_tab(self, browser, &id, &tab).await;
         }
     }
 

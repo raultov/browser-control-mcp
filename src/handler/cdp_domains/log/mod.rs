@@ -45,6 +45,9 @@ pub(crate) struct LogState {
     site: Option<String>,
     /// Says what the last cross-site navigation cleared, until it is read.
     cleared_note: Option<String>,
+    /// When the last cross-site document committed (ms since the epoch):
+    /// messages of the old site arriving late are dropped.
+    cleared_before: Option<f64>,
 }
 
 impl LogState {
@@ -59,6 +62,12 @@ impl LogState {
     /// already pushed by the other feed (same text, close timestamps) is
     /// kept once, with the watcher's labels, which say more.
     pub(crate) fn push_deduplicated(&mut self, msg: ConsoleMessage) {
+        if self
+            .cleared_before
+            .is_some_and(|at| msg.timestamp > 0.0 && msg.timestamp < at)
+        {
+            return;
+        }
         let twin = self
             .messages
             .iter_mut()
@@ -76,21 +85,30 @@ impl LogState {
         }
     }
 
-    /// A new top-level document committed at `url`. Moving to another site
-    /// clears the buffer (the old site's messages would bury the new
-    /// page's); same-site navigations and reloads keep it. Same-document
-    /// navigations (fragment, history API) never get here.
-    pub(crate) fn on_document_committed(&mut self, url: &str) {
+    /// A new top-level document committed at `url` (at `at`, ms since the
+    /// epoch, when the browser says). Moving to another site clears the
+    /// buffer (the old site's messages would bury the new page's); same-site
+    /// navigations and reloads keep it. Same-document navigations (fragment,
+    /// history API) never get here. With `at`, messages stamped at or after
+    /// it stay (Firefox reports some over another connection, which can
+    /// overtake the commit), and later ones stamped before it are dropped.
+    pub(crate) fn on_document_committed(&mut self, url: &str, at: Option<f64>) {
         let site = crate::util::url::site(url);
         if let Some(previous) = self.site.as_deref()
             && previous != site
-            && !self.messages.is_empty()
         {
-            self.cleared_note = Some(format!(
-                "{} console messages from {previous} were cleared when the tab moved to {site}",
-                self.messages.len()
-            ));
-            self.messages.clear();
+            let before = self.messages.len();
+            match at {
+                Some(at) => self.messages.retain(|m| m.timestamp >= at),
+                None => self.messages.clear(),
+            }
+            let cleared = before - self.messages.len();
+            if cleared > 0 {
+                self.cleared_note = Some(format!(
+                    "{cleared} console messages from {previous} were cleared when the tab moved to {site}"
+                ));
+            }
+            self.cleared_before = at;
         }
         self.site = Some(site);
     }
@@ -106,7 +124,7 @@ pub(crate) async fn process_log_event(event: &WsResponse, state: &Arc<Mutex<LogS
         return;
     };
     if let Some(url) = main_frame_commit(method, params) {
-        state.lock().await.on_document_committed(url);
+        state.lock().await.on_document_committed(url, None);
     } else if let Some(message) = console_message(method, params) {
         state.lock().await.push_message(message);
     }
@@ -382,6 +400,31 @@ mod tests {
                 ("tick", "console-api"),
                 ("boom", "security"),
             ]
+        );
+    }
+
+    /// REV-F11-5: with the commit time, messages the new page logged before
+    /// the commit event arrived stay, and the old site's late ones go.
+    #[test]
+    fn commit_time_keeps_early_new_page_messages() {
+        let at = |text: &str, ms: f64| ConsoleMessage {
+            timestamp: ms,
+            ..message(text)
+        };
+        let mut state = LogState::default();
+        state.on_document_committed("https://a.test/", Some(0.0));
+        state.push_deduplicated(at("old", 1000.0));
+        state.push_deduplicated(at("new early", 2500.0));
+        // When b.test commits at 2000
+        state.on_document_committed("https://b.test/", Some(2000.0));
+        // And a late message of a.test arrives
+        state.push_deduplicated(at("old late", 1900.0));
+        state.push_deduplicated(at("new", 2600.0));
+        let texts: Vec<&str> = state.messages.iter().map(|m| m.text.as_str()).collect();
+        assert_eq!(texts, ["new early", "new"]);
+        assert_eq!(
+            state.take_cleared_note().unwrap(),
+            "1 console messages from a.test were cleared when the tab moved to b.test"
         );
     }
 

@@ -26,10 +26,8 @@ use bidi_browser_lite::bidi_lite::rdp::debugger::{
 use bidi_browser_lite::{Browser, Debugger};
 use rust_mcp_sdk::schema::{CallToolError, CallToolRequestParams, CallToolResult};
 use serde_json::{Value, json};
-use std::collections::HashMap;
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
-use tokio::sync::Mutex;
 use tokio_stream::StreamExt;
 
 type ToolResult = Result<CallToolResult, CallToolError>;
@@ -56,9 +54,6 @@ pub(crate) struct TabDebugger {
     /// The resource watch (WebSocket frames, page errors), see `watch.rs`.
     _watch: ListenerHandles,
 }
-
-/// How long a background attach may take before it is given up.
-const WATCH_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Applies thread states to the tracked pause (latest wins: after a step
 /// `resumed` and the new `paused` arrive in one packet).
@@ -114,16 +109,41 @@ enum Activation {
 
 /// The RDP descriptor of the tab showing `context`. BiDi and RDP name tabs
 /// differently (a UUID, an actor) but list them in the same tab order, so
-/// the position matches them; `None` when the lists differ in length (a tab
-/// opening or closing meanwhile).
+/// the position matches them. `None` (no guess) when the lists differ in
+/// length (a tab opening or closing meanwhile) or any pair of web pages at
+/// the same position shows different URLs (another order, another window).
 async fn descriptor_of(browser: &Browser, rdp: &RdpClient, context: &str) -> Option<TabDescriptor> {
     let contexts = browser.list_tabs().await.ok()?;
     let tabs = rdp.list_tabs().await.ok()?;
-    if contexts.len() != tabs.len() {
+    let urls: Vec<(&str, &str)> = contexts
+        .iter()
+        .zip(&tabs)
+        .map(|(c, t)| (c.url.as_str(), t.url.as_str()))
+        .collect();
+    if contexts.len() != tabs.len() || !same_pages(&urls) {
         return None;
     }
     let index = contexts.iter().position(|c| c.context == context)?;
     tabs.into_iter().nth(index)
+}
+
+/// Whether BiDi's and RDP's URLs, pair by pair, can be the same tabs: web
+/// pages must match (fragment aside); other pages (`about:`, error pages,
+/// which RDP shows as `about:neterror?...` and BiDi as the requested URL)
+/// prove nothing either way.
+pub(crate) fn same_pages(pairs: &[(&str, &str)]) -> bool {
+    let web = |url: &str| -> Option<String> {
+        let parsed = url::Url::parse(url).ok()?;
+        matches!(parsed.scheme(), "http" | "https").then(|| {
+            let mut page = parsed;
+            page.set_fragment(None);
+            page.to_string()
+        })
+    };
+    pairs.iter().all(|(bidi, rdp)| match (web(bidi), web(rdp)) {
+        (Some(a), Some(b)) => a == b,
+        _ => true,
+    })
 }
 
 /// Attaches a debugger to `tab` and starts its pause tracking and its
@@ -169,26 +189,52 @@ async fn attach(
 
 /// Attaches the debugger of tab `id` in the background (never activating
 /// it), so its WebSocket frames and page errors are captured from now on.
-/// `true` when the tab is watched (it may have been already).
+/// `true` when the tab is watched (it may have been already). The attach
+/// runs without the debuggers lock (it takes several RDP round trips); a
+/// debugger another call attached meanwhile wins, and this one is detached.
 pub(crate) async fn watch_tab(
-    debuggers: &Mutex<HashMap<String, TabDebugger>>,
+    session: &FirefoxSession,
     browser: &Browser,
     id: &str,
     tab: &FirefoxTab,
 ) -> bool {
-    let mut debuggers = debuggers.lock().await;
-    if debuggers.contains_key(id) {
+    if prune_and_check(session, id).await {
         return true;
     }
-    let attached =
-        tokio::time::timeout(WATCH_TIMEOUT, attach(browser, tab, Activation::Avoided)).await;
-    match attached {
-        Ok(Ok(Some(entry))) => {
-            debuggers.insert(id.to_string(), entry);
-            true
-        }
-        _ => false,
+    let Ok(Some(entry)) = attach(browser, tab, Activation::Avoided).await else {
+        return false;
+    };
+    let mut debuggers = session.debuggers.lock().await;
+    if debuggers.contains_key(id) {
+        drop(debuggers);
+        let _ = entry.debugger.detach().await;
+        return true;
     }
+    debuggers.insert(id.to_string(), entry);
+    true
+}
+
+/// Forgets the debuggers of tabs that are gone (the page or the user closed
+/// them); whether tab `id` has one.
+async fn prune_and_check(session: &FirefoxSession, id: &str) -> bool {
+    let open: Vec<String> = crate::util::sync::read(&session.tabs)
+        .tabs
+        .keys()
+        .cloned()
+        .collect();
+    let mut debuggers = session.debuggers.lock().await;
+    let gone: Vec<String> = debuggers
+        .keys()
+        .filter(|tab_id| !open.contains(tab_id))
+        .cloned()
+        .collect();
+    let detached: Vec<TabDebugger> = gone.iter().filter_map(|g| debuggers.remove(g)).collect();
+    let watched = debuggers.contains_key(id);
+    drop(debuggers);
+    for entry in detached {
+        let _ = entry.debugger.detach().await;
+    }
+    watched
 }
 
 /// [`watch_tab`] for a session's tab, when the session has a debugger port.
@@ -203,29 +249,24 @@ pub(crate) async fn watch_session_tab(
     let Ok(browser) = session.browser().await else {
         return false;
     };
-    watch_tab(&session.debuggers, &browser, id, tab).await
+    watch_tab(session, &browser, id, tab).await
 }
 
-/// Runs `f` with the tab's debugger, attaching it first if needed.
+/// Runs `f` with the tab's debugger, attaching it first if needed. Lock
+/// order: the browser (session slot) before the debuggers.
 async fn with_debugger<T>(
     session: &FirefoxSession,
     tab_id: Option<&str>,
     f: impl AsyncFnOnce(&mut TabDebugger) -> Result<T, BackendError>,
 ) -> Result<T, BackendError> {
     let (id, tab) = session.tab(tab_id).await?;
+    let browser = session.browser().await?;
+    prune_and_check(session, &id).await;
     let mut debuggers = session.debuggers.lock().await;
-    // Tabs the page or the user closed leave their debugger behind.
-    let open: Vec<String> = crate::util::sync::read(&session.tabs)
-        .tabs
-        .keys()
-        .cloned()
-        .collect();
-    debuggers.retain(|tab_id, _| open.contains(tab_id));
-    if !debuggers.contains_key(&id) {
-        let browser = session.browser().await?;
-        if let Some(entry) = attach(&browser, &tab, Activation::Allowed).await? {
-            debuggers.insert(id.clone(), entry);
-        }
+    if !debuggers.contains_key(&id)
+        && let Some(entry) = attach(&browser, &tab, Activation::Allowed).await?
+    {
+        debuggers.insert(id.clone(), entry);
     }
     match debuggers.get_mut(&id) {
         Some(entry) => f(entry).await,
@@ -284,44 +325,59 @@ async fn next_pause(
     None
 }
 
-/// The first breakable column of 0-based `line` in the loaded script at
-/// `url` (what Firefox binds a column-less breakpoint to), or `None` when no
-/// loaded script has that URL.
+/// Where 0-based `line` of the scripts loaded from a URL can break.
+#[derive(Debug, PartialEq)]
+enum Breakable {
+    /// No loaded script has the URL (the breakpoint binds when one loads).
+    NotLoaded,
+    /// The first breakable column of the line.
+    At(u32),
+    /// Loaded, but no script with the URL can break on that line.
+    Nowhere,
+}
+
+/// The first breakable column of 0-based `line` among the loaded scripts
+/// with `url` (a page with several inline scripts has one source per
+/// `<script>`, all with the page's URL): what Firefox binds a column-less
+/// breakpoint to.
 async fn breakable_column(
     debugger: &Debugger,
     url: &str,
     line: u32,
-) -> Result<Option<u32>, BackendError> {
-    let Some(source) = debugger
-        .sources()
-        .into_iter()
-        .find(|s| s.url.as_deref() == Some(url))
-    else {
-        return Ok(None);
-    };
+) -> Result<Breakable, BackendError> {
     let rdp_line = line.saturating_add(1);
     let query = json!({"query": {
         "start": {"line": rdp_line, "column": 0},
         "end": {"line": rdp_line.saturating_add(1), "column": 0},
     }});
-    let reply = debugger
-        .client()
-        .request(&source.actor, "getBreakpointPositionsCompressed", query)
-        .await
-        .map_err(|e| rdp_error("getBreakpointPositionsCompressed", &e))?;
-    let column = reply.body["positions"][rdp_line.to_string()]
-        .as_array()
+    let mut found = Breakable::NotLoaded;
+    for source in debugger
+        .sources()
         .into_iter()
-        .flatten()
-        .filter_map(Value::as_u64)
-        .min()
-        .and_then(|c| u32::try_from(c).ok());
-    match column {
-        Some(column) => Ok(Some(column)),
-        None => Err(BackendError::InvalidArgument(format!(
-            "line_number {line} of {url} has no breakable position"
-        ))),
+        .filter(|s| s.url.as_deref() == Some(url))
+    {
+        found = Breakable::Nowhere;
+        let reply = debugger
+            .client()
+            .request(
+                &source.actor,
+                "getBreakpointPositionsCompressed",
+                query.clone(),
+            )
+            .await
+            .map_err(|e| rdp_error("getBreakpointPositionsCompressed", &e))?;
+        let column = reply.body["positions"][rdp_line.to_string()]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_u64)
+            .min()
+            .and_then(|c| u32::try_from(c).ok());
+        if let Some(column) = column {
+            return Ok(Breakable::At(column));
+        }
     }
+    Ok(found)
 }
 
 /// `set_breakpoint`: Firefox breakpoints are set by URL (spike H17).
@@ -344,11 +400,22 @@ pub(crate) async fn set_breakpoint(
     let set = with_debugger(&session, args.tab_id.as_deref(), async |entry| {
         // Resolved here (bidi-lite resolves too, but does not say where), so
         // the reply has the column Firefox binds to.
-        let loaded = breakable_column(&entry.debugger, &url, args.line_number).await?;
+        let breakable = breakable_column(&entry.debugger, &url, args.line_number).await?;
+        let column = match (&breakable, args.column_number) {
+            (_, Some(column)) => Some(column),
+            (Breakable::At(column), None) => Some(*column),
+            (Breakable::NotLoaded, None) => None,
+            (Breakable::Nowhere, None) => {
+                return Err(BackendError::InvalidArgument(format!(
+                    "line_number {} of {url} has no breakable position",
+                    args.line_number
+                )));
+            }
+        };
         let location = BreakpointLocation {
             source_url: url.clone(),
             line,
-            column: args.column_number.or(loaded),
+            column,
         };
         entry
             .debugger
@@ -360,7 +427,7 @@ pub(crate) async fn set_breakpoint(
             url: Some(url.clone()),
             line: args.line_number,
             column: location.column,
-            resolved: loaded.is_some(),
+            resolved: breakable != Breakable::NotLoaded,
         })
     })
     .await?;
@@ -658,6 +725,41 @@ mod tests {
             .unwrap();
         assert_eq!(watchers(rdp), 2);
         assert_eq!(mock.bidi().count("browsingContext.activate"), 1);
+        ts::stop(&handler).await;
+    }
+
+    /// REV-F11-2: tabs are matched by position only when every web page at
+    /// the same position shows the same URL.
+    #[test]
+    fn positions_match_only_with_the_same_pages() {
+        assert!(same_pages(&[
+            ("https://a.test/x#top", "https://a.test/x"),
+            ("http://gone.invalid/", "about:neterror?e=dnsNotFound"),
+            ("about:blank", "about:blank"),
+        ]));
+        assert!(!same_pages(&[
+            ("https://a.test/", "https://b.test/"),
+            ("https://b.test/", "https://a.test/"),
+        ]));
+    }
+
+    /// REV-F11-7: the debugger of a tab the page closed is detached at the
+    /// next attach check, even if no debugger tool runs.
+    #[tokio::test]
+    async fn closed_tabs_lose_their_debugger() {
+        // Given tab-1 watched since the session started
+        let mock = MockFirefox::start(true).await.unwrap();
+        let rdp = mock.rdp().unwrap();
+        let handler = ts::handler(&mock);
+        let session = handler.firefox(None).await.unwrap();
+        session.browser().await.unwrap();
+        assert!(session.debuggers.lock().await.contains_key("tab-1"));
+        // When the page closes it and a log tool checks another tab
+        crate::util::sync::write(&session.tabs).remove_context("ctx-0");
+        prune_and_check(&session, "tab-9").await;
+        // Then its debugger was detached (its targets unwatched)
+        assert!(session.debuggers.lock().await.is_empty());
+        assert!(rdp.wait_for_request("unwatchTargets", WAIT).await.is_some());
         ts::stop(&handler).await;
     }
 

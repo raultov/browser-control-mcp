@@ -79,11 +79,15 @@ The JavaScript debugger tools on Firefox need its debugger (RDP) port: on by
 default for a launched Firefox, `--firefox-rdp-port` for an attached one. The
 same port gives Firefox's WebSocket frames and the console messages BiDi does
 not report (script errors with their file and line, cookie and security
-warnings, CSS warnings, platform messages): each tab's debugger is attached
-when the tab is registered and watches them, in the same shapes as Chrome. A
-tab that BiDi and RDP cannot match by position (tabs opening or closing at
-that moment) is attached by its first debugger tool, which brings it to the
-front; its frames are captured from then on.
+warnings, CSS warnings, platform messages), in the same shapes as Chrome.
+Each tab's debugger watches them: the session's first tabs are attached when
+the session starts and `open_tab` attaches its tab before loading the URL; a
+tab the page opened is attached by the first `get_console_logs` or
+`get_network_logs` on it. Tabs are matched by their position in BiDi's and
+RDP's tab lists (checked against their URLs), never by activating them; a
+tab that cannot be matched that way (tabs opening or closing at that moment)
+is attached by its first debugger tool, which brings it to the front. Frames
+are captured from the moment a tab is attached.
 
 ## 📦 Installation
 

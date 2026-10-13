@@ -76,6 +76,21 @@ mod tests {
         assert_eq!(tool.unwrap().breakpoint_id, "bp-123");
     }
 
+    /// REV-F11-9: a Chrome reply without a breakpoint id is an error, not
+    /// an MCP id mapped to nothing.
+    #[tokio::test]
+    async fn breakpoint_without_cdp_id_fails() {
+        use crate::handler::cdp_domains::debugger::set_breakpoint::SetBreakpointTool;
+        use crate::handler::cdp_domains::tests::{call, mock_handler, spawn_recording_mock};
+        let mock = spawn_recording_mock().await;
+        let handler = mock_handler(mock.http_port);
+        let args = json!({"url": "http://a/app.js", "line_number": 1});
+        let error = SetBreakpointTool::handle(call("set_breakpoint", args), &handler)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("no breakpointId"), "{error}");
+    }
+
     /// DBG-02 (Chrome): an unknown id fails before anything is sent.
     #[tokio::test]
     async fn unknown_breakpoint_id_fails() {
