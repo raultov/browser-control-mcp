@@ -10,6 +10,12 @@ from a copy of its code: entries describe the differences from that release.
 
 ## [Unreleased]
 
+## [0.2.0-beta.1] - 2026-10-13
+
+Public **BETA**. Chrome and Firefox now answer the same replies; several are
+incompatible with 0.1.x (marked **Breaking**; see the README's "Migration
+from 0.1.x to 0.2.0").
+
 ### Changed
 
 - **Breaking:** `navigate` and `reload` answer the same shape on Chrome and

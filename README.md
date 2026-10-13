@@ -11,7 +11,7 @@ It is the successor of
 from a copy of its code) and complements Playwright MCP or
 chrome-devtools-mcp with runtime JavaScript debugging on both browsers.
 
-> **Status: BETA (0.1.1-beta.1).** This version contains known bugs and differences
+> **Status: BETA (0.2.0-beta.1).** This version contains known bugs and differences
 > between Chrome and Firefox (see [Limitations and TODO](#limitations-and-todo))
 > and parts that have not been verified (see [Untested](#untested)). Tool
 > replies may change in incompatible ways before 1.0. Please report problems
@@ -405,6 +405,22 @@ In client configurations replace the command `chrome-debug-mcp` with
 `browser-control-mcp` (or the npm package name). The old tool names answer an
 error that names the new ones.
 
+### Migration from 0.1.x to 0.2.0
+
+0.2.0 makes the replies the same on Chrome and Firefox; these changes are
+incompatible:
+
+| Tool | 0.1.x | 0.2.0 |
+| --- | --- | --- |
+| `navigate`, `reload` | Chrome: raw `Page.navigate` reply (`frameId`, `loaderId`, `errorText`) without waiting, `{}` on reload; Firefox: `{navigation, url}` | `{url, tab_id, browser, notes?}` after `load`; `url` is the final URL; protocol ids under `browser` |
+| `navigate`, `open_tab` to an unreachable host | Chrome: success (`errorText` inside, or a `chrome-error://` tab) | error `Navigation failed: <code> (<url>)`; `open_tab` names the tab, which stays open |
+| `evaluate_js` | Chrome: `{"result": {type, value, ...}}`; Firefox: the bare value | `{value, type, subtype?, description?}` |
+| `set_breakpoint` | Chrome: CDP id (`1:3:0:http://…`) and `locations`; Firefox: `{breakpointId, url, lineNumber, columnNumber}` | `{breakpoint_id: "bp-N", url, line_number, column_number, resolved}` |
+| `remove_breakpoint` | Chrome: CDP id, reply `{}` | `bp-N` id, reply `{removed}` |
+| `step_over`, `resume` | Chrome: text only; Firefox `step_over`: `{paused, location: {line (1-based), column}}` | `{paused, location: {url, line_number, column_number} \| null}`, 0-based |
+| `evaluate_on_call_frame` | Chrome: raw `RemoteObject` (exceptions as success); Firefox: bare value | the `evaluate_js` shape; exceptions are errors (`Evaluation threw: ...`) |
+| `get_console_logs` | a JSON array; `clear` emptied the whole buffer | `{messages, total, truncated, notes?}`, at most `limit` (200) messages; `clear` removes the returned ones; the buffer is cleared on cross-site navigation |
+
 ## Limitations and TODO
 
 - **TODO** Default window size from the screen size: launched browsers use
@@ -435,9 +451,12 @@ error that names the new ones.
 - Firefox: after a lost connection a launched Firefox gets a new session on
   the next tool call; an attached Firefox keeps its orphan session, so
   restart that Firefox.
-- Firefox debugger: it attaches to the tab Firefox has selected right after
-  activating the requested one; switching tabs at that very moment can bind
-  it to the wrong page.
+- Firefox debugger: a tab is matched to its debugger by its position in
+  BiDi's and RDP's tab lists, checked against the tabs' web URLs; tabs
+  showing no web page (`about:blank`, error pages) cannot be checked, so a
+  tab opening or closing elsewhere at that very moment could still bind the
+  debugger to the wrong page. When the lists differ the debugger attaches by
+  activating the tab, as before.
 - `get_network_logs` with response bodies has no total size limit (each
   Firefox body is capped at 2 MB): use `url_filter` on busy pages.
 - The Docker image is amd64 only.
