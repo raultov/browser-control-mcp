@@ -1,0 +1,37 @@
+{
+  "id": 12,
+  "result": {
+    "exceptionDetails": {
+      "columnNumber": 0,
+      "exception": {
+        "className": "ReferenceError",
+        "description": "ReferenceError: x_not_defined is not defined\n    at <anonymous>:1:1",
+        "objectId": "3112932618769885137.1.2",
+        "subtype": "error",
+        "type": "object"
+      },
+      "exceptionId": 2,
+      "lineNumber": 0,
+      "scriptId": "42",
+      "stackTrace": {
+        "callFrames": [
+          {
+            "columnNumber": 0,
+            "functionName": "",
+            "lineNumber": 0,
+            "scriptId": "42",
+            "url": ""
+          }
+        ]
+      },
+      "text": "Uncaught"
+    },
+    "result": {
+      "className": "ReferenceError",
+      "description": "ReferenceError: x_not_defined is not defined\n    at <anonymous>:1:1",
+      "objectId": "3112932618769885137.1.1",
+      "subtype": "error",
+      "type": "object"
+    }
+  }
+}

@@ -32,10 +32,6 @@ fn text(value: impl Into<String>) -> CallToolResult {
     CallToolResult::text_content(vec![value.into().into()])
 }
 
-fn pretty(value: &Value) -> String {
-    serde_json::to_string_pretty(value).unwrap_or_default()
-}
-
 /// The session and tab a call addresses.
 async fn target(
     handler: &McpHandler,
@@ -81,12 +77,11 @@ pub(crate) async fn reload(params: CallToolRequestParams, handler: &McpHandler) 
     Ok(outcome.reply("Page reloaded.", Some(&id)))
 }
 
-/// `evaluate_js`: the value as plain JSON.
+/// `evaluate_js`: the result in the shared shape.
 pub(crate) async fn evaluate_js(params: CallToolRequestParams, handler: &McpHandler) -> ToolResult {
     let args: EvaluateJsTool = parse_args(params)?;
     let (_, _, tab) = target(handler, &ids(&args.instance_id, &args.tab_id)).await?;
-    let value = page::evaluate(&tab.tab, &args.expression).await?;
-    Ok(text(pretty(&value)))
+    Ok(page::evaluate_js(&tab.tab, &args.expression).await?.reply())
 }
 
 /// `inspect_dom`: same text as on Chrome.

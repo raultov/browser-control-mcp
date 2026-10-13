@@ -23,6 +23,13 @@ from a copy of its code: entries describe the differences from that release.
   browsers with `Navigation failed: <browser's code> (<url>)` (Chrome used to
   report success with `errorText` inside, or a tab on `chrome-error://`); from
   `open_tab` the error names the tab, which stays open.
+- **Breaking:** `evaluate_js` answers `{value, type, subtype?, description?}`
+  on both browsers (Chrome used to wrap the value in the CDP `RemoteObject`,
+  Firefox to return the bare value). Values without a JSON form (functions,
+  DOM nodes, symbols, `NaN`, bigints, maps...) have `value: null` and a
+  `description`; on Chrome they no longer fail with "Object couldn't be
+  returned by value" or answer `{}`. A thrown exception fails with the same
+  wording on both: what was thrown plus its 1-based line and column.
 
 - Lifecycle crates bumped: `cdp-browser-lite` 0.4.2 and `bidi-browser-lite`
   0.1.4 (`bidi-lite` 0.1.2). Their mocks now record wire parameters, so the

@@ -272,6 +272,14 @@ claude mcp add browser-control-mcp -- npx -y @raultov/browser-control-mcp
   `Navigation failed: <browser's code> (<url>)`, e.g.
   `net::ERR_NAME_NOT_RESOLVED` on Chrome and `NS_ERROR_UNKNOWN_HOST` on
   Firefox; from `open_tab` the error names the tab, which stays open.
+  `evaluate_js` answers `{"value", "type", "subtype"?, "description"?}`:
+  `type` is JavaScript's `typeof`, `subtype` refines objects (`array`,
+  `null`, `node`, `date`, `map`...), `value` is the JSON form and is `null`
+  when there is none (functions, DOM nodes, symbols, `NaN`, bigints,
+  maps...), `description` then says what it was (Chrome describes functions
+  by their source, Firefox only as `function`). A thrown exception or a
+  rejected promise fails with what was thrown and its 1-based line and
+  column, e.g. `ReferenceError: x is not defined (line 1, column 1)`.
 - **Per-tab state.** Console logs, network traffic, breakpoints and custom
   events are kept per tab, in bounded buffers.
 - **Firefox allows a single automation session.** Each Firefox instance holds
@@ -368,9 +376,6 @@ error that names the new ones.
 
 ## Limitations and TODO
 
-- **TODO (priority)** Unified `evaluate_js` result: Chrome wraps the value in
-  the CDP `RemoteObject` (`{"result": {"type", "value"}}`) and Firefox
-  returns the bare value; both will return the same shape.
 - **TODO (priority)** Console buffer per navigation: `get_console_logs` will
   clear a tab's buffer when it navigates to a different site (kept across
   subdomains of the same site) and gain a limit, so one call cannot flood

@@ -1,0 +1,27 @@
+{
+  "id": 15,
+  "type": "success",
+  "result": {
+    "realm": "2fd62821-52e7-4b29-9162-2ad0ed967f6a",
+    "type": "exception",
+    "exceptionDetails": {
+      "columnNumber": 6,
+      "exception": {
+        "type": "string",
+        "value": "boom"
+      },
+      "lineNumber": 0,
+      "stackTrace": {
+        "callFrames": [
+          {
+            "columnNumber": 6,
+            "functionName": "",
+            "lineNumber": 0,
+            "url": "about:home"
+          }
+        ]
+      },
+      "text": "boom"
+    }
+  }
+}

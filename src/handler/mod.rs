@@ -1,5 +1,6 @@
 pub mod cdp_domains;
 pub mod chrome_instance;
+pub(crate) mod evaluation;
 pub(crate) mod navigation;
 mod registry;
 mod schema_compat;

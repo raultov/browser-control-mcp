@@ -3,6 +3,7 @@
 use super::protocol_error;
 use super::remote_value;
 use crate::backend::error::BackendError;
+use crate::handler::evaluation::{Evaluation, exception_message};
 use crate::handler::navigation::NavigationOutcome;
 use bidi_browser_lite::{BidiError, ReadinessState, Tab};
 use serde_json::{Value, json};
@@ -92,29 +93,36 @@ pub(crate) async fn evaluate(tab: &Tab, expression: &str) -> Result<Value, Backe
     outcome(&reply)
 }
 
+/// `evaluate_js`: the result in the shared shape, or the exception as an
+/// error worded as on Chrome.
+pub(crate) async fn evaluate_js(tab: &Tab, expression: &str) -> Result<Evaluation, BackendError> {
+    let reply = evaluate_raw(tab, expression, "none").await?;
+    thrown(&reply)?;
+    Ok(remote_value::evaluation(&reply["result"]))
+}
+
 /// The value of a `script.evaluate` reply, or its exception as an error.
 pub(crate) fn outcome(reply: &Value) -> Result<Value, BackendError> {
-    if reply.get("type").and_then(Value::as_str) == Some("exception") {
-        let details = &reply["exceptionDetails"];
-        let text = details
-            .get("text")
-            .and_then(Value::as_str)
-            .unwrap_or("exception");
-        let line = details
-            .get("lineNumber")
-            .and_then(Value::as_i64)
-            .unwrap_or(0)
-            + 1;
-        let column = details
-            .get("columnNumber")
-            .and_then(Value::as_i64)
-            .unwrap_or(0)
-            + 1;
-        return Err(BackendError::InvalidArgument(format!(
-            "{text} (line {line}, column {column})"
-        )));
-    }
+    thrown(reply)?;
     Ok(remote_value::to_json(&reply["result"]))
+}
+
+/// The exception of a `script.evaluate` reply as an error (Firefox puts
+/// what was thrown in `text`).
+fn thrown(reply: &Value) -> Result<(), BackendError> {
+    if reply.get("type").and_then(Value::as_str) != Some("exception") {
+        return Ok(());
+    }
+    let details = &reply["exceptionDetails"];
+    let text = details
+        .get("text")
+        .and_then(Value::as_str)
+        .unwrap_or("exception");
+    Err(BackendError::InvalidArgument(exception_message(
+        text,
+        details["lineNumber"].as_i64().unwrap_or(0),
+        details["columnNumber"].as_i64().unwrap_or(0),
+    )))
 }
 
 /// `true`/`false`/value of a snippet built by `util::js`.
@@ -238,7 +246,8 @@ pub(crate) async fn screenshot(tab: &Tab, req: &ShotRequest<'_>) -> Result<Strin
 mod tests {
     use super::*;
 
-    /// BID-15: A script exception is a tool error with its text and position.
+    /// BID-15 / EVL-04: A script exception is a tool error with its text and
+    /// position, worded as on Chrome.
     #[test]
     fn script_exception_is_tool_error() {
         let reply: Value = serde_json::from_str(include_str!(
@@ -250,6 +259,12 @@ mod tests {
             err,
             "ReferenceError: x_not_defined is not defined (line 1, column 1)"
         );
+        let string: Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/bidi/script-evaluate-throw-string.json"
+        ))
+        .unwrap();
+        let err = outcome(&string["result"]).unwrap_err().to_string();
+        assert_eq!(err, "boom (line 1, column 7)");
     }
 
     /// BID-18: capture_screenshot maps format, quality and origin.

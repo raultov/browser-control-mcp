@@ -1,0 +1,20 @@
+{
+  "id": 13,
+  "result": {
+    "exceptionDetails": {
+      "columnNumber": 6,
+      "exception": {
+        "type": "string",
+        "value": "boom"
+      },
+      "exceptionId": 4,
+      "lineNumber": 0,
+      "scriptId": "46",
+      "text": "Uncaught"
+    },
+    "result": {
+      "type": "string",
+      "value": "boom"
+    }
+  }
+}

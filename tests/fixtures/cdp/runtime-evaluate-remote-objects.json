@@ -1,0 +1,72 @@
+{
+  "node": {
+    "className": "HTMLDivElement",
+    "description": "div#t.a.b",
+    "objectId": "8809154888792079958.1.1",
+    "subtype": "node",
+    "type": "object"
+  },
+  "function": {
+    "className": "Function",
+    "description": "function f(a){return a}",
+    "objectId": "8809154888792079958.1.2",
+    "type": "function"
+  },
+  "object": {
+    "className": "Object",
+    "description": "Object",
+    "objectId": "8809154888792079958.1.3",
+    "type": "object"
+  },
+  "array": {
+    "className": "Array",
+    "description": "Array(2)",
+    "objectId": "8809154888792079958.1.4",
+    "subtype": "array",
+    "type": "object"
+  },
+  "symbol": {
+    "description": "Symbol(s)",
+    "objectId": "8809154888792079958.1.5",
+    "type": "symbol"
+  },
+  "window": {
+    "className": "Window",
+    "description": "Window",
+    "objectId": "8809154888792079958.1.6",
+    "type": "object"
+  },
+  "string": {
+    "type": "string",
+    "value": "hi"
+  },
+  "nan": {
+    "description": "NaN",
+    "type": "number",
+    "unserializableValue": "NaN"
+  },
+  "bigint": {
+    "description": "10n",
+    "type": "bigint",
+    "unserializableValue": "10n"
+  },
+  "undefined": {
+    "type": "undefined"
+  },
+  "null": {
+    "subtype": "null",
+    "type": "object",
+    "value": null
+  },
+  "object_by_value": {
+    "type": "object",
+    "value": {
+      "a": 1,
+      "l": [
+        1,
+        "x",
+        null
+      ]
+    }
+  }
+}
