@@ -189,14 +189,9 @@ impl Capabilities {
         }
         let no_pause = "neither a preload `debugger;` nor an RDP interrupt pauses a reloading page on Firefox (not implemented yet)";
         self.deny(Capability::PauseOnLoad, no_pause);
-        self.deny(
-            Capability::PerformanceMetrics,
-            "Firefox has no equivalent of CDP's Performance domain",
-        );
-        self.deny(
-            Capability::Tracing,
-            "Firefox has no equivalent of CDP's Tracing domain",
-        );
+        // Partial: from the Web Performance APIs (see `bidi/performance.rs`).
+        self.grant(Capability::PerformanceMetrics);
+        self.grant(Capability::Tracing);
         self.deny(Capability::Webmcp, "WebMCP is a Chrome testing feature");
         self.deny(
             Capability::CookieImport,
@@ -297,14 +292,15 @@ mod tests {
             (
                 BrowserKind::Firefox,
                 flags((false, false), true),
-                vec![RawBidi, JsDebugger, RawRdp, WebsocketFrames],
                 vec![
+                    RawBidi,
+                    JsDebugger,
+                    RawRdp,
+                    WebsocketFrames,
                     Tracing,
                     PerformanceMetrics,
-                    Webmcp,
-                    CookieImport,
-                    LaunchFeatures,
                 ],
+                vec![Webmcp, CookieImport, LaunchFeatures],
             ),
             (
                 BrowserKind::Firefox,

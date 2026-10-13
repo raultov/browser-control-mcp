@@ -8,7 +8,7 @@ use std::collections::HashMap;
 
 #[macros::mcp_tool(
     name = "get_performance_metrics",
-    description = "Captures runtime performance metrics including JS heap size, DOM node count, and layout timing. Side effects: none (read-only snapshot). Prerequisites: requires an active Chrome tab. Returns: JSON object mapping metric names to numeric values (e.g., JSHeapUsedSize, LayoutCount); an error, never an empty object, when Chrome reports no metrics. Use this to monitor memory usage, detect memory leaks, or profile performance. Alternatives: 'profile_page_performance' for detailed tracing, browser DevTools Performance tab. Chrome only (not available on Firefox)."
+    description = "Captures runtime performance metrics including JS heap size, DOM node count, and layout timing. Side effects: none (read-only snapshot). Prerequisites: requires an active Chrome tab. Returns: JSON object mapping metric names to numeric values (e.g., JSHeapUsedSize, LayoutCount); an error, never an empty object, when Chrome reports no metrics. Use this to monitor memory usage, detect memory leaks, or profile performance. Alternatives: 'profile_page_performance' for detailed tracing, browser DevTools Performance tab. On Firefox: partial, only Nodes, Frames, Resources and TransferSize read from the page with the Web Performance APIs (a second block says what is missing)."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct GetPerformanceMetricsTool {

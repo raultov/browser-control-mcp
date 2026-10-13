@@ -57,8 +57,8 @@ see the note.
 | `get_console_logs` | ✓ | ✓ | Firefox: page errors, CSS warnings and platform messages need the debugger port |
 | `get_network_logs` | ✓ | ✓ | Firefox: WebSocket frames need the debugger port |
 | `get_custom_events` | ✓ | partial | Firefox: events of the modules subscribed with `send_bidi_command` |
-| `get_performance_metrics` | ✓ | ✗ | Firefox has no equivalent of CDP's Performance domain |
-| `profile_page_performance` | ✓ | ✗ | Firefox has no equivalent of CDP's Tracing domain |
+| `get_performance_metrics` | ✓ | partial | Firefox: `Nodes`, `Frames`, `Resources`, `TransferSize` from the Web Performance APIs (no Performance domain), plus a note |
+| `profile_page_performance` | ✓ | partial | Firefox: FCP, LCP, DCL and Load from the Web Performance APIs; no trace, so `total_blocking_time_ms` and `top_long_tasks` are `null` |
 | `set_breakpoint` | ✓ | partial | Firefox: by URL only (no `script_id` / `script_hash`) |
 | `remove_breakpoint` | ✓ | ✓ | |
 | `resume` | ✓ | ✓ | |
@@ -403,9 +403,6 @@ error that names the new ones.
 
 ## Limitations and TODO
 
-- **TODO (priority)** Partial performance on Firefox from the standard Web
-  Performance APIs (navigation timings, FCP, LCP), stating what Firefox
-  cannot give (long tasks, CLS, JS heap).
 - **TODO** Default window size from the screen size: launched browsers use
   `--window-size` (default 1920x1080 on both); reading the screen size needs
   native APIs per OS, left out of the server.
@@ -414,8 +411,10 @@ error that names the new ones.
 - **TODO** `rust-mcp-sdk` 2.0: the server stays on 1.1.0 (MCP protocol
   2025-11-25). 2.0 moves to the stateless MCP protocol (2026-07-28), which
   today's MCP clients probably do not speak yet; upgrade once the clients do.
-- `get_performance_metrics` and `profile_page_performance` are Chrome only:
-  Firefox has no Performance or Tracing domain.
+- `get_performance_metrics` and `profile_page_performance` are partial on
+  Firefox: it has no Performance or Tracing domain, so they read what the
+  Web Performance APIs give and say what is missing (JS heap, layout and
+  style counts, long tasks, total blocking time).
 - Firefox WebSocket frames and page errors need the Firefox debugger port
   (WebDriver BiDi has no WebSocket frame events); binary frames are reported
   as Firefox gives them, not base64 as on Chrome.

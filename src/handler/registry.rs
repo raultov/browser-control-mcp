@@ -230,9 +230,15 @@ fn observation_tools() -> Vec<ToolEntry> {
         entry!(
             metrics::GetPerformanceMetricsTool,
             Always,
-            &[PerformanceMetrics]
+            &[PerformanceMetrics],
+            crate::backend::bidi::performance::metrics
         ),
-        entry!(profile::ProfilePagePerformanceTool, Always, &[Tracing]),
+        entry!(
+            profile::ProfilePagePerformanceTool,
+            Always,
+            &[Tracing],
+            crate::backend::bidi::performance::profile
+        ),
         entry!(
             custom::send_cdp_command::SendCdpCommandTool,
             Always,
@@ -523,16 +529,16 @@ mod tests {
     async fn unsupported_tool_fails_without_touching_the_browser() {
         // Given an instance backed by Firefox (BiDi)
         let handler = handler_with_firefox();
-        // When the agent calls "profile_page_performance" on it
+        // When the agent calls "pause_on_load" on it
         let message = error_of(
             &handler,
-            "profile_page_performance",
+            "pause_on_load",
             serde_json::json!({"instance_id": "ff"}),
         )
         .await;
         // Then the error names the tool and the browser, and no implementation ran
         assert!(
-            message.contains("`profile_page_performance` is not available on Firefox (BiDi)"),
+            message.contains("`pause_on_load` is not available on Firefox (BiDi)"),
             "{message}"
         );
     }

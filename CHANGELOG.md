@@ -48,6 +48,12 @@ from a copy of its code: entries describe the differences from that release.
 
 ### Added
 
+- Partial `get_performance_metrics` and `profile_page_performance` on
+  Firefox, from the standard Web Performance APIs: `Nodes`, `Frames`,
+  `Resources` and `TransferSize`; FCP, LCP, DCL and Load (optionally after a
+  reload, cache bypassed with `disable_cache`). What Firefox cannot give (JS
+  heap, layout counts, long tasks, total blocking time) is `null` or listed
+  in a note, never a silent empty value.
 - Firefox WebSocket frames in `get_network_logs`, and the console messages
   WebDriver BiDi does not report (script errors with file and line, cookie
   and security warnings, CSS warnings, platform messages) in

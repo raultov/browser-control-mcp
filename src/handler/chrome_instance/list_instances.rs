@@ -117,7 +117,7 @@ mod tests {
         assert_eq!(row("ff")["browser"], "firefox");
         let ff_caps = row("ff")["capabilities"].as_array().unwrap().clone();
         assert!(ff_caps.contains(&serde_json::json!("raw_bidi")));
-        assert!(!ff_caps.contains(&serde_json::json!("tracing")));
+        assert!(!ff_caps.contains(&serde_json::json!("webmcp")));
     }
 
     /// CLI-05: --enable-automation on Firefox is reported, not silently dropped.

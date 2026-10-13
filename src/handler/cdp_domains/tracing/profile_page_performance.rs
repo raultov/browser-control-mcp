@@ -9,7 +9,7 @@ use tokio::sync::mpsc;
 
 #[macros::mcp_tool(
     name = "profile_page_performance",
-    description = "Records a performance trace of page execution, calculating Core Web Vitals (FCP, LCP, DCL, Load) and identifying Long Tasks (>50ms blocking). Side effects: may temporarily disable cache ('disable_cache' defaults to false); impacts page memory/CPU. Prerequisites: requires an active Chrome tab; trace recording uses background bandwidth. Returns: JSON with vitals, blocking time, and top 5 long tasks. Use this to optimize performance, identify bottlenecks, measure cold starts. Alternatives: browser DevTools Performance tab, real user monitoring (RUM). Chrome only (not available on Firefox)."
+    description = "Records a performance trace of page execution, calculating Core Web Vitals (FCP, LCP, DCL, Load) and identifying Long Tasks (>50ms blocking). Side effects: may temporarily disable cache ('disable_cache' defaults to false); impacts page memory/CPU. Prerequisites: requires an active Chrome tab; trace recording uses background bandwidth. Returns: JSON with vitals, blocking time, and top 5 long tasks. Use this to optimize performance, identify bottlenecks, measure cold starts. Alternatives: browser DevTools Performance tab, real user monitoring (RUM). On Firefox: partial, no trace; it reloads if asked, waits duration_ms and reads FCP, LCP, DCL and Load from the Web Performance APIs; total_blocking_time_ms and top_long_tasks are null, with notes saying why."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct ProfilePagePerformanceTool {

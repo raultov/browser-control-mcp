@@ -47,6 +47,47 @@ pub fn focus_and_clear(selector: &str) -> String {
     )
 }
 
+/// The page metrics JavaScript can read without injection (Firefox's
+/// `get_performance_metrics`), named like Chrome's `Performance.getMetrics`
+/// where they mean the same: `Nodes` (nodes of the document tree), `Frames`
+/// (the page and its iframes), `Resources` (resource timing entries) and
+/// `TransferSize` (bytes over the network for the document and its
+/// resources, from resource timing).
+pub const PAGE_METRICS: &str = "(() => { \
+    let nodes = 1; const walker = document.createTreeWalker(document, NodeFilter.SHOW_ALL); \
+    while (walker.nextNode()) nodes++; \
+    const resources = performance.getEntriesByType('resource'); \
+    const timed = resources.concat(performance.getEntriesByType('navigation')); \
+    const transfer = timed.reduce((sum, e) => sum + (e.transferSize || 0), 0); \
+    return { Nodes: nodes, Frames: window.frames.length + 1, Resources: resources.length, TransferSize: transfer }; \
+})()";
+
+/// The page-load vitals the Web Performance APIs give (Firefox's
+/// `profile_page_performance`), in ms since the navigation started: DCL and
+/// load from navigation timing, FCP from paint timing, LCP from a buffered
+/// `largest-contentful-paint` observer (`null` when not reported), plus
+/// whether the browser has the Long Tasks API.
+pub const PAGE_VITALS: &str = "(() => { \
+    const nav = performance.getEntriesByType('navigation')[0]; \
+    const fcp = performance.getEntriesByName('first-contentful-paint')[0]; \
+    const types = (window.PerformanceObserver && PerformanceObserver.supportedEntryTypes) || []; \
+    let lcp = null; \
+    if (types.includes('largest-contentful-paint')) { \
+        const observer = new PerformanceObserver(() => {}); \
+        observer.observe({ type: 'largest-contentful-paint', buffered: true }); \
+        const entries = observer.takeRecords(); observer.disconnect(); \
+        if (entries.length) lcp = entries[entries.length - 1].startTime; \
+    } \
+    return { \
+        dom_content_loaded_ms: nav && nav.domContentLoadedEventEnd > 0 ? nav.domContentLoadedEventEnd : null, \
+        load_event_ms: nav && nav.loadEventEnd > 0 ? nav.loadEventEnd : null, \
+        first_contentful_paint_ms: fcp ? fcp.startTime : null, \
+        largest_contentful_paint_ms: lcp, \
+        lcp_supported: types.includes('largest-contentful-paint'), \
+        long_tasks_supported: types.includes('longtask'), \
+    }; \
+})()";
+
 #[cfg(test)]
 mod tests {
     use super::*;

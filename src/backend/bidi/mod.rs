@@ -9,6 +9,7 @@ pub(crate) mod debugger;
 pub(crate) mod grip;
 pub(crate) mod launch;
 pub(crate) mod page;
+pub(crate) mod performance;
 pub(crate) mod proxy;
 pub(crate) mod pump;
 pub(crate) mod raw;
