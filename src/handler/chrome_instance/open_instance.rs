@@ -110,6 +110,7 @@ impl OpenInstanceTool {
             headless: self.headless.unwrap_or(false),
             enable_automation: false,
             user_profile: false,
+            window_size: handler.base_params.browser.window_size,
         };
         let mut params = LaunchParams::new("127.0.0.1".into(), 0, browser);
         params.secondary = true;

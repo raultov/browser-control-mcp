@@ -48,6 +48,9 @@ from a copy of its code: entries describe the differences from that release.
 
 ### Added
 
+- `--window-size <W>x<H>` (default `1920x1080`): launched Chrome and Firefox
+  get the same window size, headless too (they used to pick 921x648 and
+  1280x887). Attached browsers keep their window.
 - A tab's console buffer is cleared when the tab moves to another site
   (registrable domain, via the `psl` crate's embedded Public Suffix List)
   and kept across subdomains of one site, reloads and same-page

@@ -25,7 +25,10 @@ impl FirefoxSpec {
 
     /// The lifecycle configuration, or why it cannot be built.
     pub(crate) fn config(&self) -> Result<BrowserConfig, String> {
-        let mut builder = BrowserConfig::builder().headless(self.browser.headless);
+        let size = self.browser.window_size;
+        let mut builder = BrowserConfig::builder()
+            .headless(self.browser.headless)
+            .window_size(size.width, size.height);
         builder = match self.firefox.firefox_port {
             Some(port) => {
                 let mut b = builder.mode(LaunchMode::AttachOnly).port(port);
@@ -73,6 +76,17 @@ mod tests {
             "rdp enabled with an allocated port"
         );
         assert!(!config.headless());
+    }
+
+    /// WIN-02: a launched Firefox gets the configured window size.
+    #[test]
+    fn firefox_config_carries_window_size() {
+        let mut spec = FirefoxSpec::default();
+        assert!(
+            format!("{:?}", spec.config().unwrap()).contains("window_size: Some((1920, 1080))")
+        );
+        spec.browser.window_size = crate::cli::WindowSize::parse("1280x800").unwrap();
+        assert!(format!("{:?}", spec.config().unwrap()).contains("window_size: Some((1280, 800))"));
     }
 
     /// BID-02: Attach mode maps the CLI ports.

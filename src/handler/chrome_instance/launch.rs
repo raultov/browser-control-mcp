@@ -158,6 +158,10 @@ impl LaunchParams {
             .host(self.host.clone())
             .port(self.resolve_port())
             .headless(self.browser.headless)
+            .window_size(
+                self.browser.window_size.width,
+                self.browser.window_size.height,
+            )
             .enable_automation(self.browser.enable_automation)
             .profile(plan.profile.clone())
             .args(plan.extra_args.iter().cloned())
@@ -223,6 +227,7 @@ mod tests {
             headless,
             enable_automation,
             user_profile,
+            ..Default::default()
         }
     }
 
@@ -320,6 +325,18 @@ mod tests {
         config
             .validate()
             .expect("default params + Auto + 127.0.0.1 + ephemeral chrome must validate");
+    }
+
+    /// WIN-01: a launched Chrome gets the configured window size (default
+    /// 1920x1080, as Firefox).
+    #[test]
+    fn chrome_config_carries_window_size() {
+        let mut params = default_params();
+        let config = params.to_config(&params.plan());
+        assert!(format!("{config:?}").contains("window_size: Some((1920, 1080))"));
+        params.browser.window_size = crate::cli::WindowSize::parse("1280x800").unwrap();
+        let config = params.to_config(&params.plan());
+        assert!(format!("{config:?}").contains("window_size: Some((1280, 800))"));
     }
 
     #[test]

@@ -302,6 +302,7 @@ claude mcp add browser-control-mcp -- npx -y @raultov/browser-control-mcp
 | `--browser <chrome\|firefox>` | `chrome` | browser of the default instance | browser of the default instance |
 | `--local` | off | navigation limited to local addresses | same |
 | `--headless` | off | headless Chrome | headless Firefox |
+| `--window-size <W>x<H>` | `1920x1080` | window of launched Chrome (`--window-size`) | window of launched Firefox (`--width`/`--height`) |
 | `--host <HOST>` | `127.0.0.1` | debugging host | debugging host |
 | `--port <PORT>` | `9222` | debugging port of the default instance | ignored (use `--firefox-port`) |
 | `--max-instances <N>` | `8` | instance cap | shared with Chrome |
@@ -398,9 +399,9 @@ error that names the new ones.
 - **TODO (priority)** Partial performance on Firefox from the standard Web
   Performance APIs (navigation timings, FCP, LCP), stating what Firefox
   cannot give (long tasks, CLS, JS heap).
-- **TODO (priority)** Same default window size on both browsers (today
-  Chrome 921x648, Firefox 1280x887): the screen size when known, else
-  1920x1080.
+- **TODO** Default window size from the screen size: launched browsers use
+  `--window-size` (default 1920x1080 on both); reading the screen size needs
+  native APIs per OS, left out of the server.
 - **TODO (priority)** Firefox WebSocket frames and the full console natively
   over the Firefox debugger (RDP watcher `websocket`, `error-message` and
   `css-message` resources), so both browsers return the same shape without

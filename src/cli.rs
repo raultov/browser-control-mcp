@@ -84,6 +84,54 @@ pub struct BrowserFlags {
     /// This starts Chrome without --user-data-dir.
     #[arg(long)]
     pub user_profile: bool,
+
+    /// Window size of the browsers the server launches, WIDTHxHEIGHT (Chrome and
+    /// Firefox alike, headless too; an attached browser keeps its window).
+    #[arg(long, default_value = "1920x1080", value_name = "WxH", value_parser = WindowSize::parse)]
+    pub window_size: WindowSize,
+}
+
+/// A browser window size. The same on both browsers, so pages lay out alike
+/// (Chrome and Firefox otherwise pick different sizes: 921x648 and 1280x887
+/// were measured).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WindowSize {
+    /// Width in CSS pixels.
+    pub width: u32,
+    /// Height in CSS pixels.
+    pub height: u32,
+}
+
+impl Default for WindowSize {
+    fn default() -> Self {
+        Self {
+            width: 1920,
+            height: 1080,
+        }
+    }
+}
+
+impl WindowSize {
+    /// Largest side accepted (both browsers cap windows well below it).
+    const MAX_SIDE: u32 = 16_384;
+
+    /// Parses `<width>x<height>` (e.g. `1920x1080`), each side 1 to 16384.
+    pub fn parse(text: &str) -> Result<Self, String> {
+        let invalid =
+            || format!("invalid window size '{text}': expected <width>x<height>, e.g. 1920x1080");
+        let (width, height) = text.trim().split_once(['x', 'X']).ok_or_else(invalid)?;
+        let side = |s: &str| {
+            s.trim()
+                .parse::<u32>()
+                .ok()
+                .filter(|n| (1..=Self::MAX_SIDE).contains(n))
+                .ok_or_else(invalid)
+        };
+        Ok(Self {
+            width: side(width)?,
+            height: side(height)?,
+        })
+    }
 }
 
 /// Server-wide permissions and optional tool groups.
@@ -157,6 +205,38 @@ mod tests {
         assert_eq!(args.server, ServerFlags::default(), "every server flag off");
         assert_eq!(args.proxy, ProxyArgs::default(), "no proxy");
         assert_eq!(args.browser_kind, crate::backend::BrowserKind::Chrome);
+    }
+
+    /// WIN-03: --window-size parses `<width>x<height>`; anything else is a
+    /// clear CLI error; the default is 1920x1080.
+    #[test]
+    fn window_size_flag_parses() {
+        assert_eq!(
+            Args::parse_from(["browser-control-mcp"])
+                .browser
+                .window_size,
+            WindowSize {
+                width: 1920,
+                height: 1080
+            }
+        );
+        let args = Args::parse_from(["browser-control-mcp", "--window-size", "1280x800"]);
+        assert_eq!(
+            args.browser.window_size,
+            WindowSize {
+                width: 1280,
+                height: 800
+            }
+        );
+        for bad in ["1280", "0x800", "axb", "1280x99999", "1280x"] {
+            let error = Args::try_parse_from(["browser-control-mcp", "--window-size", bad])
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.contains("expected <width>x<height>"),
+                "{bad}: {error}"
+            );
+        }
     }
 
     #[test]

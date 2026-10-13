@@ -1119,6 +1119,7 @@ mod tests {
                 headless: true,
                 enable_automation: true,
                 user_profile: false,
+                ..Default::default()
             },
             server: crate::cli::ServerFlags {
                 local: true,
@@ -1141,6 +1142,7 @@ mod tests {
                 headless: false,
                 enable_automation: true,
                 user_profile: true,
+                ..Default::default()
             },
             server: crate::cli::ServerFlags {
                 local: true,
