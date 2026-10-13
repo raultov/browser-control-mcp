@@ -1,11 +1,14 @@
 //! The JavaScript debugger of Firefox tabs, over RDP (`bidi_lite::rdp`).
 //!
-//! One `Debugger` per tab, attached on the first debugger tool (the tab is
-//! activated through BiDi, then `attach_selected`, spike H15). A background
+//! One `Debugger` per tab. It is attached when the tab is registered (so
+//! its WebSocket frames and page errors are watched from the start, see
+//! `watch.rs`) by matching the tab's position in BiDi's and RDP's tab lists,
+//! without activating it; when that match is not possible, the first
+//! debugger tool attaches it by activating the tab (spike H15). A background
 //! task follows its thread state, so the tools know whether and where the
 //! page is paused (each pause is announced twice: tracked once).
 
-use super::session::FirefoxSession;
+use super::session::{FirefoxSession, FirefoxTab};
 use crate::backend::error::BackendError;
 use crate::handler::cdp_domains::debugger::evaluate_on_call_frame::EvaluateOnCallFrameTool;
 use crate::handler::cdp_domains::debugger::remove_breakpoint::RemoveBreakpointTool;
@@ -16,14 +19,17 @@ use crate::handler::cdp_domains::debugger::set_breakpoint::SetBreakpointTool;
 use crate::handler::cdp_domains::event_pump::ListenerHandles;
 use crate::handler::debugging::{self, BreakpointIds, BreakpointSet, PauseLocation};
 use crate::handler::{McpHandler, TargetArgs, parse_args};
-use bidi_browser_lite::Debugger;
+use bidi_browser_lite::bidi_lite::rdp::client::{RdpClient, TabDescriptor};
 use bidi_browser_lite::bidi_lite::rdp::debugger::{
     BreakpointLocation, ThreadState, parse_thread_states,
 };
+use bidi_browser_lite::{Browser, Debugger};
 use rust_mcp_sdk::schema::{CallToolError, CallToolRequestParams, CallToolResult};
 use serde_json::{Value, json};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
+use tokio::sync::Mutex;
 use tokio_stream::StreamExt;
 
 type ToolResult = Result<CallToolResult, CallToolError>;
@@ -47,7 +53,12 @@ pub(crate) struct TabDebugger {
     /// Current pause, kept by the state task.
     pub(crate) pause: Arc<StdMutex<Option<PauseInfo>>>,
     _task: ListenerHandles,
+    /// The resource watch (WebSocket frames, page errors), see `watch.rs`.
+    _watch: ListenerHandles,
 }
+
+/// How long a background attach may take before it is given up.
+const WATCH_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Applies thread states to the tracked pause (latest wins: after a step
 /// `resumed` and the new `paused` arrive in one packet).
@@ -91,6 +102,110 @@ fn spawn_state_task(
     handles
 }
 
+/// Whether attaching may bring the tab to the front, when its RDP
+/// descriptor cannot be told apart from the others.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Activation {
+    /// A debugger tool asked: attach whatever it takes.
+    Allowed,
+    /// Background attach (frames, page errors): never steal the focus.
+    Avoided,
+}
+
+/// The RDP descriptor of the tab showing `context`. BiDi and RDP name tabs
+/// differently (a UUID, an actor) but list them in the same tab order, so
+/// the position matches them; `None` when the lists differ in length (a tab
+/// opening or closing meanwhile).
+async fn descriptor_of(browser: &Browser, rdp: &RdpClient, context: &str) -> Option<TabDescriptor> {
+    let contexts = browser.list_tabs().await.ok()?;
+    let tabs = rdp.list_tabs().await.ok()?;
+    if contexts.len() != tabs.len() {
+        return None;
+    }
+    let index = contexts.iter().position(|c| c.context == context)?;
+    tabs.into_iter().nth(index)
+}
+
+/// Attaches a debugger to `tab` and starts its pause tracking and its
+/// resource watch (WebSocket frames, page errors); `None` when the tab could
+/// only be found by activating it and `activation` forbids it.
+async fn attach(
+    browser: &Browser,
+    tab: &FirefoxTab,
+    activation: Activation,
+) -> Result<Option<TabDebugger>, BackendError> {
+    let rdp = browser.rdp_client().await.map_err(super::lifecycle_error)?;
+    let debugger = match descriptor_of(browser, &rdp, tab.tab.context_id()).await {
+        Some(descriptor) => Debugger::attach(&rdp, &descriptor).await,
+        None if activation == Activation::Allowed => {
+            tab.tab
+                .activate()
+                .await
+                .map_err(|e| super::protocol_error("browsingContext.activate", &e))?;
+            Debugger::attach_selected(&rdp).await
+        }
+        None => return Ok(None),
+    }
+    .map_err(|e| rdp_error("attach", &e))?;
+    let pause = Arc::new(StdMutex::new(None));
+    let task = spawn_state_task(&debugger, pause.clone());
+    let buffers = super::watch::TabBuffers {
+        network: tab.network.clone(),
+        log: tab.log.clone(),
+    };
+    // Without the watch the debugger still works: only frames are missing.
+    let watch = super::watch::watch(&debugger, &buffers)
+        .await
+        .inspect_err(|e| tracing::debug!(error = %e, "watchResources failed"))
+        .unwrap_or_default();
+    Ok(Some(TabDebugger {
+        debugger,
+        breakpoints: BreakpointIds::default(),
+        pause,
+        _task: task,
+        _watch: watch,
+    }))
+}
+
+/// Attaches the debugger of tab `id` in the background (never activating
+/// it), so its WebSocket frames and page errors are captured from now on.
+/// `true` when the tab is watched (it may have been already).
+pub(crate) async fn watch_tab(
+    debuggers: &Mutex<HashMap<String, TabDebugger>>,
+    browser: &Browser,
+    id: &str,
+    tab: &FirefoxTab,
+) -> bool {
+    let mut debuggers = debuggers.lock().await;
+    if debuggers.contains_key(id) {
+        return true;
+    }
+    let attached =
+        tokio::time::timeout(WATCH_TIMEOUT, attach(browser, tab, Activation::Avoided)).await;
+    match attached {
+        Ok(Ok(Some(entry))) => {
+            debuggers.insert(id.to_string(), entry);
+            true
+        }
+        _ => false,
+    }
+}
+
+/// [`watch_tab`] for a session's tab, when the session has a debugger port.
+pub(crate) async fn watch_session_tab(
+    session: &FirefoxSession,
+    id: &str,
+    tab: &FirefoxTab,
+) -> bool {
+    if !session.spec.lock().await.has_debugger() {
+        return false;
+    }
+    let Ok(browser) = session.browser().await else {
+        return false;
+    };
+    watch_tab(&session.debuggers, &browser, id, tab).await
+}
+
 /// Runs `f` with the tab's debugger, attaching it first if needed.
 async fn with_debugger<T>(
     session: &FirefoxSession,
@@ -108,23 +223,9 @@ async fn with_debugger<T>(
     debuggers.retain(|tab_id, _| open.contains(tab_id));
     if !debuggers.contains_key(&id) {
         let browser = session.browser().await?;
-        let rdp = browser.rdp_client().await.map_err(super::lifecycle_error)?;
-        tab.tab
-            .activate()
-            .await
-            .map_err(|e| super::protocol_error("browsingContext.activate", &e))?;
-        let debugger = Debugger::attach_selected(&rdp)
-            .await
-            .map_err(|e| rdp_error("attach", &e))?;
-        let pause = Arc::new(StdMutex::new(None));
-        let task = spawn_state_task(&debugger, pause.clone());
-        let entry = TabDebugger {
-            debugger,
-            breakpoints: BreakpointIds::default(),
-            pause,
-            _task: task,
-        };
-        debuggers.insert(id.clone(), entry);
+        if let Some(entry) = attach(&browser, &tab, Activation::Allowed).await? {
+            debuggers.insert(id.clone(), entry);
+        }
     }
     match debuggers.get_mut(&id) {
         Some(entry) => f(entry).await,
@@ -518,43 +619,44 @@ mod tests {
         panic!("no pause tracked on {tab}");
     }
 
-    /// RDP-02: The debugger attaches lazily to the requested tab, once.
+    fn watchers(rdp: &bidi_browser_lite::test_support::MockRdp) -> usize {
+        rdp.requests()
+            .iter()
+            .filter(|r| r.request_type == "getWatcher")
+            .count()
+    }
+
+    /// RDP-02 / FWS-06: tabs BiDi and RDP list alike are attached when the
+    /// session starts, without activation; a tab they cannot match is
+    /// attached by the first debugger tool, by activating it, once.
     #[tokio::test]
     async fn debugger_attaches_lazily_to_requested_tab() {
-        // Given tabs A (active) and B on a Firefox instance over the mocks
+        // Given a Firefox instance over the mocks (one tab in each list)
         let mock = MockFirefox::start(true).await.unwrap();
         let rdp = mock.rdp().unwrap();
         let handler = ts::handler(&mock);
+        // When the session starts and a second tab opens
         crate::backend::bidi::tools::open_tab(ts::call("open_tab", json!({})), &handler)
             .await
             .unwrap();
-        assert_eq!(rdp.requests_to("root").len(), 0, "nothing attached yet");
-        // When set_breakpoint addresses B
+        // Then tab-1 was attached and watched, nothing was activated
+        assert_eq!(watchers(rdp), 1);
+        assert!(rdp.watched_resources().contains(&"websocket".to_string()));
+        assert_eq!(mock.bidi().count("browsingContext.activate"), 0);
+        // When set_breakpoint addresses tab-2 (RDP lists one tab, BiDi two)
         set_breakpoint(breakpoint(1, Some("tab-2")), &handler)
             .await
             .unwrap();
-        // Then B was activated through BiDi and the debugger attached
+        // Then tab-2 was activated through BiDi and attached
         let activated = mock.bidi().commands_named("browsingContext.activate");
         assert_eq!(activated.len(), 1);
         assert_eq!(activated[0].params["context"], "ctx-1");
-        assert_eq!(
-            rdp.requests()
-                .iter()
-                .filter(|r| r.request_type == "getWatcher")
-                .count(),
-            1
-        );
-        // And a second debugger tool on B does not attach again
+        assert_eq!(watchers(rdp), 2);
+        // And a second debugger tool on it does not attach again
         set_breakpoint(breakpoint(2, Some("tab-2")), &handler)
             .await
             .unwrap();
-        assert_eq!(
-            rdp.requests()
-                .iter()
-                .filter(|r| r.request_type == "getWatcher")
-                .count(),
-            1
-        );
+        assert_eq!(watchers(rdp), 2);
         assert_eq!(mock.bidi().count("browsingContext.activate"), 1);
         ts::stop(&handler).await;
     }

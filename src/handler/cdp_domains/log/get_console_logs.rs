@@ -114,6 +114,7 @@ mod tests {
                 timestamp: 0.0,
                 url: None,
                 line_number: None,
+                channel: Default::default(),
             });
         }
         Arc::new(Mutex::new(state))

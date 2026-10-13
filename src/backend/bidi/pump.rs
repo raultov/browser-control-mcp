@@ -79,7 +79,7 @@ pub(crate) async fn route(event: &WsResponse, client: &BrowserClient, state: &Pu
         | "browsingContext.load" => on_navigation(method, params, state).await,
         "log.entryAdded" => {
             if let Some(log) = tab_part(state, params, |t| t.log.clone()) {
-                log.lock().await.push_message(console_message(params));
+                log.lock().await.push_deduplicated(console_message(params));
             }
         }
         _ if method.starts_with("network.") => {
@@ -181,6 +181,7 @@ pub(crate) fn console_message(params: &Value) -> ConsoleMessage {
         line_number: frame
             .and_then(|f| f.get("lineNumber"))
             .and_then(Value::as_i64),
+        channel: Default::default(),
     }
 }
 

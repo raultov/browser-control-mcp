@@ -16,7 +16,27 @@ pub struct ConsoleMessage {
     pub timestamp: f64,
     pub url: Option<String>,
     pub line_number: Option<i64>,
+    /// Which feed reported it (for de-duplication; not part of the reply).
+    #[serde(skip)]
+    pub(crate) channel: Channel,
 }
+
+/// The feed a console message came from. Firefox reports some messages
+/// on both: BiDi `log.entryAdded` and the RDP watcher.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Channel {
+    /// The browser's main protocol (CDP, or BiDi on Firefox).
+    #[default]
+    Primary,
+    /// Firefox's RDP watcher resources.
+    Watcher,
+}
+
+/// How close (ms) two copies of one message from different feeds arrive.
+const DUPLICATE_WINDOW_MS: f64 = 2000.0;
+
+/// How many recent messages are compared for duplicates.
+const DUPLICATE_LOOKBACK: usize = 64;
 
 #[derive(Default)]
 pub(crate) struct LogState {
@@ -32,6 +52,27 @@ impl LogState {
         self.messages.push_back(msg);
         if self.messages.len() > MAX_CONSOLE_MESSAGES {
             self.messages.pop_front();
+        }
+    }
+
+    /// Pushes a message that another feed may report too (Firefox): a copy
+    /// already pushed by the other feed (same text, close timestamps) is
+    /// kept once, with the watcher's labels, which say more.
+    pub(crate) fn push_deduplicated(&mut self, msg: ConsoleMessage) {
+        let twin = self
+            .messages
+            .iter_mut()
+            .rev()
+            .take(DUPLICATE_LOOKBACK)
+            .find(|m| {
+                m.channel != msg.channel
+                    && m.text == msg.text
+                    && (m.timestamp - msg.timestamp).abs() <= DUPLICATE_WINDOW_MS
+            });
+        match twin {
+            Some(existing) if msg.channel == Channel::Watcher => *existing = msg,
+            Some(_) => {}
+            None => self.push_message(msg),
         }
     }
 
@@ -111,6 +152,7 @@ fn log_entry(entry: &Value) -> ConsoleMessage {
         timestamp: timestamp(entry),
         url: opt_string(entry, "url"),
         line_number: entry.get("lineNumber").and_then(Value::as_i64),
+        channel: Channel::Primary,
     }
 }
 
@@ -132,6 +174,7 @@ fn console_api_call(params: &Value) -> ConsoleMessage {
         timestamp: timestamp(params),
         url: None, // Could extract from stackTrace if needed
         line_number: None,
+        channel: Channel::Primary,
     }
 }
 
@@ -160,6 +203,7 @@ fn exception(params: &Value, details: &Value) -> ConsoleMessage {
         timestamp: timestamp(params),
         url: opt_string(details, "url"),
         line_number: details.get("lineNumber").and_then(Value::as_i64),
+        channel: Channel::Primary,
     }
 }
 
@@ -244,6 +288,7 @@ mod tests {
             timestamp: 0.0,
             url: None,
             line_number: None,
+            channel: Channel::Primary,
         }
     }
 
@@ -295,6 +340,49 @@ mod tests {
             "1 console messages from knot.kz were cleared when the tab moved to example.com"
         );
         assert!(state.lock().await.take_cleared_note().is_none());
+    }
+
+    /// FWS-04: a message both Firefox feeds report is kept once (the
+    /// watcher's copy); repeats within one feed are all kept.
+    #[test]
+    fn duplicates_across_feeds_are_kept_once() {
+        let at = |text: &str, ms: f64, channel: Channel| ConsoleMessage {
+            timestamp: ms,
+            channel,
+            source: if channel == Channel::Watcher {
+                "security"
+            } else {
+                "console-api"
+            }
+            .into(),
+            ..message(text)
+        };
+        let mut state = LogState::default();
+        // Watcher first, then BiDi's copy: the copy is dropped
+        state.push_deduplicated(at("cookie rejected", 1000.0, Channel::Watcher));
+        state.push_deduplicated(at("cookie rejected", 1500.0, Channel::Primary));
+        // BiDi first, then the watcher's copy: replaced in place
+        state.push_deduplicated(at("boom", 2000.0, Channel::Primary));
+        state.push_deduplicated(at("boom", 2100.0, Channel::Watcher));
+        // The same text twice from one feed, and long after: all kept
+        state.push_deduplicated(at("tick", 3000.0, Channel::Primary));
+        state.push_deduplicated(at("tick", 3001.0, Channel::Primary));
+        state.push_deduplicated(at("boom", 9000.0, Channel::Watcher));
+        let kept: Vec<(&str, &str)> = state
+            .messages
+            .iter()
+            .map(|m| (m.text.as_str(), m.source.as_str()))
+            .collect();
+        assert_eq!(
+            kept,
+            [
+                ("cookie rejected", "security"),
+                ("boom", "security"),
+                ("tick", "console-api"),
+                ("tick", "console-api"),
+                ("boom", "security"),
+            ]
+        );
     }
 
     /// CON-03 / CON-07: same-document navigations keep the buffer; sibling

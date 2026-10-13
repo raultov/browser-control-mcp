@@ -17,6 +17,7 @@ pub(crate) mod session;
 #[cfg(test)]
 pub(crate) mod test_support;
 pub(crate) mod tools;
+pub(crate) mod watch;
 
 use super::BrowserKind;
 use super::error::BackendError;

@@ -54,8 +54,8 @@ see the note.
 | `click_element` | ✓ | ✓ | |
 | `fill_input` | ✓ | ✓ | |
 | `evaluate_js` | ✓ | ✓ | |
-| `get_console_logs` | ✓ | ✓ | |
-| `get_network_logs` | ✓ | partial | Firefox: HTTP requests and response bodies, no WebSocket frames |
+| `get_console_logs` | ✓ | ✓ | Firefox: page errors, CSS warnings and platform messages need the debugger port |
+| `get_network_logs` | ✓ | ✓ | Firefox: WebSocket frames need the debugger port |
 | `get_custom_events` | ✓ | partial | Firefox: events of the modules subscribed with `send_bidi_command` |
 | `get_performance_metrics` | ✓ | ✗ | Firefox has no equivalent of CDP's Performance domain |
 | `profile_page_performance` | ✓ | ✗ | Firefox has no equivalent of CDP's Tracing domain |
@@ -76,7 +76,14 @@ see the note.
 | `webmcp_list_invocations` | ✓ | ✗ | needs `--enable-webmcp` |
 
 The JavaScript debugger tools on Firefox need its debugger (RDP) port: on by
-default for a launched Firefox, `--firefox-rdp-port` for an attached one.
+default for a launched Firefox, `--firefox-rdp-port` for an attached one. The
+same port gives Firefox's WebSocket frames and the console messages BiDi does
+not report (script errors with their file and line, cookie and security
+warnings, CSS warnings, platform messages): each tab's debugger is attached
+when the tab is registered and watches them, in the same shapes as Chrome. A
+tab that BiDi and RDP cannot match by position (tabs opening or closing at
+that moment) is attached by its first debugger tool, which brings it to the
+front; its frames are captured from then on.
 
 ## 📦 Installation
 
@@ -402,10 +409,6 @@ error that names the new ones.
 - **TODO** Default window size from the screen size: launched browsers use
   `--window-size` (default 1920x1080 on both); reading the screen size needs
   native APIs per OS, left out of the server.
-- **TODO (priority)** Firefox WebSocket frames and the full console natively
-  over the Firefox debugger (RDP watcher `websocket`, `error-message` and
-  `css-message` resources), so both browsers return the same shape without
-  any page injection.
 - **TODO** `pause_on_load` on Firefox: neither a preload `debugger;`
   statement nor an RDP interrupt pauses a reloading page (spike verdict).
 - **TODO** `rust-mcp-sdk` 2.0: the server stays on 1.1.0 (MCP protocol
@@ -413,8 +416,9 @@ error that names the new ones.
   today's MCP clients probably do not speak yet; upgrade once the clients do.
 - `get_performance_metrics` and `profile_page_performance` are Chrome only:
   Firefox has no Performance or Tracing domain.
-- WebSocket frames in `get_network_logs` are Chrome only: WebDriver BiDi has
-  no WebSocket frame events.
+- Firefox WebSocket frames and page errors need the Firefox debugger port
+  (WebDriver BiDi has no WebSocket frame events); binary frames are reported
+  as Firefox gives them, not base64 as on Chrome.
 - `webmcp_list_tools`, `webmcp_invoke_tool`, `webmcp_get_invocation` and
   `webmcp_list_invocations` are Chrome only (a Chrome testing feature).
 - `send_cdp_command` is Chrome only; `send_bidi_command` and

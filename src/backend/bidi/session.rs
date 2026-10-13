@@ -296,7 +296,25 @@ impl FirefoxSession {
         let _ = client
             .send_raw_command("network.addDataCollector", collector)
             .await;
-        self.register_initial_tabs(browser).await
+        self.register_initial_tabs(browser).await?;
+        self.watch_initial_tabs(browser).await;
+        Ok(())
+    }
+
+    /// Attaches the debugger of every registered tab in the background
+    /// (WebSocket frames and page errors from the first page load on).
+    async fn watch_initial_tabs(&self, browser: &Browser) {
+        if !self.spec.lock().await.has_debugger() {
+            return;
+        }
+        let tabs: Vec<(String, FirefoxTab)> = read(&self.tabs)
+            .tabs
+            .iter()
+            .map(|(id, tab)| (id.clone(), tab.clone()))
+            .collect();
+        for (id, tab) in tabs {
+            super::debugger::watch_tab(&self.debuggers, browser, &id, &tab).await;
+        }
     }
 
     /// Registers the tabs already open (moving a launched Firefox off its

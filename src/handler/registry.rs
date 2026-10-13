@@ -666,13 +666,14 @@ mod tests {
         );
     }
 
-    /// BID-21: WebSocket frames are reported as unavailable on Firefox.
+    /// BID-21 / FWS-05: WebSocket frames on Firefox need the debugger port.
     #[tokio::test]
-    async fn websocket_frames_reported_unavailable() {
-        let handler = handler_with_firefox();
+    async fn websocket_frames_need_the_firefox_debugger() {
+        let mut handler = handler_with_firefox();
+        handler.firefox_spec.firefox.no_firefox_debugger = true;
         let args = serde_json::json!({"instance_id": "ff", "type_filter": "websocket"});
         let message = error_of(&handler, "get_network_logs", args).await;
-        assert!(message.contains("WebSocket frame"), "{message}");
+        assert!(message.contains("--no-firefox-debugger"), "{message}");
     }
 
     /// RDP-13 / CAP-06: raw Firefox tools need their protocol and the debugger port.

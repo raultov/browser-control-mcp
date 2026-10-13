@@ -48,6 +48,16 @@ from a copy of its code: entries describe the differences from that release.
 
 ### Added
 
+- Firefox WebSocket frames in `get_network_logs`, and the console messages
+  WebDriver BiDi does not report (script errors with file and line, cookie
+  and security warnings, CSS warnings, platform messages) in
+  `get_console_logs`, from the RDP watcher of each tab's debugger, in the
+  same shapes as Chrome. Each tab's debugger is attached when the tab is
+  registered, matched by its position in BiDi's and RDP's tab lists, without
+  bringing it to the front. Needs the Firefox debugger port (default for a
+  launched Firefox). Messages both feeds report are kept once; console
+  `source` labels say what a Firefox message is (`javascript`, `css`,
+  `security`, `network`, `other`).
 - `--window-size <W>x<H>` (default `1920x1080`): launched Chrome and Firefox
   get the same window size, headless too (they used to pick 921x648 and
   1280x887). Attached browsers keep their window.

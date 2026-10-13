@@ -169,32 +169,44 @@ pub(crate) async fn console_logs(
     handler: &McpHandler,
 ) -> ToolResult {
     let args: GetConsoleLogsTool = parse_args(params)?;
-    let (session, _, tab) = target(handler, &ids(&args.instance_id, &args.tab_id)).await?;
+    let (session, id, tab) = target(handler, &ids(&args.instance_id, &args.tab_id)).await?;
+    // Page errors and CSS warnings come from the tab's watcher.
+    super::debugger::watch_session_tab(&session, &id, &tab).await;
     Ok(args.report(&tab.log, session.lag_note()).await)
 }
 
-/// `get_network_logs`: REST requests (bodies through `network.getData`);
-/// WebSocket frames do not exist in BiDi.
+/// `get_network_logs`: REST requests (bodies through `network.getData`)
+/// and WebSocket frames (from the tab's RDP watcher, see `watch.rs`).
 pub(crate) async fn network_logs(
     params: CallToolRequestParams,
     handler: &McpHandler,
 ) -> ToolResult {
     let args: GetNetworkLogsTool = parse_args(params)?;
-    let (session, _, tab) = target(handler, &ids(&args.instance_id, &args.tab_id)).await?;
+    let (session, id, tab) = target(handler, &ids(&args.instance_id, &args.tab_id)).await?;
+    let watched = super::debugger::watch_session_tab(&session, &id, &tab).await;
     let mut snapshot = args.collect(&tab.network).await;
     if args.wants_bodies() {
         fetch_bodies(&tab.tab, &mut snapshot).await;
     }
     let mut notes = Vec::new();
-    if args
+    let wants_frames = args
         .type_filter
         .as_deref()
-        .is_none_or(|t| t.eq_ignore_ascii_case("both"))
-    {
-        notes.push("WebSocket frames are not available on Firefox (BiDi)".to_string());
+        .is_none_or(|t| !t.eq_ignore_ascii_case("rest"));
+    if wants_frames && !watched {
+        notes.push(frames_note(session.spec.lock().await.has_debugger()).to_string());
     }
     notes.extend(session.lag_note());
     Ok(args.finish(snapshot, notes))
+}
+
+/// Why a Firefox tab has no WebSocket frames: they come from its debugger.
+fn frames_note(has_debugger: bool) -> &'static str {
+    if has_debugger {
+        "WebSocket frames of this tab are not captured yet: its debugger could not be attached without bringing the tab to the front; any debugger tool on the tab attaches it (frames are captured from then on)"
+    } else {
+        "WebSocket frames on Firefox need its debugger port (the server runs with --no-firefox-debugger, or the attached Firefox has no --firefox-rdp-port)"
+    }
 }
 
 /// Response bodies of answered requests of the current navigation (spike H11).
@@ -257,6 +269,10 @@ pub(crate) async fn open_tab(params: CallToolRequestParams, handler: &McpHandler
             return Err(CallToolError::from_message(e));
         }
     };
+    // Watched before it loads anything, so the first WebSocket frames count.
+    if let Ok((_, entry)) = session.tab(Some(&tab_id)).await {
+        super::debugger::watch_session_tab(&session, &tab_id, &entry).await;
+    }
     let url = match url.as_str() {
         "about:blank" => url,
         _ => {
@@ -769,6 +785,105 @@ mod tests {
             ts::text(&reply).contains("{\\\"ok\\\":true}"),
             "{}",
             ts::text(&reply)
+        );
+        ts::stop(&handler).await;
+    }
+
+    /// The resources of a Firefox 157 fixture packet.
+    fn fixture_resources(fixture: &str) -> Vec<Value> {
+        let packet: Value = serde_json::from_str(fixture).unwrap();
+        packet["array"][0][1].as_array().unwrap().clone()
+    }
+
+    /// Calls `name` until its reply contains `needle` (the watcher's
+    /// resources arrive asynchronously); the last reply.
+    async fn until_contains(handler: &McpHandler, name: &str, args: Value, needle: &str) -> String {
+        let mut reply = String::new();
+        for _ in 0..100 {
+            let result = match name {
+                "get_network_logs" => network_logs(call(name, args.clone()), handler).await,
+                _ => console_logs(call(name, args.clone()), handler).await,
+            };
+            reply = ts::text(&result.unwrap());
+            if reply.contains(needle) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        reply
+    }
+
+    /// FWS-01 / FWS-02 / FWS-07: frames are recorded both ways, the filters
+    /// work, and frames keep flowing after a navigation.
+    #[tokio::test]
+    async fn firefox_websocket_frames_are_captured() {
+        use bidi_browser_lite::test_support::fixtures::RDP_RESOURCES_WEBSOCKET;
+        // Given a Firefox tab watched since the session started
+        let mock = MockFirefox::start(true).await.unwrap();
+        let rdp = mock.rdp().unwrap();
+        let handler = ts::handler(&mock);
+        handler
+            .firefox(None)
+            .await
+            .unwrap()
+            .browser()
+            .await
+            .unwrap();
+        // When the page exchanges frames
+        rdp.emit_resources("websocket", fixture_resources(RDP_RESOURCES_WEBSOCKET));
+        // Then get_network_logs filters them like on Chrome
+        let args =
+            json!({"type_filter": "websocket", "ws_content_filter": "echo", "url_filter": "8808"});
+        let reply = until_contains(&handler, "get_network_logs", args, "echo:").await;
+        let body: Value = serde_json::from_str(&reply).unwrap();
+        let frames = body["websocket_frames"]["38"].as_array().unwrap();
+        assert_eq!(frames.len(), 1, "{reply}");
+        assert!(body.get("notes").is_none(), "{reply}");
+        // And after a navigation (new target) frames keep coming
+        rdp.navigate();
+        let mut later = fixture_resources(RDP_RESOURCES_WEBSOCKET);
+        later[0]["httpChannelId"] = json!(41);
+        later[1]["httpChannelId"] = json!(41);
+        rdp.emit_resources("websocket", later[..2].to_vec());
+        let args = json!({"type_filter": "websocket"});
+        let reply = until_contains(&handler, "get_network_logs", args, "\"41\"").await;
+        assert!(reply.contains("\"41\""), "{reply}");
+        ts::stop(&handler).await;
+    }
+
+    /// FWS-03 / FWS-04: page errors reach the console with honest labels,
+    /// once even when BiDi reports them too.
+    #[tokio::test]
+    async fn firefox_page_errors_reach_the_console_once() {
+        use bidi_browser_lite::test_support::fixtures::RDP_RESOURCES_ERROR_MESSAGE;
+        // Given a watched Firefox tab
+        let mock = MockFirefox::start(true).await.unwrap();
+        let rdp = mock.rdp().unwrap();
+        let handler = ts::handler(&mock);
+        handler
+            .firefox(None)
+            .await
+            .unwrap()
+            .browser()
+            .await
+            .unwrap();
+        // When BiDi and the watcher both report one script error
+        let text = "ReferenceError: nonExistentFunctionCallHere is not defined";
+        let bidi = json!({"type": "javascript", "level": "error", "text": text,
+            "timestamp": 1_791_822_789_737_u64, "source": {"context": "ctx-0", "realm": "r"}});
+        mock.bidi().emit("log.entryAdded", bidi);
+        let errors = fixture_resources(RDP_RESOURCES_ERROR_MESSAGE);
+        rdp.emit_resources("error-message", errors);
+        // Then it is listed once, as a javascript error, next to the cookie warning
+        let reply = until_contains(&handler, "get_console_logs", json!({}), "security").await;
+        let body: Value = serde_json::from_str(&reply).unwrap();
+        let messages = body["messages"].as_array().unwrap();
+        let script: Vec<&Value> = messages.iter().filter(|m| m["text"] == text).collect();
+        assert_eq!(script.len(), 1, "{reply}");
+        assert_eq!(script[0]["source"], "javascript");
+        assert!(
+            messages.iter().any(|m| m["source"] == "security"),
+            "{reply}"
         );
         ts::stop(&handler).await;
     }
