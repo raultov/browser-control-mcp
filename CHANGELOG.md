@@ -12,6 +12,18 @@ from a copy of its code: entries describe the differences from that release.
 
 ### Changed
 
+- **Breaking:** `navigate` and `reload` answer the same shape on Chrome and
+  Firefox once the page fired `load` (at most 30 s): `{url, tab_id, browser,
+  notes?}`, `url` being the final URL after redirects and `browser` the
+  protocol's ids (Chrome used to answer the raw `Page.navigate` reply without
+  waiting, and `{}` on reload). `open_tab` reports the final URL too, and on
+  Firefox it now creates the tab blank and navigates once it is registered,
+  as on Chrome, so the page's first events are captured.
+- **Breaking:** a network error fails `navigate` and `open_tab` on both
+  browsers with `Navigation failed: <browser's code> (<url>)` (Chrome used to
+  report success with `errorText` inside, or a tab on `chrome-error://`); from
+  `open_tab` the error names the tab, which stays open.
+
 - Lifecycle crates bumped: `cdp-browser-lite` 0.4.2 and `bidi-browser-lite`
   0.1.4 (`bidi-lite` 0.1.2). Their mocks now record wire parameters, so the
   Firefox page, input, network and debugger tools and the Chrome domain

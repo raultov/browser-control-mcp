@@ -1,13 +1,17 @@
+use crate::backend::BackendError;
+use crate::handler::cdp_domains::cdp_target::CdpTarget;
+use crate::handler::navigation::{LOAD_TIMEOUT, NOT_LOADED_NOTE, NavigationOutcome};
 use crate::handler::{BrowserSession, McpHandler, is_local_address};
 use rust_mcp_sdk::{
     macros,
     schema::{CallToolError, CallToolRequestParams, CallToolResult},
 };
-use serde_json::json;
+use serde_json::{Value, json};
+use tokio_stream::StreamExt;
 
 #[macros::mcp_tool(
     name = "navigate",
-    description = "Navigates the current Chrome tab to a specified URL, loading new page content. Side effects: destructive of current page state; discards unsaved work. Prerequisites: requires an active Chrome tab; URL must be valid and accessible (subject to local-only restrictions if enabled). Returns: navigation confirmation. Auth requirements: subject to same-origin policy; may require credentials for restricted URLs. Rate limits: none. Use this to change the current page. Alternatives: 'reload' to refresh current page. Note: copy_cookies imports the user's real Chrome cookies, giving this browser access to their authenticated sessions — always ask the user before setting it to true. If the target instance is already running, setting copy_cookies is destructive: the instance is relaunched and all its open tabs are closed. In that case the call fails first with the list of tabs to be closed, so you can warn the user and re-issue with confirm_restart: true."
+    description = "Navigates the current Chrome tab to a specified URL, loading new page content. Side effects: destructive of current page state; discards unsaved work. Prerequisites: requires an active Chrome tab; URL must be valid and accessible (subject to local-only restrictions if enabled). Returns: JSON {url (final, after redirects), tab_id, browser (protocol ids), notes?} once the page fired `load` (at most 30 s); a network error (unknown host, refused connection...) fails the call with 'Navigation failed: <reason> (<url>)'. Auth requirements: subject to same-origin policy; may require credentials for restricted URLs. Rate limits: none. Use this to change the current page. Alternatives: 'reload' to refresh current page. Note: copy_cookies imports the user's real Chrome cookies, giving this browser access to their authenticated sessions — always ask the user before setting it to true. If the target instance is already running, setting copy_cookies is destructive: the instance is relaunched and all its open tabs are closed. In that case the call fails first with the list of tabs to be closed, so you can warn the user and re-issue with confirm_restart: true."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct NavigateTool {
@@ -46,11 +50,9 @@ impl NavigateTool {
             args.import_cookies(handler, &session).await?;
         }
         let target = session.target(args.tab_id.clone()).await?;
-        let params = json!({"url": args.url});
-        let val = crate::handler::send_or(&target, "Page.navigate", params, "CDP Error").await?;
-        Ok(CallToolResult::text_content(vec![
-            crate::handler::reply_text(&format!("Navigated to {}.", args.url), &val).into(),
-        ]))
+        let outcome = navigate_and_wait(&target, &args.url).await?;
+        let tab_id = session.tab_id_of(args.tab_id.as_deref());
+        Ok(outcome.reply(&format!("Navigated to {}.", outcome.url), tab_id.as_deref()))
     }
 
     /// Seeds the instance's profile with the user's cookies: on the next
@@ -103,6 +105,86 @@ impl NavigateTool {
             Ok(())
         }
     }
+}
+
+/// Navigates `target` and waits (at most [`LOAD_TIMEOUT`]) for the new
+/// document to fire `load`. Chrome answers `Page.navigate` as soon as the
+/// navigation starts and reports a network error only as `errorText` inside
+/// a successful reply: that becomes a tool error here.
+pub(crate) async fn navigate_and_wait(
+    target: &CdpTarget,
+    url: &str,
+) -> Result<NavigationOutcome, CallToolError> {
+    // Subscribed first: `load` can fire before the reply is read.
+    let mut page_events = target.on_domain("Page");
+    let reply =
+        crate::handler::send_or(target, "Page.navigate", json!({"url": url}), "CDP Error").await?;
+    let browser = reply.result.unwrap_or_else(|| json!({}));
+    if let Some(reason) = browser
+        .get("errorText")
+        .and_then(Value::as_str)
+        .filter(|e| !e.is_empty())
+    {
+        return Err(BackendError::Navigation {
+            reason: reason.to_string(),
+            url: url.to_string(),
+        }
+        .into());
+    }
+    // Same-document navigations (fragment, history) have no loader and fire no `load`.
+    let loaded = browser.get("loaderId").is_none() || wait_for_load(&mut page_events).await;
+    Ok(finish(target, url, browser, loaded).await)
+}
+
+/// The outcome once the page settled: its committed URL, plus a note when
+/// `load` did not fire in time.
+pub(crate) async fn finish(
+    target: &CdpTarget,
+    requested: &str,
+    browser: Value,
+    loaded: bool,
+) -> NavigationOutcome {
+    let url = committed_url(target)
+        .await
+        .unwrap_or_else(|| requested.to_string());
+    let notes = if loaded {
+        Vec::new()
+    } else {
+        vec![NOT_LOADED_NOTE.to_string()]
+    };
+    NavigationOutcome {
+        url,
+        browser,
+        notes,
+    }
+}
+
+/// Waits for `Page.loadEventFired` on `events`; `false` after [`LOAD_TIMEOUT`].
+pub(crate) async fn wait_for_load(events: &mut cdp_browser_lite::EventFilter) -> bool {
+    let load = async {
+        while let Some(event) = events.next().await {
+            if event.is_ok_and(|e| e.method.as_deref() == Some("Page.loadEventFired")) {
+                return true;
+            }
+        }
+        false
+    };
+    tokio::time::timeout(LOAD_TIMEOUT, load)
+        .await
+        .unwrap_or(false)
+}
+
+/// The URL of the current history entry (the committed document, after
+/// redirects), read without running script in the page.
+async fn committed_url(target: &CdpTarget) -> Option<String> {
+    let reply = target
+        .send_raw_command("Page.getNavigationHistory", json!({}))
+        .await
+        .ok()?
+        .result?;
+    let index = reply.get("currentIndex")?.as_u64()?;
+    let entry = reply.get("entries")?.get(usize::try_from(index).ok()?)?;
+    entry.get("url")?.as_str().map(str::to_string)
 }
 
 /// The message asking the agent to get the user's consent before a seeded
@@ -168,6 +250,65 @@ mod tests {
         }));
         assert!(tool.is_ok());
         assert_eq!(tool.unwrap().url, "https://example.com");
+    }
+
+    use crate::handler::cdp_domains::tests::{
+        call, committed_url, fire_load_after, mock_handler, reply_text, spawn_recording_mock,
+    };
+
+    /// The JSON object after the first line of a reply.
+    fn body(reply: &CallToolResult) -> Value {
+        let text = reply_text(reply);
+        serde_json::from_str(&text[text.find('{').unwrap()..]).unwrap()
+    }
+
+    /// NAV-01 / NAV-02: navigate waits for `load` and answers the final URL
+    /// (after redirects) in the shared shape.
+    #[tokio::test]
+    async fn navigate_reports_final_url_after_load() {
+        // Given a Chrome whose navigation to /start ends on /final
+        let mock = spawn_recording_mock().await;
+        mock.respond_with(
+            "Page.navigate",
+            |_| json!({"frameId": "F1", "loaderId": "L1"}),
+        );
+        committed_url(mock, "http://127.0.0.1:8/final");
+        fire_load_after(mock, "Page.navigate");
+        let handler = mock_handler(mock.http_port);
+        // When navigate runs
+        let args = json!({"url": "http://127.0.0.1:8/start"});
+        let reply = NavigateTool::handle(call("navigate", args), &handler)
+            .await
+            .unwrap();
+        // Then the reply has the final URL, the tab and the CDP ids
+        assert!(reply_text(&reply).starts_with("Navigated to http://127.0.0.1:8/final."));
+        let body = body(&reply);
+        assert_eq!(body["url"], "http://127.0.0.1:8/final");
+        assert_eq!(body["browser"]["loaderId"], "L1");
+        assert!(body.get("tab_id").is_some());
+        assert!(body.get("notes").is_none(), "load fired: {body}");
+    }
+
+    /// NAV-03: a network error fails the call (Chrome reports it inside a
+    /// successful Page.navigate reply).
+    #[tokio::test]
+    async fn unknown_host_fails_navigation() {
+        // Given a host Chrome cannot resolve
+        let mock = spawn_recording_mock().await;
+        mock.respond_with("Page.navigate", |_| {
+            json!({"frameId": "F1", "loaderId": "L1", "errorText": "net::ERR_NAME_NOT_RESOLVED"})
+        });
+        let handler = mock_handler(mock.http_port);
+        // When navigate runs
+        let args = json!({"url": "http://nonexistent-host.invalid/"});
+        let error = NavigateTool::handle(call("navigate", args), &handler)
+            .await
+            .unwrap_err();
+        // Then it fails with the network error and the URL
+        assert_eq!(
+            error.to_string(),
+            "Navigation failed: net::ERR_NAME_NOT_RESOLVED (http://nonexistent-host.invalid/)"
+        );
     }
 
     #[tokio::test]

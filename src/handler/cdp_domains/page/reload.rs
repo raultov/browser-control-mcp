@@ -7,7 +7,7 @@ use serde_json::json;
 
 #[macros::mcp_tool(
     name = "reload",
-    description = "Reloads the current page, discarding all unsaved changes and re-fetching resources from the server. Side effects: destructive of unsaved state; clears dynamic DOM state. Prerequisites: requires an active Chrome tab. Returns: reload confirmation. Use this to refresh page content or reset to initial load state. Alternatives: 'navigate' to load a different URL, 'pause_on_load' to debug reload execution."
+    description = "Reloads the current page, discarding all unsaved changes and re-fetching resources from the server. Side effects: destructive of unsaved state; clears dynamic DOM state. Prerequisites: requires an active Chrome tab. Returns: JSON {url, tab_id, browser, notes?} once the page fired `load` (at most 30 s), the same shape as 'navigate'. Use this to refresh page content or reset to initial load state. Alternatives: 'navigate' to load a different URL, 'pause_on_load' to debug reload execution."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct ReloadTool {
@@ -23,7 +23,10 @@ impl ReloadTool {
         handler: &McpHandler,
     ) -> Result<CallToolResult, CallToolError> {
         let ids: crate::handler::TargetArgs = crate::handler::parse_args(params)?;
-        let target = crate::handler::resolve_target(handler, ids.instance_id, ids.tab_id).await?;
+        let session = handler.session(ids.instance_id.clone()).await?;
+        let target = session.target(ids.tab_id.clone()).await?;
+        // Subscribed first: `load` can fire before the reply is read.
+        let mut page_events = target.on_domain("Page");
         // Right after a navigation Chrome may still be committing the new
         // document and refuse with "Not attached to an active page": retry
         // once after a short pause.
@@ -37,9 +40,11 @@ impl ReloadTool {
         }
         let resp = reply
             .map_err(|e| CallToolError::from_message(format!("Failed to reload page: {e:?}")))?;
-        Ok(CallToolResult::text_content(vec![
-            crate::handler::reply_text("Page reloaded.", &resp).into(),
-        ]))
+        let loaded = super::navigate::wait_for_load(&mut page_events).await;
+        let browser = resp.result.unwrap_or_else(|| json!({}));
+        let outcome = super::navigate::finish(&target, "", browser, loaded).await;
+        let tab_id = session.tab_id_of(ids.tab_id.as_deref());
+        Ok(outcome.reply("Page reloaded.", tab_id.as_deref()))
     }
 }
 
@@ -52,12 +57,11 @@ fn is_transient(error: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::handler::cdp_domains::tests::spawn_mock_chrome_server;
-    use crate::handler::chrome_instance::MockChromeManager;
+    use crate::handler::cdp_domains::tests::{
+        call, committed_url, fire_load_after, mock_handler, reply_text, spawn_recording_mock,
+    };
     use rust_mcp_sdk::schema::CallToolRequestParams;
     use serde_json::json;
-    use std::sync::Arc;
-    use tokio::sync::Mutex;
 
     #[tokio::test]
     async fn test_reload_params_deserialization() {
@@ -74,32 +78,26 @@ mod tests {
         assert!(tool.is_ok());
     }
 
+    /// NAV-05: reload answers the same shape as navigate, after `load`.
     #[tokio::test]
-    async fn test_reload_handle() {
-        let port = spawn_mock_chrome_server().await;
-
-        let mut handler = McpHandler::new_test();
-        Arc::get_mut(&mut handler.default_session)
-            .unwrap()
-            .chrome_manager = Arc::new(Mutex::new(MockChromeManager::new(port)));
-
-        let params: CallToolRequestParams = serde_json::from_value(json!({
-            "name": "reload",
-            "arguments": {}
-        }))
-        .unwrap();
-
-        let result = ReloadTool::handle(params, &handler).await;
-        assert!(result.is_ok(), "Handle should succeed: {:?}", result.err());
-
-        let call_result = result.unwrap();
-        assert!(!call_result.content.is_empty());
-        let content_str = format!("{:?}", call_result.content);
-        assert!(
-            content_str.contains("Page reloaded"),
-            "Content didn't match: {}",
-            content_str
-        );
+    async fn reload_reports_url_after_load() {
+        // Given a Chrome showing /page
+        let mock = spawn_recording_mock().await;
+        committed_url(mock, "http://127.0.0.1:8/page");
+        fire_load_after(mock, "Page.reload");
+        let handler = mock_handler(mock.http_port);
+        // When reload runs
+        let reply = ReloadTool::handle(call("reload", json!({})), &handler)
+            .await
+            .unwrap();
+        // Then it waited for load and reports the URL in the shared shape
+        let text = reply_text(&reply);
+        assert!(text.starts_with("Page reloaded."), "{text}");
+        let body: serde_json::Value =
+            serde_json::from_str(&text[text.find('{').unwrap()..]).unwrap();
+        assert_eq!(body["url"], "http://127.0.0.1:8/page");
+        assert!(body.get("tab_id").is_some() && body.get("browser").is_some());
+        assert!(body.get("notes").is_none(), "load fired: {body}");
     }
 
     /// PAG-RL1: reload right after navigate retries the transient

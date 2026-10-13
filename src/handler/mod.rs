@@ -1,5 +1,6 @@
 pub mod cdp_domains;
 pub mod chrome_instance;
+pub(crate) mod navigation;
 mod registry;
 mod schema_compat;
 pub(crate) mod shutdown;
@@ -335,6 +336,15 @@ pub(crate) struct BrowserSession {
 }
 
 impl BrowserSession {
+    /// The MCP id of the tab a call addresses: `tab_id`, else the active
+    /// tab (`None` when no tab is registered yet).
+    pub(crate) fn tab_id_of(&self, tab_id: Option<&str>) -> Option<String> {
+        match tab_id {
+            Some(id) => Some(id.to_string()),
+            None => crate::util::sync::read(&self.tabs).active_tab_id.clone(),
+        }
+    }
+
     /// A session with empty per-domain states, launched lazily by `chrome_manager`.
     pub(crate) fn new(
         chrome_manager: Arc<Mutex<dyn chrome_instance::ChromeManager>>,

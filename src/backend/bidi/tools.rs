@@ -68,21 +68,17 @@ fn check_local(handler: &McpHandler, url: &str) -> Result<(), CallToolError> {
 pub(crate) async fn navigate(params: CallToolRequestParams, handler: &McpHandler) -> ToolResult {
     let args: NavigateTool = parse_args(params)?;
     check_local(handler, &args.url)?;
-    let (_, _, tab) = target(handler, &ids(&args.instance_id, &args.tab_id)).await?;
-    let reply = page::navigate(&tab.tab, &args.url).await?;
-    Ok(text(format!(
-        "Navigated to {}.\n{}",
-        args.url,
-        pretty(&reply)
-    )))
+    let (_, id, tab) = target(handler, &ids(&args.instance_id, &args.tab_id)).await?;
+    let outcome = page::navigate(&tab.tab, &args.url).await?;
+    Ok(outcome.reply(&format!("Navigated to {}.", outcome.url), Some(&id)))
 }
 
 /// `reload`.
 pub(crate) async fn reload(params: CallToolRequestParams, handler: &McpHandler) -> ToolResult {
     let ids: TargetArgs = parse_args(params)?;
-    let (_, _, tab) = target(handler, &ids).await?;
-    let reply = page::reload(&tab.tab).await?;
-    Ok(text(format!("Page reloaded.\n{}", pretty(&reply))))
+    let (_, id, tab) = target(handler, &ids).await?;
+    let outcome = page::reload(&tab.tab).await?;
+    Ok(outcome.reply("Page reloaded.", Some(&id)))
 }
 
 /// `evaluate_js`: the value as plain JSON.
@@ -251,8 +247,10 @@ pub(crate) async fn open_tab(params: CallToolRequestParams, handler: &McpHandler
     read(&session.tabs)
         .check_new(args.label.as_deref())
         .map_err(CallToolError::from_message)?;
+    // Created blank and registered before navigating (as on Chrome), so the
+    // page's first events reach its buffers.
     let tab = browser
-        .new_tab(&url)
+        .new_tab("about:blank")
         .await
         .map_err(super::lifecycle_error)?;
     let context = tab.context_id().to_string();
@@ -262,6 +260,22 @@ pub(crate) async fn open_tab(params: CallToolRequestParams, handler: &McpHandler
         Err(e) => {
             let _ = tab.close().await;
             return Err(CallToolError::from_message(e));
+        }
+    };
+    let url = match url.as_str() {
+        "about:blank" => url,
+        _ => {
+            page::navigate(&tab, &url)
+                .await
+                .map_err(|e| {
+                    CallToolError::from_message(
+                        crate::handler::navigation::open_tab_navigation_failed(
+                            &e.to_string(),
+                            &tab_id,
+                        ),
+                    )
+                })?
+                .url
         }
     };
     let reply = json!({"tab_id": tab_id, "target_id": context, "url": url, "label": args.label});
@@ -443,23 +457,124 @@ mod tests {
     use super::super::test_support::{self as ts, evaluate_success};
     use bidi_browser_lite::test_support::MockFirefox;
 
-    /// BID-12: navigate waits for completion and returns navigation and url.
+    /// BID-12 / NAV-01 / NAV-02: navigate waits for completion and answers
+    /// the committed URL (after redirects) in the shared shape.
     #[tokio::test]
     async fn navigate_waits_for_complete() {
-        // Given a Firefox instance over the mock
+        // Given a Firefox instance whose navigation to /start ends on /final
         let mock = MockFirefox::start(false).await.unwrap();
+        mock.bidi().respond_with("browsingContext.getTree", |_| {
+            json!({"contexts": [{"context": "ctx-0", "url": "http://127.0.0.1:8/final", "children": null}]})
+        });
         let handler = ts::handler(&mock);
         // When navigate runs
-        let url = "http://127.0.0.1:8/page.html";
+        let url = "http://127.0.0.1:8/start";
         let reply = navigate(call("navigate", json!({"url": url})), &handler)
             .await
             .unwrap();
-        // Then browsingContext.navigate waited for "complete" and the reply has the URL
+        // Then browsingContext.navigate waited for "complete"
         let sent = mock.bidi().commands_named("browsingContext.navigate");
         assert_eq!(sent.len(), 1);
         assert_eq!(sent[0].params["wait"], "complete");
         assert_eq!(sent[0].params["url"], url);
-        assert!(ts::text(&reply).contains(url), "{}", ts::text(&reply));
+        // And the reply has the final URL, the tab and the BiDi ids
+        assert!(ts::text(&reply).starts_with("Navigated to http://127.0.0.1:8/final."));
+        let body = ts::json_of(&reply);
+        assert_eq!(body["url"], "http://127.0.0.1:8/final");
+        assert_eq!(body["tab_id"], "tab-1");
+        assert!(body["browser"]["navigation"].is_string(), "{body}");
+        assert_eq!(
+            mock.bidi()
+                .commands_named("browsingContext.getTree")
+                .last()
+                .unwrap()
+                .params,
+            json!({"root": "ctx-0", "maxDepth": 0})
+        );
+        ts::stop(&handler).await;
+    }
+
+    /// Firefox's reply to a navigation to an unknown host (Firefox 157).
+    fn unknown_host(mock: &MockFirefox) {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/bidi/navigate-unknown-host.json"
+        ))
+        .unwrap();
+        mock.bidi()
+            .respond_with("browsingContext.navigate", move |_| fixture.clone());
+    }
+
+    /// NAV-03: a network error fails with the same wording as on Chrome.
+    #[tokio::test]
+    async fn unknown_host_fails_navigation() {
+        // Given a host Firefox cannot resolve
+        let mock = MockFirefox::start(false).await.unwrap();
+        unknown_host(&mock);
+        let handler = ts::handler(&mock);
+        // When navigate runs
+        let args = json!({"url": "http://nonexistent-host.invalid/"});
+        let error = navigate(call("navigate", args), &handler)
+            .await
+            .unwrap_err();
+        // Then it fails with Firefox's code and the URL
+        assert_eq!(
+            error.to_string(),
+            "Navigation failed: NS_ERROR_UNKNOWN_HOST (http://nonexistent-host.invalid/)"
+        );
+        ts::stop(&handler).await;
+    }
+
+    /// NAV-04: open_tab to an unreachable host fails and names the tab,
+    /// created blank and registered before the navigation.
+    #[tokio::test]
+    async fn open_tab_with_bad_url_fails_naming_the_tab() {
+        // Given a host Firefox cannot resolve
+        let mock = MockFirefox::start(false).await.unwrap();
+        unknown_host(&mock);
+        let handler = ts::handler(&mock);
+        // When open_tab opens it
+        let args = json!({"url": "http://nonexistent-host.invalid/"});
+        let error = open_tab(call("open_tab", args), &handler)
+            .await
+            .unwrap_err()
+            .to_string();
+        // Then the error names the tab that stays open
+        assert_eq!(
+            error,
+            "Navigation failed: NS_ERROR_UNKNOWN_HOST (http://nonexistent-host.invalid/). The tab stays open as tab-2 (close it with close_tab)."
+        );
+        let created = mock.bidi().commands_named("browsingContext.create");
+        assert_eq!(created.len(), 1);
+        let navigated = mock.bidi().commands_named("browsingContext.navigate");
+        assert_eq!(navigated[0].params["wait"], "complete");
+        ts::stop(&handler).await;
+    }
+
+    /// NAV-05: reload answers the same shape as navigate.
+    #[tokio::test]
+    async fn reload_reports_url() {
+        // Given a Firefox tab
+        let mock = MockFirefox::start(false).await.unwrap();
+        mock.bidi().respond_with(
+            "browsingContext.reload",
+            |_| json!({"navigation": "n2", "url": "http://127.0.0.1:8/page"}),
+        );
+        mock.bidi().respond_with("browsingContext.getTree", |_| {
+            json!({"contexts": [{"context": "ctx-0", "url": "http://127.0.0.1:8/page", "children": null}]})
+        });
+        let handler = ts::handler(&mock);
+        // When reload runs
+        let reply = reload(call("reload", json!({})), &handler).await.unwrap();
+        // Then it reports the URL in the shared shape
+        assert!(ts::text(&reply).starts_with("Page reloaded."));
+        let body = ts::json_of(&reply);
+        assert_eq!(body["url"], "http://127.0.0.1:8/page");
+        assert_eq!(body["tab_id"], "tab-1");
+        assert_eq!(body["browser"]["navigation"], "n2");
+        assert_eq!(
+            mock.bidi().commands_named("browsingContext.reload")[0].params["wait"],
+            "complete"
+        );
         ts::stop(&handler).await;
     }
 

@@ -58,6 +58,35 @@ pub(crate) mod tests {
         Box::leak(Box::new(mock))
     }
 
+    /// Emits `Page.loadEventFired` on the session of the next `command` the
+    /// mock receives, as Chrome does after a navigation or a reload.
+    pub(crate) fn fire_load_after(
+        mock: &'static cdp_browser_lite::test_support::mock_devtools::MockDevTools,
+        command: &'static str,
+    ) {
+        let seen = mock.commands_named(command).len();
+        tokio::spawn(async move {
+            for _ in 0..500 {
+                if let Some(cmd) = mock.commands_named(command).get(seen) {
+                    let params = json!({"timestamp": 1.0});
+                    mock.emit("Page.loadEventFired", params, cmd.session_id.as_deref());
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        });
+    }
+
+    /// Makes the mock's current history entry `url` (the committed URL).
+    pub(crate) fn committed_url(
+        mock: &cdp_browser_lite::test_support::mock_devtools::MockDevTools,
+        url: &'static str,
+    ) {
+        mock.respond_with("Page.getNavigationHistory", move |_| {
+            json!({"currentIndex": 1, "entries": [{"id": 1, "url": "about:blank"}, {"id": 2, "url": url}]})
+        });
+    }
+
     /// A tool call named `name` with `arguments`.
     pub(crate) fn call(
         name: &str,

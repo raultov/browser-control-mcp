@@ -1,0 +1,7 @@
+{
+  "type": "error",
+  "id": 12,
+  "error": "unknown error",
+  "message": "Error: NS_ERROR_UNKNOWN_HOST",
+  "stacktrace": ""
+}

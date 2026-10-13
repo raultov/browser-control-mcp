@@ -262,6 +262,16 @@ claude mcp add browser-control-mcp -- npx -y @raultov/browser-control-mcp
 - **Tabs.** `open_tab`, `list_tabs`, `switch_tab`, `close_tab`. Every tool
   takes `instance_id` and `tab_id`; without them it targets the default
   instance and its active tab.
+- **Same replies on both browsers.** `navigate` and `reload` answer once the
+  page fired `load` (at most 30 s, else with a note): a first line
+  (`Navigated to <final URL>.` / `Page reloaded.`), then
+  `{"url": "<final URL, after redirects>", "tab_id": "tab-N", "browser": {...}}`,
+  where `browser` holds the protocol's ids (CDP `frameId`/`loaderId`, BiDi
+  `navigation`). `open_tab` answers `{tab_id, target_id, url, label}` with the
+  final URL. A network error (unknown host, refused connection...) fails with
+  `Navigation failed: <browser's code> (<url>)`, e.g.
+  `net::ERR_NAME_NOT_RESOLVED` on Chrome and `NS_ERROR_UNKNOWN_HOST` on
+  Firefox; from `open_tab` the error names the tab, which stays open.
 - **Per-tab state.** Console logs, network traffic, breakpoints and custom
   events are kept per tab, in bounded buffers.
 - **Firefox allows a single automation session.** Each Firefox instance holds
@@ -358,15 +368,9 @@ error that names the new ones.
 
 ## Limitations and TODO
 
-- **TODO (priority)** Unified `navigate` response: Chrome returns the CDP ids
-  (`frameId`, `loaderId`) and Firefox `{navigation, url}`; both will return
-  the final URL in the same shape.
 - **TODO (priority)** Unified `evaluate_js` result: Chrome wraps the value in
   the CDP `RemoteObject` (`{"result": {"type", "value"}}`) and Firefox
   returns the bare value; both will return the same shape.
-- **TODO (priority)** Navigation errors: on Chrome, `navigate` and `open_tab`
-  to an unreachable host report success (the network error is only inside
-  the reply, or absent); both browsers will fail with the network error.
 - **TODO (priority)** Console buffer per navigation: `get_console_logs` will
   clear a tab's buffer when it navigates to a different site (kept across
   subdomains of the same site) and gain a limit, so one call cannot flood

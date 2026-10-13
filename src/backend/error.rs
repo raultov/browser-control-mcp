@@ -35,6 +35,15 @@ pub enum BackendError {
     /// The arguments do not make sense for this browser.
     #[error("{0}")]
     InvalidArgument(String),
+    /// The browser could not load the page (network error); the same text
+    /// on every browser, `reason` being the browser's own error code.
+    #[error("Navigation failed: {reason} ({url})")]
+    Navigation {
+        /// `net::ERR_NAME_NOT_RESOLVED`, `NS_ERROR_UNKNOWN_HOST`, ...
+        reason: String,
+        /// The URL the agent asked for.
+        url: String,
+    },
 }
 
 impl From<BackendError> for rust_mcp_sdk::schema::CallToolError {

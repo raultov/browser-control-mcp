@@ -6,7 +6,7 @@ use rust_mcp_sdk::{
 
 #[macros::mcp_tool(
     name = "open_tab",
-    description = "Opens a new tab in the specified Chrome instance. Side effects: creates a browser tab and registers it under a generated Tab ID; the tab stays open until closed with 'close_tab'. Prerequisites: none - the instance is launched lazily if not running yet. Returns: structured JSON with 'tab_id' (use it as the 'tab_id' argument of other tools), 'target_id' (raw CDP target id), 'url' and 'label'. Use this to work with several pages in parallel while keeping their CDP state isolated per tab. Alternatives: 'navigate' to load content in the active tab, 'list_tabs' to enumerate already open tabs."
+    description = "Opens a new tab in the specified Chrome instance. Side effects: creates a browser tab and registers it under a generated Tab ID; the tab stays open until closed with 'close_tab'. Prerequisites: none - the instance is launched lazily if not running yet. Returns: structured JSON with 'tab_id' (use it as the 'tab_id' argument of other tools), 'target_id' (raw CDP target id), 'url' (final URL once the page fired `load`, at most 30 s) and 'label'. A network error fails the call and names the tab, which stays open. Use this to work with several pages in parallel while keeping their CDP state isolated per tab. Alternatives: 'navigate' to load content in the active tab, 'list_tabs' to enumerate already open tabs."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct OpenTabTool {
@@ -66,20 +66,26 @@ async fn create_tab(
 /// first, with its own session, and still be enabling its domains. Chrome
 /// answers a session's commands in order, so once this (idempotent)
 /// `Network.enable` replies, the page's first requests will be recorded.
+/// Waits for `load` like `navigate`; a network error fails, naming the tab
+/// that stays open.
 async fn open_url(
     session: &crate::handler::BrowserSession,
     tab_id: &str,
     url: &str,
-) -> Result<(), CallToolError> {
+) -> Result<String, CallToolError> {
     let registered = session.target(Some(tab_id.to_string())).await?;
     let _ = registered
         .send_raw_command("Network.enable", serde_json::json!({}))
         .await;
-    registered
-        .send_raw_command("Page.navigate", serde_json::json!({ "url": url }))
+    let outcome = crate::handler::cdp_domains::page::navigate::navigate_and_wait(&registered, url)
         .await
-        .map_err(|e| CallToolError::from_message(format!("Failed to open {url}: {e:?}")))?;
-    Ok(())
+        .map_err(|e| {
+            CallToolError::from_message(crate::handler::navigation::open_tab_navigation_failed(
+                &e.to_string(),
+                tab_id,
+            ))
+        })?;
+    Ok(outcome.url)
 }
 
 impl OpenTabTool {
@@ -110,9 +116,10 @@ impl OpenTabTool {
         }
 
         let (tab_id, target_id) = create_tab(&session, args.label.clone(), &url).await?;
-        if let Some(url) = deferred_navigation(&url) {
-            open_url(&session, &tab_id, url).await?;
-        }
+        let url = match deferred_navigation(&url) {
+            Some(url) => open_url(&session, &tab_id, url).await?,
+            None => url,
+        };
 
         Ok(CallToolResult::text_content(vec![
             serde_json::json!({
@@ -143,5 +150,41 @@ mod tests {
             Some("http://127.0.0.1/")
         );
         assert_eq!(deferred_navigation(BLANK), None);
+    }
+
+    /// NAV-04: open_tab to an unreachable host fails and names the tab.
+    #[tokio::test]
+    async fn open_tab_with_bad_url_fails_naming_the_tab() {
+        use crate::handler::cdp_domains::tests::{mock_handler, spawn_recording_mock};
+        // Given a tab open_tab created, on a Chrome that cannot resolve the host
+        let mock = spawn_recording_mock().await;
+        mock.respond_with("Page.navigate", |_| {
+            serde_json::json!({"frameId": "F", "loaderId": "L", "errorText": "net::ERR_NAME_NOT_RESOLVED"})
+        });
+        let handler = mock_handler(mock.http_port);
+        let session = handler.session(None).await.unwrap();
+        let browser = cdp_browser_lite::BrowserClient::connect(
+            &format!("127.0.0.1:{}", mock.http_port),
+            std::time::Duration::from_secs(5),
+        )
+        .await
+        .unwrap();
+        let tab = browser.attach("T-page-1").await.unwrap();
+        let info = super::super::tab_registry::NewTab::new(None, BLANK);
+        let tab_id = crate::util::sync::write(&session.tabs)
+            .register_tab(tab, info, false)
+            .unwrap();
+        // When it navigates the tab to the URL
+        let error = open_url(&session, &tab_id, "http://nonexistent-host.invalid/")
+            .await
+            .unwrap_err()
+            .to_string();
+        // Then the network error is reported with the tab that stays open
+        assert_eq!(
+            error,
+            format!(
+                "Navigation failed: net::ERR_NAME_NOT_RESOLVED (http://nonexistent-host.invalid/). The tab stays open as {tab_id} (close it with close_tab)."
+            )
+        );
     }
 }

@@ -3,7 +3,8 @@
 use super::protocol_error;
 use super::remote_value;
 use crate::backend::error::BackendError;
-use bidi_browser_lite::{ReadinessState, Tab};
+use crate::handler::navigation::NavigationOutcome;
+use bidi_browser_lite::{BidiError, ReadinessState, Tab};
 use serde_json::{Value, json};
 
 /// Sends a command on the tab's session, mapping errors.
@@ -14,20 +15,63 @@ pub(crate) async fn command(tab: &Tab, method: &str, params: Value) -> Result<Va
         .map_err(|e| protocol_error(method, &e))
 }
 
-/// `browsingContext.navigate` waiting for `load` (spike H2): `{navigation, url}`.
-pub(crate) async fn navigate(tab: &Tab, url: &str) -> Result<Value, BackendError> {
-    tab.navigate(url, ReadinessState::Complete)
+/// `browsingContext.navigate` waiting for `load` (spike H2). A network
+/// error is a navigation error with Firefox's code (`NS_ERROR_UNKNOWN_HOST`).
+pub(crate) async fn navigate(tab: &Tab, url: &str) -> Result<NavigationOutcome, BackendError> {
+    let reply = tab
+        .navigate(url, ReadinessState::Complete)
         .await
-        .map(|reply| reply.result.unwrap_or(Value::Null))
-        .map_err(|e| protocol_error("browsingContext.navigate", &e))
+        .map_err(|e| navigation_error("browsingContext.navigate", url, &e))?;
+    Ok(settled(tab, reply.result.unwrap_or_else(|| json!({})), url).await)
 }
 
 /// `browsingContext.reload` waiting for `load`.
-pub(crate) async fn reload(tab: &Tab) -> Result<Value, BackendError> {
-    tab.reload(ReadinessState::Complete)
+pub(crate) async fn reload(tab: &Tab) -> Result<NavigationOutcome, BackendError> {
+    let reply = tab
+        .reload(ReadinessState::Complete)
         .await
-        .map(|reply| reply.result.unwrap_or(Value::Null))
-        .map_err(|e| protocol_error("browsingContext.reload", &e))
+        .map_err(|e| navigation_error("browsingContext.reload", "", &e))?;
+    let browser = reply.result.unwrap_or_else(|| json!({}));
+    let requested = browser
+        .get("url")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    Ok(settled(tab, browser, &requested).await)
+}
+
+/// A failed navigation: Firefox reports network errors as `unknown error`
+/// with `Error: <code>` (captured from Firefox 157); anything else stays a
+/// protocol error.
+fn navigation_error(method: &str, url: &str, error: &BidiError) -> BackendError {
+    match error {
+        BidiError::ProtocolError { error, message, .. } if error == "unknown error" => {
+            BackendError::Navigation {
+                reason: message.trim_start_matches("Error: ").to_string(),
+                url: url.to_string(),
+            }
+        }
+        other => protocol_error(method, other),
+    }
+}
+
+/// The outcome of a finished navigation: the committed URL of the tab
+/// (after redirects; BiDi's reply carries the requested one) and the BiDi
+/// ids of the reply.
+async fn settled(tab: &Tab, browser: Value, requested: &str) -> NavigationOutcome {
+    let params = json!({"root": tab.context_id(), "maxDepth": 0});
+    let tree = command(tab, "browsingContext.getTree", params).await.ok();
+    let url = tree
+        .as_ref()
+        .and_then(|t| t.pointer("/contexts/0/url"))
+        .and_then(Value::as_str)
+        .unwrap_or(requested)
+        .to_string();
+    NavigationOutcome {
+        url,
+        browser,
+        notes: Vec::new(),
+    }
 }
 
 /// Raw `script.evaluate` reply (`type` success or exception).
