@@ -58,6 +58,19 @@ pub(crate) mod tests {
         Box::leak(Box::new(mock))
     }
 
+    /// A tool call named `name` with `arguments`.
+    pub(crate) fn call(
+        name: &str,
+        arguments: serde_json::Value,
+    ) -> rust_mcp_sdk::schema::CallToolRequestParams {
+        serde_json::from_value(json!({"name": name, "arguments": arguments})).unwrap()
+    }
+
+    /// The text of a tool reply's first content block.
+    pub(crate) fn reply_text(result: &rust_mcp_sdk::schema::CallToolResult) -> String {
+        result.content[0].as_text_content().unwrap().text.clone()
+    }
+
     /// A handler whose default Chrome instance talks to the mock on `port`.
     pub(crate) fn mock_handler(port: u16) -> crate::handler::McpHandler {
         let mut handler = crate::handler::McpHandler::new_test();
@@ -141,6 +154,7 @@ pub(crate) async fn enable_tab_domains(tab: &Tab, webmcp_state: &Arc<Mutex<webmc
         "Page.enable",
         "Network.enable",
         "Log.enable",
+        "Performance.enable",
         "Debugger.enable",
     ] {
         let _ = tab.send_raw_command(cmd, NoParams).await;

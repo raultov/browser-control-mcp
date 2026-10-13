@@ -19,6 +19,9 @@ from a copy of its code: entries describe the differences from that release.
 
 ### Fixed
 
+- Chrome `get_performance_metrics` returned `{}`: every tab now enables the
+  Performance domain when it is registered, the tool enables it on a session
+  that missed it, and an empty metric list is an error instead of `{}`.
 - The "Chrome not found, use Firefox?" hint no longer ends the library's
   sentence with two periods.
 
