@@ -192,7 +192,8 @@ fn is_local_host(host: &str) -> bool {
 pub(crate) fn launch_failure(error: &str, firefox: Option<&std::path::Path>) -> String {
     match firefox {
         Some(path) if error.contains("Chrome executable not found") => format!(
-            "{error}. A Firefox was found at {}: ask the user whether to use it, then call open_instance with \"browser\": \"firefox\" (or restart the server with --browser firefox).",
+            "{}. A Firefox was found at {}: ask the user whether to use it, then call open_instance with \"browser\": \"firefox\" (or restart the server with --browser firefox).",
+            error.trim_end_matches('.'),
             path.display()
         ),
         _ => error.to_string(),
@@ -390,16 +391,25 @@ mod tests {
         assert!(parsed.is_err(), "unknown presets must not deserialize");
     }
 
-    /// BKD-12: Chrome not found suggests Firefox when Firefox is installed.
+    /// BKD-12, DEP-01: Chrome not found (cdp-browser-lite 0.4.2 wording)
+    /// suggests Firefox when Firefox is installed.
     #[test]
     fn missing_chrome_suggests_installed_firefox() {
-        // Given Chrome discovery failed
-        let error = "Chrome executable not found; searched: [\"/usr/bin/google-chrome\"]";
+        // Given Chrome discovery failed with the lifecycle crate's own message
+        let error = cdp_browser_lite::BrowserError::ExecutableNotFound {
+            searched: vec!["/usr/bin/google-chrome".into(), "/usr/bin/chromium".into()],
+        }
+        .to_string();
+        let error = error.as_str();
         // When Firefox discovery found a binary
         let firefox = std::path::Path::new("/usr/bin/firefox");
         let hint = launch_failure(error, Some(firefox));
         // Then the error keeps the searched paths and suggests asking for Firefox
-        assert!(hint.contains("/usr/bin/google-chrome"), "{hint}");
+        assert!(
+            hint.contains("/usr/bin/google-chrome, /usr/bin/chromium"),
+            "{hint}"
+        );
+        assert!(!hint.contains(".."), "one sentence end, not two: {hint}");
         assert!(
             hint.contains("/usr/bin/firefox") && hint.contains("\"browser\": \"firefox\""),
             "{hint}"

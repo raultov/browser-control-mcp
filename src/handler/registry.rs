@@ -499,6 +499,25 @@ mod tests {
         }
     }
 
+    /// BKD-03: open_instance creates an instance of the requested browser.
+    #[tokio::test]
+    async fn open_instance_creates_requested_browser() {
+        // Given a Chrome default and a Firefox binary that does not exist
+        let mut handler = McpHandler::new_test();
+        handler.firefox_spec.firefox.firefox_path = Some("/nonexistent/firefox".into());
+        // When open_instance asks for Firefox
+        let open = serde_json::json!({"browser": "firefox", "label": "ff"});
+        let message = error_of(&handler, "open_instance", open).await;
+        // Then the Firefox implementation ran (it failed to launch that
+        // binary) and no instance was left behind
+        assert!(message.contains("/nonexistent/firefox"), "{message}");
+        assert!(handler.registry.get_firefox("ff").is_none());
+        // And with "chrome" the instance is a Chrome one under the label
+        let open = serde_json::json!({"browser": "chrome", "label": "cc"});
+        call(&handler, params("open_instance", open)).await.unwrap();
+        assert_eq!(handler.browser_of(Some("cc")), BrowserKind::Chrome);
+    }
+
     /// CAP-03: A tool the browser cannot serve fails with a capability error.
     #[tokio::test]
     async fn unsupported_tool_fails_without_touching_the_browser() {

@@ -440,6 +440,223 @@ mod tests {
         assert!(pause.lock().unwrap().is_none());
     }
 
+    use super::super::test_support::{self as ts, WAIT};
+    use bidi_browser_lite::test_support::MockFirefox;
+
+    const SCRIPT: &str = "https://example.com/test.html";
+
+    /// `set_breakpoint` at 0-based `line` (column given, so no source lookup).
+    fn breakpoint(line: u32, tab: Option<&str>) -> CallToolRequestParams {
+        let mut args = json!({"url": SCRIPT, "line_number": line, "column_number": 4});
+        if let Some(tab) = tab {
+            args["tab_id"] = json!(tab);
+        }
+        ts::call("set_breakpoint", args)
+    }
+
+    /// Waits until the state task of `tab` tracked a pause.
+    async fn wait_paused(session: &FirefoxSession, tab: &str) {
+        for _ in 0..100 {
+            if let Some(entry) = session.debuggers.lock().await.get(tab)
+                && current_pause(entry).is_some()
+            {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        panic!("no pause tracked on {tab}");
+    }
+
+    /// RDP-02: The debugger attaches lazily to the requested tab, once.
+    #[tokio::test]
+    async fn debugger_attaches_lazily_to_requested_tab() {
+        // Given tabs A (active) and B on a Firefox instance over the mocks
+        let mock = MockFirefox::start(true).await.unwrap();
+        let rdp = mock.rdp().unwrap();
+        let handler = ts::handler(&mock);
+        crate::backend::bidi::tools::open_tab(ts::call("open_tab", json!({})), &handler)
+            .await
+            .unwrap();
+        assert_eq!(rdp.requests_to("root").len(), 0, "nothing attached yet");
+        // When set_breakpoint addresses B
+        set_breakpoint(breakpoint(1, Some("tab-2")), &handler)
+            .await
+            .unwrap();
+        // Then B was activated through BiDi and the debugger attached
+        let activated = mock.bidi().commands_named("browsingContext.activate");
+        assert_eq!(activated.len(), 1);
+        assert_eq!(activated[0].params["context"], "ctx-1");
+        assert_eq!(
+            rdp.requests()
+                .iter()
+                .filter(|r| r.request_type == "getWatcher")
+                .count(),
+            1
+        );
+        // And a second debugger tool on B does not attach again
+        set_breakpoint(breakpoint(2, Some("tab-2")), &handler)
+            .await
+            .unwrap();
+        assert_eq!(
+            rdp.requests()
+                .iter()
+                .filter(|r| r.request_type == "getWatcher")
+                .count(),
+            1
+        );
+        assert_eq!(mock.bidi().count("browsingContext.activate"), 1);
+        ts::stop(&handler).await;
+    }
+
+    /// RDP-03 / RDP-04: breakpoints get MCP ids; remove_breakpoint uses them.
+    #[tokio::test]
+    async fn remove_breakpoint_uses_mcp_id() {
+        // Given breakpoint bp-1
+        let mock = MockFirefox::start(true).await.unwrap();
+        let rdp = mock.rdp().unwrap();
+        let handler = ts::handler(&mock);
+        let set = set_breakpoint(breakpoint(3, None), &handler).await.unwrap();
+        assert!(ts::text(&set).contains("bp-1"), "{}", ts::text(&set));
+        let sent = rdp.wait_for_request("setBreakpoint", WAIT).await.unwrap();
+        assert_eq!(sent.params["location"]["line"], 4, "RDP lines are 1-based");
+        // When remove_breakpoint "bp-1" runs twice
+        let remove = || ts::call("remove_breakpoint", json!({"breakpoint_id": "bp-1"}));
+        remove_breakpoint(remove(), &handler).await.unwrap();
+        let second = remove_breakpoint(remove(), &handler).await.unwrap_err();
+        // Then the first sent the removal, the second lists no ids
+        let removal = rdp
+            .wait_for_request("removeBreakpoint", WAIT)
+            .await
+            .unwrap();
+        assert_eq!(removal.params["location"], sent.params["location"]);
+        assert!(second.to_string().contains("Breakpoints: none"), "{second}");
+        ts::stop(&handler).await;
+    }
+
+    /// RDP-06: step_over reports the new location from the combined packet.
+    #[tokio::test]
+    async fn step_over_reads_combined_packet() {
+        // Given a debugger paused on line 7 (1-based, RDP)
+        let mock = MockFirefox::start(true).await.unwrap();
+        let rdp = mock.rdp().unwrap();
+        let handler = ts::handler(&mock);
+        set_breakpoint(breakpoint(0, None), &handler).await.unwrap();
+        rdp.pause("breakpoint", None);
+        let session = handler.firefox(None).await.unwrap();
+        wait_paused(&session, "tab-1").await;
+        // When step_over runs (answered by resumed + paused in one packet)
+        let reply = step_over(ts::call("step_over", json!({})), &handler)
+            .await
+            .unwrap();
+        // Then it reports the new location
+        let reply = ts::json_of(&reply);
+        assert_eq!(reply["paused"], true);
+        assert_eq!(reply["location"]["line"], 8);
+        let step = rdp.wait_for_request("resume", WAIT).await.unwrap();
+        assert_eq!(step.params["resumeLimit"]["type"], "next");
+        ts::stop(&handler).await;
+    }
+
+    /// RDP-09: search_scripts keeps Chrome's query language.
+    #[tokio::test]
+    async fn search_scripts_keeps_query_language() {
+        // Given two sources with URLs plus an eval source without one
+        let mock = MockFirefox::start(true).await.unwrap();
+        let rdp = mock.rdp().unwrap();
+        let handler = ts::handler(&mock);
+        let search = |query: &str| ts::call("search_scripts", json!({"query": query}));
+        search_scripts(search(""), &handler).await.unwrap();
+        rdp.emit_resources(
+            "source",
+            vec![
+                json!({"actor": "server1.conn1.watcher2.process7//source30", "url": "https://example.com/app.js"}),
+                json!({"actor": "server1.conn1.watcher2.process7//source31", "url": null, "introductionType": "debugger eval"}),
+            ],
+        );
+        let session = handler.firefox(None).await.unwrap();
+        for _ in 0..100 {
+            let sources = session.debuggers.lock().await["tab-1"].debugger.sources();
+            if sources.iter().any(|s| s.actor.ends_with("source30")) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        // When search_scripts runs with "", "@source" and a needle
+        let count = ts::text(&search_scripts(search(""), &handler).await.unwrap());
+        let sources = ts::text(&search_scripts(search("@source"), &handler).await.unwrap());
+        let needle = ts::text(&search_scripts(search("return"), &handler).await.unwrap());
+        // Then the eval source is left out and the formats are Chrome's
+        assert_eq!(count, "Total cached scripts: 2");
+        assert!(
+            sources.contains("source30") && !sources.contains("source31"),
+            "{sources}"
+        );
+        assert!(sources.contains("function test()"), "{sources}");
+        assert!(
+            needle.contains("source30") && needle.contains("source18"),
+            "{needle}"
+        );
+        assert!(needle.contains("\"lineNumber\": 0"), "{needle}");
+        ts::stop(&handler).await;
+    }
+
+    /// RDP-10: Detaching removes breakpoints first.
+    #[tokio::test]
+    async fn detach_removes_breakpoints_first() {
+        // Given tab-2 with breakpoints bp-1 and bp-2
+        let mock = MockFirefox::start(true).await.unwrap();
+        let rdp = mock.rdp().unwrap();
+        let handler = ts::handler(&mock);
+        crate::backend::bidi::tools::open_tab(ts::call("open_tab", json!({})), &handler)
+            .await
+            .unwrap();
+        set_breakpoint(breakpoint(1, Some("tab-2")), &handler)
+            .await
+            .unwrap();
+        set_breakpoint(breakpoint(2, Some("tab-2")), &handler)
+            .await
+            .unwrap();
+        // When the tab is closed
+        let close = ts::call("close_tab", json!({"tab_id": "tab-2"}));
+        crate::backend::bidi::tools::close_tab(close, &handler)
+            .await
+            .unwrap();
+        rdp.wait_for_request("unwatchTargets", WAIT).await.unwrap();
+        // Then both removals were sent before the watcher was unwatched
+        let kinds: Vec<String> = rdp
+            .requests()
+            .into_iter()
+            .map(|r| r.request_type)
+            .filter(|t| t == "removeBreakpoint" || t.starts_with("unwatch"))
+            .collect();
+        assert_eq!(kinds[..2], ["removeBreakpoint", "removeBreakpoint"]);
+        assert!(
+            kinds[2..].iter().all(|t| t.starts_with("unwatch")),
+            "{kinds:?}"
+        );
+        ts::stop(&handler).await;
+    }
+
+    /// RDP-12: send_rdp_request resolves actor shortcuts.
+    #[tokio::test]
+    async fn raw_rdp_resolves_actor_shortcuts() {
+        // Given a Firefox instance whose tab thread actor is the mock's thread1
+        let mock = MockFirefox::start(true).await.unwrap();
+        let rdp = mock.rdp().unwrap();
+        let handler = ts::handler(&mock);
+        // When send_rdp_request goes to "thread" with request_type "frames"
+        let args = json!({"to": "thread", "request_type": "frames", "params": "{}"});
+        let reply =
+            super::super::raw::send_rdp_request(ts::call("send_rdp_request", args), &handler)
+                .await
+                .unwrap();
+        // Then the mock got it on the thread actor and the reply is JSON
+        let thread = "server1.conn1.watcher2.process7//thread1";
+        assert_eq!(rdp.requests_to(thread)[0].request_type, "frames");
+        assert!(ts::json_of(&reply)["frames"].is_array());
+        ts::stop(&handler).await;
+    }
+
     /// RDP-07 / RDP-03 (argument half): no pause, no evaluation; URL required.
     #[tokio::test]
     async fn firefox_breakpoints_by_url() {

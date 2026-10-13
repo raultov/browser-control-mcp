@@ -10,6 +10,18 @@ from a copy of its code: entries describe the differences from that release.
 
 ## [Unreleased]
 
+### Changed
+
+- Lifecycle crates bumped: `cdp-browser-lite` 0.4.2 and `bidi-browser-lite`
+  0.1.4 (`bidi-lite` 0.1.2). Their mocks now record wire parameters, so the
+  Firefox page, input, network and debugger tools and the Chrome domain
+  setup are covered by hermetic tests instead of only by the E2E smoke.
+
+### Fixed
+
+- The "Chrome not found, use Firefox?" hint no longer ends the library's
+  sentence with two periods.
+
 ## [0.1.1-beta.1] - 2026-10-12
 
 Public **BETA**: known bugs and Chrome/Firefox differences are listed in the

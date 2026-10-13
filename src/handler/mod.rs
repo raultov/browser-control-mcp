@@ -1296,6 +1296,37 @@ mod tests {
         );
     }
 
+    /// CDP-04: Lazy connection still enables the same domains, in order.
+    #[tokio::test]
+    async fn lazy_connect_enables_domains_in_order() {
+        // Given a Chrome instance over the mock DevTools server
+        let mock = cdp_domains::tests::spawn_recording_mock().await;
+        let handler = cdp_domains::tests::mock_handler(mock.http_port);
+        // When the first tool call needs the browser
+        let session = handler.session(None).await.unwrap();
+        drop(session.get_or_connect().await.unwrap());
+        // Then the domains were enabled before the version was read, and the
+        // debugger last (its listener must be running first)
+        let sent: Vec<String> = mock
+            .commands()
+            .into_iter()
+            .map(|c| c.method)
+            .filter(|m| m.ends_with(".enable") || m == "Browser.getVersion")
+            .collect();
+        assert_eq!(
+            sent,
+            [
+                "Runtime.enable",
+                "Page.enable",
+                "Network.enable",
+                "Log.enable",
+                "Performance.enable",
+                "Browser.getVersion",
+                "Debugger.enable"
+            ]
+        );
+    }
+
     #[test]
     fn test_parse_chrome_major() {
         assert_eq!(parse_chrome_major("Chrome/152.0.6367.60"), Some(152));

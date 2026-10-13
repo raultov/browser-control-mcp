@@ -440,6 +440,252 @@ mod tests {
         assert!(format!("{:?}", err.unwrap_err()).contains("--local"));
     }
 
+    use super::super::test_support::{self as ts, evaluate_success};
+    use bidi_browser_lite::test_support::MockFirefox;
+
+    /// BID-12: navigate waits for completion and returns navigation and url.
+    #[tokio::test]
+    async fn navigate_waits_for_complete() {
+        // Given a Firefox instance over the mock
+        let mock = MockFirefox::start(false).await.unwrap();
+        let handler = ts::handler(&mock);
+        // When navigate runs
+        let url = "http://127.0.0.1:8/page.html";
+        let reply = navigate(call("navigate", json!({"url": url})), &handler)
+            .await
+            .unwrap();
+        // Then browsingContext.navigate waited for "complete" and the reply has the URL
+        let sent = mock.bidi().commands_named("browsingContext.navigate");
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].params["wait"], "complete");
+        assert_eq!(sent[0].params["url"], url);
+        assert!(ts::text(&reply).contains(url), "{}", ts::text(&reply));
+        ts::stop(&handler).await;
+    }
+
+    /// A mock page where `#go` sits at (5, 7) as node `n1` (handle `h1`).
+    fn page_with_button(mock: &MockFirefox) {
+        mock.bidi()
+            .respond_with(
+                "script.evaluate",
+                |params| match params["resultOwnership"].as_str() {
+                    Some("root") => {
+                        evaluate_success(json!({"type": "node", "sharedId": "n1", "handle": "h1"}))
+                    }
+                    _ => evaluate_success(json!({"type": "object", "value": [
+                        ["x", {"type": "number", "value": 5}],
+                        ["y", {"type": "number", "value": 7}],
+                    ]})),
+                },
+            );
+    }
+
+    /// The script and input commands the mock received, in order.
+    fn script_and_input(mock: &MockFirefox) -> Vec<String> {
+        mock.bidi()
+            .commands()
+            .into_iter()
+            .map(|c| c.method)
+            .filter(|m| m.starts_with("script.") || m.starts_with("input."))
+            .collect()
+    }
+
+    /// BID-16: click_element clicks the element through input actions.
+    #[tokio::test]
+    async fn click_uses_element_origin_actions() {
+        // Given a page where "#go" exists
+        let mock = MockFirefox::start(false).await.unwrap();
+        page_with_button(&mock);
+        let handler = ts::handler(&mock);
+        // When click_element "#go" runs
+        let reply = click_element(call("click_element", json!({"selector": "#go"})), &handler)
+            .await
+            .unwrap();
+        // Then root-owned evaluate, pointer actions from the element, release, disown
+        assert!(ts::text(&reply).contains("(5, 7)"), "{}", ts::text(&reply));
+        assert_eq!(
+            script_and_input(&mock),
+            [
+                "script.evaluate",
+                "script.evaluate",
+                "input.performActions",
+                "input.releaseActions",
+                "script.disown"
+            ]
+        );
+        let evaluations = mock.bidi().commands_named("script.evaluate");
+        assert_eq!(evaluations[1].params["resultOwnership"], "root");
+        let actions = &mock.bidi().commands_named("input.performActions")[0].params;
+        assert_eq!(
+            actions["actions"][0]["actions"][0]["origin"]["element"]["sharedId"],
+            "n1"
+        );
+        assert_eq!(
+            mock.bidi().commands_named("script.disown")[0].params["handles"],
+            json!(["h1"])
+        );
+        ts::stop(&handler).await;
+    }
+
+    /// BID-16: a missing element fails and sends no input action.
+    #[tokio::test]
+    async fn click_on_missing_element_sends_no_input() {
+        // Given a page without "#go"
+        let mock = MockFirefox::start(false).await.unwrap();
+        mock.bidi().respond_with("script.evaluate", |_| {
+            evaluate_success(json!({"type": "null"}))
+        });
+        let handler = ts::handler(&mock);
+        // When click_element "#go" runs
+        let error = click_element(call("click_element", json!({"selector": "#go"})), &handler)
+            .await
+            .unwrap_err();
+        // Then it names the selector and no input action was sent
+        assert!(error.to_string().contains("#go"), "{error}");
+        assert_eq!(script_and_input(&mock), ["script.evaluate"]);
+        ts::stop(&handler).await;
+    }
+
+    /// BID-17: fill_input focuses and clears, then types every character.
+    #[tokio::test]
+    async fn fill_replaces_value() {
+        // Given a page where "#q" exists
+        let mock = MockFirefox::start(false).await.unwrap();
+        mock.bidi().respond_with("script.evaluate", |_| {
+            evaluate_success(json!({"type": "boolean", "value": true}))
+        });
+        let handler = ts::handler(&mock);
+        // When fill_input types "ñandú"
+        let args = json!({"selector": "#q", "text": "ñandú"});
+        fill_input(call("fill_input", args), &handler)
+            .await
+            .unwrap();
+        // Then the clear snippet ran before the key actions, one down/up per char
+        let commands = mock.bidi().commands();
+        let clear = commands
+            .iter()
+            .position(|c| c.method == "script.evaluate")
+            .unwrap();
+        let typed = commands
+            .iter()
+            .position(|c| c.method == "input.performActions")
+            .unwrap();
+        assert!(clear < typed);
+        assert!(
+            commands[clear].params["expression"]
+                .as_str()
+                .unwrap()
+                .contains("focus()")
+        );
+        let keys = commands[typed].params["actions"][0]["actions"]
+            .as_array()
+            .unwrap();
+        let downs: String = keys
+            .iter()
+            .filter(|k| k["type"] == "keyDown")
+            .map(|k| k["value"].as_str().unwrap())
+            .collect();
+        assert_eq!(downs, "ñandú");
+        assert_eq!(keys.len(), 10);
+        assert_eq!(mock.bidi().count("input.releaseActions"), 1);
+        ts::stop(&handler).await;
+    }
+
+    /// BID-19: inspect_dom works on Firefox with the same output as Chrome.
+    #[tokio::test]
+    async fn inspect_dom_same_output_as_chrome() {
+        use crate::handler::cdp_domains::runtime::inspect_dom::InspectDomTool;
+        use crate::handler::cdp_domains::tests::{mock_handler, spawn_mock_chrome_server};
+        // Given the HTML the Chrome mock serves, also served by the Firefox mock
+        let html = "<html><body><h1>Hello World</h1><div id='test'>This is a test</div><input id='test-input' value='' /></body></html>";
+        let mock = MockFirefox::start(false).await.unwrap();
+        mock.bidi().respond_with("script.evaluate", move |_| {
+            evaluate_success(json!({"type": "string", "value": html}))
+        });
+        let firefox = ts::handler(&mock);
+        let chrome = mock_handler(spawn_mock_chrome_server().await);
+        // When inspect_dom looks for "test" on both
+        let args = json!({"query": "test", "before": 10, "after": 10});
+        let on_firefox = inspect_dom(call("inspect_dom", args.clone()), &firefox)
+            .await
+            .unwrap();
+        let on_chrome = InspectDomTool::handle(call("inspect_dom", args), &chrome)
+            .await
+            .unwrap();
+        // Then the replies are identical
+        assert_eq!(ts::text(&on_firefox), ts::text(&on_chrome));
+        ts::stop(&firefox).await;
+    }
+
+    /// BID-22: response bodies are fetched with network.getData (spike H11 ✅).
+    #[tokio::test]
+    async fn response_bodies_follow_spike() {
+        // Given one answered request of the current navigation on tab-1
+        let mock = MockFirefox::start(false).await.unwrap();
+        mock.bidi().respond_with(
+            "network.getData",
+            |_| json!({"bytes": {"type": "string", "value": "{\"ok\":true}"}}),
+        );
+        let handler = ts::handler(&mock);
+        let session = handler.firefox(None).await.unwrap();
+        let (_, tab) = session.tab(None).await.unwrap();
+        {
+            let mut network = tab.network.lock().await;
+            for (method, fixture) in [
+                (
+                    "network.beforeRequestSent",
+                    include_str!("../../../tests/fixtures/bidi/event-before-request-sent.json"),
+                ),
+                (
+                    "network.responseCompleted",
+                    include_str!("../../../tests/fixtures/bidi/event-response-completed.json"),
+                ),
+            ] {
+                let event: Value = serde_json::from_str(fixture).unwrap();
+                super::super::pump::on_network(method, &event["params"], &mut network);
+            }
+        }
+        // When get_network_logs asks for details
+        let args = json!({"include_details": true, "type_filter": "rest"});
+        let reply = network_logs(call("get_network_logs", args), &handler)
+            .await
+            .unwrap();
+        // Then the body came from network.getData for that request
+        let sent = mock.bidi().commands_named("network.getData");
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].params["dataType"], "response");
+        assert!(sent[0].params["request"].is_string());
+        assert!(
+            ts::text(&reply).contains("{\\\"ok\\\":true}"),
+            "{}",
+            ts::text(&reply)
+        );
+        ts::stop(&handler).await;
+    }
+
+    /// BKD-06: Tab ids are MCP-level and map to native ids.
+    #[tokio::test]
+    async fn tab_ids_map_to_native_ids() {
+        // Given a Firefox instance over the mock (tab-1 is its first context)
+        let mock = MockFirefox::start(false).await.unwrap();
+        let handler = ts::handler(&mock);
+        // When open_tab creates a page
+        let opened = ts::json_of(
+            &open_tab(call("open_tab", json!({})), &handler)
+                .await
+                .unwrap(),
+        );
+        // Then the reply has an MCP tab id and the native context id
+        assert_eq!(opened["tab_id"], "tab-2");
+        let context = opened["target_id"].as_str().unwrap().to_string();
+        // And a later call with that tab id reaches the native context
+        let args = json!({"tab_id": "tab-2", "url": "http://127.0.0.1:8/"});
+        navigate(call("navigate", args), &handler).await.unwrap();
+        let sent = mock.bidi().commands_named("browsingContext.navigate");
+        assert_eq!(sent.last().unwrap().params["context"], context.as_str());
+        ts::stop(&handler).await;
+    }
+
     /// BID-10: Lost events are reported, not hidden.
     #[test]
     fn lagged_events_are_reported() {

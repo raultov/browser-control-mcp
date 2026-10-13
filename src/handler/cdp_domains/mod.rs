@@ -45,12 +45,28 @@ pub(crate) mod tests {
     }
 
     pub(crate) async fn spawn_mock_chrome_server() -> u16 {
+        spawn_recording_mock().await.http_port
+    }
+
+    /// A mock DevTools server that lives for the whole test run, so tests
+    /// can read the commands it recorded.
+    pub(crate) async fn spawn_recording_mock()
+    -> &'static cdp_browser_lite::test_support::mock_devtools::MockDevTools {
         use cdp_browser_lite::test_support::mock_devtools::{MockDevTools, MockWsBehavior};
         let mock = MockDevTools::start(MockWsBehavior::StayOpen).await;
-        let port = mock.http_port;
-        // Leak the mock so it keeps running during the test
-        Box::leak(Box::new(mock));
-        port
+        // Leaked so it keeps running during the test
+        Box::leak(Box::new(mock))
+    }
+
+    /// A handler whose default Chrome instance talks to the mock on `port`.
+    pub(crate) fn mock_handler(port: u16) -> crate::handler::McpHandler {
+        let mut handler = crate::handler::McpHandler::new_test();
+        std::sync::Arc::get_mut(&mut handler.default_session)
+            .unwrap()
+            .chrome_manager = std::sync::Arc::new(tokio::sync::Mutex::new(
+            crate::handler::chrome_instance::MockChromeManager::new(port),
+        ));
+        handler
     }
 
     #[tokio::test]
