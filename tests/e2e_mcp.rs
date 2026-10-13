@@ -23,28 +23,72 @@ mod e2e {
     <script>console.log("hello from e2e");</script><script>throw new Error("boom-e2e");</script><script src="/app.js"></script></body></html>"#;
     const APP_JS: &str = "function appTarget(x) {\n  const y = x * 2;\n  return y + 1;\n}\nwindow.appTarget = appTarget;\nfetch('/api');\n";
 
-    /// A tiny HTTP server for the test pages; returns its base URL.
+    /// The WebSocket page: sends `hello-ws` to the echo server on `port`.
+    fn ws_page(port: u16) -> String {
+        format!(
+            "<!doctype html><html><body><script>const ws = new WebSocket('ws://127.0.0.1:{port}/'); \
+             ws.onopen = () => ws.send('hello-ws'); ws.onmessage = e => console.log('ws got ' + e.data);</script></body></html>"
+        )
+    }
+
+    /// Echoes the text messages of one WebSocket client.
+    async fn echo(socket: tokio::net::TcpStream) {
+        use futures_util::{SinkExt, StreamExt};
+        let Ok(mut ws) = tokio_tungstenite::accept_async(socket).await else {
+            return;
+        };
+        while let Some(Ok(message)) = ws.next().await {
+            if message.is_text() && ws.send(message).await.is_err() {
+                break;
+            }
+        }
+    }
+
+    /// A WebSocket echo server on 127.0.0.1; returns its port.
+    async fn serve_ws() -> u16 {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            while let Ok((socket, _)) = listener.accept().await {
+                tokio::spawn(echo(socket));
+            }
+        });
+        port
+    }
+
+    /// The content type and body served for `path`.
+    fn page(path: &str, ws: &str) -> (&'static str, String) {
+        match path {
+            p if p.starts_with("/app.js") => ("application/javascript", APP_JS.to_string()),
+            p if p.starts_with("/api") => ("application/json", "{\"ok\":true}".to_string()),
+            p if p.starts_with("/ws.html") => ("text/html", ws.to_string()),
+            _ => ("text/html", INDEX.to_string()),
+        }
+    }
+
+    /// Answers one HTTP request.
+    async fn respond(mut socket: tokio::net::TcpStream, ws: String) {
+        let mut buf = vec![0u8; 4096];
+        let n = socket.read(&mut buf).await.unwrap_or(0);
+        let request = String::from_utf8_lossy(&buf[..n]).to_string();
+        let path = request.split_whitespace().nth(1).unwrap_or("/").to_string();
+        let (kind, body) = page(&path, &ws);
+        let reply = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: {kind}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let _ = socket.write_all(reply.as_bytes()).await;
+    }
+
+    /// A tiny HTTP server for the test pages (and the WebSocket echo
+    /// behind `/ws.html`); returns its base URL.
     async fn serve() -> String {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+        let ws = ws_page(serve_ws().await);
         tokio::spawn(async move {
-            while let Ok((mut socket, _)) = listener.accept().await {
-                tokio::spawn(async move {
-                    let mut buf = vec![0u8; 4096];
-                    let n = socket.read(&mut buf).await.unwrap_or(0);
-                    let request = String::from_utf8_lossy(&buf[..n]).to_string();
-                    let path = request.split_whitespace().nth(1).unwrap_or("/").to_string();
-                    let (kind, body) = match path.as_str() {
-                        p if p.starts_with("/app.js") => ("application/javascript", APP_JS),
-                        p if p.starts_with("/api") => ("application/json", "{\"ok\":true}"),
-                        _ => ("text/html", INDEX),
-                    };
-                    let reply = format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: {kind}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                        body.len()
-                    );
-                    let _ = socket.write_all(reply.as_bytes()).await;
-                });
+            while let Ok((socket, _)) = listener.accept().await {
+                tokio::spawn(respond(socket, ws.clone()));
             }
         });
         base
@@ -223,6 +267,18 @@ mod e2e {
                 json!({"instance_id": i}),
                 "Page reloaded",
             ),
+            (
+                "NAV-03 unknown host fails",
+                "navigate",
+                json!({"instance_id": i, "url": "http://nonexistent-host.invalid/"}),
+                "!Navigation failed",
+            ),
+            (
+                "WIN-04 window is 1920 wide",
+                "evaluate_js",
+                json!({"instance_id": i, "expression": "innerWidth >= 1880 && innerWidth <= 1920"}),
+                "\"value\": true",
+            ),
         ]
     }
 
@@ -307,6 +363,12 @@ mod e2e {
                 json!({"instance_id": i, "url_filter": "/api"}),
                 "200",
             ),
+            (
+                "metrics",
+                "get_performance_metrics",
+                json!({"instance_id": i}),
+                "Nodes",
+            ),
             // Base64 of the PNG signature.
             (
                 "screenshot is a PNG",
@@ -320,6 +382,33 @@ mod e2e {
                 json!({"instance_id": i, "query": "needle"}),
                 "Found",
             ),
+        ]
+    }
+
+    /// FWS: the WebSocket page's frames reach get_network_logs.
+    fn websocket_steps(instance: &str, base: &str) -> Vec<Step> {
+        let i = json!(instance);
+        vec![
+            (
+                "navigate to the WebSocket page",
+                "navigate",
+                json!({"instance_id": i, "url": format!("{base}/ws.html")}),
+                "ws.html",
+            ),
+            ("wait for the echo", "sleep", json!({}), ""),
+            (
+                "websocket frames",
+                "get_network_logs",
+                json!({"instance_id": i, "type_filter": "websocket", "ws_content_filter": "hello-ws"}),
+                "hello-ws",
+            ),
+            (
+                "back to the test page",
+                "navigate",
+                json!({"instance_id": i, "url": format!("{base}/")}),
+                "Navigated to",
+            ),
+            ("wait for the page again", "sleep", json!({}), ""),
         ]
     }
 
@@ -367,19 +456,19 @@ mod e2e {
             "\"stopped\":true",
         );
         if browser != "chrome" {
-            let denied = "!is not available on";
+            let reload = json!({"instance_id": i, "duration_ms": 500, "action": "reload"});
             return vec![
                 (
+                    "FPF-02 profile_page_performance",
                     "profile_page_performance",
-                    "profile_page_performance",
-                    profile,
-                    denied,
+                    reload,
+                    "first_contentful_paint_ms",
                 ),
                 (
                     "pause_on_load",
                     "pause_on_load",
                     json!({"instance_id": i}),
-                    denied,
+                    "!is not available on",
                 ),
                 close,
             ];
@@ -413,12 +502,16 @@ mod e2e {
         let base = serve().await;
         let mut mcp = Mcp::start(&[]).await;
         mcp.list_tools(32).await;
-        mcp.steps(page_steps(browser, &base)).await;
-        mcp.steps(tab_steps("e2e", &base)).await;
-        mcp.steps(runtime_steps("e2e")).await;
-        mcp.steps(observation_steps("e2e")).await;
-        mcp.steps(debugger_steps("e2e", &base)).await;
-        mcp.steps(closing_steps(browser)).await;
+        let all = [
+            page_steps(browser, &base),
+            tab_steps("e2e", &base),
+            runtime_steps("e2e"),
+            observation_steps("e2e"),
+            websocket_steps("e2e", &base),
+            debugger_steps("e2e", &base),
+            closing_steps(browser),
+        ];
+        mcp.steps(all.concat()).await;
         let failures = mcp.finish().await;
         assert!(failures.is_empty(), "{browser}: failed steps {failures:?}");
     }

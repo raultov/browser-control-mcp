@@ -28,8 +28,10 @@ from a copy of its code: entries describe the differences from that release.
   Firefox to return the bare value). Values without a JSON form (functions,
   DOM nodes, symbols, `NaN`, bigints, maps...) have `value: null` and a
   `description`; on Chrome they no longer fail with "Object couldn't be
-  returned by value" or answer `{}`. A thrown exception fails with the same
-  wording on both: what was thrown plus its 1-based line and column.
+  returned by value" or answer `{}` (array-likes such as `NodeList` are
+  described, e.g. `NodeList(6)`, as on Firefox). A thrown exception fails
+  with the same wording on both: what was thrown plus its 1-based line and
+  column.
 - **Breaking:** the debugger tools answer the same shapes on both browsers,
   with 0-based lines everywhere: `set_breakpoint` returns an MCP id
   (`bp-N`, also on Chrome instead of the CDP id) with the bound location and

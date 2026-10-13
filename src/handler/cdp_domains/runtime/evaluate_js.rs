@@ -81,9 +81,7 @@ async fn read_outcome(
     }
     let remote = &result["result"];
     let by_value = match remote.get("objectId").and_then(Value::as_str) {
-        Some(id) if evaluation::has_json_form(remote["subtype"].as_str()) => {
-            by_value(target, id).await
-        }
+        Some(id) if evaluation::has_json_form(remote) => by_value(target, id).await,
         _ => None,
     };
     Ok(evaluation::from_cdp(remote, by_value))

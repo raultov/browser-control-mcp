@@ -72,10 +72,15 @@ pub(crate) fn exception_message(thrown: &str, line: i64, column: i64) -> String 
     format!("{thrown} (line {line}, column {column})")
 }
 
-/// `true` for the `Runtime.evaluate` subtypes whose by-value form is the
-/// object itself (other objects serialise to `{}` and are described).
-pub(crate) fn has_json_form(subtype: Option<&str>) -> bool {
-    matches!(subtype, None | Some("array"))
+/// `true` for the remote objects whose by-value form is the object itself:
+/// plain objects and real arrays. Others serialise to `{}` (or, for array
+/// likes such as `NodeList`, to `{"0": {}, ...}`) and are described.
+pub(crate) fn has_json_form(remote: &Value) -> bool {
+    match remote.get("subtype").and_then(Value::as_str) {
+        None => true,
+        Some("array") => remote.get("className").and_then(Value::as_str) == Some("Array"),
+        Some(_) => false,
+    }
 }
 
 /// A CDP `RemoteObject` (from `returnByValue: false`) in the shared shape;
@@ -90,7 +95,7 @@ pub(crate) fn from_cdp(remote: &Value, by_value: Option<Value>) -> Evaluation {
     match (kind, subtype) {
         ("undefined", _) | ("object", Some("null")) => Evaluation::json(kind, subtype, Value::Null),
         ("object", _) => match by_value {
-            Some(value) if has_json_form(subtype) => Evaluation::json(kind, subtype, value),
+            Some(value) if has_json_form(remote) => Evaluation::json(kind, subtype, value),
             _ => Evaluation::described(kind, subtype, description),
         },
         _ => match remote.get("value") {
@@ -194,6 +199,18 @@ mod tests {
         for (evaluation, expected) in rows {
             assert_eq!(evaluation.to_json(), expected);
         }
+    }
+
+    /// EVL-03 (Chrome): array-likes are described, not read by value.
+    #[test]
+    fn cdp_array_likes_are_described() {
+        let node_list = json!({"type": "object", "subtype": "array", "className": "NodeList", "description": "NodeList(6)", "objectId": "o"});
+        assert!(!has_json_form(&node_list));
+        assert_eq!(
+            from_cdp(&node_list, Some(json!({"0": {}}))).to_json(),
+            json!({"value": null, "type": "object", "subtype": "array", "description": "NodeList(6)"})
+        );
+        assert!(has_json_form(&chrome("array")));
     }
 
     /// EVL-04 (Chrome): a thrown error or value is reported with what was

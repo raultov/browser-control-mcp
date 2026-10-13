@@ -77,3 +77,6 @@ thiserror = "2.0.21"
 bidi-browser-lite = { version = "0.1.4", features = ["test-support"] }
 # In-process DevTools mocks for the unit tests only (specs D31).
 cdp-browser-lite = { version = "0.4.2", features = ["test-support"] }
+# WebSocket echo server of the E2E smoke (already in the tree via the lifecycle crates).
+futures-util = "0.3.34"
+tokio-tungstenite = "0.30.0"
