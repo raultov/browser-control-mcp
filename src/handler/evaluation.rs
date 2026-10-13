@@ -102,21 +102,26 @@ pub(crate) fn from_cdp(remote: &Value, by_value: Option<Value>) -> Evaluation {
     }
 }
 
-/// The error text of CDP `exceptionDetails`.
+/// The error text of CDP `exceptionDetails` (`evaluate_js`).
 pub(crate) fn cdp_exception(details: &Value) -> String {
+    exception_message(
+        &cdp_thrown(details),
+        details["lineNumber"].as_i64().unwrap_or(0),
+        details["columnNumber"].as_i64().unwrap_or(0),
+    )
+}
+
+/// What CDP `exceptionDetails` says was thrown: the first line of an
+/// error's description, else the thrown value, else the summary text.
+pub(crate) fn cdp_thrown(details: &Value) -> String {
     let exception = &details["exception"];
-    let thrown = exception
+    exception
         .get("description")
         .and_then(Value::as_str)
         .and_then(|d| d.lines().next())
         .map(str::to_string)
         .or_else(|| exception.get("value").map(thrown_value))
-        .unwrap_or_else(|| details["text"].as_str().unwrap_or("exception").to_string());
-    exception_message(
-        &thrown,
-        details["lineNumber"].as_i64().unwrap_or(0),
-        details["columnNumber"].as_i64().unwrap_or(0),
-    )
+        .unwrap_or_else(|| details["text"].as_str().unwrap_or("exception").to_string())
 }
 
 /// A thrown non-error value as text (a string as is, anything else as JSON).

@@ -1,4 +1,5 @@
 use crate::handler::McpHandler;
+use crate::handler::debugging;
 use rust_mcp_sdk::{
     macros,
     schema::{CallToolError, CallToolRequestParams, CallToolResult},
@@ -6,7 +7,7 @@ use rust_mcp_sdk::{
 
 #[macros::mcp_tool(
     name = "step_over",
-    description = "Executes the current line of code without entering function calls, pausing at the next line. Side effects: advances debugger execution state. Prerequisites: requires an active, paused debugger session. Returns: confirmation of step execution. Use this to skip function internals during debugging. Alternatives: use 'resume' to continue full execution, or 'evaluate_on_call_frame' to inspect state without stepping."
+    description = "Executes the current line of code without entering function calls, pausing at the next line. Side effects: advances debugger execution state. Prerequisites: requires an active, paused debugger session. Returns: JSON {paused, location: {url, line_number, column_number} (0-based) | null} where the thread stopped next (waits up to 2 s). Use this to skip function internals during debugging. Alternatives: use 'resume' to continue full execution, or 'evaluate_on_call_frame' to inspect state without stepping."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct StepOverTool {
@@ -21,29 +22,28 @@ impl StepOverTool {
         params: CallToolRequestParams,
         handler: &McpHandler,
     ) -> Result<CallToolResult, CallToolError> {
-        let method = "Debugger.stepOver";
+        let ids: crate::handler::TargetArgs = crate::handler::parse_args(params)?;
+        let session = handler.session(ids.instance_id.clone()).await?;
+        let state = session.debugger_state(ids.tab_id.clone())?;
+        if state.lock().await.paused_call_frame_id.is_none() {
+            return Err(CallToolError::from_message(debugging::NOT_PAUSED));
+        }
+        let target = session.target(ids.tab_id.clone()).await?;
+        // Subscribed first: the new pause can arrive before the reply.
+        let mut events = target.on_domain("Debugger");
+        let params = serde_json::json!({});
         let failure = "Failed to step over";
-        let command = crate::handler::Command {
-            method,
-            params: serde_json::json!({}),
-            failure,
-        };
-        let ids = crate::handler::parse_args(params)?;
-        crate::handler::run_on_target(handler, ids, command).await?;
-        let done = "Stepped over to the next expression in the debugger.";
-        Ok(CallToolResult::text_content(vec![done.into()]))
+        crate::handler::send_or(&target, "Debugger.stepOver", params, failure).await?;
+        let location = super::wait_for_pause(&mut events, debugging::STEP_WAIT).await;
+        Ok(debugging::stepped(location.as_ref()))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::handler::cdp_domains::tests::spawn_mock_chrome_server;
-    use crate::handler::chrome_instance::MockChromeManager;
     use rust_mcp_sdk::schema::CallToolRequestParams;
     use serde_json::json;
-    use std::sync::Arc;
-    use tokio::sync::Mutex;
 
     #[tokio::test]
     async fn test_step_over_params_deserialization() {
@@ -60,31 +60,40 @@ mod tests {
         assert!(tool.is_ok());
     }
 
+    /// DBG-03 (Chrome): step_over reports where the thread stopped next,
+    /// 0-based; without a pause it fails like on Firefox.
     #[tokio::test]
-    async fn test_step_over_handle() {
-        let port = spawn_mock_chrome_server().await;
-
-        let mut handler = McpHandler::new_test();
-        Arc::get_mut(&mut handler.default_session)
+    async fn step_over_reports_the_next_pause() {
+        use crate::handler::cdp_domains::tests::{
+            call, fire_after, mock_handler, reply_text, spawn_recording_mock,
+        };
+        // Given a Chrome that is not paused
+        let mock = spawn_recording_mock().await;
+        let handler = mock_handler(mock.http_port);
+        let error = StepOverTool::handle(call("step_over", json!({})), &handler)
+            .await
+            .unwrap_err();
+        assert_eq!(error.to_string(), debugging::NOT_PAUSED);
+        // When it is paused and step_over runs
+        let session = handler.session(None).await.unwrap();
+        session
+            .debugger_state(None)
             .unwrap()
-            .chrome_manager = Arc::new(Mutex::new(MockChromeManager::new(port)));
-
-        let params: CallToolRequestParams = serde_json::from_value(json!({
-            "name": "step_over",
-            "arguments": {}
-        }))
-        .unwrap();
-
-        let result = StepOverTool::handle(params, &handler).await;
-        assert!(result.is_ok(), "Handle should succeed: {:?}", result.err());
-
-        let call_result = result.unwrap();
-        assert!(!call_result.content.is_empty());
-        let content_str = format!("{:?}", call_result.content);
-        assert!(
-            content_str.contains("Stepped over to the next expression in the debugger"),
-            "Content didn't match: {}",
-            content_str
+            .lock()
+            .await
+            .paused_call_frame_id = Some("f1".into());
+        let paused = json!({"reason": "other", "callFrames": [{"callFrameId": "f2", "url": "http://a/app.js", "location": {"scriptId": "7", "lineNumber": 4, "columnNumber": 2}}]});
+        fire_after(mock, "Debugger.stepOver", "Debugger.paused", paused);
+        let reply = StepOverTool::handle(call("step_over", json!({})), &handler)
+            .await
+            .unwrap();
+        // Then it reports the new location
+        let text = reply_text(&reply);
+        let body: serde_json::Value =
+            serde_json::from_str(&text[text.find('{').unwrap()..]).unwrap();
+        assert_eq!(
+            body,
+            json!({"paused": true, "location": {"url": "http://a/app.js", "line_number": 4, "column_number": 2}})
         );
     }
 }

@@ -154,6 +154,7 @@ mod tests {
                         hash: format!("hash-{}", i),
                         start_line: 0,
                         start_column: 0,
+                        url: String::new(),
                     },
                 );
             }
@@ -230,6 +231,7 @@ mod tests {
                     hash: "mock-hash".to_string(),
                     start_line: 0,
                     start_column: 0,
+                    url: String::new(),
                 },
             );
         }
@@ -292,6 +294,7 @@ mod tests {
                     hash: "session-hash".to_string(),
                     start_line: 0,
                     start_column: 0,
+                    url: String::new(),
                 },
             );
         }
@@ -307,6 +310,7 @@ mod tests {
                     hash: "tab-hash".to_string(),
                     start_line: 0,
                     start_column: 0,
+                    url: String::new(),
                 },
             );
         }

@@ -30,6 +30,16 @@ from a copy of its code: entries describe the differences from that release.
   `description`; on Chrome they no longer fail with "Object couldn't be
   returned by value" or answer `{}`. A thrown exception fails with the same
   wording on both: what was thrown plus its 1-based line and column.
+- **Breaking:** the debugger tools answer the same shapes on both browsers,
+  with 0-based lines everywhere: `set_breakpoint` returns an MCP id
+  (`bp-N`, also on Chrome instead of the CDP id) with the bound location and
+  `resolved`; `remove_breakpoint` takes that id and answers `{removed}`;
+  `step_over` and `resume` answer `{paused, location}` (Firefox's step
+  location was 1-based; Chrome reported none); `evaluate_on_call_frame`
+  answers the `evaluate_js` shape, and an exception in the frame is an error
+  on Chrome too (`Evaluation threw: ...`; it used to be a success carrying
+  `exceptionDetails`). `step_over` without a pause fails with "the debugger
+  is not paused" on both.
 
 - Lifecycle crates bumped: `cdp-browser-lite` 0.4.2 and `bidi-browser-lite`
   0.1.4 (`bidi-lite` 0.1.2). Their mocks now record wire parameters, so the

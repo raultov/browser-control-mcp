@@ -7,7 +7,7 @@ use serde_json::json;
 
 #[macros::mcp_tool(
     name = "remove_breakpoint",
-    description = "Removes a previously set debugger breakpoint by its ID, allowing execution to pass that location uninterrupted. Side effects: modifies debugger state (breakpoint deleted). Prerequisites: the breakpoint ID returned by 'set_breakpoint' (works whether or not execution is stopped). Returns: confirmation of breakpoint removal. Use this to clean up breakpoints or disable debugging at specific locations. Alternatives: 'set_breakpoint' to add new breakpoints, 'resume' to continue execution."
+    description = "Removes a previously set debugger breakpoint by its ID, allowing execution to pass that location uninterrupted. Side effects: modifies debugger state (breakpoint deleted). Prerequisites: the breakpoint ID returned by 'set_breakpoint' (works whether or not execution is stopped). Returns: JSON {removed: breakpoint_id}; an unknown id fails listing the tab's breakpoint ids. Use this to clean up breakpoints or disable debugging at specific locations. Alternatives: 'set_breakpoint' to add new breakpoints, 'resume' to continue execution."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct RemoveBreakpointTool {
@@ -25,25 +25,28 @@ impl RemoveBreakpointTool {
         handler: &McpHandler,
     ) -> Result<CallToolResult, CallToolError> {
         let args: RemoveBreakpointTool = crate::handler::parse_args(params)?;
-        let target = crate::handler::resolve_target(handler, args.instance_id, args.tab_id).await?;
-        let params = json!({ "breakpointId": args.breakpoint_id });
+        let session = handler.session(args.instance_id.clone()).await?;
+        let state = session.debugger_state(args.tab_id.clone())?;
+        let native = state
+            .lock()
+            .await
+            .breakpoints
+            .get(&args.breakpoint_id)
+            .map_err(CallToolError::from_message)?
+            .clone();
+        let target = session.target(args.tab_id.clone()).await?;
+        let params = json!({ "breakpointId": native });
         let failure = "Failed to remove breakpoint";
-        let resp =
-            crate::handler::send_or(&target, "Debugger.removeBreakpoint", params, failure).await?;
-        Ok(CallToolResult::text_content(vec![
-            crate::handler::reply_text("Breakpoint removed.", &resp).into(),
-        ]))
+        crate::handler::send_or(&target, "Debugger.removeBreakpoint", params, failure).await?;
+        state.lock().await.breakpoints.remove(&args.breakpoint_id);
+        Ok(crate::handler::debugging::removed(&args.breakpoint_id))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::handler::cdp_domains::tests::spawn_mock_chrome_server;
-    use crate::handler::chrome_instance::MockChromeManager;
     use rust_mcp_sdk::schema::CallToolRequestParams;
-    use std::sync::Arc;
-    use tokio::sync::Mutex;
 
     #[tokio::test]
     async fn test_remove_breakpoint_missing_id_fails_deserialization() {
@@ -73,33 +76,17 @@ mod tests {
         assert_eq!(tool.unwrap().breakpoint_id, "bp-123");
     }
 
+    /// DBG-02 (Chrome): an unknown id fails before anything is sent.
     #[tokio::test]
-    async fn test_remove_breakpoint_handle() {
-        let port = spawn_mock_chrome_server().await;
-
-        let mut handler = McpHandler::new_test();
-        Arc::get_mut(&mut handler.default_session)
-            .unwrap()
-            .chrome_manager = Arc::new(Mutex::new(MockChromeManager::new(port)));
-
-        let params: CallToolRequestParams = serde_json::from_value(json!({
-            "name": "remove_breakpoint",
-            "arguments": {
-                "breakpoint_id": "mock_bp_id_1"
-            }
-        }))
-        .unwrap();
-
-        let result = RemoveBreakpointTool::handle(params, &handler).await;
-        assert!(result.is_ok(), "Handle should succeed: {:?}", result.err());
-
-        let call_result = result.unwrap();
-        assert!(!call_result.content.is_empty());
-        let content_str = format!("{:?}", call_result.content);
-        assert!(
-            content_str.contains("Breakpoint removed"),
-            "Content didn't match: {}",
-            content_str
-        );
+    async fn unknown_breakpoint_id_fails() {
+        use crate::handler::cdp_domains::tests::{call, mock_handler, spawn_recording_mock};
+        let mock = spawn_recording_mock().await;
+        let handler = mock_handler(mock.http_port);
+        let args = json!({"breakpoint_id": "1:3:0:http://a/app.js"});
+        let error = RemoveBreakpointTool::handle(call("remove_breakpoint", args), &handler)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().starts_with("No breakpoint"), "{error}");
+        assert!(mock.commands_named("Debugger.removeBreakpoint").is_empty());
     }
 }

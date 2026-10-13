@@ -64,12 +64,26 @@ pub(crate) mod tests {
         mock: &'static cdp_browser_lite::test_support::mock_devtools::MockDevTools,
         command: &'static str,
     ) {
+        fire_after(
+            mock,
+            command,
+            "Page.loadEventFired",
+            json!({"timestamp": 1.0}),
+        );
+    }
+
+    /// Emits `event` on the session of the next `command` the mock receives.
+    pub(crate) fn fire_after(
+        mock: &'static cdp_browser_lite::test_support::mock_devtools::MockDevTools,
+        command: &'static str,
+        event: &'static str,
+        params: serde_json::Value,
+    ) {
         let seen = mock.commands_named(command).len();
         tokio::spawn(async move {
             for _ in 0..500 {
                 if let Some(cmd) = mock.commands_named(command).get(seen) {
-                    let params = json!({"timestamp": 1.0});
-                    mock.emit("Page.loadEventFired", params, cmd.session_id.as_deref());
+                    mock.emit(event, params, cmd.session_id.as_deref());
                     return;
                 }
                 tokio::time::sleep(Duration::from_millis(5)).await;

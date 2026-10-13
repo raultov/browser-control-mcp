@@ -14,6 +14,7 @@ use crate::handler::cdp_domains::debugger::search_scripts::{
 };
 use crate::handler::cdp_domains::debugger::set_breakpoint::SetBreakpointTool;
 use crate::handler::cdp_domains::event_pump::ListenerHandles;
+use crate::handler::debugging::{self, BreakpointIds, BreakpointSet, PauseLocation};
 use crate::handler::{McpHandler, TargetArgs, parse_args};
 use bidi_browser_lite::Debugger;
 use bidi_browser_lite::bidi_lite::rdp::debugger::{
@@ -21,7 +22,6 @@ use bidi_browser_lite::bidi_lite::rdp::debugger::{
 };
 use rust_mcp_sdk::schema::{CallToolError, CallToolRequestParams, CallToolResult};
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 use tokio_stream::StreamExt;
@@ -35,16 +35,15 @@ pub(crate) struct PauseInfo {
     pub(crate) frame: Option<String>,
     /// Why (`breakpoint`, `resumeLimit`, `debuggerStatement`...).
     pub(crate) why: String,
-    /// 1-based line and 0-based column of the top frame.
-    pub(crate) location: Option<(u32, u32)>,
+    /// Source actor, 1-based line and 0-based column of the top frame (RDP's).
+    pub(crate) location: Option<(String, u32, u32)>,
 }
 
 /// A debugger attached to one tab.
 pub(crate) struct TabDebugger {
     pub(crate) debugger: Debugger,
     /// MCP breakpoint ids → locations.
-    pub(crate) breakpoints: BTreeMap<String, BreakpointLocation>,
-    counter: usize,
+    pub(crate) breakpoints: BreakpointIds<BreakpointLocation>,
     /// Current pause, kept by the state task.
     pub(crate) pause: Arc<StdMutex<Option<PauseInfo>>>,
     _task: ListenerHandles,
@@ -66,7 +65,9 @@ pub(crate) fn apply_states(pause: &StdMutex<Option<PauseInfo>>, states: Vec<Thre
                         .and_then(Value::as_str)
                         .unwrap_or_default()
                         .to_string(),
-                    location: frame.and_then(|f| f.location).map(|l| (l.line, l.column)),
+                    location: frame
+                        .and_then(|f| f.location)
+                        .map(|l| (l.actor, l.line, l.column)),
                 });
             }
             ThreadState::Resumed => *slot = None,
@@ -119,8 +120,7 @@ async fn with_debugger<T>(
         let task = spawn_state_task(&debugger, pause.clone());
         let entry = TabDebugger {
             debugger,
-            breakpoints: BTreeMap::new(),
-            counter: 0,
+            breakpoints: BreakpointIds::default(),
             pause,
             _task: task,
         };
@@ -147,7 +147,80 @@ fn current_pause(entry: &TabDebugger) -> Option<PauseInfo> {
 }
 
 fn not_paused() -> BackendError {
-    BackendError::InvalidArgument("the debugger is not paused".into())
+    BackendError::InvalidArgument(debugging::NOT_PAUSED.into())
+}
+
+/// Where a pause stopped, 0-based as every tool reports it, with the URL of
+/// its source.
+fn pause_location(entry: &TabDebugger, pause: &PauseInfo) -> Option<PauseLocation> {
+    let (actor, line, column) = pause.location.clone()?;
+    let url = entry
+        .debugger
+        .sources()
+        .into_iter()
+        .find(|s| s.actor == actor)
+        .and_then(|s| s.url);
+    Some(PauseLocation {
+        url,
+        line: line.saturating_sub(1),
+        column,
+    })
+}
+
+/// Waits up to `limit` for a pause other than `before`.
+async fn next_pause(
+    entry: &TabDebugger,
+    before: Option<&PauseInfo>,
+    limit: Duration,
+) -> Option<PauseLocation> {
+    let deadline = tokio::time::Instant::now() + limit;
+    while tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        if let Some(now) = current_pause(entry).filter(|p| Some(p) != before) {
+            return pause_location(entry, &now);
+        }
+    }
+    None
+}
+
+/// The first breakable column of 0-based `line` in the loaded script at
+/// `url` (what Firefox binds a column-less breakpoint to), or `None` when no
+/// loaded script has that URL.
+async fn breakable_column(
+    debugger: &Debugger,
+    url: &str,
+    line: u32,
+) -> Result<Option<u32>, BackendError> {
+    let Some(source) = debugger
+        .sources()
+        .into_iter()
+        .find(|s| s.url.as_deref() == Some(url))
+    else {
+        return Ok(None);
+    };
+    let rdp_line = line.saturating_add(1);
+    let query = json!({"query": {
+        "start": {"line": rdp_line, "column": 0},
+        "end": {"line": rdp_line.saturating_add(1), "column": 0},
+    }});
+    let reply = debugger
+        .client()
+        .request(&source.actor, "getBreakpointPositionsCompressed", query)
+        .await
+        .map_err(|e| rdp_error("getBreakpointPositionsCompressed", &e))?;
+    let column = reply.body["positions"][rdp_line.to_string()]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_u64)
+        .min()
+        .and_then(|c| u32::try_from(c).ok());
+    match column {
+        Some(column) => Ok(Some(column)),
+        None => Err(BackendError::InvalidArgument(format!(
+            "line_number {line} of {url} has no breakable position"
+        ))),
+    }
 }
 
 /// `set_breakpoint`: Firefox breakpoints are set by URL (spike H17).
@@ -166,29 +239,31 @@ pub(crate) async fn set_breakpoint(
     let Some(line) = args.line_number.checked_add(1) else {
         return Err(CallToolError::from_message("line_number is out of range"));
     };
-    let location = BreakpointLocation {
-        source_url: url.clone(),
-        line,
-        column: args.column_number,
-    };
     let session = handler.firefox(args.instance_id.as_deref()).await?;
-    let id = with_debugger(&session, args.tab_id.as_deref(), async |entry| {
+    let set = with_debugger(&session, args.tab_id.as_deref(), async |entry| {
+        // Resolved here (bidi-lite resolves too, but does not say where), so
+        // the reply has the column Firefox binds to.
+        let loaded = breakable_column(&entry.debugger, &url, args.line_number).await?;
+        let location = BreakpointLocation {
+            source_url: url.clone(),
+            line,
+            column: args.column_number.or(loaded),
+        };
         entry
             .debugger
             .set_breakpoint(&location, None)
             .await
             .map_err(|e| rdp_error("setBreakpoint", &e))?;
-        entry.counter += 1;
-        let id = format!("bp-{}", entry.counter);
-        entry.breakpoints.insert(id.clone(), location.clone());
-        Ok(id)
+        Ok(BreakpointSet {
+            id: entry.breakpoints.add(location.clone()),
+            url: Some(url.clone()),
+            line: args.line_number,
+            column: location.column,
+            resolved: loaded.is_some(),
+        })
     })
     .await?;
-    let reply = json!({"breakpointId": id, "url": url, "lineNumber": args.line_number, "columnNumber": args.column_number});
-    Ok(text(format!(
-        "Breakpoint set successfully.\n{}",
-        pretty(&reply)
-    )))
+    Ok(set.reply())
 }
 
 /// `remove_breakpoint` by MCP id.
@@ -199,74 +274,55 @@ pub(crate) async fn remove_breakpoint(
     let args: RemoveBreakpointTool = parse_args(params)?;
     let session = handler.firefox(args.instance_id.as_deref()).await?;
     with_debugger(&session, args.tab_id.as_deref(), async |entry| {
-        let Some(location) = entry.breakpoints.remove(&args.breakpoint_id) else {
-            let ids: Vec<_> = entry.breakpoints.keys().cloned().collect();
-            return Err(BackendError::InvalidArgument(format!(
-                "No breakpoint '{}'. Breakpoints: {}",
-                args.breakpoint_id,
-                if ids.is_empty() {
-                    "none".to_string()
-                } else {
-                    ids.join(", ")
-                }
-            )));
-        };
+        let location = entry
+            .breakpoints
+            .get(&args.breakpoint_id)
+            .map_err(BackendError::InvalidArgument)?
+            .clone();
         entry
             .debugger
             .remove_breakpoint(&location)
             .await
-            .map_err(|e| rdp_error("removeBreakpoint", &e))
+            .map_err(|e| rdp_error("removeBreakpoint", &e))?;
+        entry.breakpoints.remove(&args.breakpoint_id);
+        Ok(())
     })
     .await?;
-    Ok(text(format!(
-        "Breakpoint removed.\n{}",
-        pretty(&json!({"removed": args.breakpoint_id}))
-    )))
+    Ok(debugging::removed(&args.breakpoint_id))
 }
 
-/// `resume`.
+/// `resume`: reports a pause that follows right away (another breakpoint).
 pub(crate) async fn resume(params: CallToolRequestParams, handler: &McpHandler) -> ToolResult {
     let ids: TargetArgs = parse_args(params)?;
     let session = handler.firefox(ids.instance_id.as_deref()).await?;
-    with_debugger(&session, ids.tab_id.as_deref(), async |entry| {
+    let location = with_debugger(&session, ids.tab_id.as_deref(), async |entry| {
+        let before = current_pause(entry);
         entry
             .debugger
             .resume()
             .await
-            .map_err(|e| rdp_error("resume", &e))
+            .map_err(|e| rdp_error("resume", &e))?;
+        Ok(next_pause(entry, before.as_ref(), debugging::RESUME_WAIT).await)
     })
     .await?;
-    Ok(text("Debugger execution resumed."))
+    Ok(debugging::resumed(location.as_ref()))
 }
 
-/// `step_over`: steps, then reports where the thread stopped.
+/// `step_over`: steps, then reports where the thread stopped (0-based).
 pub(crate) async fn step_over(params: CallToolRequestParams, handler: &McpHandler) -> ToolResult {
     let ids: TargetArgs = parse_args(params)?;
     let session = handler.firefox(ids.instance_id.as_deref()).await?;
-    let pause = with_debugger(&session, ids.tab_id.as_deref(), async |entry| {
+    let location = with_debugger(&session, ids.tab_id.as_deref(), async |entry| {
         let before = current_pause(entry).ok_or_else(not_paused)?;
         entry
             .debugger
             .step_over()
             .await
             .map_err(|e| rdp_error("resume next", &e))?;
-        for _ in 0..40 {
-            tokio::time::sleep(Duration::from_millis(50)).await;
-            if let Some(now) = current_pause(entry).filter(|p| *p != before) {
-                return Ok(Some(now));
-            }
-        }
-        Ok(None)
+        Ok(next_pause(entry, Some(&before), debugging::STEP_WAIT).await)
     })
     .await?;
-    let location = pause
-        .and_then(|p| p.location)
-        .map(|(line, column)| json!({"line": line, "column": column}));
-    let reply = json!({"paused": location.is_some(), "location": location});
-    Ok(text(format!(
-        "Stepped over to the next expression in the debugger.\n{}",
-        pretty(&reply)
-    )))
+    Ok(debugging::stepped(location.as_ref()))
 }
 
 /// `evaluate_on_call_frame`: in the top frame of the current pause.
@@ -290,15 +346,14 @@ pub(crate) async fn evaluate_on_call_frame(
             .await
             .map_err(|e| rdp_error("evaluateJSAsync", &e))?;
         match evaluation.exception {
-            Some(exception) => Err(BackendError::InvalidArgument(format!(
-                "Evaluation threw: {}",
-                super::grip::to_json(&exception)
+            Some(exception) => Err(BackendError::InvalidArgument(debugging::frame_exception(
+                &super::grip::thrown(&evaluation.raw, &exception),
             ))),
-            None => Ok(super::grip::to_json(&evaluation.result)),
+            None => Ok(super::grip::evaluation(&evaluation.result)),
         }
     })
     .await?;
-    Ok(text(pretty(&value)))
+    Ok(value.reply())
 }
 
 /// `search_scripts`: same query language and output as on Chrome; scripts
@@ -344,10 +399,6 @@ pub(crate) async fn search_scripts(
 
 fn text(value: impl Into<String>) -> CallToolResult {
     CallToolResult::text_content(vec![value.into().into()])
-}
-
-fn pretty(value: &Value) -> String {
-    serde_json::to_string_pretty(value).unwrap_or_default()
 }
 
 /// Detaches every tab's debugger (`detach` removes breakpoints first).
@@ -533,7 +584,39 @@ mod tests {
         ts::stop(&handler).await;
     }
 
-    /// RDP-06: step_over reports the new location from the combined packet.
+    /// DBG-01 (Firefox): the reply has the column Firefox binds to and
+    /// whether a loaded script has that URL.
+    #[tokio::test]
+    async fn breakpoint_reply_has_resolved_column() {
+        // Given the mock's loaded test.html (breakable at column 10)
+        let mock = MockFirefox::start(true).await.unwrap();
+        let rdp = mock.rdp().unwrap();
+        let handler = ts::handler(&mock);
+        // When set_breakpoint gives no column
+        let args = json!({"url": SCRIPT, "line_number": 6});
+        let reply = set_breakpoint(ts::call("set_breakpoint", args), &handler)
+            .await
+            .unwrap();
+        // Then the reply has the bound 0-based location, and that was sent
+        assert_eq!(
+            ts::json_of(&reply),
+            json!({"breakpoint_id": "bp-1", "url": SCRIPT, "line_number": 6, "column_number": 10, "resolved": true})
+        );
+        let sent = rdp.wait_for_request("setBreakpoint", WAIT).await.unwrap();
+        assert_eq!(sent.params["location"]["line"], 7);
+        assert_eq!(sent.params["location"]["column"], 10);
+        // And a script not loaded yet is set with its column, unresolved
+        let later =
+            json!({"url": "https://example.com/later.js", "line_number": 0, "column_number": 0});
+        let reply = set_breakpoint(ts::call("set_breakpoint", later), &handler)
+            .await
+            .unwrap();
+        assert_eq!(ts::json_of(&reply)["resolved"], false);
+        ts::stop(&handler).await;
+    }
+
+    /// RDP-06 / DBG-04: step_over reports the new location from the
+    /// combined packet, 0-based, with the script URL.
     #[tokio::test]
     async fn step_over_reads_combined_packet() {
         // Given a debugger paused on line 7 (1-based, RDP)
@@ -551,7 +634,8 @@ mod tests {
         // Then it reports the new location
         let reply = ts::json_of(&reply);
         assert_eq!(reply["paused"], true);
-        assert_eq!(reply["location"]["line"], 8);
+        assert_eq!(reply["location"]["line_number"], 7, "RDP line 8, 0-based");
+        assert_eq!(reply["location"]["url"], SCRIPT);
         let step = rdp.wait_for_request("resume", WAIT).await.unwrap();
         assert_eq!(step.params["resumeLimit"]["type"], "next");
         ts::stop(&handler).await;

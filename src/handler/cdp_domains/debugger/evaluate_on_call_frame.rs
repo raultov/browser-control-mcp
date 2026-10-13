@@ -1,4 +1,5 @@
 use crate::handler::McpHandler;
+use crate::handler::{debugging, evaluation};
 use rust_mcp_sdk::{
     macros,
     schema::{CallToolError, CallToolRequestParams, CallToolResult},
@@ -7,7 +8,7 @@ use serde_json::json;
 
 #[macros::mcp_tool(
     name = "evaluate_on_call_frame",
-    description = "Evaluates JavaScript expressions within the scope of a paused call frame, accessing local variables and call stack. Side effects: read-only by default; can modify state if expression includes mutations. Prerequisites: requires debugger to be paused at a breakpoint with active call frame. Returns: expression result with type and value. Use this to inspect variables and call stack during debugging. Alternatives: 'evaluate_js' for global scope evaluation, 'step_over' to advance without evaluation."
+    description = "Evaluates JavaScript expressions within the scope of a paused call frame, accessing local variables and call stack. Side effects: read-only by default; can modify state if expression includes mutations. Prerequisites: requires debugger to be paused at a breakpoint with active call frame. Returns: JSON {value, type, subtype?, description?} like evaluate_js; an exception fails the call with 'Evaluation threw: <what was thrown>'. Use this to inspect variables and call stack during debugging. Alternatives: 'evaluate_js' for global scope evaluation, 'step_over' to advance without evaluation."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct EvaluateOnCallFrameTool {
@@ -44,22 +45,17 @@ impl EvaluateOnCallFrameTool {
             })?;
 
         let target = session.target(args.tab_id.clone()).await?;
-
-        let expression_result = target
-            .send_raw_command(
-                "Debugger.evaluateOnCallFrame",
-                json!({
-                    "callFrameId": call_frame_id,
-                    "returnByValue": true,
-                    "expression": args.expression
-                }),
-            )
-            .await
-            .map_err(|e| CallToolError::from_message(format!("Evaluation failed: {:?}", e)))?;
-
-        Ok(CallToolResult::text_content(vec![
-            crate::handler::reply_text("", &expression_result).into(),
-        ]))
+        let params = json!({"callFrameId": call_frame_id, "expression": args.expression});
+        let evaluated = crate::handler::cdp_domains::runtime::evaluate_js::evaluate_remote(
+            &target,
+            "Debugger.evaluateOnCallFrame",
+            params,
+            |details| debugging::frame_exception(&evaluation::cdp_thrown(details)),
+        )
+        .await;
+        evaluated
+            .map(|evaluation| evaluation.reply())
+            .map_err(CallToolError::from_message)
     }
 }
 
@@ -159,5 +155,51 @@ mod tests {
             err.to_string().contains("not found"),
             "expected tab-not-found error, got: {err}"
         );
+    }
+
+    /// DBG-05 (Chrome): an exception in the frame is a tool error worded as
+    /// on Firefox; a value comes in the evaluate_js shape.
+    #[tokio::test]
+    async fn frame_exception_is_a_tool_error() {
+        use crate::handler::cdp_domains::tests::{
+            call, mock_handler, reply_text, spawn_recording_mock,
+        };
+        // Given a paused Chrome
+        let mock = spawn_recording_mock().await;
+        let handler = mock_handler(mock.http_port);
+        let session = handler.session(None).await.unwrap();
+        session
+            .debugger_state(None)
+            .unwrap()
+            .lock()
+            .await
+            .paused_call_frame_id = Some("f1".into());
+        // When the expression throws
+        mock.respond_with("Debugger.evaluateOnCallFrame", |_| {
+            json!({"result": {"result": {"type": "object", "subtype": "error", "className": "ReferenceError", "description": "ReferenceError: y is not defined\n    at eval"},
+                "exceptionDetails": {"text": "Uncaught", "lineNumber": 0, "columnNumber": 0, "exception": {"type": "object", "subtype": "error", "className": "ReferenceError", "description": "ReferenceError: y is not defined\n    at eval"}}}})
+        });
+        let args = json!({"expression": "y"});
+        let error = EvaluateOnCallFrameTool::handle(call("evaluate_on_call_frame", args), &handler)
+            .await
+            .unwrap_err();
+        // Then the error says what was thrown
+        assert_eq!(
+            error.to_string(),
+            "Evaluation threw: ReferenceError: y is not defined"
+        );
+        let sent = &mock.commands_named("Debugger.evaluateOnCallFrame")[0].params;
+        assert_eq!(sent["callFrameId"], "f1");
+        // And a number comes in the shared shape
+        mock.respond_with(
+            "Debugger.evaluateOnCallFrame",
+            |_| json!({"result": {"result": {"type": "number", "value": 35, "description": "35"}}}),
+        );
+        let args = json!({"expression": "x * 7"});
+        let reply = EvaluateOnCallFrameTool::handle(call("evaluate_on_call_frame", args), &handler)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_str(&reply_text(&reply)).unwrap();
+        assert_eq!(body, json!({"value": 35, "type": "number"}));
     }
 }

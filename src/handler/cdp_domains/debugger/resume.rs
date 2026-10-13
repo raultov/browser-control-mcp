@@ -1,4 +1,5 @@
 use crate::handler::McpHandler;
+use crate::handler::debugging;
 use rust_mcp_sdk::{
     macros,
     schema::{CallToolError, CallToolRequestParams, CallToolResult},
@@ -6,7 +7,7 @@ use rust_mcp_sdk::{
 
 #[macros::mcp_tool(
     name = "resume",
-    description = "Continues full execution of the debugger from current breakpoint. Side effects: advances code execution until next breakpoint or completion. Prerequisites: requires an active, paused debugger session. Returns: confirmation of resume command. Use this to continue program flow after inspection. Alternatives: 'step_over' for single-step execution."
+    description = "Continues full execution of the debugger from current breakpoint. Side effects: advances code execution until next breakpoint or completion. Prerequisites: requires an active, paused debugger session. Returns: JSON {paused, location} like step_over: paused is true only if the page stopped again right away (within 250 ms, e.g. another breakpoint). Use this to continue program flow after inspection. Alternatives: 'step_over' for single-step execution."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct ResumeTool {
@@ -21,32 +22,24 @@ impl ResumeTool {
         params: CallToolRequestParams,
         handler: &McpHandler,
     ) -> Result<CallToolResult, CallToolError> {
-        let method = "Debugger.resume";
-        let failure = "Failed to resume execution";
-        let command = crate::handler::Command {
-            method,
-            params: serde_json::json!({}),
-            failure,
-        };
         let ids: crate::handler::TargetArgs = crate::handler::parse_args(params)?;
         let session = handler.session(ids.instance_id.clone()).await?;
         let debugger_state = session.debugger_state(ids.tab_id.clone())?;
         let pause_script = debugger_state.lock().await.pause_on_load_script.take();
-        let tab_id = ids.tab_id.clone();
-        crate::handler::run_on_target(handler, ids, command).await?;
+        let target = session.target(ids.tab_id.clone()).await?;
+        // Subscribed first: an immediate new pause can arrive before the reply.
+        let mut events = target.on_domain("Debugger");
+        let params = serde_json::json!({});
+        let failure = "Failed to resume execution";
+        crate::handler::send_or(&target, "Debugger.resume", params, failure).await?;
         if let Some(identifier) = pause_script {
-            // `.ok()` first: the error type is not `Send` across the next await.
-            let target = session.target(tab_id).await.ok();
-            if let Some(target) = target {
-                let params = serde_json::json!({ "identifier": identifier });
-                let _ = target
-                    .send_raw_command("Page.removeScriptToEvaluateOnNewDocument", params)
-                    .await;
-            }
+            let params = serde_json::json!({ "identifier": identifier });
+            let _ = target
+                .send_raw_command("Page.removeScriptToEvaluateOnNewDocument", params)
+                .await;
         }
-        Ok(CallToolResult::text_content(vec![
-            "Debugger execution resumed.".into(),
-        ]))
+        let location = super::wait_for_pause(&mut events, debugging::RESUME_WAIT).await;
+        Ok(debugging::resumed(location.as_ref()))
     }
 }
 

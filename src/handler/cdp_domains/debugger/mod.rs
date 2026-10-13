@@ -6,6 +6,7 @@ pub mod search_scripts;
 pub mod set_breakpoint;
 pub mod step_over;
 
+use crate::handler::debugging::PauseLocation;
 use crate::handler::{DebuggerState, ScriptInfo, extract_from_value};
 use cdp_browser_lite::WsResponse;
 use std::sync::Arc;
@@ -32,6 +33,7 @@ pub(crate) async fn process_debugger_event(event: &WsResponse, state: &Arc<Mutex
             ) {
                 let start_line = position(&event.params, "startLine");
                 let start_column = position(&event.params, "startColumn");
+                let url = extract_from_value(&event.params, "url").unwrap_or_default();
 
                 let mut st = state.lock().await;
                 st.scripts.insert(
@@ -40,6 +42,7 @@ pub(crate) async fn process_debugger_event(event: &WsResponse, state: &Arc<Mutex
                         hash: hash.to_string(),
                         start_line,
                         start_column,
+                        url: url.to_string(),
                     },
                 );
             }
@@ -58,6 +61,46 @@ pub(crate) async fn process_debugger_event(event: &WsResponse, state: &Arc<Mutex
             state.lock().await.paused_call_frame_id = None;
         }
     }
+}
+
+/// Where a `Debugger.paused` event stopped (top frame), 0-based as CDP.
+pub(crate) fn pause_location(params: &serde_json::Value) -> Option<PauseLocation> {
+    let frame = params.get("callFrames")?.as_array()?.first()?;
+    let location = frame.get("location")?;
+    let number = |key: &str| {
+        location
+            .get(key)
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|n| u32::try_from(n).ok())
+    };
+    let url = frame
+        .get("url")
+        .and_then(serde_json::Value::as_str)
+        .filter(|u| !u.is_empty())
+        .map(str::to_string);
+    Some(PauseLocation {
+        url,
+        line: number("lineNumber")?,
+        column: number("columnNumber").unwrap_or(0),
+    })
+}
+
+/// Waits up to `limit` for the next `Debugger.paused` on `events`.
+pub(crate) async fn wait_for_pause(
+    events: &mut cdp_browser_lite::EventFilter,
+    limit: std::time::Duration,
+) -> Option<PauseLocation> {
+    use tokio_stream::StreamExt;
+    let pause = async {
+        while let Some(event) = events.next().await {
+            let Ok(event) = event else { continue };
+            if event.method.as_deref() == Some("Debugger.paused") {
+                return event.params.as_ref().and_then(pause_location);
+            }
+        }
+        None
+    };
+    tokio::time::timeout(limit, pause).await.ok().flatten()
 }
 
 pub(crate) fn start_debugger_listener(

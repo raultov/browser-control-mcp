@@ -31,35 +31,53 @@ impl EvaluateJsTool {
     ) -> Result<CallToolResult, CallToolError> {
         let args: EvaluateJsTool = crate::handler::parse_args(params)?;
         let target = crate::handler::resolve_target(handler, args.instance_id, args.tab_id).await?;
-        // As text: the error type is not `Send` across the release below.
-        let outcome = evaluate(&target, &args.expression)
-            .await
-            .map_err(|e| e.to_string());
-        let release = json!({"objectGroup": GROUP});
-        let _ = target
-            .send_raw_command("Runtime.releaseObjectGroup", release)
-            .await;
-        outcome
+        let params = json!({"expression": args.expression, "awaitPromise": true});
+        let evaluated = evaluate_remote(
+            &target,
+            "Runtime.evaluate",
+            params,
+            evaluation::cdp_exception,
+        )
+        .await;
+        evaluated
             .map(|evaluation| evaluation.reply())
             .map_err(CallToolError::from_message)
     }
 }
 
-/// Evaluates by reference (so functions, nodes and symbols keep their
-/// description), then reads objects that have a JSON form by value.
-async fn evaluate(target: &CdpTarget, expression: &str) -> Result<Evaluation, CallToolError> {
-    let params = json!({
-        "expression": expression,
-        "returnByValue": false,
-        "awaitPromise": true,
-        "objectGroup": GROUP,
-    });
-    let reply = crate::handler::send_or(target, "Runtime.evaluate", params, "CDP Error").await?;
-    let result = reply.result.unwrap_or_default();
+/// Runs an evaluation command (`Runtime.evaluate`,
+/// `Debugger.evaluateOnCallFrame`) by reference, so functions, nodes and
+/// symbols keep their description, then reads objects that have a JSON form
+/// by value; the remote objects are released afterwards. A thrown exception
+/// is an error worded by `thrown`. Errors are text: the tool error type is
+/// not `Send` across the release.
+pub(crate) async fn evaluate_remote(
+    target: &CdpTarget,
+    method: &str,
+    mut params: Value,
+    thrown: fn(&Value) -> String,
+) -> Result<Evaluation, String> {
+    params["returnByValue"] = json!(false);
+    params["objectGroup"] = json!(GROUP);
+    let outcome = match target.send_raw_command(method, params).await {
+        Ok(reply) => read_outcome(target, reply.result.unwrap_or_default(), thrown).await,
+        Err(e) => Err(format!("CDP Error: {e:?}")),
+    };
+    let release = json!({"objectGroup": GROUP});
+    let _ = target
+        .send_raw_command("Runtime.releaseObjectGroup", release)
+        .await;
+    outcome
+}
+
+/// The evaluation of a reply, or its exception as an error.
+async fn read_outcome(
+    target: &CdpTarget,
+    result: Value,
+    thrown: fn(&Value) -> String,
+) -> Result<Evaluation, String> {
     if let Some(details) = result.get("exceptionDetails") {
-        return Err(CallToolError::from_message(evaluation::cdp_exception(
-            details,
-        )));
+        return Err(thrown(details));
     }
     let remote = &result["result"];
     let by_value = match remote.get("objectId").and_then(Value::as_str) {

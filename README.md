@@ -352,6 +352,17 @@ Chrome and Firefox take the same calls:
    moves one statement; `resume` continues.
 6. `remove_breakpoint` with the id `set_breakpoint` returned.
 
+Both browsers answer the same replies, with 0-based lines everywhere:
+
+| Tool | Reply |
+| --- | --- |
+| `set_breakpoint` | `{"breakpoint_id": "bp-N", "url", "line_number", "column_number", "resolved"}`: where the browser bound it; `resolved` is false until a script with that URL loads |
+| `remove_breakpoint` | `{"removed": "bp-N"}`; an unknown id fails listing the tab's ids |
+| `step_over`, `resume` | `{"paused", "location": {"url", "line_number", "column_number"} \| null}`: where the thread stopped next (`step_over` waits up to 2 s; `resume` reports a pause only if one follows within 250 ms) |
+| `evaluate_on_call_frame` | the `evaluate_js` shape; an exception fails with `Evaluation threw: <what was thrown>` |
+
+Breakpoint ids are per tab and MCP-level (`bp-1`, `bp-2`...), like tab ids.
+
 Chrome also offers `pause_on_load` (pause on the first statement of the next
 load). Firefox notes: breakpoints by URL only; the column is snapped to the
 nearest breakable position automatically; the debugger needs the RDP port.
@@ -380,10 +391,6 @@ error that names the new ones.
   clear a tab's buffer when it navigates to a different site (kept across
   subdomains of the same site) and gain a limit, so one call cannot flood
   the client.
-- **TODO (priority)** Unified debugger replies: `set_breakpoint`,
-  `remove_breakpoint` and `step_over` answer differently on Chrome and
-  Firefox (and Firefox's `step_over` location uses a 1-based line); both
-  will return the same shape with 0-based lines.
 - **TODO (priority)** Partial performance on Firefox from the standard Web
   Performance APIs (navigation timings, FCP, LCP), stating what Firefox
   cannot give (long tasks, CLS, JS heap).

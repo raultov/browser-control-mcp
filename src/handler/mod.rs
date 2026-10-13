@@ -1,5 +1,6 @@
 pub mod cdp_domains;
 pub mod chrome_instance;
+pub(crate) mod debugging;
 pub(crate) mod evaluation;
 pub(crate) mod navigation;
 mod registry;
@@ -17,6 +18,9 @@ pub(crate) struct ScriptInfo {
     pub hash: String,
     pub start_line: i32,
     pub start_column: i32,
+    /// The script's URL (empty for inline evals).
+    #[serde(default)]
+    pub url: String,
 }
 
 /// Most parsed scripts remembered per tab (oldest forgotten first).
@@ -31,6 +35,8 @@ pub(crate) struct DebuggerState {
     /// Identifier of the `debugger;` script `pause_on_load` installed, removed
     /// on the next `resume` so later navigations do not pause again.
     pub pause_on_load_script: Option<String>,
+    /// Breakpoints by MCP id (`bp-N`) → CDP breakpoint id.
+    pub breakpoints: debugging::BreakpointIds<String>,
 }
 
 #[derive(Clone, Debug, ::serde::Serialize, ::serde::Deserialize)]
@@ -243,23 +249,6 @@ pub(crate) async fn resolve_target(
 pub(crate) struct TargetArgs {
     pub(crate) instance_id: Option<String>,
     pub(crate) tab_id: Option<String>,
-}
-
-/// One protocol command and the message prefix used if it fails.
-pub(crate) struct Command<'a> {
-    pub(crate) method: &'a str,
-    pub(crate) params: serde_json::Value,
-    pub(crate) failure: &'a str,
-}
-
-/// Resolves the target of `ids` and sends `command` to it.
-pub(crate) async fn run_on_target(
-    handler: &McpHandler,
-    ids: TargetArgs,
-    command: Command<'_>,
-) -> std::result::Result<cdp_browser_lite::WsResponse, CallToolError> {
-    let target = resolve_target(handler, ids.instance_id, ids.tab_id).await?;
-    send_or(&target, command.method, command.params, command.failure).await
 }
 
 /// Sends one command; a failure becomes `"<failure>: <error>"`.
@@ -964,6 +953,7 @@ mod tests {
                 hash: String::new(),
                 start_line: 0,
                 start_column: 0,
+                url: String::new(),
             };
             debugger.scripts.insert(i.to_string(), info);
         }
