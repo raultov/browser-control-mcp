@@ -1,0 +1,11 @@
+{
+  "type": "event",
+  "method": "browsingContext.navigationCommitted",
+  "params": {
+    "context": "0eb3f315-4513-4c76-9af3-5d0ab1823fac",
+    "navigation": "f3473d77-c944-4cdf-b7ba-bea9eae098e3",
+    "timestamp": 1791914234699,
+    "url": "https://github.com/",
+    "userContext": "default"
+  }
+}

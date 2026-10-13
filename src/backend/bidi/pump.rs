@@ -18,6 +18,7 @@ pub(crate) const EVENTS: &[&str] = &[
     "browsingContext.contextCreated",
     "browsingContext.contextDestroyed",
     "browsingContext.navigationStarted",
+    "browsingContext.navigationCommitted",
     "browsingContext.load",
     "log.entryAdded",
     "network.beforeRequestSent",
@@ -73,9 +74,9 @@ pub(crate) async fn route(event: &WsResponse, client: &BrowserClient, state: &Pu
                 write(&state.tabs).remove_context(context);
             }
         }
-        "browsingContext.navigationStarted" | "browsingContext.load" => {
-            on_navigation(method, params, state).await
-        }
+        "browsingContext.navigationStarted"
+        | "browsingContext.navigationCommitted"
+        | "browsingContext.load" => on_navigation(method, params, state).await,
         "log.entryAdded" => {
             if let Some(log) = tab_part(state, params, |t| t.log.clone()) {
                 log.lock().await.push_message(console_message(params));
@@ -139,10 +140,19 @@ async fn on_navigation(method: &str, params: &Value, state: &PumpState) {
         if let Some(url) = str_field(params, "url") {
             tab.url = url.to_string();
         }
-        tab.network.clone()
+        (tab.network.clone(), tab.log.clone())
     };
-    if method == "browsingContext.navigationStarted" {
-        top.lock().await.split_after_navigation();
+    let (network, log) = top;
+    match method {
+        "browsingContext.navigationStarted" => network.lock().await.split_after_navigation(),
+        // The final URL (after redirects) of a new document; fragment and
+        // history navigations have their own events.
+        "browsingContext.navigationCommitted" => {
+            if let Some(url) = str_field(params, "url") {
+                log.lock().await.on_document_committed(url);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -392,6 +402,50 @@ mod tests {
         let network = tab.network.lock().await;
         assert_eq!(network.iter_current().len(), 1);
         assert_eq!(network.iter_all().len(), 2);
+    }
+
+    /// CON-01 (Firefox): a committed cross-site navigation clears the tab's
+    /// console; a reload of the same site keeps it.
+    #[tokio::test]
+    async fn committed_cross_site_navigation_clears_console() {
+        // Given tab-1 on github.com with one console message
+        let mock = MockBidi::start(MockBidiBehavior::Ready).await.unwrap();
+        let (client, state) = one_tab(&mock).await;
+        let committed = fixture(
+            include_str!("../../../tests/fixtures/bidi/event-navigation-committed.json"),
+            "ctx-0",
+        );
+        route(
+            &event("browsingContext.navigationCommitted", committed.clone()),
+            &client,
+            &state,
+        )
+        .await;
+        let probe = fixture(
+            include_str!("../../../tests/fixtures/bidi/event-log-console-probe.json"),
+            "ctx-0",
+        );
+        route(&event("log.entryAdded", probe), &client, &state).await;
+        let log = read(&state.tabs).tabs["tab-1"].log.clone();
+        // When the same site commits again, the message stays
+        route(
+            &event("browsingContext.navigationCommitted", committed.clone()),
+            &client,
+            &state,
+        )
+        .await;
+        assert_eq!(log.lock().await.messages.len(), 1);
+        // When another site commits, the console is cleared and the URL is final
+        let mut elsewhere = committed;
+        elsewhere["url"] = json!("https://example.com/");
+        route(
+            &event("browsingContext.navigationCommitted", elsewhere),
+            &client,
+            &state,
+        )
+        .await;
+        assert!(log.lock().await.messages.is_empty());
+        assert_eq!(read(&state.tabs).tabs["tab-1"].url, "https://example.com/");
     }
 
     /// BID-20: BiDi network events become the neutral request record.

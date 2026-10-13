@@ -40,6 +40,18 @@ from a copy of its code: entries describe the differences from that release.
   on Chrome too (`Evaluation threw: ...`; it used to be a success carrying
   `exceptionDetails`). `step_over` without a pause fails with "the debugger
   is not paused" on both.
+- **Breaking:** `get_console_logs` answers `{messages, total, truncated,
+  notes?}` instead of a bare array, returns at most `limit` messages (new
+  argument, default 200, the most recent ones), and `clear` removes only the
+  returned messages (it used to empty the whole buffer, even messages a
+  `level_filter` had hidden).
+
+### Added
+
+- A tab's console buffer is cleared when the tab moves to another site
+  (registrable domain, via the `psl` crate's embedded Public Suffix List)
+  and kept across subdomains of one site, reloads and same-page
+  navigations; the next `get_console_logs` says what was cleared.
 
 - Lifecycle crates bumped: `cdp-browser-lite` 0.4.2 and `bidi-browser-lite`
   0.1.4 (`bidi-lite` 0.1.2). Their mocks now record wire parameters, so the

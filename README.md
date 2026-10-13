@@ -281,7 +281,15 @@ claude mcp add browser-control-mcp -- npx -y @raultov/browser-control-mcp
   rejected promise fails with what was thrown and its 1-based line and
   column, e.g. `ReferenceError: x is not defined (line 1, column 1)`.
 - **Per-tab state.** Console logs, network traffic, breakpoints and custom
-  events are kept per tab, in bounded buffers.
+  events are kept per tab, in bounded buffers. A tab's console buffer (last
+  1000 messages) is cleared when the tab moves to another site (registrable
+  domain from the Public Suffix List: `www.knot.kz` and `docs.knot.kz` are
+  one site, `a.github.io` and `b.github.io` two) and kept across reloads and
+  same-page navigations. `get_console_logs` answers
+  `{"messages": [...], "total", "truncated", "notes"?}`: at most `limit`
+  (default 200) of the most recent matching messages, oldest first; `clear`
+  removes only the returned ones; a note says when a site change cleared
+  messages.
 - **Firefox allows a single automation session.** Each Firefox instance holds
   one WebDriver BiDi session shared by its tabs; `close_instance`,
   `stop_browser` and every server shutdown path end it, so the next run can
@@ -387,10 +395,6 @@ error that names the new ones.
 
 ## Limitations and TODO
 
-- **TODO (priority)** Console buffer per navigation: `get_console_logs` will
-  clear a tab's buffer when it navigates to a different site (kept across
-  subdomains of the same site) and gain a limit, so one call cannot flood
-  the client.
 - **TODO (priority)** Partial performance on Firefox from the standard Web
   Performance APIs (navigation timings, FCP, LCP), stating what Firefox
   cannot give (long tasks, CLS, JS heap).
