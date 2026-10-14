@@ -10,6 +10,11 @@ from a copy of its code: entries describe the differences from that release.
 
 ## [Unreleased]
 
+## [0.2.0-beta.2] - 2026-10-14
+
+Public **BETA**. Firefox debugger internals only; tool replies are the same
+as in 0.2.0-beta.1.
+
 ### Changed
 
 - `bidi-browser-lite` 0.1.5 (`bidi-lite` 0.1.3). Firefox tabs are attached to
