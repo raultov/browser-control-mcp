@@ -56,7 +56,7 @@ fn_params_excessive_bools = "warn"
 [dependencies]
 async-trait = "0.1.92"
 cdp-browser-lite = "0.4.2"
-bidi-browser-lite = "0.1.4"
+bidi-browser-lite = "0.1.5"
 chrono = "0.4.45"
 clap = { version = "4.6.7", features = ["derive"] }
 # Registrable domain (eTLD+1) for "same site" (Public Suffix List, embedded).
@@ -74,7 +74,7 @@ thiserror = "2.0.21"
 
 [dev-dependencies]
 # In-process BiDi/RDP mocks (MockBidi, MockRdp, MockFirefox).
-bidi-browser-lite = { version = "0.1.4", features = ["test-support"] }
+bidi-browser-lite = { version = "0.1.5", features = ["test-support"] }
 # In-process DevTools mocks for the unit tests only (specs D31).
 cdp-browser-lite = { version = "0.4.2", features = ["test-support"] }
 # WebSocket echo server of the E2E smoke (already in the tree via the lifecycle crates).

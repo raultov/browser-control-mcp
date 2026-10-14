@@ -203,7 +203,7 @@ pub(crate) async fn network_logs(
 /// Why a Firefox tab has no WebSocket frames: they come from its debugger.
 fn frames_note(has_debugger: bool) -> &'static str {
     if has_debugger {
-        "WebSocket frames of this tab are not captured yet: its debugger could not be attached without bringing the tab to the front; any debugger tool on the tab attaches it (frames are captured from then on)"
+        "WebSocket frames of this tab are not captured yet: Firefox's debugger could not find the tab (still opening, or closed); the next get_network_logs or debugger tool on it retries"
     } else {
         "WebSocket frames on Firefox need its debugger port (the server runs with --no-firefox-debugger, or the attached Firefox has no --firefox-rdp-port)"
     }
@@ -819,7 +819,7 @@ mod tests {
     async fn firefox_websocket_frames_are_captured() {
         use bidi_browser_lite::test_support::fixtures::RDP_RESOURCES_WEBSOCKET;
         // Given a Firefox tab watched since the session started
-        let mock = MockFirefox::start(true).await.unwrap();
+        let mock = ts::firefox_with_debugger().await;
         let rdp = mock.rdp().unwrap();
         let handler = ts::handler(&mock);
         handler
@@ -857,7 +857,7 @@ mod tests {
     async fn firefox_page_errors_reach_the_console_once() {
         use bidi_browser_lite::test_support::fixtures::RDP_RESOURCES_ERROR_MESSAGE;
         // Given a watched Firefox tab
-        let mock = MockFirefox::start(true).await.unwrap();
+        let mock = ts::firefox_with_debugger().await;
         let rdp = mock.rdp().unwrap();
         let handler = ts::handler(&mock);
         handler

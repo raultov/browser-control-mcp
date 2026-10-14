@@ -10,6 +10,19 @@ from a copy of its code: entries describe the differences from that release.
 
 ## [Unreleased]
 
+### Changed
+
+- `bidi-browser-lite` 0.1.5 (`bidi-lite` 0.1.3). Firefox tabs are attached to
+  their debugger with `Debugger::attach_to_context`: Firefox's Remote Agent
+  maps each BiDi context to its RDP tab, replacing the match by position in
+  the tab lists. Tabs on the same URL, several windows and error pages are
+  told apart, and a debugger tool never activates a tab any more (a tab
+  Firefox cannot map is an error, not a guess).
+- Firefox `set_breakpoint` uses bidi-lite's `set_breakpoint_resolved`: the
+  bound column comes from the library (every inline script with the URL is
+  searched). A column-less breakpoint for a script not loaded yet fails with
+  an argument error asking for `column_number`, as before.
+
 ## [0.2.0-beta.1] - 2026-10-13
 
 Public **BETA**. Chrome and Firefox now answer the same replies; several are

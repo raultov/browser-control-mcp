@@ -83,11 +83,11 @@ warnings, CSS warnings, platform messages), in the same shapes as Chrome.
 Each tab's debugger watches them: the session's first tabs are attached when
 the session starts and `open_tab` attaches its tab before loading the URL; a
 tab the page opened is attached by the first `get_console_logs` or
-`get_network_logs` on it. Tabs are matched by their position in BiDi's and
-RDP's tab lists (checked against their URLs), never by activating them; a
-tab that cannot be matched that way (tabs opening or closing at that moment)
-is attached by its first debugger tool, which brings it to the front. Frames
-are captured from the moment a tab is attached.
+`get_network_logs` on it. Firefox itself says which RDP tab shows a BiDi
+tab (its Remote Agent maps the BiDi context to the tab's `browserId`), so
+tabs on the same URL, several windows and error pages are told apart, and a
+tab is never activated or brought to the front to attach it. Frames are
+captured from the moment a tab is attached.
 
 ## 📦 Installation
 
@@ -384,8 +384,10 @@ Both browsers answer the same replies, with 0-based lines everywhere:
 Breakpoint ids are per tab and MCP-level (`bp-1`, `bp-2`...), like tab ids.
 
 Chrome also offers `pause_on_load` (pause on the first statement of the next
-load). Firefox notes: breakpoints by URL only; the column is snapped to the
-nearest breakable position automatically; the debugger needs the RDP port.
+load). Firefox notes: breakpoints by URL only; without `column_number` the
+breakpoint binds to the first breakable column of the line, in whichever of
+the page's scripts with that URL has one (inline `<script>` blocks share the
+page's URL), and needs the script loaded; the debugger needs the RDP port.
 
 ## Migration from chrome-debug-mcp
 
@@ -451,12 +453,9 @@ incompatible:
 - Firefox: after a lost connection a launched Firefox gets a new session on
   the next tool call; an attached Firefox keeps its orphan session, so
   restart that Firefox.
-- Firefox debugger: a tab is matched to its debugger by its position in
-  BiDi's and RDP's tab lists, checked against the tabs' web URLs; tabs
-  showing no web page (`about:blank`, error pages) cannot be checked, so a
-  tab opening or closing elsewhere at that very moment could still bind the
-  debugger to the wrong page. When the lists differ the debugger attaches by
-  activating the tab, as before.
+- Firefox debugger: tabs are mapped to the debugger through Firefox's Remote
+  Agent (verified on Firefox 157 only); a Firefox without it answers the
+  debugger tools with an error instead of guessing a tab.
 - `get_network_logs` with response bodies has no total size limit (each
   Firefox body is capped at 2 MB): use `url_filter` on busy pages.
 - The Docker image is amd64 only.

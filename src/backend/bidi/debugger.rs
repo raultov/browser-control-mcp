@@ -2,9 +2,8 @@
 //!
 //! One `Debugger` per tab. It is attached when the tab is registered (so
 //! its WebSocket frames and page errors are watched from the start, see
-//! `watch.rs`) by matching the tab's position in BiDi's and RDP's tab lists,
-//! without activating it; when that match is not possible, the first
-//! debugger tool attaches it by activating the tab (spike H15). A background
+//! `watch.rs`) through Firefox's own mapping of the BiDi context to its RDP
+//! tab (`Debugger::attach_to_context`), never activating it. A background
 //! task follows its thread state, so the tools know whether and where the
 //! page is paused (each pause is announced twice: tracked once).
 
@@ -19,13 +18,13 @@ use crate::handler::cdp_domains::debugger::set_breakpoint::SetBreakpointTool;
 use crate::handler::cdp_domains::event_pump::ListenerHandles;
 use crate::handler::debugging::{self, BreakpointIds, BreakpointSet, PauseLocation};
 use crate::handler::{McpHandler, TargetArgs, parse_args};
-use bidi_browser_lite::bidi_lite::rdp::client::{RdpClient, TabDescriptor};
+use bidi_browser_lite::bidi_lite::error::codes;
 use bidi_browser_lite::bidi_lite::rdp::debugger::{
     BreakpointLocation, ThreadState, parse_thread_states,
 };
-use bidi_browser_lite::{Browser, Debugger};
+use bidi_browser_lite::{BidiError, Browser, Debugger};
 use rust_mcp_sdk::schema::{CallToolError, CallToolRequestParams, CallToolResult};
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 use tokio_stream::StreamExt;
@@ -97,76 +96,16 @@ fn spawn_state_task(
     handles
 }
 
-/// Whether attaching may bring the tab to the front, when its RDP
-/// descriptor cannot be told apart from the others.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Activation {
-    /// A debugger tool asked: attach whatever it takes.
-    Allowed,
-    /// Background attach (frames, page errors): never steal the focus.
-    Avoided,
-}
-
-/// The RDP descriptor of the tab showing `context`. BiDi and RDP name tabs
-/// differently (a UUID, an actor) but list them in the same tab order, so
-/// the position matches them. `None` (no guess) when the lists differ in
-/// length (a tab opening or closing meanwhile) or any pair of web pages at
-/// the same position shows different URLs (another order, another window).
-async fn descriptor_of(browser: &Browser, rdp: &RdpClient, context: &str) -> Option<TabDescriptor> {
-    let contexts = browser.list_tabs().await.ok()?;
-    let tabs = rdp.list_tabs().await.ok()?;
-    let urls: Vec<(&str, &str)> = contexts
-        .iter()
-        .zip(&tabs)
-        .map(|(c, t)| (c.url.as_str(), t.url.as_str()))
-        .collect();
-    if contexts.len() != tabs.len() || !same_pages(&urls) {
-        return None;
-    }
-    let index = contexts.iter().position(|c| c.context == context)?;
-    tabs.into_iter().nth(index)
-}
-
-/// Whether BiDi's and RDP's URLs, pair by pair, can be the same tabs: web
-/// pages must match (fragment aside); other pages (`about:`, error pages,
-/// which RDP shows as `about:neterror?...` and BiDi as the requested URL)
-/// prove nothing either way.
-pub(crate) fn same_pages(pairs: &[(&str, &str)]) -> bool {
-    let web = |url: &str| -> Option<String> {
-        let parsed = url::Url::parse(url).ok()?;
-        matches!(parsed.scheme(), "http" | "https").then(|| {
-            let mut page = parsed;
-            page.set_fragment(None);
-            page.to_string()
-        })
-    };
-    pairs.iter().all(|(bidi, rdp)| match (web(bidi), web(rdp)) {
-        (Some(a), Some(b)) => a == b,
-        _ => true,
-    })
-}
-
 /// Attaches a debugger to `tab` and starts its pause tracking and its
-/// resource watch (WebSocket frames, page errors); `None` when the tab could
-/// only be found by activating it and `activation` forbids it.
-async fn attach(
-    browser: &Browser,
-    tab: &FirefoxTab,
-    activation: Activation,
-) -> Result<Option<TabDebugger>, BackendError> {
+/// resource watch (WebSocket frames, page errors). The tab's RDP descriptor
+/// is found from its BiDi context through Firefox's Remote Agent
+/// (`Debugger::attach_to_context`, bidi-lite 0.1.3): no activation, no focus
+/// change, same-URL tabs told apart.
+async fn attach(browser: &Browser, tab: &FirefoxTab) -> Result<TabDebugger, BackendError> {
     let rdp = browser.rdp_client().await.map_err(super::lifecycle_error)?;
-    let debugger = match descriptor_of(browser, &rdp, tab.tab.context_id()).await {
-        Some(descriptor) => Debugger::attach(&rdp, &descriptor).await,
-        None if activation == Activation::Allowed => {
-            tab.tab
-                .activate()
-                .await
-                .map_err(|e| super::protocol_error("browsingContext.activate", &e))?;
-            Debugger::attach_selected(&rdp).await
-        }
-        None => return Ok(None),
-    }
-    .map_err(|e| rdp_error("attach", &e))?;
+    let debugger = Debugger::attach_to_context(&rdp, tab.tab.context_id())
+        .await
+        .map_err(|e| attach_error(&e))?;
     let pause = Arc::new(StdMutex::new(None));
     let task = spawn_state_task(&debugger, pause.clone());
     let buffers = super::watch::TabBuffers {
@@ -178,17 +117,28 @@ async fn attach(
         .await
         .inspect_err(|e| tracing::debug!(error = %e, "watchResources failed"))
         .unwrap_or_default();
-    Ok(Some(TabDebugger {
+    Ok(TabDebugger {
         debugger,
         breakpoints: BreakpointIds::default(),
         pause,
         _task: task,
         _watch: watch,
-    }))
+    })
 }
 
-/// Attaches the debugger of tab `id` in the background (never activating
-/// it), so its WebSocket frames and page errors are captured from now on.
+/// An attach failure as the agent should read it.
+fn attach_error(error: &BidiError) -> BackendError {
+    match error {
+        BidiError::ProtocolError { error, .. } if error == codes::NO_SUCH_FRAME => {
+            BackendError::InvalidArgument(
+                "Firefox's debugger does not know this tab (closed, or still opening): try again, or call list_tabs".into(),
+            )
+        }
+        other => rdp_error("attach", other),
+    }
+}
+
+/// Attaches the debugger of tab `id` in the background, so its WebSocket frames and page errors are captured from now on.
 /// `true` when the tab is watched (it may have been already). The attach
 /// runs without the debuggers lock (it takes several RDP round trips); a
 /// debugger another call attached meanwhile wins, and this one is detached.
@@ -201,7 +151,7 @@ pub(crate) async fn watch_tab(
     if prune_and_check(session, id).await {
         return true;
     }
-    let Ok(Some(entry)) = attach(browser, tab, Activation::Avoided).await else {
+    let Ok(entry) = attach(browser, tab).await else {
         return false;
     };
     let mut debuggers = session.debuggers.lock().await;
@@ -263,9 +213,8 @@ async fn with_debugger<T>(
     let browser = session.browser().await?;
     prune_and_check(session, &id).await;
     let mut debuggers = session.debuggers.lock().await;
-    if !debuggers.contains_key(&id)
-        && let Some(entry) = attach(&browser, &tab, Activation::Allowed).await?
-    {
+    if !debuggers.contains_key(&id) {
+        let entry = attach(&browser, &tab).await?;
         debuggers.insert(id.clone(), entry);
     }
     match debuggers.get_mut(&id) {
@@ -325,61 +274,6 @@ async fn next_pause(
     None
 }
 
-/// Where 0-based `line` of the scripts loaded from a URL can break.
-#[derive(Debug, PartialEq)]
-enum Breakable {
-    /// No loaded script has the URL (the breakpoint binds when one loads).
-    NotLoaded,
-    /// The first breakable column of the line.
-    At(u32),
-    /// Loaded, but no script with the URL can break on that line.
-    Nowhere,
-}
-
-/// The first breakable column of 0-based `line` among the loaded scripts
-/// with `url` (a page with several inline scripts has one source per
-/// `<script>`, all with the page's URL): what Firefox binds a column-less
-/// breakpoint to.
-async fn breakable_column(
-    debugger: &Debugger,
-    url: &str,
-    line: u32,
-) -> Result<Breakable, BackendError> {
-    let rdp_line = line.saturating_add(1);
-    let query = json!({"query": {
-        "start": {"line": rdp_line, "column": 0},
-        "end": {"line": rdp_line.saturating_add(1), "column": 0},
-    }});
-    let mut found = Breakable::NotLoaded;
-    for source in debugger
-        .sources()
-        .into_iter()
-        .filter(|s| s.url.as_deref() == Some(url))
-    {
-        found = Breakable::Nowhere;
-        let reply = debugger
-            .client()
-            .request(
-                &source.actor,
-                "getBreakpointPositionsCompressed",
-                query.clone(),
-            )
-            .await
-            .map_err(|e| rdp_error("getBreakpointPositionsCompressed", &e))?;
-        let column = reply.body["positions"][rdp_line.to_string()]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(Value::as_u64)
-            .min()
-            .and_then(|c| u32::try_from(c).ok());
-        if let Some(column) = column {
-            return Ok(Breakable::At(column));
-        }
-    }
-    Ok(found)
-}
-
 /// `set_breakpoint`: Firefox breakpoints are set by URL (spike H17).
 /// `line_number` is 0-based as on Chrome.
 pub(crate) async fn set_breakpoint(
@@ -398,40 +292,48 @@ pub(crate) async fn set_breakpoint(
     };
     let session = handler.firefox(args.instance_id.as_deref()).await?;
     let set = with_debugger(&session, args.tab_id.as_deref(), async |entry| {
-        // Resolved here (bidi-lite resolves too, but does not say where), so
-        // the reply has the column Firefox binds to.
-        let breakable = breakable_column(&entry.debugger, &url, args.line_number).await?;
-        let column = match (&breakable, args.column_number) {
-            (_, Some(column)) => Some(column),
-            (Breakable::At(column), None) => Some(*column),
-            (Breakable::NotLoaded, None) => None,
-            (Breakable::Nowhere, None) => {
-                return Err(BackendError::InvalidArgument(format!(
-                    "line_number {} of {url} has no breakable position",
-                    args.line_number
-                )));
-            }
-        };
+        // bidi-lite resolves a column-less location to the first breakable
+        // column of the line (every source with the URL) and says where.
         let location = BreakpointLocation {
             source_url: url.clone(),
             line,
-            column,
+            column: args.column_number,
         };
-        entry
+        let bound = entry
             .debugger
-            .set_breakpoint(&location, None)
+            .set_breakpoint_resolved(&location, None)
             .await
-            .map_err(|e| rdp_error("setBreakpoint", &e))?;
+            .map_err(|e| breakpoint_error(&e, &url, args.line_number))?;
         Ok(BreakpointSet {
-            id: entry.breakpoints.add(location.clone()),
+            id: entry.breakpoints.add(bound.location.clone()),
             url: Some(url.clone()),
             line: args.line_number,
-            column: location.column,
-            resolved: breakable != Breakable::NotLoaded,
+            column: bound.location.column,
+            resolved: bound.resolved,
         })
     })
     .await?;
     Ok(set.reply())
+}
+
+/// A refused breakpoint, worded with the agent's 0-based line (bidi-lite's
+/// messages count lines from 1).
+fn breakpoint_error(error: &BidiError, url: &str, line: u32) -> BackendError {
+    match error {
+        BidiError::ProtocolError { error, message, .. } if error == codes::INVALID_ARGUMENT => {
+            let reason = if message.contains("no breakable position") {
+                format!("line_number {line} of {url} has no breakable position")
+            } else if message.contains("no loaded source") {
+                format!(
+                    "no loaded script has the URL {url}: give column_number, or set the breakpoint once the script is loaded"
+                )
+            } else {
+                message.clone()
+            };
+            BackendError::InvalidArgument(reason)
+        }
+        other => rdp_error("setBreakpoint", other),
+    }
 }
 
 /// `remove_breakpoint` by MCP id.
@@ -613,6 +515,7 @@ pub(crate) async fn resolve_actor(
 mod tests {
     use super::*;
     use bidi_browser_lite::bidi_lite::rdp::protocol::RdpPacket;
+    use serde_json::json;
 
     /// REV-15: a line number at the top of the range is an argument error,
     /// not an overflow, and nothing reaches the browser.
@@ -660,7 +563,6 @@ mod tests {
     }
 
     use super::super::test_support::{self as ts, WAIT};
-    use bidi_browser_lite::test_support::MockFirefox;
 
     const SCRIPT: &str = "https://example.com/test.html";
 
@@ -686,61 +588,117 @@ mod tests {
         panic!("no pause tracked on {tab}");
     }
 
-    fn watchers(rdp: &bidi_browser_lite::test_support::MockRdp) -> usize {
-        rdp.requests()
-            .iter()
-            .filter(|r| r.request_type == "getWatcher")
-            .count()
+    /// The captured `listTabs` descriptors of three tabs (browserId 2, 11
+    /// and 12; the last two on the same URL), with `ctx-1`/`ctx-2` mapped to
+    /// the same-URL ones.
+    fn three_tabs(rdp: &bidi_browser_lite::test_support::MockRdp) {
+        use bidi_browser_lite::test_support::fixtures::RDP_LIST_TABS_TWO_TABS;
+        let tabs: Value = serde_json::from_str(RDP_LIST_TABS_TWO_TABS).unwrap();
+        rdp.set_tabs(tabs["tabs"].as_array().unwrap().clone());
+        rdp.map_context("ctx-1", 11);
+        rdp.map_context("ctx-2", 12);
     }
 
-    /// RDP-02 / FWS-06: tabs BiDi and RDP list alike are attached when the
-    /// session starts, without activation; a tab they cannot match is
-    /// attached by the first debugger tool, by activating it, once.
+    /// The tab descriptors `getWatcher` was asked of, in order.
+    fn watched_descriptors(rdp: &bidi_browser_lite::test_support::MockRdp) -> Vec<String> {
+        rdp.requests()
+            .into_iter()
+            .filter(|r| r.request_type == "getWatcher")
+            .map(|r| r.to)
+            .collect()
+    }
+
+    /// RDP-02 / FWS-06 / DBG-06: every tab attaches to its own RDP
+    /// descriptor through Firefox's lookup of its BiDi context (same-URL
+    /// tabs told apart), never by activating it, and only once.
     #[tokio::test]
     async fn debugger_attaches_lazily_to_requested_tab() {
-        // Given a Firefox instance over the mocks (one tab in each list)
-        let mock = MockFirefox::start(true).await.unwrap();
+        // Given a Firefox with three tabs, the last two on the same URL
+        let mock = ts::firefox_with_debugger().await;
         let rdp = mock.rdp().unwrap();
+        three_tabs(rdp);
         let handler = ts::handler(&mock);
-        // When the session starts and a second tab opens
-        crate::backend::bidi::tools::open_tab(ts::call("open_tab", json!({})), &handler)
-            .await
-            .unwrap();
-        // Then tab-1 was attached and watched, nothing was activated
-        assert_eq!(watchers(rdp), 1);
+        // When the session starts and two tabs open
+        for _ in 0..2 {
+            crate::backend::bidi::tools::open_tab(ts::call("open_tab", json!({})), &handler)
+                .await
+                .unwrap();
+        }
+        // Then each tab was attached to its own descriptor, nothing activated
+        assert_eq!(
+            watched_descriptors(rdp),
+            [
+                "server1.conn0.tabDescriptor1",
+                "server1.conn0.tabDescriptor2",
+                "server1.conn0.tabDescriptor3"
+            ]
+        );
         assert!(rdp.watched_resources().contains(&"websocket".to_string()));
+        // And a debugger tool on an attached tab does not attach again
+        set_breakpoint(breakpoint(2, Some("tab-3")), &handler)
+            .await
+            .unwrap();
+        assert_eq!(watched_descriptors(rdp).len(), 3);
         assert_eq!(mock.bidi().count("browsingContext.activate"), 0);
-        // When set_breakpoint addresses tab-2 (RDP lists one tab, BiDi two)
-        set_breakpoint(breakpoint(1, Some("tab-2")), &handler)
-            .await
-            .unwrap();
-        // Then tab-2 was activated through BiDi and attached
-        let activated = mock.bidi().commands_named("browsingContext.activate");
-        assert_eq!(activated.len(), 1);
-        assert_eq!(activated[0].params["context"], "ctx-1");
-        assert_eq!(watchers(rdp), 2);
-        // And a second debugger tool on it does not attach again
-        set_breakpoint(breakpoint(2, Some("tab-2")), &handler)
-            .await
-            .unwrap();
-        assert_eq!(watchers(rdp), 2);
-        assert_eq!(mock.bidi().count("browsingContext.activate"), 1);
         ts::stop(&handler).await;
     }
 
-    /// REV-F11-2: tabs are matched by position only when every web page at
-    /// the same position shows the same URL.
-    #[test]
-    fn positions_match_only_with_the_same_pages() {
-        assert!(same_pages(&[
-            ("https://a.test/x#top", "https://a.test/x"),
-            ("http://gone.invalid/", "about:neterror?e=dnsNotFound"),
-            ("about:blank", "about:blank"),
-        ]));
-        assert!(!same_pages(&[
-            ("https://a.test/", "https://b.test/"),
-            ("https://b.test/", "https://a.test/"),
-        ]));
+    /// DBG-07: a tab Firefox's lookup cannot find is neither watched nor
+    /// activated; a debugger tool on it fails saying so.
+    #[tokio::test]
+    async fn unknown_tab_is_not_attached() {
+        // Given a second tab RDP does not know (its context is not mapped)
+        let mock = ts::firefox_with_debugger().await;
+        let rdp = mock.rdp().unwrap();
+        let handler = ts::handler(&mock);
+        crate::backend::bidi::tools::open_tab(ts::call("open_tab", json!({})), &handler)
+            .await
+            .unwrap();
+        // When set_breakpoint addresses it
+        let error = set_breakpoint(breakpoint(1, Some("tab-2")), &handler)
+            .await
+            .unwrap_err()
+            .to_string();
+        // Then it fails, only tab-1 was attached and nothing was activated
+        assert!(error.contains("debugger does not know this tab"), "{error}");
+        assert_eq!(watched_descriptors(rdp).len(), 1);
+        assert_eq!(mock.bidi().count("browsingContext.activate"), 0);
+        ts::stop(&handler).await;
+    }
+
+    /// DBG-08: a `forwardingCancelled` racing a `listTabs` reply (after a
+    /// detach) does not break the next attach.
+    #[tokio::test]
+    async fn attach_survives_forwarding_cancelled() {
+        use bidi_browser_lite::test_support::fixtures::RDP_FORWARDING_CANCELLED;
+        // Given tab-2 opened, attached and closed (its debugger detached)
+        let mock = ts::firefox_with_debugger().await;
+        let rdp = mock.rdp().unwrap();
+        three_tabs(rdp);
+        let handler = ts::handler(&mock);
+        crate::backend::bidi::tools::open_tab(ts::call("open_tab", json!({})), &handler)
+            .await
+            .unwrap();
+        let close = ts::call("close_tab", json!({"tab_id": "tab-2"}));
+        crate::backend::bidi::tools::close_tab(close, &handler)
+            .await
+            .unwrap();
+        // When the next listTabs reply follows a forwardingCancelled
+        rdp.emit_before_reply(
+            "listTabs",
+            serde_json::from_str(RDP_FORWARDING_CANCELLED).unwrap(),
+        );
+        crate::backend::bidi::tools::open_tab(ts::call("open_tab", json!({})), &handler)
+            .await
+            .unwrap();
+        // Then the new tab was still attached to its descriptor
+        let watched = watched_descriptors(rdp);
+        assert_eq!(
+            watched.last().unwrap(),
+            "server1.conn0.tabDescriptor3",
+            "{watched:?}"
+        );
+        ts::stop(&handler).await;
     }
 
     /// REV-F11-7: the debugger of a tab the page closed is detached at the
@@ -748,7 +706,7 @@ mod tests {
     #[tokio::test]
     async fn closed_tabs_lose_their_debugger() {
         // Given tab-1 watched since the session started
-        let mock = MockFirefox::start(true).await.unwrap();
+        let mock = ts::firefox_with_debugger().await;
         let rdp = mock.rdp().unwrap();
         let handler = ts::handler(&mock);
         let session = handler.firefox(None).await.unwrap();
@@ -767,7 +725,7 @@ mod tests {
     #[tokio::test]
     async fn remove_breakpoint_uses_mcp_id() {
         // Given breakpoint bp-1
-        let mock = MockFirefox::start(true).await.unwrap();
+        let mock = ts::firefox_with_debugger().await;
         let rdp = mock.rdp().unwrap();
         let handler = ts::handler(&mock);
         let set = set_breakpoint(breakpoint(3, None), &handler).await.unwrap();
@@ -793,7 +751,7 @@ mod tests {
     #[tokio::test]
     async fn breakpoint_reply_has_resolved_column() {
         // Given the mock's loaded test.html (breakable at column 10)
-        let mock = MockFirefox::start(true).await.unwrap();
+        let mock = ts::firefox_with_debugger().await;
         let rdp = mock.rdp().unwrap();
         let handler = ts::handler(&mock);
         // When set_breakpoint gives no column
@@ -819,12 +777,73 @@ mod tests {
         ts::stop(&handler).await;
     }
 
+    /// DBG-09: a column-less breakpoint on a line only a later inline
+    /// script of the page can break on binds there.
+    #[tokio::test]
+    async fn breakpoint_binds_in_a_later_inline_script() {
+        use bidi_browser_lite::test_support::fixtures::{
+            RDP_BREAKPOINT_POSITIONS_INLINE_NONE, RDP_BREAKPOINT_POSITIONS_INLINE_SECOND,
+        };
+        // Given a page with two inline scripts, line 9 (1-based) breakable
+        // at column 2 only in the second
+        let mock = ts::firefox_with_debugger().await;
+        let rdp = mock.rdp().unwrap();
+        let page = "http://127.0.0.1:8/inline";
+        for fixture in [
+            RDP_BREAKPOINT_POSITIONS_INLINE_NONE,
+            RDP_BREAKPOINT_POSITIONS_INLINE_SECOND,
+        ] {
+            let reply: Value = serde_json::from_str(fixture).unwrap();
+            rdp.add_source(page, reply["positions"].clone());
+        }
+        let handler = ts::handler(&mock);
+        // When set_breakpoint gives line_number 8 and no column
+        let args = json!({"url": page, "line_number": 8});
+        let reply = set_breakpoint(ts::call("set_breakpoint", args), &handler)
+            .await
+            .unwrap();
+        // Then it bound to the second script's column
+        let body = ts::json_of(&reply);
+        assert_eq!(
+            (body["column_number"].as_u64(), body["resolved"].as_bool()),
+            (Some(2), Some(true))
+        );
+        ts::stop(&handler).await;
+    }
+
+    /// DBG-10: errors name the agent's 0-based line: no column for a script
+    /// not loaded, or a line no loaded script can break on.
+    #[tokio::test]
+    async fn refused_breakpoints_are_argument_errors() {
+        let mock = ts::firefox_with_debugger().await;
+        let rdp = mock.rdp().unwrap();
+        let page = "http://127.0.0.1:8/inline";
+        rdp.add_source(page, json!({}));
+        let handler = ts::handler(&mock);
+        let later = json!({"url": "https://example.com/later.js", "line_number": 0});
+        let error = set_breakpoint(ts::call("set_breakpoint", later), &handler)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("give column_number"), "{error}");
+        let nowhere = json!({"url": page, "line_number": 4});
+        let error = set_breakpoint(ts::call("set_breakpoint", nowhere), &handler)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            error,
+            format!("line_number 4 of {page} has no breakable position")
+        );
+        ts::stop(&handler).await;
+    }
+
     /// RDP-06 / DBG-04: step_over reports the new location from the
     /// combined packet, 0-based, with the script URL.
     #[tokio::test]
     async fn step_over_reads_combined_packet() {
         // Given a debugger paused on line 7 (1-based, RDP)
-        let mock = MockFirefox::start(true).await.unwrap();
+        let mock = ts::firefox_with_debugger().await;
         let rdp = mock.rdp().unwrap();
         let handler = ts::handler(&mock);
         set_breakpoint(breakpoint(0, None), &handler).await.unwrap();
@@ -849,7 +868,7 @@ mod tests {
     #[tokio::test]
     async fn search_scripts_keeps_query_language() {
         // Given two sources with URLs plus an eval source without one
-        let mock = MockFirefox::start(true).await.unwrap();
+        let mock = ts::firefox_with_debugger().await;
         let rdp = mock.rdp().unwrap();
         let handler = ts::handler(&mock);
         let search = |query: &str| ts::call("search_scripts", json!({"query": query}));
@@ -892,8 +911,9 @@ mod tests {
     #[tokio::test]
     async fn detach_removes_breakpoints_first() {
         // Given tab-2 with breakpoints bp-1 and bp-2
-        let mock = MockFirefox::start(true).await.unwrap();
+        let mock = ts::firefox_with_debugger().await;
         let rdp = mock.rdp().unwrap();
+        three_tabs(rdp);
         let handler = ts::handler(&mock);
         crate::backend::bidi::tools::open_tab(ts::call("open_tab", json!({})), &handler)
             .await
@@ -929,7 +949,7 @@ mod tests {
     #[tokio::test]
     async fn raw_rdp_resolves_actor_shortcuts() {
         // Given a Firefox instance whose tab thread actor is the mock's thread1
-        let mock = MockFirefox::start(true).await.unwrap();
+        let mock = ts::firefox_with_debugger().await;
         let rdp = mock.rdp().unwrap();
         let handler = ts::handler(&mock);
         // When send_rdp_request goes to "thread" with request_type "frames"

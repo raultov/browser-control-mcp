@@ -21,6 +21,20 @@ pub(crate) fn handler(mock: &MockFirefox) -> McpHandler {
     handler
 }
 
+/// `browserId` of the one tab the RDP mock lists by default.
+pub(crate) const FIRST_BROWSER_ID: u64 = 2;
+
+/// A mock Firefox with its debugger port, whose first BiDi context (`ctx-0`)
+/// is the tab RDP lists (Firefox's Remote Agent lookup maps it), so the
+/// session attaches its debugger as on a real Firefox.
+pub(crate) async fn firefox_with_debugger() -> MockFirefox {
+    let mock = MockFirefox::start(true).await.unwrap();
+    if let Some(rdp) = mock.rdp() {
+        rdp.map_context("ctx-0", FIRST_BROWSER_ID);
+    }
+    mock
+}
+
 /// A tool call named `name` with `arguments`.
 pub(crate) fn call(name: &str, arguments: Value) -> CallToolRequestParams {
     serde_json::from_value(json!({"name": name, "arguments": arguments})).unwrap()
