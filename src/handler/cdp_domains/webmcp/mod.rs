@@ -39,8 +39,13 @@ pub struct WebmcpAnnotation {
 pub struct WebmcpTool {
     pub name: String,
     pub description: String,
-    #[serde(rename = "inputSchema")]
-    pub input_schema: serde_json::Value,
+    /// Optional in the protocol: a tool without parameters may omit it.
+    #[serde(
+        rename = "inputSchema",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub input_schema: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub annotations: Option<WebmcpAnnotation>,
     #[serde(rename = "frameId")]
@@ -225,6 +230,25 @@ mod tests {
         }
     }
 
+    /// AUD-RW-16: a tool registered without `inputSchema` (optional in the
+    /// protocol) is kept, and listed without one (it used to be dropped).
+    #[tokio::test]
+    async fn tools_without_input_schema_are_kept() {
+        let state = Arc::new(Mutex::new(WebmcpState::default()));
+        let add_event = make_event(
+            "WebMCP.toolsAdded",
+            json!({"tools": [{"name": "no-schema", "description": "d", "frameId": "f1"}]}),
+        );
+        process_webmcp_event(&add_event, &state).await;
+        let st = state.lock().await;
+        let tool = &st.tools["f1"]["no-schema"];
+        let listed = serde_json::to_value(tool).unwrap();
+        assert_eq!(
+            listed,
+            json!({"name": "no-schema", "description": "d", "frameId": "f1"})
+        );
+    }
+
     #[tokio::test]
     async fn test_tools_added_and_removed() {
         let state = Arc::new(Mutex::new(WebmcpState::default()));
@@ -329,7 +353,7 @@ mod tests {
                 WebmcpTool {
                     name: name.to_string(),
                     description: "d".into(),
-                    input_schema: json!({}),
+                    input_schema: Some(json!({})),
                     annotations: None,
                     frame_id: frame.to_string(),
                     backend_node_id: None,

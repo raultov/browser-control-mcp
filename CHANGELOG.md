@@ -39,6 +39,9 @@ from a copy of its code: entries describe the differences from that release.
   (`null`, `0`, `undefined` left out); an object holding a BigInt or a
   cycle has no JSON form and is described (`"Object"`, `value: null`), and
   an object reached twice without a cycle is serialised both times.
+- `webmcp_list_tools` no longer hides page tools registered without an
+  `inputSchema` (optional in WebMCP); they are listed without one and can
+  be invoked.
 - `fill_input` no longer types into the wrong element or reports a fill
   that did not happen (both browsers). An element that cannot take the text
   (a plain element, disabled, read-only, a non-text input such as a

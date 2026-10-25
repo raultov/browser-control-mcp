@@ -76,7 +76,7 @@ mod tests {
         WebmcpTool {
             name: name.into(),
             description: "desc".into(),
-            input_schema: json!({}),
+            input_schema: Some(json!({})),
             annotations: None,
             frame_id: frame_id.into(),
             backend_node_id: None,

@@ -257,7 +257,7 @@ mod tests {
                 crate::handler::cdp_domains::webmcp::WebmcpTool {
                     name: name.to_string(),
                     description: "d".into(),
-                    input_schema: json!({}),
+                    input_schema: Some(json!({})),
                     annotations: None,
                     frame_id: frame.to_string(),
                     backend_node_id: None,
