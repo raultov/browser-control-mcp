@@ -101,19 +101,12 @@ pub(crate) async fn inspect_dom(params: CallToolRequestParams, handler: &McpHand
     Ok(text(report))
 }
 
-/// `scroll`: the same JavaScript as on Chrome.
+/// `scroll`: the same JavaScript and reply as on Chrome.
 pub(crate) async fn scroll(params: CallToolRequestParams, handler: &McpHandler) -> ToolResult {
     let args: ScrollTool = parse_args(params)?;
     let (_, _, tab) = target(handler, &ids(&args.instance_id, &args.tab_id)).await?;
-    let value = page::run_snippet(&tab.tab, &args.expression()).await?;
-    if let Some(selector) = &args.selector
-        && value != Value::Bool(true)
-    {
-        return Err(CallToolError::from_message(format!(
-            "Element not found for scrolling: {selector}"
-        )));
-    }
-    Ok(text("Successfully scrolled."))
+    let outcome = page::run_snippet(&tab.tab, &args.expression()).await?;
+    args.reply(&outcome)
 }
 
 /// `click_element`: real pointer input at the point the shared snippet
@@ -648,6 +641,23 @@ mod tests {
             (&first["origin"], &first["x"], &first["y"]),
             (&json!("viewport"), &json!(5), &json!(7))
         );
+        ts::stop(&handler).await;
+    }
+
+    /// AUD-IN-15: on Firefox too, scroll reports the positions and says when
+    /// the window did not move.
+    #[tokio::test]
+    async fn scroll_reports_when_the_window_did_not_move() {
+        let mock = MockFirefox::start(false).await.unwrap();
+        let still =
+            json!({"status": "done", "before": {"x": 0, "y": 0}, "after": {"x": 0, "y": 0}});
+        page_with_point(&mock, still);
+        let handler = ts::handler(&mock);
+        let reply = scroll(call("scroll", json!({"y": 500})), &handler)
+            .await
+            .unwrap();
+        assert!(ts::text(&reply).starts_with("The window did not move"));
+        assert_eq!(ts::json_of(&reply)["after"], json!({"x": 0, "y": 0}));
         ts::stop(&handler).await;
     }
 

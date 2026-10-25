@@ -16,12 +16,30 @@ fn on_element(selector: &str, missing: &str, body: &str) -> String {
     )
 }
 
-/// Scrolls the first element matching `selector` into view; `true` if found.
+/// Scrolls the first element matching `selector` into view. Returns
+/// `{status: 'missing'}`, `{status: 'hidden'}` (no layout box, nothing to
+/// scroll to) or `{status: 'done', before, after, in_view}` with the window
+/// positions, so the reply can tell what moved.
 pub fn scroll_into_view(selector: &str) -> String {
     on_element(
         selector,
-        "false",
-        "el.scrollIntoView({ behavior: 'instant', block: 'center' }); return true;",
+        "{ status: 'missing' }",
+        "const before = { x: scrollX, y: scrollY }; \
+         el.scrollIntoView({ behavior: 'instant', block: 'center' }); \
+         const r = el.getBoundingClientRect(); \
+         if (r.width === 0 && r.height === 0) return { status: 'hidden' }; \
+         const in_view = r.bottom > 0 && r.top < innerHeight && r.right > 0 && r.left < innerWidth; \
+         return { status: 'done', before, after: { x: scrollX, y: scrollY }, in_view };",
+    )
+}
+
+/// Scrolls the window by `(left, top)` (JavaScript expressions) and returns
+/// `{status: 'done', before, after}` with the window positions.
+pub fn scroll_by(left: &str, top: &str) -> String {
+    format!(
+        "(function() {{ const before = {{ x: scrollX, y: scrollY }}; \
+         window.scrollBy({{ left: {left}, top: {top}, behavior: 'instant' }}); \
+         return {{ status: 'done', before, after: {{ x: scrollX, y: scrollY }} }}; }})()"
     )
 }
 

@@ -34,6 +34,12 @@ from a copy of its code: entries describe the differences from that release.
   when another element covers the point, naming it (an overlay used to get
   the click on both). Both browsers click the same checked viewport point;
   Firefox no longer leaves the pointer pressed when its actions fail.
+- `scroll` no longer reports success when nothing moved (both browsers). The
+  reply adds the window positions as JSON `{before, after}` (plus
+  `element_in_view` for a selector) after its first line, which says why the
+  window did not move when it did not (at the edge, or the page scrolls an
+  inner element). Scrolling to a hidden element fails. `x` is no longer
+  dropped when scrolling by `pages`.
 
 ## [0.2.0-beta.2] - 2026-10-14
 

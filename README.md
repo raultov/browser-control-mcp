@@ -48,7 +48,7 @@ see the note.
 | `switch_tab` | ✓ | ✓ | |
 | `navigate` | ✓ | ✓ | |
 | `reload` | ✓ | ✓ | |
-| `scroll` | ✓ | ✓ | |
+| `scroll` | ✓ | ✓ | reports the window positions before and after |
 | `inspect_dom` | ✓ | ✓ | |
 | `capture_screenshot` | ✓ | ✓ | |
 | `click_element` | ✓ | ✓ | scrolls the element into view; fails without clicking when it is hidden or covered |
