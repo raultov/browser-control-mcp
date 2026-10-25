@@ -1,13 +1,12 @@
 use crate::backend::BackendError;
 use crate::handler::cdp_domains::cdp_target::CdpTarget;
-use crate::handler::navigation::{LOAD_TIMEOUT, NOT_LOADED_NOTE, NavigationOutcome};
+use crate::handler::navigation::{LOAD_TIMEOUT, NOT_LOADED_NOTE, NavigationOutcome, load_before};
 use crate::handler::{BrowserSession, McpHandler, is_local_address};
 use rust_mcp_sdk::{
     macros,
     schema::{CallToolError, CallToolRequestParams, CallToolResult},
 };
 use serde_json::{Value, json};
-use tokio_stream::StreamExt;
 
 #[macros::mcp_tool(
     name = "navigate",
@@ -117,8 +116,25 @@ pub(crate) async fn navigate_and_wait(
 ) -> Result<NavigationOutcome, CallToolError> {
     // Subscribed first: `load` can fire before the reply is read.
     let mut page_events = target.on_domain("Page");
-    let reply =
-        crate::handler::send_or(target, "Page.navigate", json!({"url": url}), "CDP Error").await?;
+    let deadline = tokio::time::Instant::now() + LOAD_TIMEOUT;
+    let reply = match target
+        .send_raw_command("Page.navigate", json!({"url": url}))
+        .await
+    {
+        Ok(reply) => reply,
+        // Chrome answers once the response headers arrive: a slow server
+        // outlasts the command timeout while the navigation goes on.
+        Err(cdp_browser_lite::CdpError::Timeout { .. }) => {
+            let loaded = load_before(&mut page_events, deadline, is_load).await;
+            return Ok(finish(target, url, json!({}), loaded).await);
+        }
+        Err(e) => {
+            return Err(CallToolError::from_message(crate::handler::cdp_failure(
+                "CDP Error",
+                &e,
+            )));
+        }
+    };
     let browser = reply.result.unwrap_or_else(|| json!({}));
     if let Some(reason) = browser
         .get("errorText")
@@ -161,17 +177,14 @@ pub(crate) async fn finish(
 
 /// Waits for `Page.loadEventFired` on `events`; `false` after [`LOAD_TIMEOUT`].
 pub(crate) async fn wait_for_load(events: &mut cdp_browser_lite::EventFilter) -> bool {
-    let load = async {
-        while let Some(event) = events.next().await {
-            if event.is_ok_and(|e| e.method.as_deref() == Some("Page.loadEventFired")) {
-                return true;
-            }
-        }
-        false
-    };
-    tokio::time::timeout(LOAD_TIMEOUT, load)
-        .await
-        .unwrap_or(false)
+    let deadline = tokio::time::Instant::now() + LOAD_TIMEOUT;
+    load_before(events, deadline, is_load).await
+}
+
+fn is_load(event: &cdp_browser_lite::CdpResult<cdp_browser_lite::WsResponse>) -> bool {
+    event
+        .as_ref()
+        .is_ok_and(|e| e.method.as_deref() == Some("Page.loadEventFired"))
 }
 
 /// The URL of the current history entry (the committed document, after

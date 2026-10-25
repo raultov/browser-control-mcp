@@ -4,7 +4,7 @@ use super::protocol_error;
 use super::remote_value;
 use crate::backend::error::BackendError;
 use crate::handler::evaluation::{Evaluation, exception_message};
-use crate::handler::navigation::NavigationOutcome;
+use crate::handler::navigation::{LOAD_TIMEOUT, NOT_LOADED_NOTE, NavigationOutcome, load_before};
 use bidi_browser_lite::{BidiError, ReadinessState, Tab};
 use serde_json::{Value, json};
 
@@ -47,18 +47,55 @@ pub(crate) async fn unless_prompt<T>(
 /// error is a navigation error with Firefox's code (`NS_ERROR_UNKNOWN_HOST`).
 pub(crate) async fn navigate(tab: &Tab, url: &str) -> Result<NavigationOutcome, BackendError> {
     let method = "browsingContext.navigate";
-    let reply = unless_prompt(tab, method, tab.navigate(url, ReadinessState::Complete))
-        .await?
-        .map_err(|e| navigation_error(method, url, &e))?;
+    let wait = tab.navigate(url, ReadinessState::Complete);
+    let Some(reply) = outlasting_timeout(tab, method, wait).await? else {
+        return Ok(not_loaded(tab, url).await);
+    };
+    let reply = reply.map_err(|e| navigation_error(method, url, &e))?;
     Ok(settled(tab, reply.result.unwrap_or_else(|| json!({})), url).await)
+}
+
+/// Runs a navigation command waiting for `load` (failing at once on a
+/// dialog). When it outlasts the BiDi command timeout the navigation goes
+/// on: `None` once `load` did not come within [`LOAD_TIMEOUT`] of the start,
+/// else the command's reply (an empty success when `load` came late).
+async fn outlasting_timeout(
+    tab: &Tab,
+    method: &str,
+    command: impl std::future::Future<Output = Result<bidi_browser_lite::WsResponse, BidiError>>,
+) -> Result<Option<Result<bidi_browser_lite::WsResponse, BidiError>>, BackendError> {
+    // Subscribed first: `load` may come right after the timeout.
+    let mut events = tab.on_module("browsingContext");
+    let deadline = tokio::time::Instant::now() + LOAD_TIMEOUT;
+    match unless_prompt(tab, method, command).await? {
+        Err(BidiError::Timeout { .. }) => {
+            let is_load = |event: &bidi_browser_lite::BidiResult<bidi_browser_lite::WsResponse>| {
+                event
+                    .as_ref()
+                    .is_ok_and(|e| e.method.as_deref() == Some("browsingContext.load"))
+            };
+            let loaded = load_before(&mut events, deadline, is_load).await;
+            Ok(loaded.then(|| Ok(bidi_browser_lite::WsResponse::default())))
+        }
+        other => Ok(Some(other)),
+    }
+}
+
+/// The outcome of a navigation that did not fire `load` in time.
+async fn not_loaded(tab: &Tab, requested: &str) -> NavigationOutcome {
+    let mut outcome = settled(tab, json!({}), requested).await;
+    outcome.notes.push(NOT_LOADED_NOTE.to_string());
+    outcome
 }
 
 /// `browsingContext.reload` waiting for `load`.
 pub(crate) async fn reload(tab: &Tab) -> Result<NavigationOutcome, BackendError> {
     let method = "browsingContext.reload";
-    let reply = unless_prompt(tab, method, tab.reload(ReadinessState::Complete))
-        .await?
-        .map_err(|e| navigation_error(method, "", &e))?;
+    let Some(reply) = outlasting_timeout(tab, method, tab.reload(ReadinessState::Complete)).await?
+    else {
+        return Ok(not_loaded(tab, "").await);
+    };
+    let reply = reply.map_err(|e| navigation_error(method, "", &e))?;
     let browser = reply.result.unwrap_or_else(|| json!({}));
     let requested = browser
         .get("url")

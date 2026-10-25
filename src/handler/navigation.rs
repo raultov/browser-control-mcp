@@ -16,6 +16,32 @@ pub(crate) const LOAD_TIMEOUT: std::time::Duration = std::time::Duration::from_s
 pub(crate) const NOT_LOADED_NOTE: &str =
     "the page had not fired `load` after 30 s; the URL is the one committed so far";
 
+/// Waits for the event `is_load` picks on `events` until `deadline` (the
+/// navigation's start plus [`LOAD_TIMEOUT`]); `false` when it does not come.
+/// A navigation command can outlast the protocol's own command timeout
+/// (Chrome answers `Page.navigate` only once the response headers arrive,
+/// Firefox's `navigate` waits for `load`), so a timed-out command is not a
+/// failed navigation: the page may still load within the budget.
+pub(crate) async fn load_before<I>(
+    events: impl tokio_stream::Stream<Item = I> + Unpin,
+    deadline: tokio::time::Instant,
+    is_load: impl Fn(&I) -> bool,
+) -> bool {
+    use tokio_stream::StreamExt;
+    let mut events = events;
+    let load = async {
+        while let Some(event) = events.next().await {
+            if is_load(&event) {
+                return true;
+            }
+        }
+        false
+    };
+    tokio::time::timeout_at(deadline, load)
+        .await
+        .unwrap_or(false)
+}
+
 /// What a finished navigation reports.
 #[derive(Debug, Default)]
 pub(crate) struct NavigationOutcome {
@@ -55,6 +81,19 @@ pub(crate) fn open_tab_navigation_failed(message: &str, tab_id: &str) -> String 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// AUD-EV-03 / AUD-EV-04: after a navigation command timed out, `load`
+    /// within the remaining budget still counts; nothing until the deadline
+    /// is `false`.
+    #[tokio::test]
+    async fn load_counts_until_the_deadline() {
+        let soon = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        let events = tokio_stream::iter(["started", "load"]);
+        assert!(load_before(events, soon, |e| *e == "load").await);
+        let quiet = tokio_stream::pending::<&str>();
+        let past = tokio::time::Instant::now() + std::time::Duration::from_millis(20);
+        assert!(!load_before(quiet, past, |e| *e == "load").await);
+    }
 
     /// NAV-01: the reply object has the same keys on both browsers.
     #[test]

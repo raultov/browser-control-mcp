@@ -18,6 +18,11 @@ from a copy of its code: entries describe the differences from that release.
 
 ### Fixed
 
+- `navigate` and `reload` keep their 30 s budget on slow pages (both
+  browsers). A server slow to answer, or a page slow to fire `load`, hit
+  the 10 s protocol command timeout and failed although the navigation went
+  on; now the call waits for `load` up to 30 s from its start and answers
+  then, with the not-loaded note when it did not come.
 - `get_network_logs` `clear: true` removes only the requests and frames it
   returned (with `url_filter`, `type_filter` or `current_navigation_only`
   it used to empty everything, also what was never returned), as
