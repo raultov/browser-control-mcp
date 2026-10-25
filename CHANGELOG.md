@@ -18,6 +18,11 @@ from a copy of its code: entries describe the differences from that release.
 
 ### Fixed
 
+- `get_network_logs` `clear: true` removes only the requests and frames it
+  returned (with `url_filter`, `type_filter` or `current_navigation_only`
+  it used to empty everything, also what was never returned), as
+  `get_console_logs` does. WebSocket connections keep their URL after a
+  clear (later frames used to have `url: ""`).
 - Chrome `pause_on_load` no longer leaves its `debugger;` script injected
   (after which every later load paused): calling it again replaces the
   previous script, and a `resume` Chrome refuses because the reload has not

@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 #[macros::mcp_tool(
     name = "get_network_logs",
-    description = "Retrieves intercepted HTTP/REST requests and WebSocket frames from network activity cache with filtering. Side effects: when 'clear' is true the cached requests and WebSocket frames are emptied after being returned. Prerequisites: requires active Chrome tab with network monitoring enabled. Returns: JSON array of requests/WebSocket frames with optional full details ('include_details' defaults to true; set false for summary only). Parameters: 'current_navigation_only' limits results to current navigation only (defaults to false, retaining up to 3 navigations). Rate limits: none. Use this to audit API calls, debug network issues, inspect WebSocket traffic. Alternatives: browser DevTools Network tab, HAR file export."
+    description = "Retrieves intercepted HTTP/REST requests and WebSocket frames from network activity cache with filtering. Side effects: when 'clear' is true the returned requests and WebSocket frames (those the filters selected) are removed from the cache; the rest stays. Prerequisites: requires active Chrome tab with network monitoring enabled. Returns: JSON array of requests/WebSocket frames with optional full details ('include_details' defaults to true; set false for summary only). Parameters: 'current_navigation_only' limits results to current navigation only (defaults to false, retaining up to 3 navigations). Rate limits: none. Use this to audit API calls, debug network issues, inspect WebSocket traffic. Alternatives: browser DevTools Network tab, HAR file export."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct GetNetworkLogsTool {
@@ -17,7 +17,7 @@ pub struct GetNetworkLogsTool {
     pub instance_id: Option<String>,
     /// The Tab ID of the target tab. Omit to use the active tab.
     pub tab_id: Option<String>,
-    /// Clear network cache after returning logs. Constraints: boolean. Interactions: when true, subsequent calls return only new traffic. Defaults to: false.
+    /// Remove the returned requests and frames from the cache. Constraints: boolean. Interactions: only what the filters selected is removed, so later calls return the rest plus new traffic. Defaults to: false.
     #[serde(default)]
     pub clear: Option<bool>,
 
@@ -129,30 +129,42 @@ impl GetNetworkLogsTool {
         filters.want_rest && filters.include_details
     }
 
-    /// Copies the tab's buffers (clearing them if asked) and applies the
-    /// type, URL, direction and content filters. Shared by every browser.
+    /// Copies the tab's buffers and applies the type, URL, direction and
+    /// content filters; with `clear`, removes from the buffers exactly what
+    /// is returned (connections keep their URL). Shared by every browser.
     pub(crate) async fn collect(
         &self,
         network_state: &std::sync::Arc<tokio::sync::Mutex<crate::handler::NetworkState>>,
     ) -> NetworkSnapshot {
         let filters = Filters::new(self);
-        let mut snapshot = {
-            let mut st = network_state.lock().await;
-            let requests = if self.current_navigation_only.unwrap_or(false) {
-                st.iter_current()
-            } else {
-                st.iter_all()
-            };
-            let snapshot = NetworkSnapshot {
-                requests,
-                frames: st.ws_frames.clone().into_iter().collect(),
-                current_ids: st.current_ids(),
-            };
-            if self.clear.unwrap_or(false) {
-                st.clear_all();
-            }
-            snapshot
+        let mut st = network_state.lock().await;
+        let requests = if self.current_navigation_only.unwrap_or(false) {
+            st.iter_current()
+        } else {
+            st.iter_all()
         };
+        let mut snapshot = NetworkSnapshot {
+            requests,
+            frames: st.ws_frames.clone().into_iter().collect(),
+            current_ids: st.current_ids(),
+        };
+        filters.apply(&mut snapshot);
+        if self.clear.unwrap_or(false) {
+            st.remove_requests(snapshot.requests.keys());
+            for id in snapshot.frames.keys() {
+                if let Some(frames) = st.ws_frames.get_mut(id) {
+                    frames.retain(|f| !filters.frame_matches(f));
+                }
+            }
+        }
+        snapshot
+    }
+}
+
+impl Filters {
+    /// Keeps the requests and frames the filters select.
+    fn apply(&self, snapshot: &mut NetworkSnapshot) {
+        let filters = self;
         if filters.want_rest {
             snapshot
                 .requests
@@ -168,9 +180,10 @@ impl GetNetworkLogsTool {
         } else {
             snapshot.frames.clear();
         }
-        snapshot
     }
+}
 
+impl GetNetworkLogsTool {
     /// The tool's output: redacted unless asked otherwise; `notes` (browser
     /// limits, lost events) are listed under `notes`.
     pub(crate) fn finish(
@@ -514,6 +527,52 @@ mod tests {
             serde_json::from_str(result2.content[0].as_text().unwrap()).unwrap();
         assert!(json2["requests"].as_object().unwrap().is_empty());
         assert!(json2["websocket_frames"].as_object().unwrap().is_empty());
+    }
+
+    /// AUD-OB-04 / AUD-OB-05: `clear` removes only what the call returned
+    /// (it used to empty every request and frame whatever the filters), and
+    /// a live connection keeps its URL.
+    #[tokio::test]
+    async fn clear_removes_only_the_returned_entries() {
+        let handler = McpHandler::new_test();
+        setup_mock_data(&handler).await;
+        handler
+            .default_session
+            .network_state
+            .lock()
+            .await
+            .insert_ws_connection("ws-1".into(), "wss://socket.com/feed".into());
+        let read = |args: serde_json::Value| {
+            let handler = &handler;
+            async move {
+                let params = crate::handler::cdp_domains::tests::call("get_network_logs", args);
+                let reply = GetNetworkLogsTool::handle(params, handler).await.unwrap();
+                serde_json::from_str::<serde_json::Value>(reply.content[0].as_text().unwrap())
+                    .unwrap()
+            }
+        };
+        // When the example.com request is read with clear
+        let cleared =
+            read(json!({"url_filter": "example.com", "type_filter": "rest", "clear": true})).await;
+        assert_eq!(cleared["requests"].as_object().unwrap().len(), 1);
+        // Then the other request and every frame are still there
+        let rest = read(json!({"include_details": false})).await;
+        let ids: Vec<&String> = rest["requests"].as_object().unwrap().keys().collect();
+        assert_eq!(ids, ["req-2"]);
+        assert!(
+            !rest["websocket_frames"]["ws-1"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        // And clearing the frames keeps the connection's URL for later ones
+        read(json!({"type_filter": "websocket", "clear": true})).await;
+        let mut st = handler.default_session.network_state.lock().await;
+        assert!(st.ws_frames.get_mut("ws-1").is_none_or(|f| f.is_empty()));
+        assert_eq!(
+            st.ws_connections.get("ws-1").map(String::as_str),
+            Some("wss://socket.com/feed")
+        );
     }
 
     /// SEC-19: Sensitive headers are redacted by default.

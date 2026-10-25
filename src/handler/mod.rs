@@ -188,11 +188,13 @@ impl NetworkState {
             .unwrap_or_default()
     }
 
-    pub(crate) fn clear_all(&mut self) {
-        self.navigations.clear();
-        self.navigations.push_back(NavigationBucket::default());
-        self.ws_connections.clear();
-        self.ws_frames.clear();
+    /// Forgets the requests `ids` (a `clear` that returned them).
+    pub(crate) fn remove_requests<'a>(&mut self, ids: impl Iterator<Item = &'a String>) {
+        let ids: std::collections::HashSet<&String> = ids.collect();
+        for bucket in &mut self.navigations {
+            bucket.requests.retain(|id, _| !ids.contains(id));
+            bucket.order.retain(|id| !ids.contains(id));
+        }
     }
 }
 
