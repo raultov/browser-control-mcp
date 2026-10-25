@@ -35,7 +35,10 @@ impl PauseOnLoadTool {
             .send_raw_command("Debugger.enable", cdp_browser_lite::NoParams)
             .await
             .map_err(|e| {
-                CallToolError::from_message(format!("CDP Debugger.enable error: {:?}", e))
+                CallToolError::from_message(crate::handler::cdp_failure(
+                    "CDP Debugger.enable error",
+                    &e,
+                ))
             })?;
 
         let added = target
@@ -45,7 +48,10 @@ impl PauseOnLoadTool {
             )
             .await
             .map_err(|e| {
-                CallToolError::from_message(format!("CDP Page.addScript... error: {:?}", e))
+                CallToolError::from_message(crate::handler::cdp_failure(
+                    "CDP Page.addScript... error",
+                    &e,
+                ))
             })?;
         let identifier = crate::handler::extract_from_value(&added.result, "identifier");
         let debugger_state = session.debugger_state(args.tab_id.clone())?;
@@ -56,7 +62,12 @@ impl PauseOnLoadTool {
         target
             .send_raw_command("Page.reload", cdp_browser_lite::NoParams)
             .await
-            .map_err(|e| CallToolError::from_message(format!("CDP Page.reload error: {:?}", e)))?;
+            .map_err(|e| {
+                CallToolError::from_message(crate::handler::cdp_failure(
+                    "CDP Page.reload error",
+                    &e,
+                ))
+            })?;
 
         Ok(CallToolResult::text_content(vec![
             "Debugger enabled and paused on the next executed statement. Page reloaded.".into(),

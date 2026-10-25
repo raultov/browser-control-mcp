@@ -1,6 +1,7 @@
 pub mod cdp_domains;
 pub mod chrome_instance;
 pub(crate) mod debugging;
+pub(crate) mod dialogs;
 pub(crate) mod evaluation;
 pub(crate) mod navigation;
 mod registry;
@@ -261,7 +262,8 @@ pub(crate) struct TargetArgs {
     pub(crate) tab_id: Option<String>,
 }
 
-/// Sends one command; a failure becomes `"<failure>: <error>"`.
+/// Sends one command; a failure becomes `"<failure>: <error>"` (a command a
+/// dialog interrupted gives the dialog's message alone).
 pub(crate) async fn send_or(
     target: &cdp_domains::cdp_target::CdpTarget,
     method: &str,
@@ -271,7 +273,20 @@ pub(crate) async fn send_or(
     target
         .send_raw_command(method, params)
         .await
-        .map_err(|e| CallToolError::from_message(format!("{failure}: {e:?}")))
+        .map_err(|e| CallToolError::from_message(cdp_failure(failure, &e)))
+}
+
+/// A CDP error as the agent reads it: `"<failure>: <error text>"`, or the
+/// message alone for a command a JavaScript dialog interrupted.
+pub(crate) fn cdp_failure(failure: &str, error: &cdp_browser_lite::CdpError) -> String {
+    match error {
+        cdp_browser_lite::CdpError::ProtocolError { message, .. }
+            if dialogs::interrupted(error) =>
+        {
+            message.clone()
+        }
+        other => format!("{failure}: {other}"),
+    }
 }
 
 /// The value of a `util::js` snippet (`Runtime.evaluate` by value). A
@@ -378,6 +393,7 @@ pub(crate) struct BrowserSession {
     pub(crate) tracing_state: Arc<Mutex<cdp_domains::tracing::TracingState>>,
     pub(crate) custom_state: Arc<Mutex<CustomState>>,
     pub(crate) webmcp_state: Arc<Mutex<cdp_domains::webmcp::WebmcpState>>,
+    pub(crate) dialog_state: Arc<Mutex<dialogs::DialogState>>,
     pub(crate) chrome_manager: Arc<Mutex<dyn chrome_instance::ChromeManager>>,
     pub(crate) tabs: Arc<std::sync::RwLock<chrome_instance::tab_registry::TabRegistry>>,
     pub(crate) session_listeners: Arc<Mutex<cdp_domains::event_pump::ListenerHandles>>,
@@ -422,6 +438,7 @@ impl BrowserSession {
             tracing_state: Default::default(),
             custom_state: Default::default(),
             webmcp_state: Arc::new(Mutex::new(webmcp_state)),
+            dialog_state: Default::default(),
             chrome_manager,
             tabs: Arc::new(std::sync::RwLock::new(
                 chrome_instance::tab_registry::TabRegistry::new(16),
@@ -582,6 +599,10 @@ impl BrowserSession {
                 self.webmcp_state.clone(),
             ));
         }
+        handles.push(cdp_domains::page::start_dialog_listener(
+            target,
+            self.dialog_state.clone(),
+        ));
         handles
     }
 
@@ -646,7 +667,25 @@ impl BrowserSession {
         }
     }
 
+    /// The target a call addresses, refused while a JavaScript dialog is
+    /// open on it: every command that runs page code would wait for it.
     pub(crate) async fn target(
+        &self,
+        tab_id: Option<String>,
+    ) -> std::result::Result<cdp_domains::cdp_target::CdpTarget, CallToolError> {
+        let found = self.target_ignoring_dialogs(tab_id.clone()).await?;
+        // Bound first: the error type is not `Send` across an await.
+        let dialog = self.dialog_state(tab_id)?;
+        let open = dialog.lock().await.open.clone();
+        match open {
+            Some(dialog) => Err(CallToolError::from_message(dialog.blocking())),
+            None => Ok(found),
+        }
+    }
+
+    /// The target a call addresses even while a dialog is open (for
+    /// `handle_dialog` and raw protocol commands).
+    pub(crate) async fn target_ignoring_dialogs(
         &self,
         tab_id: Option<String>,
     ) -> std::result::Result<cdp_domains::cdp_target::CdpTarget, CallToolError> {
@@ -721,6 +760,7 @@ impl BrowserSession {
     state_accessor!(tracing_state, cdp_domains::tracing::TracingState);
     state_accessor!(custom_state, CustomState);
     state_accessor!(webmcp_state, cdp_domains::webmcp::WebmcpState);
+    state_accessor!(dialog_state, dialogs::DialogState);
 }
 
 #[derive(Debug, Clone)]
@@ -1435,7 +1475,7 @@ mod tests {
         let tools = result.unwrap().tools;
 
         // Without proxy and webmcp, 32 tools are listed
-        assert_eq!(tools.len(), 32);
+        assert_eq!(tools.len(), 33);
         let tool_names: Vec<String> = tools.into_iter().map(|t| t.name).collect();
         assert!(tool_names.contains(&"scroll".to_string()));
         assert!(tool_names.contains(&"capture_screenshot".to_string()));
@@ -1466,7 +1506,7 @@ mod tests {
         let tools = result.unwrap().tools;
 
         // With proxy configured (and webmcp disabled), 31 tools are listed
-        assert_eq!(tools.len(), 33);
+        assert_eq!(tools.len(), 34);
         let tool_names: Vec<String> = tools.into_iter().map(|t| t.name).collect();
         assert!(tool_names.contains(&"enable_proxy_auth".to_string()));
     }
@@ -1485,7 +1525,7 @@ mod tests {
         let tools = result.unwrap().tools;
 
         // With webmcp configured (30 + 4 = 34 tools)
-        assert_eq!(tools.len(), 36);
+        assert_eq!(tools.len(), 37);
         let tool_names: Vec<String> = tools.into_iter().map(|t| t.name).collect();
         assert!(tool_names.contains(&"webmcp_list_tools".to_string()));
         assert!(tool_names.contains(&"webmcp_invoke_tool".to_string()));

@@ -2,6 +2,7 @@ use crate::handler::cdp_domains::event_pump::ListenerHandles;
 use crate::handler::cdp_domains::log::LogState;
 use crate::handler::cdp_domains::tracing::TracingState;
 use crate::handler::cdp_domains::webmcp::{WebmcpAvailability, WebmcpState};
+use crate::handler::dialogs::DialogState;
 use crate::handler::{CustomState, DebuggerState, NetworkState};
 use cdp_browser_lite::Tab;
 use std::collections::HashMap;
@@ -11,13 +12,14 @@ use tokio::sync::Mutex;
 pub type TabId = String;
 
 /// Per-tab domain state handles needed to wire the CDP listeners.
-pub(crate) type TabDomainStates = (
-    Arc<Mutex<DebuggerState>>,
-    Arc<Mutex<NetworkState>>,
-    Arc<Mutex<LogState>>,
-    Arc<Mutex<TracingState>>,
-    Arc<Mutex<WebmcpState>>,
-);
+pub(crate) struct TabDomainStates {
+    pub(crate) debugger: Arc<Mutex<DebuggerState>>,
+    pub(crate) network: Arc<Mutex<NetworkState>>,
+    pub(crate) log: Arc<Mutex<LogState>>,
+    pub(crate) tracing: Arc<Mutex<TracingState>>,
+    pub(crate) webmcp: Arc<Mutex<WebmcpState>>,
+    pub(crate) dialog: Arc<Mutex<DialogState>>,
+}
 
 pub(crate) struct TabEntry {
     pub(crate) tab: Tab,
@@ -29,18 +31,20 @@ pub(crate) struct TabEntry {
     pub(crate) tracing_state: Arc<Mutex<TracingState>>,
     pub(crate) custom_state: Arc<Mutex<CustomState>>,
     pub(crate) webmcp_state: Arc<Mutex<WebmcpState>>,
+    pub(crate) dialog_state: Arc<Mutex<DialogState>>,
     pub(crate) listeners: Option<ListenerHandles>,
 }
 
 impl TabEntry {
     pub(crate) fn domain_states(&self) -> TabDomainStates {
-        (
-            self.debugger_state.clone(),
-            self.network_state.clone(),
-            self.log_state.clone(),
-            self.tracing_state.clone(),
-            self.webmcp_state.clone(),
-        )
+        TabDomainStates {
+            debugger: self.debugger_state.clone(),
+            network: self.network_state.clone(),
+            log: self.log_state.clone(),
+            tracing: self.tracing_state.clone(),
+            webmcp: self.webmcp_state.clone(),
+            dialog: self.dialog_state.clone(),
+        }
     }
 }
 
@@ -125,6 +129,7 @@ impl TabRegistry {
             tracing_state: Arc::new(Mutex::new(TracingState::default())),
             custom_state: Arc::new(Mutex::new(CustomState::default())),
             webmcp_state: Arc::new(Mutex::new(webmcp_st)),
+            dialog_state: Default::default(),
             listeners: None,
         };
 

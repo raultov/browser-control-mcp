@@ -20,6 +20,8 @@ pub(crate) const EVENTS: &[&str] = &[
     "browsingContext.navigationStarted",
     "browsingContext.navigationCommitted",
     "browsingContext.load",
+    "browsingContext.userPromptOpened",
+    "browsingContext.userPromptClosed",
     "log.entryAdded",
     "network.beforeRequestSent",
     "network.responseStarted",
@@ -77,6 +79,9 @@ pub(crate) async fn route(event: &WsResponse, client: &BrowserClient, state: &Pu
         "browsingContext.navigationStarted"
         | "browsingContext.navigationCommitted"
         | "browsingContext.load" => on_navigation(method, params, state).await,
+        "browsingContext.userPromptOpened" | "browsingContext.userPromptClosed" => {
+            on_prompt(method, params, state).await;
+        }
         "log.entryAdded" => {
             if let Some(log) = tab_part(state, params, |t| t.log.clone()) {
                 log.lock().await.push_deduplicated(console_message(params));
@@ -88,6 +93,15 @@ pub(crate) async fn route(event: &WsResponse, client: &BrowserClient, state: &Pu
             }
         }
         _ => on_custom(method, params, state).await,
+    }
+}
+
+/// Keeps the open JavaScript dialog of the tab owning the event's context.
+async fn on_prompt(method: &str, params: &Value, state: &PumpState) {
+    if let Some(dialog) = tab_part(state, params, |t| t.dialog.clone()) {
+        let opened = (method == "browsingContext.userPromptOpened")
+            .then(|| crate::handler::dialogs::OpenDialog::from_firefox(params));
+        dialog.lock().await.open = opened;
     }
 }
 

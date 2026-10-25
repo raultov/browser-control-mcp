@@ -35,14 +35,48 @@ fn text(value: impl Into<String>) -> CallToolResult {
     CallToolResult::text_content(vec![value.into().into()])
 }
 
-/// The session and tab a call addresses.
+/// The session and tab a call addresses, refused while a JavaScript dialog
+/// is open on the tab (as on Chrome).
 async fn target(
     handler: &McpHandler,
     ids: &TargetArgs,
 ) -> Result<(Arc<FirefoxSession>, String, super::session::FirefoxTab), CallToolError> {
     let session = handler.firefox(ids.instance_id.as_deref()).await?;
     let (id, tab) = session.tab(ids.tab_id.as_deref()).await?;
+    let open = tab.dialog.lock().await.open.clone();
+    if let Some(dialog) = open {
+        return Err(CallToolError::from_message(dialog.blocking()));
+    }
     Ok((session, id, tab))
+}
+
+/// `handle_dialog`: `browsingContext.handleUserPrompt` on the tab.
+pub(crate) async fn handle_dialog(
+    params: CallToolRequestParams,
+    handler: &McpHandler,
+) -> ToolResult {
+    use crate::handler::cdp_domains::page::handle_dialog::HandleDialogTool;
+    let args: HandleDialogTool = parse_args(params)?;
+    let session = handler.firefox(args.instance_id.as_deref()).await?;
+    let (_, tab) = session.tab(args.tab_id.as_deref()).await?;
+    let mut prompt = json!({"context": tab.tab.context_id(), "accept": args.accept});
+    if let Some(text) = &args.prompt_text {
+        prompt["userText"] = json!(text);
+    }
+    // Read first: closing it makes Firefox announce it closed.
+    let dialog = tab.dialog.lock().await.open.clone();
+    let reply = page::command(&tab.tab, "browsingContext.handleUserPrompt", prompt).await;
+    tab.dialog.lock().await.open = None;
+    match reply {
+        Ok(_) => Ok(crate::handler::dialogs::handled(
+            args.accept,
+            dialog.as_ref(),
+        )),
+        Err(e) if e.to_string().contains("no such alert") => Err(CallToolError::from_message(
+            crate::handler::dialogs::NO_DIALOG,
+        )),
+        Err(e) => Err(e.into()),
+    }
 }
 
 fn ids(instance_id: &Option<String>, tab_id: &Option<String>) -> TargetArgs {
@@ -711,6 +745,51 @@ mod tests {
             };
             evaluate_success(ts::remote(value))
         });
+    }
+
+    /// AUD-EV-05 (Firefox): an open prompt blocks page tools with its text;
+    /// handle_dialog answers it through browsingContext.handleUserPrompt.
+    #[tokio::test]
+    async fn open_prompt_blocks_tools_until_handled() {
+        // Given a tab that opened a confirm
+        let mock = MockFirefox::start(false).await.unwrap();
+        mock.bidi()
+            .respond_with("browsingContext.handleUserPrompt", |_| json!({}));
+        let handler = ts::handler(&mock);
+        let session = handler.firefox(None).await.unwrap();
+        session.browser().await.unwrap();
+        let opened =
+            json!({"context": "ctx-0", "type": "confirm", "message": "Sure?", "handler": "ignore"});
+        mock.bidi().emit("browsingContext.userPromptOpened", opened);
+        let (_, tab) = session.tab(None).await.unwrap();
+        for _ in 0..100 {
+            if tab.dialog.lock().await.open.is_some() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        // When evaluate_js runs, it fails naming the dialog
+        let evaluate = || call("evaluate_js", json!({"expression": "1"}));
+        let error = evaluate_js(evaluate(), &handler)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.starts_with("A JavaScript confirm dialog is open on this tab (\"Sure?\")"),
+            "{error}"
+        );
+        // And handle_dialog dismisses it
+        let reply = handle_dialog(call("handle_dialog", json!({"accept": false})), &handler)
+            .await
+            .unwrap();
+        assert!(ts::text(&reply).starts_with("Dialog dismissed."));
+        let sent = &mock
+            .bidi()
+            .commands_named("browsingContext.handleUserPrompt")[0]
+            .params;
+        assert_eq!(sent, &json!({"context": "ctx-0", "accept": false}));
+        assert!(tab.dialog.lock().await.open.is_none());
+        ts::stop(&handler).await;
     }
 
     /// AUD-IN-08: on Firefox too, a non-editable element fails and no key is typed.

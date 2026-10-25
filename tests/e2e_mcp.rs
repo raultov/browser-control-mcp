@@ -501,7 +501,7 @@ mod e2e {
     async fn smoke(browser: &str) {
         let base = serve().await;
         let mut mcp = Mcp::start(&[]).await;
-        mcp.list_tools(32).await;
+        mcp.list_tools(33).await;
         let all = [
             page_steps(browser, &base),
             tab_steps("e2e", &base),

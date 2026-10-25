@@ -23,7 +23,7 @@ async fn read_metrics(target: &CdpTarget) -> Result<HashMap<String, f64>, CallTo
     let reply = target
         .send_raw_command("Performance.getMetrics", serde_json::json!({}))
         .await
-        .map_err(|e| CallToolError::from_message(format!("CDP Error: {e:?}")))?;
+        .map_err(|e| CallToolError::from_message(crate::handler::cdp_failure("CDP Error", &e)))?;
     let metrics = reply.result.unwrap_or_default();
     Ok(metrics
         .get("metrics")

@@ -10,7 +10,23 @@ from a copy of its code: entries describe the differences from that release.
 
 ## [Unreleased]
 
+### Added
+
+- `handle_dialog` (both browsers): accepts or dismisses the JavaScript
+  dialog (`alert`, `confirm`, `prompt` with `prompt_text`, `beforeunload`)
+  open on a tab, and replies with its type and message.
+
 ### Fixed
+
+- JavaScript dialogs no longer hang the tools. A call during which the page
+  opens a dialog (`evaluate_js` running `alert()`, a `click_element` on a
+  button that asks `confirm()`, a `navigate` stopped by `beforeunload`)
+  fails at once quoting the dialog instead of after a 10–20 s timeout, and
+  while a dialog is open the page tools fail naming it and pointing to
+  `handle_dialog`. On Chrome the tab used to stay blocked until a raw
+  `Page.handleJavaScriptDialog`. Chrome errors are worded with the
+  protocol's message instead of Rust debug output (`Timeout { method: ...
+  }`).
 
 - Security: with `RUST_LOG=trace` the MCP transport logged every incoming
   tool call in full, including the `enable_proxy_auth` password and raw

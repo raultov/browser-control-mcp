@@ -62,7 +62,10 @@ impl InspectDomTool {
                 );
                 Ok(CallToolResult::text_content(vec![report.into()]))
             }
-            Err(e) => Err(CallToolError::from_message(format!("CDP Error: {:?}", e))),
+            Err(e) => Err(CallToolError::from_message(crate::handler::cdp_failure(
+                "CDP Error",
+                &e,
+            ))),
         }
     }
 }

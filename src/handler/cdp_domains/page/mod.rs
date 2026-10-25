@@ -1,4 +1,5 @@
 pub mod capture_screenshot;
+pub mod handle_dialog;
 pub mod navigate;
 pub mod reload;
 pub mod scroll;
@@ -132,6 +133,31 @@ pub(crate) async fn process_page_event(
     }
 }
 
+/// Keeps a tab's open JavaScript dialog from Chrome's `Page` events.
+pub(crate) async fn process_dialog_event(
+    event: &WsResponse,
+    state: &Arc<Mutex<crate::handler::dialogs::DialogState>>,
+) {
+    let opened = match event.method.as_deref() {
+        Some("Page.javascriptDialogOpening") => event
+            .params
+            .as_ref()
+            .map(crate::handler::dialogs::OpenDialog::from_chrome),
+        Some("Page.javascriptDialogClosed") => None,
+        _ => return,
+    };
+    state.lock().await.open = opened;
+}
+
+/// Starts the listener of [`process_dialog_event`].
+pub(crate) fn start_dialog_listener(
+    target: &crate::handler::cdp_domains::cdp_target::CdpTarget,
+    state: Arc<Mutex<crate::handler::dialogs::DialogState>>,
+) -> tokio::task::JoinHandle<()> {
+    let process = |event, state| async move { process_dialog_event(&event, &state).await };
+    crate::handler::cdp_domains::event_pump::spawn_state_listener(target, "Page", state, process)
+}
+
 pub(crate) fn start_page_listener(
     target: &crate::handler::cdp_domains::cdp_target::CdpTarget,
     state_clone: Arc<Mutex<NetworkState>>,
@@ -164,6 +190,23 @@ pub(crate) fn start_page_listener(
 
 #[cfg(test)]
 mod tests {
+    /// AUD-EV-05: the tab's open dialog follows Chrome's events.
+    #[tokio::test]
+    async fn dialog_state_follows_events() {
+        use crate::handler::cdp_domains::tests::make_event;
+        let state = Arc::new(Mutex::new(crate::handler::dialogs::DialogState::default()));
+        let opening =
+            serde_json::json!({"type": "confirm", "message": "Leave?", "url": "http://a/"});
+        process_dialog_event(&make_event("Page.javascriptDialogOpening", opening), &state).await;
+        assert_eq!(
+            state.lock().await.open.as_ref().map(|d| d.kind.as_str()),
+            Some("confirm")
+        );
+        let closed = serde_json::json!({"result": true, "userInput": ""});
+        process_dialog_event(&make_event("Page.javascriptDialogClosed", closed), &state).await;
+        assert!(state.lock().await.open.is_none());
+    }
+
     use super::*;
     use crate::handler::cdp_domains::cdp_target::CdpTarget;
     use crate::handler::cdp_domains::webmcp::{WebmcpInvocation, WebmcpState};

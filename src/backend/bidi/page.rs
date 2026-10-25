@@ -8,30 +8,57 @@ use crate::handler::navigation::NavigationOutcome;
 use bidi_browser_lite::{BidiError, ReadinessState, Tab};
 use serde_json::{Value, json};
 
-/// Sends a command on the tab's session, mapping errors.
+/// Sends a command on the tab's session, mapping errors. A prompt the page
+/// opens meanwhile fails the command at once (see [`unless_prompt`]).
 pub(crate) async fn command(tab: &Tab, method: &str, params: Value) -> Result<Value, BackendError> {
-    tab.send_raw_command(method, params)
-        .await
+    let send = tab.send_raw_command(method, params);
+    let reply = if method == "browsingContext.handleUserPrompt" {
+        send.await
+    } else {
+        unless_prompt(tab, method, send).await?
+    };
+    reply
         .map(|reply| reply.result.unwrap_or(Value::Null))
         .map_err(|e| protocol_error(method, &e))
+}
+
+/// Runs `command` unless the tab opens a JavaScript dialog first: the
+/// command that opened it (an `alert()` in a script, a click) would only
+/// answer once it is closed, so it fails at once quoting the dialog.
+pub(crate) async fn unless_prompt<T>(
+    tab: &Tab,
+    method: &str,
+    command: impl std::future::Future<Output = T>,
+) -> Result<T, BackendError> {
+    let opened = |event: &bidi_browser_lite::BidiResult<bidi_browser_lite::WsResponse>| match event
+    {
+        Ok(event) if event.method.as_deref() == Some("browsingContext.userPromptOpened") => event
+            .params
+            .as_ref()
+            .map(crate::handler::dialogs::OpenDialog::from_firefox),
+        _ => None,
+    };
+    crate::handler::dialogs::unless_dialog(command, tab.on_module("browsingContext"), opened)
+        .await
+        .map_err(|dialog| BackendError::InvalidArgument(dialog.opened_during(method)))
 }
 
 /// `browsingContext.navigate` waiting for `load` (spike H2). A network
 /// error is a navigation error with Firefox's code (`NS_ERROR_UNKNOWN_HOST`).
 pub(crate) async fn navigate(tab: &Tab, url: &str) -> Result<NavigationOutcome, BackendError> {
-    let reply = tab
-        .navigate(url, ReadinessState::Complete)
-        .await
-        .map_err(|e| navigation_error("browsingContext.navigate", url, &e))?;
+    let method = "browsingContext.navigate";
+    let reply = unless_prompt(tab, method, tab.navigate(url, ReadinessState::Complete))
+        .await?
+        .map_err(|e| navigation_error(method, url, &e))?;
     Ok(settled(tab, reply.result.unwrap_or_else(|| json!({})), url).await)
 }
 
 /// `browsingContext.reload` waiting for `load`.
 pub(crate) async fn reload(tab: &Tab) -> Result<NavigationOutcome, BackendError> {
-    let reply = tab
-        .reload(ReadinessState::Complete)
-        .await
-        .map_err(|e| navigation_error("browsingContext.reload", "", &e))?;
+    let method = "browsingContext.reload";
+    let reply = unless_prompt(tab, method, tab.reload(ReadinessState::Complete))
+        .await?
+        .map_err(|e| navigation_error(method, "", &e))?;
     let browser = reply.result.unwrap_or_else(|| json!({}));
     let requested = browser
         .get("url")
@@ -132,7 +159,9 @@ pub(crate) async fn run_snippet(tab: &Tab, expression: &str) -> Result<Value, Ba
 
 /// Clicks the viewport point `(x, y)` with real pointer input (spike H6).
 /// The input state is released even when the actions fail, so a later
-/// action does not start with the button held.
+/// action does not start with the button held; after a failure (a dialog
+/// the click opened blocks the page) in the background, so the call does
+/// not wait for the dialog.
 pub(crate) async fn click_at(tab: &Tab, x: f64, y: f64) -> Result<(), BackendError> {
     // The click snippet returns whole CSS pixels; BiDi wants integers.
     let (x, y) = (x.round() as i64, y.round() as i64);
@@ -148,8 +177,17 @@ pub(crate) async fn click_at(tab: &Tab, x: f64, y: f64) -> Result<(), BackendErr
         json!({"context": context, "actions": [pointer]}),
     )
     .await;
-    let released = command(tab, "input.releaseActions", json!({"context": context})).await;
-    clicked.and(released).map(|_| ())
+    let release = json!({"context": context});
+    if clicked.is_err() {
+        let tab = tab.clone();
+        tokio::spawn(async move {
+            let _ = tab.send_raw_command("input.releaseActions", release).await;
+        });
+        return clicked.map(|_| ());
+    }
+    command(tab, "input.releaseActions", release)
+        .await
+        .map(|_| ())
 }
 
 /// Types `text` key by key into the focused element (spike H8).

@@ -42,6 +42,8 @@ pub(crate) struct FirefoxTab {
     pub(crate) network: Arc<Mutex<NetworkState>>,
     /// Events of modules the agent subscribed to.
     pub(crate) custom: Arc<Mutex<CustomState>>,
+    /// The JavaScript dialog open on the tab, if any.
+    pub(crate) dialog: Arc<Mutex<crate::handler::dialogs::DialogState>>,
 }
 
 /// Tabs by MCP id, plus the context tree used to route iframe events.
@@ -98,6 +100,7 @@ impl FirefoxTabs {
             log: Default::default(),
             network: Default::default(),
             custom: Default::default(),
+            dialog: Default::default(),
         };
         self.tabs.insert(id.clone(), entry);
         self.active.get_or_insert_with(|| id.clone());

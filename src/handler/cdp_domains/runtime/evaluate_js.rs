@@ -61,7 +61,11 @@ pub(crate) async fn evaluate_remote(
     params["objectGroup"] = json!(GROUP);
     let outcome = match target.send_raw_command(method, params).await {
         Ok(reply) => read_outcome(target, reply.result.unwrap_or_default(), thrown).await,
-        Err(e) => Err(format!("CDP Error: {e:?}")),
+        // A dialog blocks the page: releasing would wait for a timeout.
+        Err(e) if crate::handler::dialogs::interrupted(&e) => {
+            return Err(crate::handler::cdp_failure("CDP Error", &e));
+        }
+        Err(e) => Err(crate::handler::cdp_failure("CDP Error", &e)),
     };
     let release = json!({"objectGroup": GROUP});
     let _ = target

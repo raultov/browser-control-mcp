@@ -225,8 +225,16 @@ pub(crate) fn start_tab_listeners(
 ) -> event_pump::ListenerHandles {
     let mut handles = event_pump::ListenerHandles::default();
     let target = cdp_target::CdpTarget::Tab(tab.clone());
-    let (dbg, net, log, trace, webmcp) = states;
+    let TabDomainStates {
+        debugger: dbg,
+        network: net,
+        log,
+        tracing: trace,
+        webmcp,
+        dialog,
+    } = states;
     handles.push(debugger::start_debugger_listener(&target, dbg));
+    handles.push(page::start_dialog_listener(&target, dialog));
     handles.push(network::start_network_listener(&target, net.clone()));
     handles.push(page::start_page_listener(
         &target,

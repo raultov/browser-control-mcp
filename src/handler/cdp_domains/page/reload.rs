@@ -31,15 +31,13 @@ impl ReloadTool {
         // document and refuse with "Not attached to an active page": retry
         // once after a short pause.
         let mut reply = target.send_raw_command("Page.reload", json!({})).await;
-        if reply
-            .as_ref()
-            .is_err_and(|e| is_transient(&format!("{e:?}")))
-        {
+        if reply.as_ref().is_err_and(|e| is_transient(&e.to_string())) {
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             reply = target.send_raw_command("Page.reload", json!({})).await;
         }
-        let resp = reply
-            .map_err(|e| CallToolError::from_message(format!("Failed to reload page: {e:?}")))?;
+        let resp = reply.map_err(|e| {
+            CallToolError::from_message(crate::handler::cdp_failure("Failed to reload page", &e))
+        })?;
         let loaded = super::navigate::wait_for_load(&mut page_events).await;
         let browser = resp.result.unwrap_or_else(|| json!({}));
         let outcome = super::navigate::finish(&target, "", browser, loaded).await;
