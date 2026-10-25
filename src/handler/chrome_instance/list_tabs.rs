@@ -23,6 +23,7 @@ impl ListTabsTool {
         let args: ListTabsTool = serde_json::from_value(args_value)
             .map_err(|e| CallToolError::from_message(e.to_string()))?;
         let session = handler.session(args.instance_id.clone()).await?;
+        session.check_browser().await?;
         // Current URLs from the browser, when it is running (the registry only
         // knows the URL a tab was opened with).
         let running = session.chrome_manager.lock().await.is_running().await;

@@ -39,6 +39,7 @@ impl CloseTabTool {
         let args: CloseTabTool = serde_json::from_value(args_value)
             .map_err(|e| CallToolError::from_message(e.to_string()))?;
         let session = handler.session(args.instance_id.clone()).await?;
+        session.check_browser().await?;
 
         let target_id = {
             let registry = crate::util::sync::read(&session.tabs);

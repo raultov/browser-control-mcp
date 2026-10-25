@@ -212,6 +212,9 @@ pub(crate) struct FirefoxSession {
     pub(crate) proxy_task: Mutex<ListenerHandles>,
     /// The connection the pump listens on (its liveness is the session's).
     pump_client: RwLock<Option<bidi_browser_lite::BidiClient>>,
+    /// Set when Firefox died under the session: calls report it instead of
+    /// launching a new one, until `stop` (restart_browser, stop_browser).
+    pub(crate) crashed: std::sync::atomic::AtomicBool,
 }
 
 impl FirefoxSession {
@@ -228,6 +231,7 @@ impl FirefoxSession {
             custom_modules: Default::default(),
             proxy_task: Mutex::new(ListenerHandles::default()),
             pump_client: RwLock::new(None),
+            crashed: Default::default(),
         }
     }
 
@@ -245,9 +249,22 @@ impl FirefoxSession {
     /// The running `Browser` and whether this call started its session.
     async fn browser_slot(&self) -> Result<(Arc<Browser>, bool), BackendError> {
         let mut slot = self.browser.lock().await;
+        if self.crashed.load(Ordering::SeqCst) {
+            return Err(BackendError::Launch(crate::handler::BROWSER_GONE.into()));
+        }
         if let Some(browser) = slot.clone() {
             if self.connected() {
                 return Ok((browser, false));
+            }
+            if !browser.is_alive().await {
+                // Firefox itself is gone (not only the WebSocket): its tabs
+                // with it. Nothing is relaunched behind the agent's back.
+                tracing::warn!("Firefox died; the instance needs restart_browser");
+                self.reset().await;
+                let _ = browser.stop().await;
+                *slot = None;
+                self.crashed.store(true, Ordering::SeqCst);
+                return Err(BackendError::Launch(crate::handler::BROWSER_GONE.into()));
             }
             // The WebSocket was lost: `Browser` opens a new session on next
             // use, but the pump, subscription and tab handles belong to the
@@ -361,6 +378,7 @@ impl FirefoxSession {
     /// Detaches the debuggers, stops the pump, ends the session and stops (or
     /// releases) the browser. Safe to call when nothing runs.
     pub(crate) async fn stop(&self) -> Result<(), BackendError> {
+        self.crashed.store(false, Ordering::SeqCst);
         self.reset().await;
         let browser = self.browser.lock().await.take();
         match browser {
@@ -503,6 +521,34 @@ pub(crate) mod tests {
         assert_eq!(mock.count("session.subscribe"), 2);
         assert!(session.connected());
         session.stop().await.unwrap();
+    }
+
+    /// AUD-LC-07: once Firefox itself is gone (its port no longer answers),
+    /// calls say to restart, without relaunching anything, until the
+    /// instance is stopped (it answered "the browser was stopped" forever).
+    #[tokio::test]
+    async fn dead_firefox_says_to_restart() {
+        // Given a running session whose Firefox then dies
+        let mock = MockBidi::start(MockBidiBehavior::Ready).await.unwrap();
+        let session = attached(&mock);
+        session.browser().await.unwrap();
+        drop(mock);
+        for _ in 0..100 {
+            if !session.connected() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        // When tools use the session, twice
+        for _ in 0..2 {
+            let error = session.browser().await.unwrap_err().to_string();
+            // Then each says the browser is gone, and its tabs are forgotten
+            assert_eq!(error, crate::handler::BROWSER_GONE);
+        }
+        assert!(read(&session.tabs).tabs.is_empty());
+        // And once stopped (what restart_browser does first) it is not reported
+        session.stop().await.unwrap();
+        assert!(!session.crashed.load(Ordering::SeqCst));
     }
 
     /// Two tabs of a mock Firefox: `ctx-1` labelled "x", `ctx-2` unlabelled.

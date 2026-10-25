@@ -65,6 +65,15 @@ from a copy of its code: entries describe the differences from that release.
   continuing the tab's requests, so they hung); whatever ends the handler
   turns interception off. It also subscribes before enabling interception,
   so a request paused right away is not missed.
+- A browser that crashed or was killed from outside is reported: every call
+  on that instance answers "The browser of this instance closed or crashed
+  ... Call 'restart_browser'", its dead tabs are forgotten, and nothing is
+  relaunched behind the agent's back. Chrome used to answer `CDP Error:
+  Disconnected` forever while silently starting an unused new Chrome (and
+  leaking the dead one's pool entry); Firefox answered "the browser was
+  stopped" forever. `restart_browser`, `stop_browser` and `close_instance`
+  work as usual afterwards. Chrome `open_tab` checks `--local` before it
+  starts a browser.
 - `fill_input` no longer types into the wrong element or reports a fill
   that did not happen (both browsers). An element that cannot take the text
   (a plain element, disabled, read-only, a non-text input such as a

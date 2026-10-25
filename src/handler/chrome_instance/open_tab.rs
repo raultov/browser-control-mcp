@@ -96,7 +96,16 @@ impl OpenTabTool {
         let args: OpenTabTool = crate::handler::parse_args(params)?;
         let session = handler.session(args.instance_id.clone()).await?;
 
-        // Ensure the instance is running
+        // Refused before anything starts a browser.
+        let url = args.url.clone().unwrap_or_else(|| BLANK.to_string());
+        if handler.flags.local && !crate::handler::is_local_address(&url) {
+            return Err(CallToolError::from_message(format!(
+                "Navigation to '{}' is blocked by local-only restrictions.",
+                url
+            )));
+        }
+
+        session.check_browser().await?;
         {
             let mut manager = session.chrome_manager.lock().await;
             manager.ensure_instance().await.map_err(|e| {
@@ -105,14 +114,6 @@ impl OpenTabTool {
                     super::launch::describe_launch_failure(&e.to_string())
                 ))
             })?;
-        }
-
-        let url = args.url.clone().unwrap_or_else(|| BLANK.to_string());
-        if handler.flags.local && !crate::handler::is_local_address(&url) {
-            return Err(CallToolError::from_message(format!(
-                "Navigation to '{}' is blocked by local-only restrictions.",
-                url
-            )));
         }
 
         let (tab_id, target_id) = create_tab(&session, args.label.clone(), &url).await?;

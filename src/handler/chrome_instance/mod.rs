@@ -80,6 +80,11 @@ pub trait ChromeManager: Send + Sync {
     async fn is_running(&self) -> bool {
         false
     }
+    /// Whether a browser this manager launched has died since (crashed or
+    /// killed from outside) and was not stopped yet. Defaults to `false`.
+    async fn crashed(&self) -> bool {
+        false
+    }
     /// Sets or clears the seed profile report for the next launch.
     fn set_seed_profile(&mut self, _seed: Option<SeedReport>) {}
     /// Downcasting hook for tests (inspecting a `MockChromeManager`).
@@ -92,6 +97,7 @@ pub struct MockChromeManager {
     features: Vec<ChromeFeature>,
     proxy: Option<String>,
     running: bool,
+    crashed: bool,
     seed_report: Option<SeedReport>,
 }
 
@@ -102,6 +108,7 @@ impl MockChromeManager {
             features: Vec::new(),
             proxy: None,
             running: false,
+            crashed: false,
             seed_report: None,
         }
     }
@@ -109,6 +116,11 @@ impl MockChromeManager {
     #[cfg(test)]
     pub fn set_running(&mut self, running: bool) {
         self.running = running;
+    }
+
+    #[cfg(test)]
+    pub fn set_crashed(&mut self, crashed: bool) {
+        self.crashed = crashed;
     }
 
     #[cfg(test)]
@@ -126,6 +138,7 @@ impl ChromeManager for MockChromeManager {
 
     async fn stop_instance(&mut self) -> crate::handler::chrome_instance::ManagerResult<()> {
         self.running = false;
+        self.crashed = false;
         self.seed_report = None;
         Ok(())
     }
@@ -167,6 +180,10 @@ impl ChromeManager for MockChromeManager {
 
     async fn is_running(&self) -> bool {
         self.running
+    }
+
+    async fn crashed(&self) -> bool {
+        self.crashed
     }
 
     fn set_seed_profile(&mut self, seed: Option<SeedReport>) {

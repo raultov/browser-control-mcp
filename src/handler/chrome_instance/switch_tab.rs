@@ -27,6 +27,7 @@ impl SwitchTabTool {
         let args: SwitchTabTool = serde_json::from_value(args_value)
             .map_err(|e| CallToolError::from_message(e.to_string()))?;
         let session = handler.session(args.instance_id.clone()).await?;
+        session.check_browser().await?;
 
         // 1. Look up the tab and set it as the active ID
         let tab = {

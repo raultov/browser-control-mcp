@@ -316,6 +316,11 @@ pub(crate) fn parse_chrome_major(product: &str) -> Option<u32> {
     major_str.parse::<u32>().ok()
 }
 
+/// The error of a call on an instance whose browser died (crashed, killed
+/// or closed from outside): its tabs are gone and nothing is relaunched
+/// behind the agent's back.
+pub(crate) const BROWSER_GONE: &str = "The browser of this instance closed or crashed, and its tabs are gone. Call 'restart_browser' for this instance to start a new one (or 'close_instance' to drop the instance).";
+
 /// How long the first call on a fresh connection waits for the browser's
 /// page to register as a tab (target discovery runs in the background).
 const FIRST_TAB_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
@@ -592,10 +597,22 @@ impl BrowserSession {
         )))
     }
 
+    /// Fails with [`BROWSER_GONE`] when the browser died, forgetting its
+    /// tabs and connections (they belong to the dead process).
+    pub(crate) async fn check_browser(&self) -> std::result::Result<(), CallToolError> {
+        let crashed = self.chrome_manager.lock().await.crashed().await;
+        if crashed {
+            self.reset_connection_state().await;
+            return Err(CallToolError::from_message(BROWSER_GONE));
+        }
+        Ok(())
+    }
+
     pub(crate) async fn target(
         &self,
         tab_id: Option<String>,
     ) -> std::result::Result<cdp_domains::cdp_target::CdpTarget, CallToolError> {
+        self.check_browser().await?;
         if let Some(found) = self.registered_target(tab_id)? {
             return Ok(found);
         }
@@ -1172,6 +1189,38 @@ mod tests {
         assert_eq!(col, 0);
 
         assert_eq!(find_line_column(source, "not_found"), None);
+    }
+
+    /// AUD-LC-04: once the browser died, every call that needs it says so
+    /// and what to do (it answered `CDP Error: Disconnected` forever), and
+    /// the dead tabs are forgotten.
+    #[tokio::test]
+    async fn calls_on_a_dead_browser_say_to_restart() {
+        // Given a session whose browser crashed, with a tab still registered
+        let mut manager = chrome_instance::MockChromeManager::new(0);
+        manager.set_crashed(true);
+        let session = BrowserSession::new(
+            Arc::new(Mutex::new(manager)),
+            cdp_domains::webmcp::WebmcpAvailability::NotRequested,
+            false,
+        );
+        let port = cdp_domains::tests::spawn_mock_chrome_server().await;
+        let browser = cdp_browser_lite::BrowserClient::connect(
+            &format!("127.0.0.1:{port}"),
+            std::time::Duration::from_secs(2),
+        )
+        .await
+        .unwrap();
+        let tab = browser.attach("T-dead").await.unwrap();
+        let info = chrome_instance::tab_registry::NewTab::new(None, "about:blank");
+        crate::util::sync::write(&session.tabs)
+            .register_tab(tab, info, false)
+            .unwrap();
+        // When a tool looks for its target
+        let error = session.target(None).await.unwrap_err().to_string();
+        // Then it is told to restart, and the dead tab is gone
+        assert_eq!(error, BROWSER_GONE);
+        assert!(crate::util::sync::read(&session.tabs).tabs.is_empty());
     }
 
     /// AUD-LC-29: the first call on a fresh Chrome waits for its page to

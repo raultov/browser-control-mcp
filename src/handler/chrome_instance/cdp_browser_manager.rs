@@ -28,12 +28,17 @@ impl CdpBrowserManager {
 #[async_trait]
 impl crate::handler::chrome_instance::ChromeManager for CdpBrowserManager {
     async fn ensure_instance(&mut self) -> crate::handler::chrome_instance::ManagerResult<()> {
-        if let Some(browser) = self.browser.as_ref()
-            && browser.is_alive().await
-        {
-            return Ok(());
+        if let Some(browser) = self.browser.as_ref() {
+            if browser.is_alive().await {
+                return Ok(());
+            }
+            // Relaunching here would hand every tab, listener and cached
+            // connection a browser they do not belong to: the agent restarts.
+            return Err(crate::handler::chrome_instance::manager_error!(
+                "{}",
+                crate::handler::BROWSER_GONE
+            ));
         }
-        self.browser = None;
         let plan: LaunchPlan = self.params.plan();
         let config = self.params.to_config(&plan);
         let browser = self.launcher.launch(config).await?;
@@ -109,6 +114,13 @@ impl crate::handler::chrome_instance::ChromeManager for CdpBrowserManager {
             browser.is_alive().await
         } else {
             false
+        }
+    }
+
+    async fn crashed(&self) -> bool {
+        match self.browser.as_ref() {
+            Some(browser) => !browser.is_alive().await,
+            None => false,
         }
     }
 
@@ -436,12 +448,15 @@ mod tests {
         );
     }
 
+    /// AUD-LC-04: a browser that died is reported, not relaunched behind
+    /// the agent's back (the relaunch left every tab and connection stale);
+    /// stopping it (what `restart_browser` does) allows a fresh launch.
     #[tokio::test]
-    async fn given_dead_browser_when_ensure_instance_then_relaunches() {
+    async fn dead_browser_is_reported_until_stopped() {
         let launcher = FakeLauncher::script(vec![FakeBrowser::new(9222), FakeBrowser::new(9333)]);
         let mut mgr = CdpBrowserManager::new(params(9222), Box::new(launcher));
         mgr.ensure_instance().await.unwrap();
-        assert_eq!(mgr.get_port(), 9222);
+        assert!(!mgr.crashed().await);
         let first = {
             let fake: &FakeLauncher = mgr
                 .launcher
@@ -451,6 +466,11 @@ mod tests {
             fake.launched.lock().unwrap().first().cloned().unwrap()
         };
         first.kill();
+        assert!(mgr.crashed().await);
+        let error = mgr.ensure_instance().await.unwrap_err().to_string();
+        assert!(error.contains("restart_browser"), "{error}");
+        mgr.stop_instance().await.unwrap();
+        assert!(!mgr.crashed().await);
         mgr.ensure_instance().await.unwrap();
         assert_eq!(mgr.get_port(), 9333);
     }
