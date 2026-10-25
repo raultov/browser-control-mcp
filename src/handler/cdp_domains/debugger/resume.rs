@@ -29,6 +29,8 @@ impl ResumeTool {
         let target = session.target(ids.tab_id.clone()).await?;
         // Subscribed first: an immediate new pause can arrive before the reply.
         let mut events = target.on_domain("Debugger");
+        // Before resuming: a page `debugger;` right after must not stop it.
+        super::sync_pauses(&target, &debugger_state).await;
         let params = serde_json::json!({});
         let failure = "Failed to resume execution";
         crate::handler::send_or(&target, "Debugger.resume", params, failure).await?;

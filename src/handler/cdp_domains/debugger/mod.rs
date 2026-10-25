@@ -6,6 +6,7 @@ pub mod search_scripts;
 pub mod set_breakpoint;
 pub mod step_over;
 
+use crate::handler::cdp_domains::cdp_target::CdpTarget;
 use crate::handler::debugging::PauseLocation;
 use crate::handler::{DebuggerState, ScriptInfo, extract_from_value};
 use cdp_browser_lite::WsResponse;
@@ -24,7 +25,15 @@ fn position(params: &Option<serde_json::Value>, key: &str) -> i32 {
 
 /// Processes a single CDP debugger event, updating the shared state accordingly.
 /// This function is extracted from the listener loop to enable isolated unit testing.
-pub(crate) async fn process_debugger_event(event: &WsResponse, state: &Arc<Mutex<DebuggerState>>) {
+/// Returns `true` for a pause the tab must not keep (`DebuggerState::
+/// skips_pauses`): it is not recorded, and the listener resumes it.
+pub(crate) async fn process_debugger_event(
+    event: &WsResponse,
+    state: &Arc<Mutex<DebuggerState>>,
+) -> bool {
+    if event.method.as_deref() == Some("Debugger.paused") && state.lock().await.skips_pauses() {
+        return true;
+    }
     if let Some(method) = event.method.as_deref() {
         if method == "Debugger.scriptParsed" {
             if let (Some(script_id), Some(hash)) = (
@@ -61,6 +70,7 @@ pub(crate) async fn process_debugger_event(event: &WsResponse, state: &Arc<Mutex
             state.lock().await.paused_call_frame_id = None;
         }
     }
+    false
 }
 
 /// Where a `Debugger.paused` event stopped (top frame), 0-based as CDP.
@@ -103,11 +113,42 @@ pub(crate) async fn wait_for_pause(
     tokio::time::timeout(limit, pause).await.ok().flatten()
 }
 
+/// Tells Chrome whether to skip every pause (`Debugger.setSkipAllPauses`)
+/// from the tab's state (see `DebuggerState::skips_pauses`). Best effort: an
+/// older Chrome without the command keeps pausing.
+pub(crate) async fn sync_pauses(target: &CdpTarget, state: &Arc<Mutex<DebuggerState>>) {
+    let skip = state.lock().await.skips_pauses();
+    let _ = target
+        .send_raw_command(
+            "Debugger.setSkipAllPauses",
+            serde_json::json!({ "skip": skip }),
+        )
+        .await;
+}
+
+/// Keeps the tab's debugger state from its `Debugger` events. A pause with
+/// no breakpoint and no `pause_on_load` (the page's own `debugger;`) is
+/// resumed at once: `Debugger.setSkipAllPauses` does not survive a
+/// cross-process navigation, so it is sent again too.
 pub(crate) fn start_debugger_listener(
     target: &crate::handler::cdp_domains::cdp_target::CdpTarget,
     state: Arc<Mutex<DebuggerState>>,
 ) -> tokio::task::JoinHandle<()> {
-    let process = |event, state| async move { process_debugger_event(&event, &state).await };
+    let page = target.clone();
+    let process = move |event, state| {
+        let page = page.clone();
+        async move {
+            if process_debugger_event(&event, &state).await {
+                let skip = serde_json::json!({ "skip": true });
+                let _ = page
+                    .send_raw_command("Debugger.setSkipAllPauses", skip)
+                    .await;
+                let _ = page
+                    .send_raw_command("Debugger.resume", serde_json::json!({}))
+                    .await;
+            }
+        }
+    };
     crate::handler::cdp_domains::event_pump::spawn_state_listener(
         target, "Debugger", state, process,
     )
@@ -195,7 +236,7 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn test_paused_stores_call_frame_id() {
-        let state = Arc::new(Mutex::new(DebuggerState::default()));
+        let state = with_breakpoint();
         let event = make_event(
             "Debugger.paused",
             json!({
@@ -295,7 +336,7 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn test_paused_overwrites_previous_frame_id() {
-        let state = Arc::new(Mutex::new(DebuggerState::default()));
+        let state = with_breakpoint();
 
         let event1 = make_event(
             "Debugger.paused",
@@ -339,11 +380,36 @@ pub(crate) mod tests {
         assert_eq!((script.start_line, script.start_column), (12, 4));
     }
 
+    /// A tab state with one breakpoint, so its pauses are kept.
+    pub(crate) fn with_breakpoint() -> Arc<Mutex<DebuggerState>> {
+        let mut state = DebuggerState::default();
+        state.breakpoints.add("1:3:0:http://a/app.js".into());
+        Arc::new(Mutex::new(state))
+    }
+
+    /// AUD-EV-07: without a breakpoint or `pause_on_load`, a pause (the
+    /// page's own `debugger;`) is not kept: the listener resumes it.
+    #[tokio::test]
+    async fn pauses_without_breakpoints_are_resumed() {
+        let paused = || {
+            make_event(
+                "Debugger.paused",
+                json!({"callFrames": [{"callFrameId": "F1"}]}),
+            )
+        };
+        let idle = Arc::new(Mutex::new(DebuggerState::default()));
+        assert!(process_debugger_event(&paused(), &idle).await);
+        assert!(idle.lock().await.paused_call_frame_id.is_none());
+        let debugging = with_breakpoint();
+        assert!(!process_debugger_event(&paused(), &debugging).await);
+        assert!(debugging.lock().await.paused_call_frame_id.is_some());
+    }
+
     /// FIX-02: Resuming clears the paused call frame.
     #[tokio::test]
     async fn resume_clears_paused_frame() {
         // Given a pause followed by Debugger.resumed
-        let state = Arc::new(Mutex::new(DebuggerState::default()));
+        let state = with_breakpoint();
         let paused = serde_json::json!({"callFrames": [{"callFrameId": "F1"}]});
         process_debugger_event(&make_event("Debugger.paused", paused), &state).await;
         assert!(state.lock().await.paused_call_frame_id.is_some());

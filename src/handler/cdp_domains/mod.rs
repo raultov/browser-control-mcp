@@ -202,6 +202,12 @@ pub(crate) async fn enable_tab_domains(tab: &Tab, webmcp_state: &Arc<Mutex<webmc
     ] {
         let _ = tab.send_raw_command(cmd, NoParams).await;
     }
+    // A new tab has no breakpoint: the page's `debugger;` statements are
+    // skipped until one is set (`DebuggerState::skips_pauses`).
+    let skip = serde_json::json!({ "skip": true });
+    let _ = tab
+        .send_raw_command("Debugger.setSkipAllPauses", skip)
+        .await;
     let enable_res = tab.send_raw_command("WebMCP.enable", NoParams).await;
     let availability = if enable_res.is_ok() {
         webmcp::WebmcpAvailability::Enabled

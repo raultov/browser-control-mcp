@@ -39,6 +39,16 @@ pub(crate) struct DebuggerState {
     pub breakpoints: debugging::BreakpointIds<String>,
 }
 
+impl DebuggerState {
+    /// Whether the page must not pause: the debugger is always attached, so
+    /// without a breakpoint or a `pause_on_load` the only pauses are the
+    /// page's own `debugger;` statements, which anti-debugging pages loop on
+    /// to freeze every tool.
+    pub(crate) fn skips_pauses(&self) -> bool {
+        self.breakpoints.is_empty() && self.pause_on_load_script.is_none()
+    }
+}
+
 #[derive(Clone, Debug, ::serde::Serialize, ::serde::Deserialize)]
 pub struct NetworkRequest {
     pub url: String,
@@ -379,6 +389,9 @@ pub(crate) struct BrowserSession {
     /// Set when a fresh connection started target discovery and no call has
     /// waited for the browser's page to register as a tab yet.
     first_tab_pending: std::sync::atomic::AtomicBool,
+    /// Set while the session-level connection has its debugger enabled;
+    /// turned off once a tab is registered (see `retire_fallback_debugger`).
+    fallback_debugger: std::sync::atomic::AtomicBool,
 }
 
 impl BrowserSession {
@@ -418,6 +431,7 @@ impl BrowserSession {
             proxy_auth_tasks: Default::default(),
             enable_webmcp,
             first_tab_pending: Default::default(),
+            fallback_debugger: Default::default(),
         }
     }
 
@@ -428,6 +442,8 @@ impl BrowserSession {
         *self.session_listeners.lock().await = cdp_domains::event_pump::ListenerHandles::default();
         *self.browser_version.lock().await = None;
         self.first_tab_pending
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        self.fallback_debugger
             .store(false, std::sync::atomic::Ordering::SeqCst);
         self.proxy_auth_tasks.lock().await.clear();
         cdp_domains::custom::clear_custom_listeners(&self.custom_state).await;
@@ -491,6 +507,9 @@ impl BrowserSession {
         let _ = client
             .send_raw_command("Debugger.enable", cdp_browser_lite::NoParams)
             .await;
+        cdp_domains::debugger::sync_pauses(&target, &self.debugger_state).await;
+        self.fallback_debugger
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         // Start the tab lifecycle listener (Target.*)
         if let Ok(browser_client) = {
             let manager = self.chrome_manager.lock().await;
@@ -608,12 +627,34 @@ impl BrowserSession {
         Ok(())
     }
 
+    /// Turns off the session-level connection's debugger once the page is
+    /// a registered tab: tools then only read the tab's state, and that
+    /// debugger, with no breakpoint of its own, would resume the tab's
+    /// pauses (every debugger on a page can resume it).
+    async fn retire_fallback_debugger(&self) {
+        if !self
+            .fallback_debugger
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            return;
+        }
+        let client = self.client.lock().await.clone();
+        if let Some(client) = client {
+            let _ = client
+                .send_raw_command("Debugger.disable", cdp_browser_lite::NoParams)
+                .await;
+        }
+    }
+
     pub(crate) async fn target(
         &self,
         tab_id: Option<String>,
     ) -> std::result::Result<cdp_domains::cdp_target::CdpTarget, CallToolError> {
         self.check_browser().await?;
-        if let Some(found) = self.registered_target(tab_id)? {
+        // Bound first: the lookup's error type is not `Send` across an await.
+        let registered = self.registered_target(tab_id)?;
+        if let Some(found) = registered {
+            self.retire_fallback_debugger().await;
             return Ok(found);
         }
         let client = self.get_or_connect().await?.clone();
@@ -626,6 +667,7 @@ impl BrowserSession {
             .swap(false, std::sync::atomic::Ordering::SeqCst)
             && let Some(tab) = wait_for_active_tab(&self.tabs, FIRST_TAB_WAIT).await
         {
+            self.retire_fallback_debugger().await;
             return Ok(tab);
         }
         client
@@ -1221,6 +1263,42 @@ mod tests {
         // Then it is told to restart, and the dead tab is gone
         assert_eq!(error, BROWSER_GONE);
         assert!(crate::util::sync::read(&session.tabs).tabs.is_empty());
+    }
+
+    /// AUD-EV-07: once the page is registered as a tab, the session-level
+    /// connection's debugger is turned off: with no breakpoints of its own
+    /// it would resume the tab's pauses (`pause_on_load`, breakpoints).
+    #[tokio::test]
+    async fn fallback_debugger_is_disabled_once_a_tab_is_registered() {
+        // Given a session that used its session-level connection
+        let mock = cdp_domains::tests::spawn_recording_mock().await;
+        let handler = cdp_domains::tests::mock_handler(mock.http_port);
+        let session = handler.session(None).await.unwrap();
+        session.target(None).await.unwrap();
+        let fallback = |method: &str| {
+            mock.commands_named(method)
+                .into_iter()
+                .filter(|c| c.session_id.is_none())
+                .count()
+        };
+        assert_eq!(fallback("Debugger.enable"), 1);
+        assert_eq!(fallback("Debugger.disable"), 0);
+        // When a tab registers and calls use it, twice
+        let browser = cdp_browser_lite::BrowserClient::connect(
+            &format!("127.0.0.1:{}", mock.http_port),
+            std::time::Duration::from_secs(2),
+        )
+        .await
+        .unwrap();
+        let tab = browser.attach("T-page").await.unwrap();
+        let info = chrome_instance::tab_registry::NewTab::new(None, "about:blank");
+        crate::util::sync::write(&session.tabs)
+            .register_tab(tab, info, false)
+            .unwrap();
+        session.target(None).await.unwrap();
+        session.target(None).await.unwrap();
+        // Then the session-level debugger was disabled once
+        assert_eq!(fallback("Debugger.disable"), 1);
     }
 
     /// AUD-LC-29: the first call on a fresh Chrome waits for its page to

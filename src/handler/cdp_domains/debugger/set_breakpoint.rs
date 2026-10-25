@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 
 #[macros::mcp_tool(
     name = "set_breakpoint",
-    description = "Sets a debugger breakpoint at a specific location, pausing execution when reached. Side effects: modifies debugger state (breakpoint added until removed). Prerequisites: requires an active Chrome tab; target script must be loaded. Returns: JSON {breakpoint_id ('bp-N', for remove_breakpoint), url, line_number, column_number (0-based, where the browser bound it), resolved (false until a script with that URL loads)}. Use this to debug specific code paths. Alternatives: 'pause_on_load' for early script execution, 'search_scripts' to find scripts by pattern."
+    description = "Sets a debugger breakpoint at a specific location, pausing execution when reached. Side effects: modifies debugger state (breakpoint added until removed). Prerequisites: requires an active Chrome tab; target script must be loaded. Returns: JSON {breakpoint_id ('bp-N', for remove_breakpoint), url, line_number, column_number (0-based, where the browser bound it), resolved (false until a script with that URL loads)}. While a tab has no breakpoint (and no pause_on_load), the page's own `debugger;` statements do not pause it; the first breakpoint turns them on. Use this to debug specific code paths. Alternatives: 'pause_on_load' for early script execution, 'search_scripts' to find scripts by pattern."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct SetBreakpointTool {
@@ -52,9 +52,13 @@ impl SetBreakpointTool {
             })?
             .to_string();
         let state = session.debugger_state(args.tab_id.clone())?;
-        let mut state = state.lock().await;
-        let mut set = args.resolution(&reply, &state);
-        set.id = state.breakpoints.add(native);
+        let set = {
+            let mut state = state.lock().await;
+            let mut set = args.resolution(&reply, &state);
+            set.id = state.breakpoints.add(native);
+            set
+        };
+        super::sync_pauses(&target, &state).await;
         Ok(set.reply())
     }
 
@@ -180,5 +184,39 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(again.to_string(), "No breakpoint 'bp-1'. Breakpoints: none");
+    }
+
+    /// AUD-EV-07: without breakpoints the page's `debugger;` statements
+    /// are skipped (anti-debugging pages froze every tool); the first
+    /// breakpoint turns pauses on and removing the last turns them off.
+    #[tokio::test]
+    async fn pauses_are_skipped_without_breakpoints() {
+        use crate::handler::cdp_domains::debugger::remove_breakpoint::RemoveBreakpointTool;
+        use crate::handler::cdp_domains::tests::{call, mock_handler, spawn_recording_mock};
+        let mock = spawn_recording_mock().await;
+        mock.respond_with(
+            "Debugger.setBreakpointByUrl",
+            |_| json!({"breakpointId": "1:3:0:http://a/app.js", "locations": []}),
+        );
+        let handler = mock_handler(mock.http_port);
+        let skips = || -> Vec<Value> {
+            mock.commands_named("Debugger.setSkipAllPauses")
+                .into_iter()
+                .map(|c| c.params["skip"].clone())
+                .collect()
+        };
+        // When the first breakpoint is set (connecting enables the debugger)
+        let args = json!({"url": "http://a/app.js", "line_number": 3});
+        SetBreakpointTool::handle(call("set_breakpoint", args), &handler)
+            .await
+            .unwrap();
+        // Then pauses were skipped after Debugger.enable, then turned on
+        assert_eq!(skips(), [json!(true), json!(false)]);
+        // And removing it skips them again
+        let remove = call("remove_breakpoint", json!({"breakpoint_id": "bp-1"}));
+        RemoveBreakpointTool::handle(remove, &handler)
+            .await
+            .unwrap();
+        assert_eq!(skips(), [json!(true), json!(false), json!(true)]);
     }
 }

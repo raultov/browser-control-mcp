@@ -383,6 +383,11 @@ Both browsers answer the same replies, with 0-based lines everywhere:
 
 Breakpoint ids are per tab and MCP-level (`bp-1`, `bp-2`...), like tab ids.
 
+While a tab has no breakpoint (and, on Chrome, no pending `pause_on_load`),
+the page's own `debugger;` statements do not pause it: the debugger is
+always attached, and anti-debugging pages loop on `debugger;` to freeze
+every tool. The first breakpoint turns them back on.
+
 Chrome also offers `pause_on_load` (pause on the first statement of the next
 load). Firefox notes: breakpoints by URL only; without `column_number` the
 breakpoint binds to the first breakable column of the line, in whichever of

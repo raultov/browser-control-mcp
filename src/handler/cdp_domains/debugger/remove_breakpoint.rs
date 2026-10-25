@@ -38,7 +38,16 @@ impl RemoveBreakpointTool {
         let params = json!({ "breakpointId": native });
         let failure = "Failed to remove breakpoint";
         crate::handler::send_or(&target, "Debugger.removeBreakpoint", params, failure).await?;
-        state.lock().await.breakpoints.remove(&args.breakpoint_id);
+        let paused = {
+            let mut state = state.lock().await;
+            state.breakpoints.remove(&args.breakpoint_id);
+            state.paused_call_frame_id.is_some()
+        };
+        // While paused, skipping would also cancel the next step: `resume`
+        // brings the setting up to date.
+        if !paused {
+            super::sync_pauses(&target, &state).await;
+        }
         Ok(crate::handler::debugging::removed(&args.breakpoint_id))
     }
 }

@@ -50,6 +50,8 @@ impl PauseOnLoadTool {
         let identifier = crate::handler::extract_from_value(&added.result, "identifier");
         let debugger_state = session.debugger_state(args.tab_id.clone())?;
         debugger_state.lock().await.pause_on_load_script = identifier.map(str::to_string);
+        // The injected `debugger;` must pause even without breakpoints.
+        super::sync_pauses(&target, &debugger_state).await;
 
         target
             .send_raw_command("Page.reload", cdp_browser_lite::NoParams)

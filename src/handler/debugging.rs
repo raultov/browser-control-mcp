@@ -63,6 +63,11 @@ impl<T> BreakpointIds<T> {
         self.by_id.remove(id)
     }
 
+    /// Whether no breakpoint is registered.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.by_id.is_empty()
+    }
+
     /// The id already registered for `native`, if any.
     pub(crate) fn id_of(&self, native: &T) -> Option<&str>
     where

@@ -74,6 +74,15 @@ from a copy of its code: entries describe the differences from that release.
   stopped" forever. `restart_browser`, `stop_browser` and `close_instance`
   work as usual afterwards. Chrome `open_tab` checks `--local` before it
   starts a browser.
+- A page's own `debugger;` statements no longer pause it while the tab has
+  no breakpoint (and, on Chrome, no `pause_on_load`). The debugger is
+  always attached, so anti-debugging pages (`setInterval(() => {debugger})`)
+  and a stray `debugger;` froze every tool on the tab until a timeout. The
+  first breakpoint turns them back on, removing the last one turns them off
+  (Chrome `Debugger.setSkipAllPauses`, re-applied after cross-process
+  navigations; Firefox `shouldPauseOnDebuggerStatement`). Chrome's
+  session-level connection drops its debugger once the page is a
+  registered tab, so it no longer resumes the tab's pauses.
 - `fill_input` no longer types into the wrong element or reports a fill
   that did not happen (both browsers). An element that cannot take the text
   (a plain element, disabled, read-only, a non-text input such as a

@@ -117,13 +117,33 @@ async fn attach(browser: &Browser, tab: &FirefoxTab) -> Result<TabDebugger, Back
         .await
         .inspect_err(|e| tracing::debug!(error = %e, "watchResources failed"))
         .unwrap_or_default();
-    Ok(TabDebugger {
+    let entry = TabDebugger {
         debugger,
         breakpoints: BreakpointIds::default(),
         pause,
         _task: task,
         _watch: watch,
-    })
+    };
+    sync_pauses(&entry).await;
+    Ok(entry)
+}
+
+/// Pauses on the page's `debugger;` statements only while the tab has a
+/// breakpoint: the debugger is always attached, and anti-debugging pages
+/// loop on `debugger;` to freeze every tool (thread configuration
+/// `shouldPauseOnDebuggerStatement`; breakpoints and steps are unaffected).
+/// Best effort: an older Firefox without the option keeps pausing.
+async fn sync_pauses(entry: &TabDebugger) {
+    let pause = !entry.breakpoints.is_empty();
+    let params = serde_json::json!({
+        "configuration": { "shouldPauseOnDebuggerStatement": pause }
+    });
+    let debugger = &entry.debugger;
+    let actor = debugger.thread_configuration_actor();
+    let _ = debugger
+        .client()
+        .request(actor, "updateConfiguration", params)
+        .await;
 }
 
 /// An attach failure as the agent should read it.
@@ -314,8 +334,10 @@ pub(crate) async fn set_breakpoint(
             .set_breakpoint_resolved(&location, None)
             .await
             .map_err(|e| breakpoint_error(&e, &url, args.line_number))?;
+        let id = entry.breakpoints.add(bound.location.clone());
+        sync_pauses(entry).await;
         Ok(BreakpointSet {
-            id: entry.breakpoints.add(bound.location.clone()),
+            id,
             url: Some(url.clone()),
             line: args.line_number,
             column: bound.location.column,
@@ -448,6 +470,7 @@ pub(crate) async fn remove_breakpoint(
             .await
             .map_err(|e| rdp_error("removeBreakpoint", &e))?;
         entry.breakpoints.remove(&args.breakpoint_id);
+        sync_pauses(entry).await;
         Ok(())
     })
     .await?;
@@ -839,6 +862,33 @@ mod tests {
             .unwrap();
         assert_eq!(removal.params["location"], sent.params["location"]);
         assert!(second.to_string().contains("Breakpoints: none"), "{second}");
+        ts::stop(&handler).await;
+    }
+
+    /// AUD-EV-07 (Firefox): without breakpoints the page's `debugger;`
+    /// statements do not pause; the first breakpoint turns them on and
+    /// removing the last turns them off.
+    #[tokio::test]
+    async fn debugger_statements_pause_only_with_breakpoints() {
+        let mock = ts::firefox_with_debugger().await;
+        let rdp = mock.rdp().unwrap();
+        let handler = ts::handler(&mock);
+        let flags = || -> Vec<Value> {
+            rdp.requests()
+                .into_iter()
+                .filter(|r| r.request_type == "updateConfiguration")
+                .filter_map(|r| {
+                    r.params["configuration"]
+                        .get("shouldPauseOnDebuggerStatement")
+                        .cloned()
+                })
+                .collect()
+        };
+        set_breakpoint(breakpoint(3, None), &handler).await.unwrap();
+        assert_eq!(flags(), [json!(false), json!(true)]);
+        let remove = ts::call("remove_breakpoint", json!({"breakpoint_id": "bp-1"}));
+        remove_breakpoint(remove, &handler).await.unwrap();
+        assert_eq!(flags(), [json!(false), json!(true), json!(false)]);
         ts::stop(&handler).await;
     }
 
