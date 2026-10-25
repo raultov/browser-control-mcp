@@ -10,6 +10,15 @@ from a copy of its code: entries describe the differences from that release.
 
 ## [Unreleased]
 
+## [0.3.0-beta.3] - 2026-10-25
+
+Public **BETA**. Result of a tool-by-tool audit on real Chrome and Firefox:
+tools that reported success for an action that did not happen now fail or
+say what happened, secrets no longer leak into logs or replies, and a new
+`handle_dialog` tool closes JavaScript dialogs. Some replies change (marked
+in the entries below: `scroll`, `fill_input`, `click_element` errors,
+Chrome `open_tab` ids).
+
 ### Added
 
 - `handle_dialog` (both browsers): accepts or dismisses the JavaScript
