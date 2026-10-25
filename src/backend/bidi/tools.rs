@@ -14,7 +14,7 @@ use crate::handler::cdp_domains::input::fill_input::{
 };
 use crate::handler::cdp_domains::log::get_console_logs::GetConsoleLogsTool;
 use crate::handler::cdp_domains::network::get_network_logs::GetNetworkLogsTool;
-use crate::handler::cdp_domains::page::capture_screenshot::CaptureScreenshotTool;
+use crate::handler::cdp_domains::page::capture_screenshot::{self, CaptureScreenshotTool};
 use crate::handler::cdp_domains::page::navigate::NavigateTool;
 use crate::handler::cdp_domains::page::scroll::ScrollTool;
 use crate::handler::cdp_domains::runtime::evaluate_js::EvaluateJsTool;
@@ -23,9 +23,7 @@ use crate::handler::chrome_instance::registry::InstanceDescriptor;
 use crate::handler::chrome_instance::{close_instance, open_instance, open_tab, switch_tab};
 use crate::handler::{McpHandler, TargetArgs, parse_args};
 use crate::util::sync::{read, write};
-use rust_mcp_sdk::schema::{
-    CallToolError, CallToolRequestParams, CallToolResult, ContentBlock, ImageContent,
-};
+use rust_mcp_sdk::schema::{CallToolError, CallToolRequestParams, CallToolResult};
 use serde_json::{Value, json};
 use std::sync::Arc;
 
@@ -178,19 +176,29 @@ pub(crate) async fn capture_screenshot(
     let args: CaptureScreenshotTool = parse_args(params)?;
     let (_, _, tab) = target(handler, &ids(&args.instance_id, &args.tab_id)).await?;
     let format = args.format.clone().unwrap_or_else(|| "png".into());
+    let full_page = args.full_page.unwrap_or(false);
+    let (clip, note) = if full_page {
+        let size = page::run_snippet(&tab.tab, crate::util::js::DOCUMENT_SIZE).await?;
+        let side = |key: &str| size[key].as_f64().unwrap_or_default();
+        let (width, height) = (side("width"), side("height"));
+        match capture_screenshot::full_page_note(width, height) {
+            Some(note) => {
+                let max = capture_screenshot::FULL_PAGE_MAX;
+                (Some((width.min(max), height.min(max))), Some(note))
+            }
+            None => (None, None),
+        }
+    } else {
+        (None, None)
+    };
     let request = page::ShotRequest {
         format: &format,
         quality: args.quality,
-        full_page: args.full_page.unwrap_or(false),
+        full_page,
+        clip,
     };
     let data = page::screenshot(&tab.tab, &request).await?;
-    let image = ImageContent::new(data, format!("image/{format}"), None, None);
-    Ok(CallToolResult {
-        content: vec![ContentBlock::ImageContent(image)],
-        is_error: None,
-        meta: None,
-        structured_content: None,
-    })
+    Ok(capture_screenshot::image_reply(data, &format, note))
 }
 
 // ---- observation ----
@@ -786,6 +794,41 @@ mod tests {
             .params;
         assert_eq!(sent, &json!({"context": "ctx-0", "accept": false}));
         assert!(tab.dialog.lock().await.open.is_none());
+        ts::stop(&handler).await;
+    }
+
+    /// AUD-IN-22 (Firefox): a full-page capture of a tall page is clipped
+    /// to FULL_PAGE_MAX and the reply says so.
+    #[tokio::test]
+    async fn tall_full_page_is_cut_with_a_note() {
+        use crate::handler::cdp_domains::page::capture_screenshot::FULL_PAGE_MAX;
+        // Given a page 1905 x 30000 px
+        let mock = MockFirefox::start(false).await.unwrap();
+        mock.bidi().respond_with("script.evaluate", |_| {
+            evaluate_success(ts::remote(&json!({"width": 1905, "height": 30000})))
+        });
+        mock.bidi().respond_with(
+            "browsingContext.captureScreenshot",
+            |_| json!({"type": "success", "result": {"data": "iVBO"}}),
+        );
+        let handler = ts::handler(&mock);
+        // When the whole page is captured
+        let args = json!({"full_page": true});
+        let reply = capture_screenshot(call("capture_screenshot", args), &handler)
+            .await
+            .unwrap();
+        // Then the capture is a box clip of the document's top, with a note
+        let sent = &mock
+            .bidi()
+            .commands_named("browsingContext.captureScreenshot")[0]
+            .params;
+        assert_eq!(sent["origin"], "document");
+        assert_eq!(
+            sent["clip"],
+            json!({"type": "box", "x": 0, "y": 0, "width": 1905.0, "height": FULL_PAGE_MAX})
+        );
+        let note = &reply.content[1].as_text_content().unwrap().text;
+        assert!(note.contains("16384 of 30000"), "{note}");
         ts::stop(&handler).await;
     }
 

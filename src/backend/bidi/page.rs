@@ -317,6 +317,9 @@ pub(crate) struct ShotRequest<'a> {
     pub(crate) quality: Option<u32>,
     /// The whole document instead of the viewport.
     pub(crate) full_page: bool,
+    /// Width and height of the document's top-left box to capture, when the
+    /// whole document is too large.
+    pub(crate) clip: Option<(f64, f64)>,
 }
 
 /// `browsingContext.captureScreenshot` params for a request (spike H7).
@@ -330,7 +333,12 @@ pub(crate) fn screenshot_params(context: &str, req: &ShotRequest<'_>) -> Value {
     } else {
         "viewport"
     };
-    json!({"context": context, "origin": origin, "format": format})
+    let mut params = json!({"context": context, "origin": origin, "format": format});
+    if let (Some((width, height)), Some(map)) = (req.clip, params.as_object_mut()) {
+        let clip = json!({"type": "box", "x": 0, "y": 0, "width": width, "height": height});
+        map.insert("clip".into(), clip);
+    }
+    params
 }
 
 /// Base64 image data of the tab.
@@ -382,6 +390,7 @@ mod tests {
                 format: "png",
                 quality: None,
                 full_page: false,
+                clip: None,
             },
         );
         assert_eq!(
@@ -394,9 +403,14 @@ mod tests {
                 format: "jpeg",
                 quality: Some(80),
                 full_page: true,
+                clip: Some((800.0, 16384.0)),
             },
         );
         assert_eq!(jpeg["origin"], "document");
+        assert_eq!(
+            jpeg["clip"],
+            json!({"type": "box", "x": 0, "y": 0, "width": 800.0, "height": 16384.0})
+        );
         assert_eq!(
             jpeg["format"],
             json!({"type": "image/jpeg", "quality": 0.8})

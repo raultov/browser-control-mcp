@@ -50,7 +50,7 @@ see the note.
 | `reload` | ✓ | ✓ | |
 | `scroll` | ✓ | ✓ | reports the window positions before and after |
 | `inspect_dom` | ✓ | ✓ | at most 100 000 characters without `query` (cut in the page) |
-| `capture_screenshot` | ✓ | ✓ | |
+| `capture_screenshot` | ✓ | ✓ | `full_page` at most 16 384 px per side (a text note says when cut) |
 | `click_element` | ✓ | ✓ | scrolls the element into view; fails without clicking when it is hidden or covered |
 | `fill_input` | ✓ | ✓ | picks `<select>` options; fails without typing on elements that cannot take the text; Chrome inserts the text, Firefox types keys |
 | `handle_dialog` | ✓ | ✓ | accepts or dismisses the open `alert` / `confirm` / `prompt` / `beforeunload` dialog |

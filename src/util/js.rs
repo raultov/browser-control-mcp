@@ -151,6 +151,12 @@ pub fn dom_query(query: Option<&str>, before: usize, after: usize) -> String {
     )
 }
 
+/// The document's scrolling size in CSS pixels, `{width, height}` (what a
+/// full-page capture covers).
+pub const DOCUMENT_SIZE: &str = "(() => { const root = document.documentElement, body = document.body; \
+     return { width: Math.max(root.scrollWidth, body ? body.scrollWidth : 0), \
+     height: Math.max(root.scrollHeight, body ? body.scrollHeight : 0) }; })()";
+
 /// The page metrics JavaScript can read without injection (Firefox's
 /// `get_performance_metrics`), named like Chrome's `Performance.getMetrics`
 /// where they mean the same: `Nodes` (nodes of the document tree), `Frames`

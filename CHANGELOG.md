@@ -12,6 +12,9 @@ from a copy of its code: entries describe the differences from that release.
 
 ### Fixed
 
+- `capture_screenshot` with `full_page` captures at most 16 384 CSS pixels
+  per side, from the top left, and then adds a text note naming the
+  document's size (a 30 000 px page came back whole).
 - Observation buffers keep a bounded copy of each item: a console message
   keeps 10 000 characters, a WebSocket payload 64 000 (`payload_len` is
   the whole length), custom event params over 64 000 characters of JSON
