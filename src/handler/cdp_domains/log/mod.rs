@@ -130,6 +130,19 @@ pub(crate) async fn process_log_event(event: &WsResponse, state: &Arc<Mutex<LogS
     }
 }
 
+/// A console level in the vocabulary both browsers report, lowercase:
+/// Firefox's console API names `console.warn` `warn` where Chrome (and
+/// Firefox's own warnings) say `warning`, so one `level_filter` works on
+/// both.
+pub(crate) fn canonical_level(level: &str) -> String {
+    let level = level.to_lowercase();
+    if level == "warn" {
+        "warning".to_string()
+    } else {
+        level
+    }
+}
+
 /// The URL of a new top-level document (`Page.frameNavigated` of the main
 /// frame, which Chrome sends at commit, before the page's scripts run).
 fn main_frame_commit<'a>(method: &str, params: &'a Value) -> Option<&'a str> {

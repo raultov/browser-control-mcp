@@ -18,7 +18,7 @@ pub struct GetConsoleLogsTool {
     #[serde(default)]
     pub clear: Option<bool>,
 
-    /// Filter logs by severity level (case-insensitive). Constraints: 'error', 'warning', 'info', 'log', or similar CDP log level. Interactions: when provided, returns only matching level; empty returns all. Defaults to: None (no filtering).
+    /// Filter logs by severity level (case-insensitive). Constraints: 'error', 'warning' (or 'warn'), 'info', 'log', 'debug', or another level the browser reports. Interactions: when provided, returns only matching level; empty returns all. Defaults to: None (no filtering).
     #[serde(default)]
     pub level_filter: Option<String>,
 
@@ -43,13 +43,13 @@ impl GetConsoleLogsTool {
                 .unwrap_or(usize::MAX)
                 .clamp(1, crate::handler::MAX_CONSOLE_MESSAGES)
         });
-        let level = self.level_filter.as_deref().map(str::to_lowercase);
+        let level = self.level_filter.as_deref().map(super::canonical_level);
         let mut st = log_state.lock().await;
         let matching: Vec<usize> = (0..st.messages.len())
             .filter(|&i| {
                 level
                     .as_deref()
-                    .is_none_or(|l| st.messages[i].level.to_lowercase() == l)
+                    .is_none_or(|l| super::canonical_level(&st.messages[i].level) == l)
             })
             .collect();
         let total = matching.len();
@@ -155,6 +155,29 @@ mod tests {
         // And nothing is cut when everything fits
         let all = read(&state, json!({"limit": 1000})).await;
         assert_eq!(all["truncated"], false);
+    }
+
+    /// AUD-OB-02: `warn` and `warning` name the same level, so one filter
+    /// works on both browsers (Firefox's console API calls it `warn`).
+    #[tokio::test]
+    async fn warn_and_warning_filter_the_same_messages() {
+        let mut state = LogState::default();
+        for (level, text) in [("warning", "w"), ("log", "l")] {
+            state.push_message(ConsoleMessage {
+                source: "console-api".into(),
+                level: level.into(),
+                text: text.into(),
+                timestamp: 0.0,
+                url: None,
+                line_number: None,
+                channel: Default::default(),
+            });
+        }
+        let state = Arc::new(Mutex::new(state));
+        for filter in ["warning", "warn", "WARN"] {
+            let reply = read(&state, json!({"level_filter": filter})).await;
+            assert_eq!(texts(&reply), ["w"], "{filter}");
+        }
     }
 
     /// CON-06 (F-24): `clear` removes only the returned messages.

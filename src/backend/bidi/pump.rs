@@ -171,7 +171,8 @@ pub(crate) fn console_message(params: &Value) -> ConsoleMessage {
         level: if javascript {
             "error".to_string()
         } else {
-            opt_string(params, "method").unwrap_or_else(|| string_or_empty(params, "level"))
+            let method = str_field(params, "method").or_else(|| str_field(params, "level"));
+            crate::handler::cdp_domains::log::canonical_level(method.unwrap_or_default())
         },
         text: string_or_empty(params, "text"),
         timestamp: params
@@ -318,6 +319,16 @@ mod tests {
         assert_eq!(messages.len(), 1);
         assert!(messages[0].text.contains("hello from probe"));
         assert_eq!(messages[0].source, "console-api");
+    }
+
+    /// AUD-OB-02: `console.warn` is level `warning`, as on Chrome and as
+    /// Firefox's own warnings (BiDi names the method `warn`).
+    #[test]
+    fn console_warn_is_level_warning() {
+        let params = json!({"type": "console", "method": "warn", "level": "warn", "text": "w", "timestamp": 1});
+        assert_eq!(console_message(&params).level, "warning");
+        let params = json!({"type": "console", "method": "log", "level": "info", "text": "l", "timestamp": 1});
+        assert_eq!(console_message(&params).level, "log");
     }
 
     /// BKD-08: tab events register and drop tabs.
