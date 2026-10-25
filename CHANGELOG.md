@@ -10,6 +10,15 @@ from a copy of its code: entries describe the differences from that release.
 
 ## [Unreleased]
 
+## [0.3.1-beta.3] - 2026-10-25
+
+Public **BETA**. Size limits: large pages, results, scripts, logs and
+screenshots no longer flood the agent or drop the browser connection, and
+Chrome reconnects by itself when a reply over 16 MB drops it. Some replies
+change (cut texts end with a `[cut: ...]` or `[Truncated: ...]` note,
+`evaluate_js` may say `truncated: true`, `inspect_dom` positions are
+characters).
+
 ### Fixed
 
 - `capture_screenshot` with `full_page` captures at most 16 384 CSS pixels
