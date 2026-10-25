@@ -292,13 +292,23 @@ pub(crate) async fn set_breakpoint(
     };
     let session = handler.firefox(args.instance_id.as_deref()).await?;
     let set = with_debugger(&session, args.tab_id.as_deref(), async |entry| {
-        // bidi-lite resolves a column-less location to the first breakable
-        // column of the line (every source with the URL) and says where.
+        let target = BreakpointTarget {
+            url: &url,
+            line,
+            agent_line: args.line_number,
+        };
+        let column = bound_column(&entry.debugger, &target, args.column_number).await?;
         let location = BreakpointLocation {
             source_url: url.clone(),
             line,
-            column: args.column_number,
+            column: Some(column),
         };
+        if let Some(id) = entry.breakpoints.id_of(&location) {
+            return Err(BackendError::InvalidArgument(format!(
+                "Breakpoint {id} is already set there (line_number {}, column_number {column} of {url}): Firefox keeps one breakpoint per location. Use {id}, or remove it first.",
+                args.line_number
+            )));
+        }
         let bound = entry
             .debugger
             .set_breakpoint_resolved(&location, None)
@@ -314,6 +324,89 @@ pub(crate) async fn set_breakpoint(
     })
     .await?;
     Ok(set.reply())
+}
+
+/// A line a breakpoint is asked for.
+struct BreakpointTarget<'a> {
+    url: &'a str,
+    /// 1-based, as RDP counts.
+    line: u32,
+    /// 0-based, as the agent gave it (for messages).
+    agent_line: u32,
+}
+
+/// The column a breakpoint binds to. Firefox silently ignores a breakpoint
+/// at a column it cannot break on, so once a script with the URL is loaded
+/// the column is the first breakable one at or after the asked one (as
+/// Chrome does), or the first of the line when none is asked. Without a
+/// loaded script a given column is kept (it binds when the script loads).
+async fn bound_column(
+    debugger: &Debugger,
+    target: &BreakpointTarget<'_>,
+    asked: Option<u32>,
+) -> Result<u32, BackendError> {
+    let BreakpointTarget {
+        url, agent_line, ..
+    } = *target;
+    match (breakable_columns(debugger, url, target.line).await?, asked) {
+        (None, Some(asked)) => Ok(asked),
+        (None, None) => Err(BackendError::InvalidArgument(format!(
+            "no loaded script has the URL {url}: give column_number, or set the breakpoint once the script is loaded"
+        ))),
+        (Some(columns), asked) => {
+            let from = asked.unwrap_or(0);
+            columns
+                .into_iter()
+                .filter(|c| *c >= from)
+                .min()
+                .ok_or_else(|| {
+                    let after =
+                        asked.map_or(String::new(), |c| format!(" at or after column_number {c}"));
+                    BackendError::InvalidArgument(format!(
+                        "line_number {agent_line} of {url} has no breakable position{after}"
+                    ))
+                })
+        }
+    }
+}
+
+/// The breakable columns of `line` (1-based) in every loaded source with
+/// `url` (a page has one source per inline script), or `None` when none is
+/// loaded.
+async fn breakable_columns(
+    debugger: &Debugger,
+    url: &str,
+    line: u32,
+) -> Result<Option<Vec<u32>>, BackendError> {
+    let sources: Vec<_> = debugger
+        .sources()
+        .into_iter()
+        .filter(|source| source.url.as_deref() == Some(url))
+        .collect();
+    if sources.is_empty() {
+        return Ok(None);
+    }
+    let query = serde_json::json!({ "query": {
+        "start": { "line": line, "column": 0 },
+        "end": { "line": line.saturating_add(1), "column": 0 },
+    } });
+    let mut columns = Vec::new();
+    for source in sources {
+        let reply = debugger
+            .client()
+            .request(&source.actor, "getBreakpointPositionsCompressed", &query)
+            .await
+            .map_err(|e| rdp_error("getBreakpointPositionsCompressed", &e))?;
+        let positions = reply.body["positions"][line.to_string()].as_array();
+        columns.extend(
+            positions
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_u64)
+                .filter_map(|c| u32::try_from(c).ok()),
+        );
+    }
+    Ok(Some(columns))
 }
 
 /// A refused breakpoint, worded with the agent's 0-based line (bidi-lite's
@@ -568,7 +661,8 @@ mod tests {
 
     const SCRIPT: &str = "https://example.com/test.html";
 
-    /// `set_breakpoint` at 0-based `line` (column given, so no source lookup).
+    /// `set_breakpoint` at 0-based `line`, column 4 (test.html binds it to
+    /// its breakable column 10).
     fn breakpoint(line: u32, tab: Option<&str>) -> CallToolRequestParams {
         let mut args = json!({"url": SCRIPT, "line_number": line, "column_number": 4});
         if let Some(tab) = tab {
@@ -776,6 +870,65 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(ts::json_of(&reply)["resolved"], false);
+        ts::stop(&handler).await;
+    }
+
+    /// AUD-DB-03: a given column Firefox cannot break on moves to the next
+    /// breakable one (Firefox ignored it silently, so the page never paused).
+    #[tokio::test]
+    async fn given_column_moves_to_a_breakable_one() {
+        // Given the mock's loaded test.html, breakable at column 10 only
+        let mock = ts::firefox_with_debugger().await;
+        let rdp = mock.rdp().unwrap();
+        let handler = ts::handler(&mock);
+        // When set_breakpoint asks for column 4 of line 6
+        let args = json!({"url": SCRIPT, "line_number": 6, "column_number": 4});
+        let reply = set_breakpoint(ts::call("set_breakpoint", args), &handler)
+            .await
+            .unwrap();
+        // Then column 10 was sent and reported
+        assert_eq!(ts::json_of(&reply)["column_number"], 10);
+        let sent = rdp.wait_for_request("setBreakpoint", WAIT).await.unwrap();
+        assert_eq!(sent.params["location"]["column"], 10);
+        // And a column past every breakable one is an error
+        let args = json!({"url": SCRIPT, "line_number": 6, "column_number": 11});
+        let error = set_breakpoint(ts::call("set_breakpoint", args), &handler)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            error,
+            format!(
+                "line_number 6 of {SCRIPT} has no breakable position at or after column_number 11"
+            )
+        );
+        ts::stop(&handler).await;
+    }
+
+    /// AUD-DB-04: Firefox keeps one breakpoint per location, so a second
+    /// one there is refused naming the first (removing either used to
+    /// remove both).
+    #[tokio::test]
+    async fn duplicate_breakpoint_is_refused() {
+        let mock = ts::firefox_with_debugger().await;
+        let rdp = mock.rdp().unwrap();
+        let handler = ts::handler(&mock);
+        let args = || ts::call("set_breakpoint", json!({"url": SCRIPT, "line_number": 6}));
+        set_breakpoint(args(), &handler).await.unwrap();
+        let error = set_breakpoint(args(), &handler)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.starts_with("Breakpoint bp-1 is already set there"),
+            "{error}"
+        );
+        let sets = rdp
+            .requests()
+            .into_iter()
+            .filter(|r| r.request_type == "setBreakpoint")
+            .count();
+        assert_eq!(sets, 1);
         ts::stop(&handler).await;
     }
 

@@ -62,6 +62,17 @@ impl<T> BreakpointIds<T> {
     pub(crate) fn remove(&mut self, id: &str) -> Option<T> {
         self.by_id.remove(id)
     }
+
+    /// The id already registered for `native`, if any.
+    pub(crate) fn id_of(&self, native: &T) -> Option<&str>
+    where
+        T: PartialEq,
+    {
+        self.by_id
+            .iter()
+            .find(|(_, known)| *known == native)
+            .map(|(id, _)| id.as_str())
+    }
 }
 
 /// Where a breakpoint was set.

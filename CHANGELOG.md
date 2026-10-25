@@ -25,6 +25,13 @@ from a copy of its code: entries describe the differences from that release.
   at the end of the previous line (both browsers); matches in inline scripts
   were counted from the script, not the page (Chrome); columns now count
   UTF-16 units, as the browsers do, instead of bytes.
+- Firefox `set_breakpoint` no longer sets breakpoints that never fire. A
+  `column_number` Firefox cannot break on (it ignores those silently) moves
+  to the next breakable column of the line once the script is loaded, as on
+  Chrome, and the reply says where; a column past every breakable one is an
+  error. A second breakpoint at the same location is refused naming the
+  first: Firefox keeps one per location, so removing either id used to
+  remove both.
 - `fill_input` no longer types into the wrong element or reports a fill
   that did not happen (both browsers). An element that cannot take the text
   (a plain element, disabled, read-only, a non-text input such as a
