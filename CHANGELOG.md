@@ -12,6 +12,9 @@ from a copy of its code: entries describe the differences from that release.
 
 ### Fixed
 
+- Security: with `RUST_LOG=trace` the MCP transport logged every incoming
+  tool call in full, including the `enable_proxy_auth` password and raw
+  protocol params. Its logs are now capped at `info`, like `cdp-lite`'s.
 - `fill_input` no longer types into the wrong element or reports a fill
   that did not happen (both browsers). An element that cannot take the text
   (a plain element, disabled, read-only, a non-text input such as a
