@@ -15,6 +15,12 @@ from a copy of its code: entries describe the differences from that release.
 - Security: with `RUST_LOG=trace` the MCP transport logged every incoming
   tool call in full, including the `enable_proxy_auth` password and raw
   protocol params. Its logs are now capped at `info`, like `cdp-lite`'s.
+- Security: copies of the user's cookies (`copy_cookies`) could stay in the
+  temp directory: when a launch failed, when a seed was replaced before
+  use, when a browser failed to stop, when a partial copy failed, and at
+  shutdown after the seeded Chrome had crashed. The seeded profile now
+  deletes itself whenever it is dropped, and shutdown drops the seed of an
+  instance that is no longer running.
 - Security: `get_network_logs` returned request bodies (login forms with
   passwords, token exchanges) and API-key headers such as `X-Api-Key` in
   full by default. Request bodies and every header whose name contains

@@ -61,9 +61,19 @@ pub(crate) struct CookieSource {
     pub(crate) profile: String,
 }
 
-#[derive(Debug, Clone)]
+/// A seeded profile directory: a copy of the user's cookies and the key to
+/// decrypt them. The report owns the directory and deletes it when dropped,
+/// so no error, replacement, restart or shutdown path can leave the copy
+/// behind (hence no `Clone`).
+#[derive(Debug)]
 pub(crate) struct SeedReport {
     pub(crate) dir: PathBuf,
+}
+
+impl Drop for SeedReport {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.dir);
+    }
 }
 
 pub(crate) fn source_roots(os: Os, env: &dyn EnvProvider) -> Vec<PathBuf> {
@@ -235,6 +245,16 @@ pub(crate) fn current_uid() -> Option<u32> {
 
 const SEED_PREFIX: &str = "browser-control-mcp-profile-";
 
+/// A real seed directory holding a fake cookie DB, for the tests that check
+/// it is deleted.
+#[cfg(test)]
+pub(crate) fn test_seed() -> SeedReport {
+    let dir = create_seed_dir().unwrap();
+    fs::create_dir_all(dir.join("Default")).unwrap();
+    fs::write(dir.join("Default").join("Cookies"), b"not a real db").unwrap();
+    SeedReport { dir }
+}
+
 /// Creates a temporary profile directory with restricted permissions (`0700` on Unix).
 pub(crate) fn create_seed_dir() -> Result<PathBuf, String> {
     sweep_orphaned_seed_dirs();
@@ -358,7 +378,11 @@ pub(crate) fn seed_cookies(
                 source.root.display()
             )
         })?;
-    let seed_dir = create_seed_dir()?;
+    // Owned from the start: a failed copy below deletes the partial seed.
+    let report = SeedReport {
+        dir: create_seed_dir()?,
+    };
+    let seed_dir = report.dir.clone();
     let dst_default = seed_dir.join("Default");
     fs::create_dir_all(&dst_default)
         .map_err(|e| format!("Failed to create seed subdirectory: {e}"))?;
@@ -372,7 +396,7 @@ pub(crate) fn seed_cookies(
         copy_sidecars(&cookies_db, &dst, fs_probe);
     }
     merge_local_state(&source.root, &seed_dir, fs_probe);
-    Ok(SeedReport { dir: seed_dir })
+    Ok(report)
 }
 
 /// Chrome reads the cookie DB from `<profile>/Cookies` (older layouts) or
@@ -713,6 +737,17 @@ mod tests {
         // (`/home/test\.config/google-chrome` on Windows).
         let searched = PathBuf::from("/home/test").join(".config/google-chrome");
         assert!(err.contains(&searched.display().to_string()), "{err}");
+    }
+
+    /// AUD-LC-01: a seed report owns its directory (a copy of the user's
+    /// cookies): dropping it deletes the directory.
+    #[test]
+    fn dropping_a_seed_report_deletes_its_directory() {
+        let seed = test_seed();
+        let dir = seed.dir.clone();
+        assert!(dir.join("Default").join("Cookies").exists());
+        drop(seed);
+        assert!(!dir.exists());
     }
 
     #[test]

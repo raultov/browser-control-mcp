@@ -43,15 +43,17 @@ impl crate::handler::chrome_instance::ChromeManager for CdpBrowserManager {
     }
 
     async fn stop_instance(&mut self) -> crate::handler::chrome_instance::ManagerResult<()> {
-        if let Some(browser) = self.browser.take() {
-            browser.stop().await?;
-        }
-        if let Some(seed) = self.seed_report.take() {
-            let _ = std::fs::remove_dir_all(&seed.dir);
+        let stopped = match self.browser.take() {
+            Some(browser) => browser.stop().await,
+            None => Ok(()),
+        };
+        // The copy of the user's cookies goes whether or not the browser
+        // stopped cleanly (dropping the report deletes it).
+        if self.seed_report.take().is_some() {
             self.params.set_seed_profile(None);
         }
         self.resolved_port = self.params.configured_port();
-        Ok(())
+        stopped
     }
 
     async fn client(&self) -> crate::handler::chrome_instance::ManagerResult<CdpClient> {
@@ -236,6 +238,8 @@ pub(crate) struct FakeBrowser {
     pub(crate) alive: std::sync::atomic::AtomicBool,
     pub(crate) stopped: std::sync::atomic::AtomicBool,
     pub(crate) stop_calls: std::sync::atomic::AtomicU32,
+    /// Makes `stop` fail, as a browser that cannot be killed.
+    pub(crate) fail_stop: std::sync::atomic::AtomicBool,
 }
 
 #[cfg(test)]
@@ -246,6 +250,7 @@ impl FakeBrowser {
             alive: std::sync::atomic::AtomicBool::new(true),
             stopped: std::sync::atomic::AtomicBool::new(false),
             stop_calls: std::sync::atomic::AtomicU32::new(0),
+            fail_stop: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -282,6 +287,11 @@ impl ManagedBrowser for FakeBrowser {
     async fn stop(&self) -> crate::handler::chrome_instance::ManagerResult<()> {
         self.stop_calls
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if self.fail_stop.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(crate::handler::chrome_instance::manager_error!(
+                "FakeBrowser: stop failed"
+            ));
+        }
         self.stopped
             .store(true, std::sync::atomic::Ordering::SeqCst);
         Ok(())
@@ -501,6 +511,34 @@ mod tests {
         let mut mgr = CdpBrowserManager::new(params(9222), Box::new(launcher));
         mgr.set_proxy(Some("http://proxy.example.com:8080".into()));
         mgr.ensure_instance().await.unwrap();
+    }
+
+    /// AUD-LC-01 / AUD-EV-09: a seed replaced before use, and the seed of a
+    /// browser whose stop fails, are deleted (copies of the user's cookies
+    /// used to stay in the temp directory).
+    #[tokio::test]
+    async fn seeds_are_deleted_when_replaced_or_when_stop_fails() {
+        // Given a manager seeded twice before its first launch
+        let browser = FakeBrowser::new(9222);
+        browser
+            .fail_stop
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let mut mgr = CdpBrowserManager::new(params(9222), Box::new(FakeLauncher::new(browser)));
+        let (first, second) = (
+            crate::handler::chrome_instance::cookie_seed::test_seed(),
+            crate::handler::chrome_instance::cookie_seed::test_seed(),
+        );
+        let (first_dir, second_dir) = (first.dir.clone(), second.dir.clone());
+        mgr.set_seed_profile(Some(first));
+        mgr.set_seed_profile(Some(second));
+        // Then the replaced one is gone
+        assert!(!first_dir.exists());
+        assert!(second_dir.exists());
+        // And when the browser launched with it fails to stop
+        mgr.ensure_instance().await.unwrap();
+        assert!(mgr.stop_instance().await.is_err());
+        // Then its seed is gone too
+        assert!(!second_dir.exists());
     }
 
     #[tokio::test]

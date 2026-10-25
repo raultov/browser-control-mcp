@@ -53,6 +53,9 @@ async fn stop_one(session: Arc<BrowserSession>, timeout: Duration) -> Result<(),
         if manager.is_running().await {
             manager.stop_instance().await.map_err(|e| e.to_string())
         } else {
+            // A crashed or never-launched browser can still hold a seeded
+            // profile (a copy of the user's cookies): drop it.
+            manager.set_seed_profile(None);
             Ok(())
         }
     };
@@ -160,6 +163,26 @@ mod tests {
         for session in [a, b, c] {
             assert!(!is_running(&session).await);
         }
+    }
+
+    /// AUD-LC-01: the seed of an instance that is no longer running (Chrome
+    /// crashed, or never launched) is deleted at shutdown too.
+    #[tokio::test]
+    async fn shutdown_deletes_the_seed_of_a_stopped_instance() {
+        // Given a seeded instance whose browser is not running
+        let registry = Arc::new(Registry::new(8));
+        let seed = crate::handler::chrome_instance::cookie_seed::test_seed();
+        let dir = seed.dir.clone();
+        let mut manager = MockChromeManager::new(0);
+        manager.set_seed_profile(Some(seed));
+        add(&registry, "seeded", Arc::new(Mutex::new(manager)));
+        // When the shutdown hook runs
+        let failures = ShutdownHook { registry }
+            .stop_all(Duration::from_secs(1))
+            .await;
+        // Then the copy of the cookies is gone
+        assert!(failures.is_empty(), "{failures:?}");
+        assert!(!dir.exists());
     }
 
     /// SHT-02: A hung backend does not block shutdown.
