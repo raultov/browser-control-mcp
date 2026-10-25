@@ -49,7 +49,7 @@ see the note.
 | `navigate` | ✓ | ✓ | |
 | `reload` | ✓ | ✓ | |
 | `scroll` | ✓ | ✓ | reports the window positions before and after |
-| `inspect_dom` | ✓ | ✓ | |
+| `inspect_dom` | ✓ | ✓ | at most 100 000 characters without `query` (cut in the page) |
 | `capture_screenshot` | ✓ | ✓ | |
 | `click_element` | ✓ | ✓ | scrolls the element into view; fails without clicking when it is hidden or covered |
 | `fill_input` | ✓ | ✓ | picks `<select>` options; fails without typing on elements that cannot take the text; Chrome inserts the text, Firefox types keys |

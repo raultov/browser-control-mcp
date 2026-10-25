@@ -3,11 +3,10 @@ use rust_mcp_sdk::{
     macros,
     schema::{CallToolError, CallToolRequestParams, CallToolResult},
 };
-use serde_json::json;
 
 #[macros::mcp_tool(
     name = "inspect_dom",
-    description = "Retrieves the complete HTML document or a contextual snippet around a search query. Side effects: none (read-only). Prerequisites: requires an active Chrome tab with loaded DOM. Returns: full HTML or snippet with context markers. Use this to inspect page structure, find elements by text, or verify rendering. Alternatives: 'evaluate_js' for complex DOM queries, 'capture_screenshot' for visual verification."
+    description = "Retrieves the HTML document (outerHTML of the top document; shadow roots and iframes are not included) or a contextual snippet around a search query. Side effects: none (read-only). Prerequisites: requires an active tab with loaded DOM. Returns: the HTML, at most 100000 characters (a longer document starts with a [Truncated: ...] note), or the first match with its position (characters) and context markers. Use this to inspect page structure, find elements by text, or verify rendering. Alternatives: 'evaluate_js' for complex DOM queries, 'capture_screenshot' for visual verification."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct InspectDomTool {
@@ -17,9 +16,9 @@ pub struct InspectDomTool {
     pub tab_id: Option<String>,
     /// Text pattern to search for in the DOM (case-sensitive). Constraints: any string. Interactions: when provided, returns context snippet instead of full HTML. Defaults to: None (returns full HTML if omitted).
     pub query: Option<String>,
-    /// Characters to include before the match. Constraints: non-negative integer. Interactions: only applies if 'query' provided. Defaults to: 200.
+    /// Characters to include before the match. Constraints: non-negative integer, at most 10000. Interactions: only applies if 'query' provided. Defaults to: 200.
     pub before: Option<u32>,
-    /// Characters to include after the match. Constraints: non-negative integer. Interactions: only applies if 'query' provided. Defaults to: 200.
+    /// Characters to include after the match. Constraints: non-negative integer, at most 10000. Interactions: only applies if 'query' provided. Defaults to: 200.
     pub after: Option<u32>,
 }
 
@@ -28,57 +27,29 @@ impl InspectDomTool {
         params: CallToolRequestParams,
         handler: &McpHandler,
     ) -> Result<CallToolResult, CallToolError> {
-        let args_value = serde_json::Value::Object(params.arguments.unwrap_or_default());
-        let args: InspectDomTool = serde_json::from_value(args_value)
-            .map_err(|e| CallToolError::from_message(e.to_string()))?;
-        let session = handler.session(args.instance_id.clone()).await?;
-        let target = session.target(args.tab_id.clone()).await?;
+        let args: InspectDomTool = crate::handler::parse_args(params)?;
+        let target =
+            crate::handler::resolve_target(handler, args.instance_id.clone(), args.tab_id.clone())
+                .await?;
+        let (before, after) = args.context();
+        let expression = crate::util::js::dom_query(args.query.as_deref(), before, after);
+        let outcome = crate::handler::snippet_value(&target, &expression).await?;
+        let report = crate::util::text::dom_report(&outcome, args.query.as_deref(), before, after);
+        Ok(CallToolResult::text_content(vec![report.into()]))
+    }
 
-        let result = target
-            .send_raw_command(
-                "Runtime.evaluate",
-                json!({
-                    "expression": "document.documentElement.outerHTML",
-                    "returnByValue": true
-                }),
-            )
-            .await;
-
-        match result {
-            Ok(val) => {
-                let html = val
-                    .result
-                    .as_ref()
-                    .and_then(|r| r.get("result"))
-                    .and_then(|r| r.get("value"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-
-                let report = crate::util::text::dom_query_report(
-                    html,
-                    args.query.as_deref(),
-                    args.before.unwrap_or(200) as usize,
-                    args.after.unwrap_or(200) as usize,
-                );
-                Ok(CallToolResult::text_content(vec![report.into()]))
-            }
-            Err(e) => Err(CallToolError::from_message(crate::handler::cdp_failure(
-                "CDP Error",
-                &e,
-            ))),
-        }
+    /// Characters of context before and after a match (defaults 200).
+    pub(crate) fn context(&self) -> (usize, usize) {
+        let chars = |n: Option<u32>| usize::try_from(n.unwrap_or(200)).unwrap_or(usize::MAX);
+        (chars(self.before), chars(self.after))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::handler::cdp_domains::tests::spawn_mock_chrome_server;
-    use crate::handler::chrome_instance::MockChromeManager;
     use rust_mcp_sdk::schema::CallToolRequestParams;
     use serde_json::json;
-    use std::sync::Arc;
-    use tokio::sync::Mutex;
 
     #[tokio::test]
     async fn test_inspect_dom_params_deserialization() {
@@ -95,79 +66,51 @@ mod tests {
         assert!(tool.is_ok());
     }
 
-    #[tokio::test]
-    async fn test_inspect_dom_handle_full() {
-        let port = spawn_mock_chrome_server().await;
-
-        let mut handler = McpHandler::new_test();
-        Arc::get_mut(&mut handler.default_session)
-            .unwrap()
-            .chrome_manager = Arc::new(Mutex::new(MockChromeManager::new(port)));
-
-        let params: CallToolRequestParams = serde_json::from_value(json!({
-            "name": "inspect_dom",
-            "arguments": {}
-        }))
-        .unwrap();
-
-        let result = InspectDomTool::handle(params, &handler).await;
-        assert!(result.is_ok(), "Handle should succeed: {:?}", result.err());
-
-        let call_result = result.unwrap();
-        let content_str = format!("{:?}", call_result.content);
-        assert!(content_str.contains("Hello World"));
+    /// A Chrome mock whose inspect_dom snippet answers `outcome`.
+    async fn page_answering(
+        outcome: serde_json::Value,
+    ) -> &'static cdp_browser_lite::test_support::mock_devtools::MockDevTools {
+        let mock = crate::handler::cdp_domains::tests::spawn_recording_mock().await;
+        mock.respond_with("Runtime.evaluate", move |_| outcome.clone());
+        mock
     }
 
-    #[tokio::test]
-    async fn test_inspect_dom_handle_search() {
-        let port = spawn_mock_chrome_server().await;
-
-        let mut handler = McpHandler::new_test();
-        Arc::get_mut(&mut handler.default_session)
-            .unwrap()
-            .chrome_manager = Arc::new(Mutex::new(MockChromeManager::new(port)));
-
-        let params: CallToolRequestParams = serde_json::from_value(json!({
-            "name": "inspect_dom",
-            "arguments": {
-                "query": "Hello World",
-                "before": 10,
-                "after": 10
-            }
-        }))
-        .unwrap();
-
-        let result = InspectDomTool::handle(params, &handler).await;
-        assert!(result.is_ok());
-
-        let call_result = result.unwrap();
-        let content_str = format!("{:?}", call_result.content);
-        assert!(content_str.contains("Found 'Hello World'"));
-        assert!(content_str.contains("before=10, after=10"));
+    async fn inspect(
+        mock: &cdp_browser_lite::test_support::mock_devtools::MockDevTools,
+        args: serde_json::Value,
+    ) -> Result<CallToolResult, CallToolError> {
+        let handler = crate::handler::cdp_domains::tests::mock_handler(mock.http_port);
+        let params = crate::handler::cdp_domains::tests::call("inspect_dom", args);
+        InspectDomTool::handle(params, &handler).await
     }
 
+    /// AUD-IN-27: the search and the cut run in the page, so only the
+    /// report's text crosses the connection.
     #[tokio::test]
-    async fn test_inspect_dom_handle_search_not_found() {
-        let port = spawn_mock_chrome_server().await;
+    async fn search_runs_in_the_page() {
+        let found =
+            json!({"total": 3_400_000, "found": true, "position": 7, "context": "ab needle cd"});
+        let mock =
+            page_answering(json!({"result": {"result": {"type": "object", "value": found}}})).await;
+        let reply = inspect(mock, json!({"query": "needle", "before": 3, "after": 3}))
+            .await
+            .unwrap();
+        let text = crate::handler::cdp_domains::tests::reply_text(&reply);
+        assert!(text.starts_with("Found 'needle' at position 7."), "{text}");
+        let sent = &mock.commands_named("Runtime.evaluate")[0].params["expression"];
+        assert!(sent.as_str().unwrap().contains("indexOf"), "{sent}");
+    }
 
-        let mut handler = McpHandler::new_test();
-        Arc::get_mut(&mut handler.default_session)
-            .unwrap()
-            .chrome_manager = Arc::new(Mutex::new(MockChromeManager::new(port)));
-
-        let params: CallToolRequestParams = serde_json::from_value(json!({
-            "name": "inspect_dom",
-            "arguments": {
-                "query": "NOT_IN_DOM"
-            }
-        }))
-        .unwrap();
-
-        let result = InspectDomTool::handle(params, &handler).await;
-        assert!(result.is_ok());
-
-        let call_result = result.unwrap();
-        let content_str = format!("{:?}", call_result.content);
-        assert!(content_str.contains("Query 'NOT_IN_DOM' not found"));
+    /// AUD-IN-23: an exception in the page is an error (Chrome used to
+    /// answer an empty success).
+    #[tokio::test]
+    async fn page_exception_is_an_error() {
+        let thrown = json!({"result": {"result": {"type": "object"}, "exceptionDetails": {"text": "Uncaught", "exception": {"description": "TypeError: Cannot read properties of null (reading 'outerHTML')"}}}});
+        let mock = page_answering(thrown).await;
+        let error = inspect(mock, json!({})).await.unwrap_err().to_string();
+        assert!(
+            error.starts_with("TypeError: Cannot read properties of null"),
+            "{error}"
+        );
     }
 }

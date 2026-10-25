@@ -1,65 +1,63 @@
 //! Text helpers that must never panic on multi-byte input.
 
-/// The slice of `text` from `before` bytes ahead of `matched` to `after`
-/// bytes past it, widened to the nearest UTF-8 character boundaries so it can
-/// never split a character (slicing by raw byte offsets panicked).
-pub fn context_window(
-    text: &str,
-    matched: std::ops::Range<usize>,
+/// The `inspect_dom` text from the page's outcome (`util::js::dom_query`):
+/// the document, after a note when it was cut, or the first match with its
+/// context (same output on every browser).
+pub fn dom_report(
+    outcome: &serde_json::Value,
+    query: Option<&str>,
     before: usize,
     after: usize,
-) -> &str {
-    let mut start = matched.start.saturating_sub(before).min(text.len());
-    while !text.is_char_boundary(start) {
-        start -= 1;
-    }
-    let mut end = matched.end.saturating_add(after).min(text.len());
-    while !text.is_char_boundary(end) {
-        end += 1;
-    }
-    text.get(start..end).unwrap_or_default()
-}
-
-/// The `inspect_dom` text for `html`: the whole document without a query,
-/// otherwise the first match with its context (same output on every browser).
-pub fn dom_query_report(html: &str, query: Option<&str>, before: usize, after: usize) -> String {
+) -> String {
+    let text = |key: &str| outcome[key].as_str().unwrap_or_default();
+    let total = outcome["total"].as_u64().unwrap_or_default();
     let Some(query) = query else {
-        return html.to_string();
+        let html = text("html");
+        let shown = html.encode_utf16().count() as u64;
+        if shown >= total {
+            return html.to_string();
+        }
+        return format!(
+            "[Truncated: the first {shown} of {total} characters of HTML. Pass 'query' to find a part, or read parts with 'evaluate_js'.]\n{html}"
+        );
     };
-    match html.find(query) {
-        Some(pos) => format!(
-            "Found '{}' at position {}. Context (before={}, after={}):\n\n[...]\n{}\n[...]",
-            query,
-            pos,
-            before,
-            after,
-            context_window(html, pos..pos + query.len(), before, after)
-        ),
-        None => format!("Query '{}' not found in the DOM.", query),
+    if outcome["found"].as_bool() != Some(true) {
+        return format!("Query '{query}' not found in the DOM.");
     }
+    format!(
+        "Found '{query}' at position {}. Context (before={before}, after={after}):\n\n[...]\n{}\n[...]",
+        outcome["position"].as_u64().unwrap_or_default(),
+        text("context")
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// SEC-12: inspect_dom never panics on multi-byte text.
+    /// AUD-IN-27: the page sends at most `DOM_MAX_CHARS` of HTML; a cut
+    /// document says so first. Positions are characters (AUD-IN-26).
     #[test]
-    fn inspect_dom_slices_on_char_boundaries() {
-        // Given a document of two-byte characters with "needle" in the middle
-        let html = format!("{}needle{}", "ñ".repeat(250), "ñ".repeat(250));
-        for width in 1..=7 {
-            // When the query is reported with odd context widths
-            let report = dom_query_report(&html, Some("needle"), width, width);
-            // Then it returns the context around the match (no panic, no empty slice)
-            let context = report.split("[...]\n").nth(1).unwrap_or_default();
-            assert!(context.contains("needle"), "width {width}: {report}");
-        }
-    }
-
-    #[test]
-    fn context_window_clamps_to_the_text() {
-        assert_eq!(context_window("abc", 1..2, 10, 10), "abc");
-        assert_eq!(context_window("abcdef", 2..4, 1, 1), "bcde");
+    fn dom_reports_from_the_page_outcome() {
+        use serde_json::json;
+        let whole = json!({"total": 11, "html": "<html></html>"});
+        assert_eq!(dom_report(&whole, None, 200, 200), "<html></html>");
+        let cut = json!({"total": 3_400_000, "html": "<html>"});
+        let text = dom_report(&cut, None, 200, 200);
+        assert!(
+            text.starts_with("[Truncated: the first 6 of 3400000 characters"),
+            "{text}"
+        );
+        assert!(text.ends_with("\n<html>"), "{text}");
+        let found = json!({"total": 50, "found": true, "position": 7, "context": "ab needle cd"});
+        assert_eq!(
+            dom_report(&found, Some("needle"), 3, 3),
+            "Found 'needle' at position 7. Context (before=3, after=3):\n\n[...]\nab needle cd\n[...]"
+        );
+        let missing = json!({"total": 50, "found": false});
+        assert_eq!(
+            dom_report(&missing, Some("x"), 3, 3),
+            "Query 'x' not found in the DOM."
+        );
     }
 }

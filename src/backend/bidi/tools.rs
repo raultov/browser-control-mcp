@@ -125,13 +125,10 @@ pub(crate) async fn evaluate_js(params: CallToolRequestParams, handler: &McpHand
 pub(crate) async fn inspect_dom(params: CallToolRequestParams, handler: &McpHandler) -> ToolResult {
     let args: InspectDomTool = parse_args(params)?;
     let (_, _, tab) = target(handler, &ids(&args.instance_id, &args.tab_id)).await?;
-    let html = page::evaluate(&tab.tab, "document.documentElement.outerHTML").await?;
-    let report = crate::util::text::dom_query_report(
-        html.as_str().unwrap_or_default(),
-        args.query.as_deref(),
-        args.before.unwrap_or(200) as usize,
-        args.after.unwrap_or(200) as usize,
-    );
+    let (before, after) = args.context();
+    let expression = crate::util::js::dom_query(args.query.as_deref(), before, after);
+    let outcome = page::run_snippet(&tab.tab, &expression).await?;
+    let report = crate::util::text::dom_report(&outcome, args.query.as_deref(), before, after);
     Ok(text(report))
 }
 

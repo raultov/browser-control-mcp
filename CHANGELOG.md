@@ -12,6 +12,12 @@ from a copy of its code: entries describe the differences from that release.
 
 ### Fixed
 
+- `inspect_dom` searches and cuts in the page, so a large document no
+  longer crosses the connection (a 20 MB page used to drop it on Chrome).
+  Without `query` it returns at most 100 000 characters, after a
+  `[Truncated: ...]` note naming the total; `before`/`after` are capped at
+  10 000. Positions are characters (they were bytes). On Chrome an
+  exception in the page is an error (it was an empty success).
 - A reply over 16 MB (a huge `evaluate_js` result, a 20 MB page in
   `inspect_dom`) makes the browser close the DevTools connection. Chrome
   then answered `CDP Error: Connection lost` to every later call until

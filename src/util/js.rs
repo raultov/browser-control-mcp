@@ -126,6 +126,31 @@ pub fn fill_result(selector: &str, text: &str) -> String {
     )
 }
 
+/// Most characters of HTML `inspect_dom` returns without a query: the
+/// whole document of a large page would flood the agent, and a reply over
+/// 16 MB closes the browser connection.
+pub const DOM_MAX_CHARS: usize = 100_000;
+
+/// Most characters of context on each side of an `inspect_dom` match.
+pub const DOM_MAX_CONTEXT: usize = 10_000;
+
+/// `inspect_dom`'s search and cut, run in the page so only the result
+/// crosses the connection: `{total, html}` without a query (at most
+/// [`DOM_MAX_CHARS`]), else `{total, found, position, context}` with
+/// positions in characters.
+pub fn dom_query(query: Option<&str>, before: usize, after: usize) -> String {
+    let query = query.map_or_else(|| "null".to_string(), string_literal);
+    let (before, after) = (before.min(DOM_MAX_CONTEXT), after.min(DOM_MAX_CONTEXT));
+    format!(
+        "(() => {{ const html = document.documentElement.outerHTML; const query = {query}; \
+         if (query === null) return {{ total: html.length, html: html.slice(0, {DOM_MAX_CHARS}) }}; \
+         const position = html.indexOf(query); \
+         if (position < 0) return {{ total: html.length, found: false }}; \
+         const context = html.slice(Math.max(0, position - {before}), position + query.length + {after}); \
+         return {{ total: html.length, found: true, position, context }}; }})()"
+    )
+}
+
 /// The page metrics JavaScript can read without injection (Firefox's
 /// `get_performance_metrics`), named like Chrome's `Performance.getMetrics`
 /// where they mean the same: `Nodes` (nodes of the document tree), `Frames`
@@ -196,6 +221,21 @@ mod tests {
             // Then it is one JSON string literal that parses back to the original
             assert_eq!(embedded_selector(&expression), selector, "{expression}");
         }
+    }
+
+    /// AUD-IN-27: inspect_dom searches and cuts in the page; the query
+    /// reaches JavaScript as one string literal.
+    #[test]
+    fn dom_query_cuts_in_the_page() {
+        let query = r#"a"); window.__pwned = 1; ("#;
+        let expression = dom_query(Some(query), 10, 20);
+        assert!(expression.contains("outerHTML"), "{expression}");
+        assert!(expression.contains(&string_literal(query)), "{expression}");
+        assert!(
+            expression.contains(&DOM_MAX_CHARS.to_string()),
+            "{expression}"
+        );
+        assert!(dom_query(None, 1, 1).contains("const query = null;"));
     }
 
     /// The `const text = <literal>;` of a fill snippet, parsed back as JSON.
