@@ -10,6 +10,11 @@ from a copy of its code: entries describe the differences from that release.
 
 ## [Unreleased]
 
+## [0.3.2-beta.3] - 2026-10-25
+
+Public **BETA**. Replies up to 256 MB no longer drop the browser connection
+(new `cdp-lite` and `bidi-lite` releases).
+
 ### Fixed
 
 - Replies up to 256 MB no longer drop the connection: built with `cdp-lite`

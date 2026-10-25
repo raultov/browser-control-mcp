@@ -1,6 +1,6 @@
 {
   "name": "@raultov/browser-control-mcp",
-  "version": "0.3.1-beta.3",
+  "version": "0.3.2-beta.3",
   "description": "MCP server to control and debug Chrome and Firefox at runtime: breakpoints, call frames and stepping over CDP and WebDriver BiDi/RDP, plus navigation, DOM, input, screenshots, console and network capture.",
   "license": "MIT",
   "homepage": "https://github.com/raultov/browser-control-mcp",
