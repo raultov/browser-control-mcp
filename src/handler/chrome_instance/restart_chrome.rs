@@ -13,7 +13,7 @@ use rust_mcp_sdk::{
 pub struct RestartChromeTool {
     /// Chrome instance id from open_instance/list_instances. Omit for the default instance.
     pub instance_id: Option<String>,
-    /// Proxy server URL (e.g., `http://proxy.example.com:8080`). Constraints: valid proxy URL with protocol and port. Interactions: applied to new Chrome instance; requires 'enable_proxy_auth' for authenticated proxies. Defaults to: None (no proxy).
+    /// Proxy server URL (e.g., `http://proxy.example.com:8080`). Constraints: valid proxy URL with protocol and port. Interactions: applied to new Chrome instance; requires 'enable_proxy_auth' for authenticated proxies. Defaults to: the instance's current proxy (from open_instance or the previous restart), else the server's --proxy-server.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub proxy_server: Option<String>,
 
@@ -62,8 +62,11 @@ impl RestartChromeTool {
             )));
         }
 
+        // Omitted: keep the instance's own proxy (open_instance's `proxy`),
+        // as Firefox does.
         let proxy = tool
             .proxy_server
+            .or_else(|| manager.proxy().map(str::to_string))
             .or_else(|| handler.proxy.proxy_server.clone());
         manager.set_proxy(proxy);
         manager.set_seed_profile(seed_report);
@@ -186,6 +189,29 @@ mod tests {
             .downcast_ref::<MockChromeManager>()
             .expect("manager must be the MockChromeManager");
         assert_eq!(mock.features(), &[ChromeFeature::WebglSoftware]);
+    }
+
+    /// AUD-LC-02: a restart without `proxy_server` keeps the instance's own
+    /// proxy (it was replaced by the global one, or none, silently).
+    #[tokio::test]
+    async fn restart_without_proxy_keeps_the_instance_proxy() {
+        // Given an instance launched with its own proxy
+        let mut handler = McpHandler::new_test();
+        let mut manager = MockChromeManager::new(9999);
+        manager.set_proxy(Some("http://own-proxy:3128".into()));
+        Arc::get_mut(&mut handler.default_session)
+            .unwrap()
+            .chrome_manager = Arc::new(Mutex::new(manager));
+        // When restart_browser runs without proxy_server
+        let params: CallToolRequestParams = serde_json::from_value(json!({
+            "name": "restart_browser",
+            "arguments": { "instance_id": "default" }
+        }))
+        .unwrap();
+        RestartChromeTool::handle(params, &handler).await.unwrap();
+        // Then the relaunch keeps that proxy
+        let manager = handler.default_session.chrome_manager.lock().await;
+        assert_eq!(manager.proxy(), Some("http://own-proxy:3128"));
     }
 
     #[tokio::test]

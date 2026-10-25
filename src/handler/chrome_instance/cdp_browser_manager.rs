@@ -87,6 +87,10 @@ impl crate::handler::chrome_instance::ChromeManager for CdpBrowserManager {
         self.params.set_proxy(proxy);
     }
 
+    fn proxy(&self) -> Option<&str> {
+        self.params.proxy()
+    }
+
     fn set_features(
         &mut self,
         features: Vec<crate::handler::chrome_instance::launch::ChromeFeature>,

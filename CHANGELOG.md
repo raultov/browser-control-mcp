@@ -42,6 +42,9 @@ from a copy of its code: entries describe the differences from that release.
 - `webmcp_list_tools` no longer hides page tools registered without an
   `inputSchema` (optional in WebMCP); they are listed without one and can
   be invoked.
+- Chrome `restart_browser` without `proxy_server` keeps the instance's own
+  proxy (the one given to `open_instance` or the previous restart), as on
+  Firefox; it used to fall back to `--proxy-server`, or none, silently.
 - `fill_input` no longer types into the wrong element or reports a fill
   that did not happen (both browsers). An element that cannot take the text
   (a plain element, disabled, read-only, a non-text input such as a

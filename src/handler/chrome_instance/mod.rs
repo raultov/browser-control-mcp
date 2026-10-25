@@ -66,6 +66,11 @@ pub trait ChromeManager: Send + Sync {
     }
     fn get_port(&self) -> u16;
     fn set_proxy(&mut self, proxy: Option<String>);
+    /// The proxy the next launch uses, so a restart can keep it. Defaults
+    /// to `None` for managers that launch nothing (test doubles).
+    fn proxy(&self) -> Option<&str> {
+        None
+    }
     /// Replaces the capability presets applied on the next launch. Like
     /// [`ChromeManager::set_proxy`], an empty list clears any previous value.
     fn set_features(&mut self, features: Vec<ChromeFeature>);
@@ -85,6 +90,7 @@ pub trait ChromeManager: Send + Sync {
 pub struct MockChromeManager {
     port: u16,
     features: Vec<ChromeFeature>,
+    proxy: Option<String>,
     running: bool,
     seed_report: Option<SeedReport>,
 }
@@ -94,6 +100,7 @@ impl MockChromeManager {
         Self {
             port,
             features: Vec::new(),
+            proxy: None,
             running: false,
             seed_report: None,
         }
@@ -142,8 +149,12 @@ impl ChromeManager for MockChromeManager {
         self.port
     }
 
-    fn set_proxy(&mut self, _proxy: Option<String>) {
-        // Mock: do nothing
+    fn set_proxy(&mut self, proxy: Option<String>) {
+        self.proxy = proxy;
+    }
+
+    fn proxy(&self) -> Option<&str> {
+        self.proxy.as_deref()
     }
 
     fn set_features(&mut self, features: Vec<ChromeFeature>) {

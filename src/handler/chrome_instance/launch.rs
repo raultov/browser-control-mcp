@@ -97,6 +97,10 @@ impl LaunchParams {
         self.proxy = proxy;
     }
 
+    pub(crate) fn proxy(&self) -> Option<&str> {
+        self.proxy.as_deref()
+    }
+
     pub(crate) fn configured_port(&self) -> u16 {
         self.port
     }
