@@ -10,6 +10,14 @@ from a copy of its code: entries describe the differences from that release.
 
 ## [Unreleased]
 
+### Fixed
+
+- A reply over 16 MB (a huge `evaluate_js` result, a 20 MB page in
+  `inspect_dom`) makes the browser close the DevTools connection. Chrome
+  then answered `CDP Error: Connection lost` to every later call until
+  `restart_browser`; now the next call reconnects by itself (tab ids are
+  re-assigned). The failing call explains what happened on both browsers.
+
 ## [0.3.0-beta.3] - 2026-10-25
 
 Public **BETA**. Result of a tool-by-tool audit on real Chrome and Firefox:

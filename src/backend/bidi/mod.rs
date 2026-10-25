@@ -39,9 +39,34 @@ pub(crate) fn lifecycle_error(error: bidi_browser_lite::BrowserError) -> Backend
 
 /// A BiDi command error as a tool error.
 pub(crate) fn protocol_error(method: &str, error: &bidi_browser_lite::BidiError) -> BackendError {
+    let message = match error {
+        // Firefox closes the WebSocket when a message exceeds the client's
+        // 16 MB frame limit; the session reconnects on the next call.
+        bidi_browser_lite::BidiError::Disconnected => {
+            "the connection to Firefox dropped. It closes it when a reply exceeds 16 MB (a huge evaluate_js result or page): keep results small (slice strings, query the DOM). The next call reconnects; tab ids are re-assigned (call list_tabs).".to_string()
+        }
+        other => other.to_string(),
+    };
     BackendError::Protocol {
         browser: BrowserKind::Firefox,
         method: method.to_string(),
-        message: error.to_string(),
+        message,
+    }
+}
+
+#[cfg(test)]
+mod lost_connection_tests {
+    /// AUD-EV-23 (Firefox): a dropped connection says why and what follows.
+    #[test]
+    fn lost_connection_is_explained() {
+        let error = super::protocol_error(
+            "script.evaluate",
+            &bidi_browser_lite::BidiError::Disconnected,
+        );
+        let text = error.to_string();
+        assert!(
+            text.contains("16 MB") && text.contains("next call reconnects"),
+            "{text}"
+        );
     }
 }

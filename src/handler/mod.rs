@@ -287,6 +287,9 @@ pub(crate) fn cdp_failure(failure: &str, error: &cdp_browser_lite::CdpError) -> 
         {
             message.clone()
         }
+        cdp_browser_lite::CdpError::Disconnected => format!(
+            "{failure}: the DevTools connection to Chrome dropped. Chrome closes it when a reply exceeds 16 MB (a huge evaluate_js result, page, script or response body): keep results small (slice strings, query the DOM). The next call reconnects; tab ids are re-assigned (call list_tabs)."
+        ),
         other => format!("{failure}: {other}"),
     }
 }
@@ -641,11 +644,50 @@ impl BrowserSession {
 
     /// Fails with [`BROWSER_GONE`] when the browser died, forgetting its
     /// tabs and connections (they belong to the dead process).
+    /// Also replaces a DevTools connection that dropped while the browser
+    /// lives (see [`Self::reconnect_if_dropped`]).
     pub(crate) async fn check_browser(&self) -> std::result::Result<(), CallToolError> {
         let crashed = self.chrome_manager.lock().await.crashed().await;
         if crashed {
             self.reset_connection_state().await;
             return Err(CallToolError::from_message(BROWSER_GONE));
+        }
+        self.reconnect_if_dropped().await
+    }
+
+    /// Chrome closes the DevTools WebSocket when one of its messages exceeds
+    /// the client's 16 MB frame limit (a huge `evaluate_js` result, page or
+    /// script): the tabs registered over it would answer `Connection lost`
+    /// forever. A dead connection is forgotten with its tabs, and the
+    /// session reconnects and waits for the pages to register again (with
+    /// new tab ids).
+    async fn reconnect_if_dropped(&self) -> std::result::Result<(), CallToolError> {
+        let tab_client = {
+            let registry = crate::util::sync::read(&self.tabs);
+            registry
+                .tabs
+                .values()
+                .next()
+                .map(|e| e.tab.client().clone())
+        };
+        let session_client = self.client.lock().await.clone();
+        let Some(client) = tab_client.or(session_client) else {
+            return Ok(());
+        };
+        let probe = client
+            .send_raw_command("Browser.getVersion", cdp_browser_lite::NoParams)
+            .await;
+        if !matches!(probe, Err(cdp_browser_lite::CdpError::Disconnected)) {
+            return Ok(());
+        }
+        tracing::warn!("DevTools connection dropped; reconnecting");
+        self.reset_connection_state().await;
+        drop(self.get_or_connect().await?);
+        if self
+            .first_tab_pending
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            let _ = wait_for_active_tab(&self.tabs, FIRST_TAB_WAIT).await;
         }
         Ok(())
     }
@@ -1341,6 +1383,46 @@ mod tests {
         session.target(None).await.unwrap();
         // Then the session-level debugger was disabled once
         assert_eq!(fallback("Debugger.disable"), 1);
+    }
+
+    /// AUD-EV-23: a tab whose DevTools connection dropped (Chrome closes it
+    /// on a message over 16 MB) while the browser lives is forgotten and the
+    /// session reconnects, instead of answering "Connection lost" forever.
+    #[tokio::test]
+    async fn dropped_connection_is_reconnected() {
+        use cdp_browser_lite::test_support::mock_devtools::{MockDevTools, MockWsBehavior};
+        // Given a live browser and a registered tab whose connection closed
+        let live = cdp_domains::tests::spawn_recording_mock().await;
+        let handler = cdp_domains::tests::mock_handler(live.http_port);
+        let session = handler.session(None).await.unwrap();
+        let dying = MockDevTools::start(MockWsBehavior::CloseAfterOneCommand).await;
+        let browser = cdp_browser_lite::BrowserClient::connect(
+            &format!("127.0.0.1:{}", dying.http_port),
+            std::time::Duration::from_secs(2),
+        )
+        .await
+        .unwrap();
+        let tab = browser.attach("T-dropped").await.unwrap();
+        let info = chrome_instance::tab_registry::NewTab::new(None, "about:blank");
+        crate::util::sync::write(&session.tabs)
+            .register_tab(tab, info, false)
+            .unwrap();
+        // When a tool looks for its target
+        let target = session.target(None).await.unwrap();
+        // Then the dead tab is gone and the call runs on a live connection
+        assert!(crate::util::sync::read(&session.tabs).tabs.is_empty());
+        let reply = target
+            .send_raw_command("Runtime.evaluate", serde_json::json!({"expression": "1"}))
+            .await;
+        assert!(reply.is_ok(), "{:?}", reply.err());
+    }
+
+    /// AUD-EV-23: "Connection lost" says why and what happens next.
+    #[test]
+    fn lost_connection_error_is_explained() {
+        let text = cdp_failure("CDP Error", &cdp_browser_lite::CdpError::Disconnected);
+        assert!(text.contains("16 MB"), "{text}");
+        assert!(text.contains("next call reconnects"), "{text}");
     }
 
     /// AUD-LC-29: the first call on a fresh Chrome waits for its page to
