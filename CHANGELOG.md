@@ -16,8 +16,18 @@ from a copy of its code: entries describe the differences from that release.
   dialog (`alert`, `confirm`, `prompt` with `prompt_text`, `beforeunload`)
   open on a tab, and replies with its type and message.
 
+### Changed
+
+- Chrome: when the first call on an instance is `open_tab`, the browser's
+  own first page is now registered too (as on Firefox), so the new tab is
+  `tab-2` and stays inactive until `switch_tab`; before, it was `tab-1` and
+  active.
+
 ### Fixed
 
+- Chrome tracks popups (`window.open`) and tabs closed by the page or the
+  user when the first call on an instance is `open_tab`; it only did after
+  a call that used the instance's default page.
 - `navigate` and `reload` keep their 30 s budget on slow pages (both
   browsers). A server slow to answer, or a page slow to fire `load`, hit
   the 10 s protocol command timeout and failed although the navigation went

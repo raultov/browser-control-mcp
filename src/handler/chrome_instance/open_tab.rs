@@ -115,6 +115,10 @@ impl OpenTabTool {
                 ))
             })?;
         }
+        // The session connection starts target discovery (popups, tabs the
+        // page or the user closes, the browser's first page): without it a
+        // session whose first call is open_tab would never track them.
+        drop(session.get_or_connect().await?);
 
         let (tab_id, target_id) = create_tab(&session, args.label.clone(), &url).await?;
         let url = match deferred_navigation(&url) {
