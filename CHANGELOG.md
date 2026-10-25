@@ -20,6 +20,11 @@ from a copy of its code: entries describe the differences from that release.
   full by default. Request bodies and every header whose name contains
   `token`, `secret`, `api-key`, `apikey`, `password`, `session`, `csrf` or
   `xsrf` are now `<redacted>` unless `include_sensitive_headers: true`.
+- `search_scripts` positions are right, so they can be passed to
+  `set_breakpoint` as they are. A match at the start of a line was reported
+  at the end of the previous line (both browsers); matches in inline scripts
+  were counted from the script, not the page (Chrome); columns now count
+  UTF-16 units, as the browsers do, instead of bytes.
 - `fill_input` no longer types into the wrong element or reports a fill
   that did not happen (both browsers). An element that cannot take the text
   (a plain element, disabled, read-only, a non-text input such as a

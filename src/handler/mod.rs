@@ -912,13 +912,19 @@ pub(crate) fn extract_from_value<'a>(
         .and_then(|v| v.as_str())
 }
 
+/// The 0-based line and column of the first `pattern` in `source`, in the
+/// units the browsers' debuggers use: lines end at `\n`, columns count
+/// UTF-16 code units.
 pub(crate) fn find_line_column(source: &str, pattern: &str) -> Option<(u32, u32)> {
     let byte_index = source.find(pattern)?;
     let prefix = &source[..byte_index];
-    let line_number = prefix.lines().count().saturating_sub(1) as u32;
-    let column_number = prefix.lines().last().map(|line| line.len()).unwrap_or(0) as u32;
-
-    Some((line_number, column_number))
+    let line_start = prefix.rfind('\n').map_or(0, |i| i + 1);
+    let line = prefix.matches('\n').count();
+    let column = prefix[line_start..].encode_utf16().count();
+    Some((
+        u32::try_from(line).unwrap_or(u32::MAX),
+        u32::try_from(column).unwrap_or(u32::MAX),
+    ))
 }
 
 #[async_trait]
@@ -1130,6 +1136,27 @@ mod tests {
         assert_eq!(col, 0);
 
         assert_eq!(find_line_column(source, "not_found"), None);
+    }
+
+    /// AUD-DB-01: a match at the start of a line is on that line, column 0
+    /// (it was reported at the end of the previous line).
+    #[test]
+    fn match_at_line_start_is_on_its_line() {
+        assert_eq!(
+            find_line_column("let a=1;\nfunction foo(){}", "function foo"),
+            Some((1, 0))
+        );
+        assert_eq!(find_line_column("a\n\n\nfoo", "foo"), Some((3, 0)));
+        assert_eq!(find_line_column("a\r\nfoo", "foo"), Some((1, 0)));
+    }
+
+    /// AUD-DB-14: columns count UTF-16 code units, as the browsers do.
+    #[test]
+    fn columns_count_utf16_units() {
+        assert_eq!(
+            find_line_column("const s = 'ñ€😀'; foo()", "foo"),
+            Some((0, 18))
+        );
     }
 
     #[test]

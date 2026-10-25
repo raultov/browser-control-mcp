@@ -46,10 +46,12 @@ impl SearchScriptsTool {
             match reply {
                 Ok(reply) => match extract_from_value(&reply.result, "scriptSource") {
                     Some(source) => {
+                        let offset = |n: i32| u32::try_from(n).unwrap_or(0);
                         let text = ScriptText {
                             id: &script_id,
                             hash: &script.hash,
                             source,
+                            start: (offset(script.start_line), offset(script.start_column)),
                         };
                         report.add_source(&args.query, &text)
                     }
@@ -73,6 +75,10 @@ pub(crate) struct ScriptText<'a> {
     pub(crate) id: &'a str,
     pub(crate) hash: &'a str,
     pub(crate) source: &'a str,
+    /// Where the source starts in its resource (line, column): an inline
+    /// script's source is its body only, while breakpoints by URL count
+    /// lines of the whole document. `(0, 0)` for a whole resource.
+    pub(crate) start: (u32, u32),
 }
 
 /// Matches and errors of one `search_scripts` call. The query language is
@@ -88,7 +94,12 @@ pub(crate) struct SearchReport {
 impl SearchReport {
     /// Applies `query` to one script's source.
     pub(crate) fn add_source(&mut self, query: &str, script: &ScriptText<'_>) {
-        let ScriptText { id, hash, source } = *script;
+        let ScriptText {
+            id,
+            hash,
+            source,
+            start: (start_line, start_column),
+        } = *script;
         let row = match query {
             "@source" => {
                 Some(json!({"id": id, "source": source.chars().take(1000).collect::<String>()}))
@@ -96,10 +107,15 @@ impl SearchReport {
             "debug" => Some(json!({"id": id, "source_len": source.len()})),
             _ => find_line_column(source, query).map(|(line, column)| {
                 let preview = source.lines().nth(line as usize).unwrap_or("").trim();
+                let column = if line == 0 {
+                    column.saturating_add(start_column)
+                } else {
+                    column
+                };
                 json!({
                     "scriptId": id,
                     "scriptHash": hash,
-                    "lineNumber": line,
+                    "lineNumber": line.saturating_add(start_line),
                     "columnNumber": column,
                     "linePreview": preview
                 })
@@ -332,6 +348,46 @@ mod tests {
         assert!(
             text.contains("Total cached scripts: 1"),
             "must count only the TAB script, got: {text}"
+        );
+    }
+
+    /// AUD-DB-02: matches in an inline script are reported in document
+    /// lines (where `set_breakpoint` by URL counts), not script lines.
+    #[test]
+    fn inline_script_matches_are_in_document_lines() {
+        // Given an inline script whose body starts at line 14, column 8 of the page
+        let source = "\nfunction inlineTarget(v) {\n  const w = v + 100;\n}";
+        let script = ScriptText {
+            id: "45",
+            hash: "h",
+            source,
+            start: (14, 8),
+        };
+        let mut report = SearchReport::default();
+        // When a line below the first and a match on the first line are searched
+        report.add_source("const w", &script);
+        let first_line = ScriptText {
+            source: "var x = 1;",
+            start: (3, 8),
+            ..script
+        };
+        report.add_source("x =", &first_line);
+        // Then lines are shifted by the start line, and only the first line's
+        // columns by the start column
+        assert_eq!(
+            (
+                &report.results[0]["lineNumber"],
+                &report.results[0]["columnNumber"]
+            ),
+            (&json!(16), &json!(2))
+        );
+        assert_eq!(report.results[0]["linePreview"], "const w = v + 100;");
+        assert_eq!(
+            (
+                &report.results[1]["lineNumber"],
+                &report.results[1]["columnNumber"]
+            ),
+            (&json!(3), &json!(12))
         );
     }
 

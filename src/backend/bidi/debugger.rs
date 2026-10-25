@@ -455,6 +455,8 @@ pub(crate) async fn search_scripts(
                             id: &source.actor,
                             hash: &url,
                             source: &code,
+                            // Firefox gives the whole document's text.
+                            start: (0, 0),
                         },
                     );
                 }
