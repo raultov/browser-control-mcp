@@ -10,6 +10,23 @@ from a copy of its code: entries describe the differences from that release.
 
 ## [Unreleased]
 
+### Fixed
+
+- `fill_input` no longer types into the wrong element or reports a fill
+  that did not happen (both browsers). An element that cannot take the text
+  (a plain element, disabled, read-only, a non-text input such as a
+  checkbox, or one that cannot take focus) fails with the reason and nothing
+  is typed; before, the text went to whichever element had focus. A
+  `<select>` gets the option whose value or label equals the text (it used
+  to be emptied on Chrome). After typing, a field left empty (it rejected the
+  text, e.g. letters in a number field) is an error, and a field holding
+  something else (a mask, `maxlength`) succeeds with a note; the text is
+  never echoed back. The field is emptied through the native `value` setter,
+  which React-controlled inputs observe. On Chrome, an invalid selector
+  reports its `SyntaxError` instead of "Element not found". The description
+  no longer promises a `change` event: it fires when the field loses focus,
+  as for a user.
+
 ## [0.2.0-beta.2] - 2026-10-14
 
 Public **BETA**. Firefox debugger internals only; tool replies are the same

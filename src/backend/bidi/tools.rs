@@ -6,8 +6,9 @@ use super::page;
 use super::session::FirefoxSession;
 use crate::backend::BrowserKind;
 use crate::handler::cdp_domains::custom::get_custom_events::GetCustomEventsTool;
-use crate::handler::cdp_domains::input::{
-    click_element::ClickElementTool, fill_input::FillInputTool,
+use crate::handler::cdp_domains::input::click_element::ClickElementTool;
+use crate::handler::cdp_domains::input::fill_input::{
+    FillInputTool, FillStart, fill_reply, fill_start, selected_reply,
 };
 use crate::handler::cdp_domains::log::get_console_logs::GetConsoleLogsTool;
 use crate::handler::cdp_domains::network::get_network_logs::GetNetworkLogsTool;
@@ -127,15 +128,19 @@ pub(crate) async fn click_element(
     )))
 }
 
-/// `fill_input`: replaces the element's content by typing.
+/// `fill_input`: replaces the element's content by typing, with the same
+/// checks and replies as on Chrome.
 pub(crate) async fn fill_input(params: CallToolRequestParams, handler: &McpHandler) -> ToolResult {
     let args: FillInputTool = parse_args(params)?;
     let (_, _, tab) = target(handler, &ids(&args.instance_id, &args.tab_id)).await?;
-    page::fill(&tab.tab, &args.selector, &args.text).await?;
-    Ok(text(format!(
-        "Successfully filled input '{}' with text.",
-        args.selector
-    )))
+    let prepare = crate::util::js::prepare_fill(&args.selector, &args.text);
+    let prepared = page::run_snippet(&tab.tab, &prepare).await?;
+    if let FillStart::Selected = fill_start(&prepared, &args.selector)? {
+        return Ok(selected_reply(&args.selector));
+    }
+    page::type_text(&tab.tab, &args.text).await?;
+    let check = crate::util::js::fill_result(&args.selector, &args.text);
+    fill_reply(&page::run_snippet(&tab.tab, &check).await?, &args.selector)
 }
 
 /// `capture_screenshot`: image content.
@@ -672,14 +677,66 @@ mod tests {
         ts::stop(&handler).await;
     }
 
+    /// A mock page whose fill preparation answers `prepared` and whose
+    /// result snippet answers `typed`.
+    fn fill_page(mock: &MockFirefox, prepared: Value, typed: Value) {
+        mock.bidi().respond_with("script.evaluate", move |params| {
+            let expression = params["expression"].as_str().unwrap_or_default();
+            let value = if expression.contains("'ready'") {
+                &prepared
+            } else {
+                &typed
+            };
+            evaluate_success(ts::remote(value))
+        });
+    }
+
+    /// AUD-IN-08: on Firefox too, a non-editable element fails and no key is typed.
+    #[tokio::test]
+    async fn fill_non_editable_sends_no_keys() {
+        // Given a page where "#d" is read-only
+        let mock = MockFirefox::start(false).await.unwrap();
+        let prepared = json!({"status": "not_editable", "reason": "read-only"});
+        fill_page(&mock, prepared, json!(null));
+        let handler = ts::handler(&mock);
+        // When fill_input targets it
+        let args = json!({"selector": "#d", "text": "x"});
+        let error = fill_input(call("fill_input", args), &handler)
+            .await
+            .unwrap_err()
+            .to_string();
+        // Then it fails like on Chrome and no input action was sent
+        assert_eq!(
+            error,
+            "Element '#d' is not editable (read-only); nothing was typed."
+        );
+        assert_eq!(script_and_input(&mock), ["script.evaluate"]);
+        ts::stop(&handler).await;
+    }
+
+    /// AUD-IN-10: on Firefox too, a field left empty after typing is an error.
+    #[tokio::test]
+    async fn fill_rejected_text_is_an_error() {
+        let mock = MockFirefox::start(false).await.unwrap();
+        let typed = json!({"status": "done", "matches": false, "empty": true});
+        fill_page(&mock, json!({"status": "ready"}), typed);
+        let handler = ts::handler(&mock);
+        let args = json!({"selector": "#num", "text": "abc"});
+        let error = fill_input(call("fill_input", args), &handler)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.starts_with("'#num' is empty after typing"), "{error}");
+        ts::stop(&handler).await;
+    }
+
     /// BID-17: fill_input focuses and clears, then types every character.
     #[tokio::test]
     async fn fill_replaces_value() {
         // Given a page where "#q" exists
         let mock = MockFirefox::start(false).await.unwrap();
-        mock.bidi().respond_with("script.evaluate", |_| {
-            evaluate_success(json!({"type": "boolean", "value": true}))
-        });
+        let typed = json!({"status": "done", "matches": true, "empty": false});
+        fill_page(&mock, json!({"status": "ready"}), typed);
         let handler = ts::handler(&mock);
         // When fill_input types "ñandú"
         let args = json!({"selector": "#q", "text": "ñandú"});

@@ -3,11 +3,11 @@ use rust_mcp_sdk::{
     macros,
     schema::{CallToolError, CallToolRequestParams, CallToolResult},
 };
-use serde_json::json;
+use serde_json::{Value, json};
 
 #[macros::mcp_tool(
     name = "fill_input",
-    description = "Focuses an input field via CSS selector, clears it and inserts text using native input simulation, so the text replaces the previous content; triggers input/change events. Side effects: replaces the DOM input value; triggers input/change event handlers. Prerequisites: element must exist, be visible, and be an input/textarea or contenteditable element. Returns: success confirmation. Use this to populate form fields, search boxes, text areas. Alternatives: 'evaluate_js' for direct value assignment without events, 'click_element' to focus manually."
+    description = "Focuses an input field via CSS selector, clears it and inserts text using native input simulation, so the text replaces the previous content; fires input events ('change' fires when the field loses focus, as for a user). For a <select>, picks the option whose value or label equals the text. Side effects: replaces the DOM input value; triggers input event handlers. Prerequisites: element must exist, be visible, and be an input/textarea or contenteditable element; a disabled, read-only, non-text or unfocusable element fails without typing anything, and so does a field left empty after typing (it rejected the text). Returns: success confirmation, with a note when the field holds something other than the text (a mask or maxlength reformatted it). Use this to populate form fields, search boxes, text areas, selects. Alternatives: 'evaluate_js' for direct value assignment without events, 'click_element' to focus manually."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct FillInputTool {
@@ -15,10 +15,74 @@ pub struct FillInputTool {
     pub instance_id: Option<String>,
     /// The Tab ID of the target tab. Omit to use the active tab.
     pub tab_id: Option<String>,
-    /// CSS selector identifying the input element. Constraints: valid CSS selector matching an input/textarea/contenteditable element. Interactions: element must be focusable and writable. Defaults to: None (required).
+    /// CSS selector identifying the input element. Constraints: valid CSS selector matching an input/textarea/contenteditable element or a select. Interactions: element must be focusable and writable. Defaults to: None (required).
     pub selector: String,
-    /// Text content to insert. Constraints: any string (special chars escaped automatically). Interactions: replaces any existing text after focus; triggers input/change events. Defaults to: None (required).
+    /// Text content to insert, or the value or label of the option to pick in a select. Constraints: any string (special chars escaped automatically). Interactions: replaces any existing text after focus; fires input events. Defaults to: None (required).
     pub text: String,
+}
+
+/// What is left after the preparation snippet (`util::js::prepare_fill`).
+pub(crate) enum FillStart {
+    /// The field is focused and empty: type the text.
+    Type,
+    /// A `<select>` option was picked: nothing to type.
+    Selected,
+}
+
+/// Reads the preparation snippet's `{status}`; anything that must not be
+/// typed into is an error, so the text never lands in another element.
+pub(crate) fn fill_start(value: &Value, selector: &str) -> Result<FillStart, CallToolError> {
+    match value["status"].as_str() {
+        Some("ready") => Ok(FillStart::Type),
+        Some("selected") => Ok(FillStart::Selected),
+        Some("not_editable") => Err(CallToolError::from_message(format!(
+            "Element '{selector}' is not editable ({}); nothing was typed.",
+            value["reason"].as_str().unwrap_or("unknown reason")
+        ))),
+        Some("no_option") => {
+            let options: Vec<&str> = value["options"]
+                .as_array()
+                .map(|o| o.iter().filter_map(Value::as_str).collect())
+                .unwrap_or_default();
+            Err(CallToolError::from_message(format!(
+                "No option of '{selector}' has that value or label. Options: {}.",
+                options.join(", ")
+            )))
+        }
+        _ => Err(CallToolError::from_message(format!(
+            "Element not found for selector: {selector}"
+        ))),
+    }
+}
+
+/// The reply once a `<select>` option was picked.
+pub(crate) fn selected_reply(selector: &str) -> CallToolResult {
+    CallToolResult::text_content(vec![
+        format!("Successfully selected the option matching the text in '{selector}'.").into(),
+    ])
+}
+
+/// The reply from the result snippet (`util::js::fill_result`): an error
+/// when the field ended empty (it rejected the text), a note when it holds
+/// something else. Neither repeats the text, which may be a password.
+pub(crate) fn fill_reply(value: &Value, selector: &str) -> Result<CallToolResult, CallToolError> {
+    if value["status"].as_str() != Some("done") {
+        return Err(CallToolError::from_message(format!(
+            "Element '{selector}' disappeared while typing (the page replaced it)."
+        )));
+    }
+    let done = format!("Successfully filled input '{selector}' with text.");
+    if value["matches"].as_bool() == Some(true) {
+        return Ok(CallToolResult::text_content(vec![done.into()]));
+    }
+    if value["empty"].as_bool() == Some(true) {
+        return Err(CallToolError::from_message(format!(
+            "'{selector}' is empty after typing: the field rejected the text (for example letters in a number field, or a date field that needs its own format). Set the value with 'evaluate_js' instead."
+        )));
+    }
+    Ok(CallToolResult::text_content(vec![
+        format!("{done}\nNote: the field holds something other than the text (the page or the field reformatted it, for example a mask or maxlength).").into(),
+    ]))
 }
 
 impl FillInputTool {
@@ -26,65 +90,32 @@ impl FillInputTool {
         params: CallToolRequestParams,
         handler: &McpHandler,
     ) -> Result<CallToolResult, CallToolError> {
-        let args_value = serde_json::Value::Object(params.arguments.unwrap_or_default());
-        let args: FillInputTool = serde_json::from_value(args_value)
-            .map_err(|e| CallToolError::from_message(e.to_string()))?;
-        let session = handler.session(args.instance_id.clone()).await?;
-        let target = session.target(args.tab_id.clone()).await?;
-
-        let expression = crate::util::js::focus_and_clear(&args.selector);
-
-        let eval_result = target
-            .send_raw_command(
-                "Runtime.evaluate",
-                json!({
-                    "expression": expression,
-                    "returnByValue": true
-                }),
-            )
-            .await;
-
-        match eval_result {
-            Ok(val) => {
-                let result_obj = val.result.as_ref().and_then(|r| r.get("result"));
-                let value_obj = result_obj.and_then(|r| r.get("value"));
-
-                if value_obj.and_then(|v| v.as_bool()) == Some(true) {
-                    // Element found and focused, now insert text
-                    let _ = target
-                        .send_raw_command(
-                            "Input.insertText",
-                            json!({
-                                "text": args.text
-                            }),
-                        )
-                        .await
-                        .map_err(|e| CallToolError::from_message(format!("CDP Error: {:?}", e)))?;
-
-                    Ok(CallToolResult::text_content(vec![
-                        format!("Successfully filled input '{}' with text.", args.selector).into(),
-                    ]))
-                } else {
-                    Err(CallToolError::from_message(format!(
-                        "Element not found for selector: {}",
-                        args.selector
-                    )))
-                }
-            }
-            Err(e) => Err(CallToolError::from_message(format!("CDP Error: {:?}", e))),
+        let args: FillInputTool = crate::handler::parse_args(params)?;
+        let target =
+            crate::handler::resolve_target(handler, args.instance_id.clone(), args.tab_id.clone())
+                .await?;
+        let prepare = crate::util::js::prepare_fill(&args.selector, &args.text);
+        let prepared = crate::handler::snippet_value(&target, &prepare).await?;
+        if let FillStart::Selected = fill_start(&prepared, &args.selector)? {
+            return Ok(selected_reply(&args.selector));
         }
+        if !args.text.is_empty() {
+            let text = json!({"text": args.text});
+            crate::handler::send_or(&target, "Input.insertText", text, "CDP Error").await?;
+        }
+        let check = crate::util::js::fill_result(&args.selector, &args.text);
+        fill_reply(
+            &crate::handler::snippet_value(&target, &check).await?,
+            &args.selector,
+        )
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::handler::cdp_domains::tests::spawn_mock_chrome_server;
-    use crate::handler::chrome_instance::MockChromeManager;
     use rust_mcp_sdk::schema::CallToolRequestParams;
     use serde_json::json;
-    use std::sync::Arc;
-    use tokio::sync::Mutex;
 
     #[tokio::test]
     async fn test_fill_input_params_deserialization() {
@@ -110,27 +141,137 @@ mod tests {
         assert_eq!(tool.text, "my_user");
     }
 
+    /// A Chrome mock whose preparation snippet answers `prepared` and whose
+    /// result snippet answers `typed` (both by value).
+    async fn page_answering(
+        prepared: Value,
+        typed: Value,
+    ) -> &'static cdp_browser_lite::test_support::mock_devtools::MockDevTools {
+        let mock = crate::handler::cdp_domains::tests::spawn_recording_mock().await;
+        mock.respond_with("Runtime.evaluate", move |params| {
+            let expression = params["expression"].as_str().unwrap_or_default();
+            let value = if expression.contains("'ready'") {
+                prepared.clone()
+            } else {
+                typed.clone()
+            };
+            json!({"result": {"result": {"type": "object", "value": value}}})
+        });
+        mock
+    }
+
+    async fn fill(
+        mock: &cdp_browser_lite::test_support::mock_devtools::MockDevTools,
+        selector: &str,
+    ) -> Result<CallToolResult, CallToolError> {
+        let handler = crate::handler::cdp_domains::tests::mock_handler(mock.http_port);
+        let args = json!({"selector": selector, "text": "SECRET"});
+        let params = crate::handler::cdp_domains::tests::call("fill_input", args);
+        FillInputTool::handle(params, &handler).await
+    }
+
+    /// AUD-IN-08: an element that cannot take text fails and nothing is typed
+    /// (the text used to land in the previously focused field).
     #[tokio::test]
-    async fn test_fill_input_handle() {
-        let port = spawn_mock_chrome_server().await;
+    async fn non_editable_element_fails_without_typing() {
+        // Given a page where "#d" is a plain div
+        let reason = "not an input, textarea or contenteditable element";
+        let mock = page_answering(
+            json!({"status": "not_editable", "reason": reason}),
+            json!(null),
+        )
+        .await;
+        // When fill_input targets it
+        let error = fill(mock, "#d").await.unwrap_err().to_string();
+        // Then the error names the element and the reason, and no text was inserted
+        assert_eq!(
+            error,
+            format!("Element '#d' is not editable ({reason}); nothing was typed.")
+        );
+        assert!(mock.commands_named("Input.insertText").is_empty());
+    }
 
-        let mut handler = McpHandler::new_test();
-        Arc::get_mut(&mut handler.default_session)
-            .unwrap()
-            .chrome_manager = Arc::new(Mutex::new(MockChromeManager::new(port)));
+    /// AUD-IN-09: a <select> gets the option matching the text, without typing.
+    #[tokio::test]
+    async fn select_picks_the_matching_option() {
+        // Given a select with an option labelled like the text
+        let mock = page_answering(json!({"status": "selected"}), json!(null)).await;
+        // When fill_input targets it
+        let reply = fill(mock, "#s").await.unwrap();
+        // Then the option was selected in the page and no text was inserted
+        let text = crate::handler::cdp_domains::tests::reply_text(&reply);
+        assert_eq!(
+            text,
+            "Successfully selected the option matching the text in '#s'."
+        );
+        assert!(mock.commands_named("Input.insertText").is_empty());
+        let prepare = &mock.commands_named("Runtime.evaluate")[0].params;
+        let expression = prepare["expression"].as_str().unwrap();
+        assert!(expression.contains("HTMLSelectElement"), "{expression}");
+    }
 
-        let params: CallToolRequestParams = serde_json::from_value(json!({
-            "name": "fill_input",
-            "arguments": {
-                "selector": "#test-input",
-                "text": "Hello World"
-            }
-        }))
-        .unwrap();
+    /// AUD-IN-09: a <select> without a matching option fails listing them.
+    #[tokio::test]
+    async fn select_without_matching_option_fails() {
+        let options = json!({"status": "no_option", "options": ["Red", "Blue"]});
+        let mock = page_answering(options, json!(null)).await;
+        let error = fill(mock, "#s").await.unwrap_err().to_string();
+        assert_eq!(
+            error,
+            "No option of '#s' has that value or label. Options: Red, Blue."
+        );
+    }
 
-        let result = FillInputTool::handle(params, &handler).await;
-        // In the mock server, if the result is not exactly right, we might get an error.
-        // We'll update the mock server to return true for focusing input test.
-        assert!(result.is_ok(), "Handle should succeed: {:?}", result.err());
+    /// AUD-IN-10: a field left empty after typing rejected the text: error.
+    #[tokio::test]
+    async fn field_left_empty_is_an_error() {
+        // Given a field that drops what is typed (e.g. letters in type=number)
+        let mock = page_answering(
+            json!({"status": "ready"}),
+            json!({"status": "done", "matches": false, "empty": true}),
+        )
+        .await;
+        // When fill_input types into it
+        let error = fill(mock, "#num").await.unwrap_err().to_string();
+        // Then the text was inserted, but the call fails saying the field rejected it
+        assert_eq!(mock.commands_named("Input.insertText").len(), 1);
+        assert!(error.starts_with("'#num' is empty after typing"), "{error}");
+    }
+
+    /// AUD-IN-10: a field holding something else than the text (mask,
+    /// maxlength) succeeds with a note that never echoes the text.
+    #[tokio::test]
+    async fn reformatted_field_succeeds_with_a_note() {
+        let mock = page_answering(
+            json!({"status": "ready"}),
+            json!({"status": "done", "matches": false, "empty": false}),
+        )
+        .await;
+        let reply = fill(mock, "#phone").await.unwrap();
+        let text = crate::handler::cdp_domains::tests::reply_text(&reply);
+        assert!(
+            text.starts_with("Successfully filled input '#phone' with text.\nNote:"),
+            "{text}"
+        );
+        assert!(!text.contains("SECRET"), "{text}");
+    }
+
+    /// AUD-IN-08: the happy path types the text once, then checks the field.
+    #[tokio::test]
+    async fn editable_field_is_typed_and_checked() {
+        let mock = page_answering(
+            json!({"status": "ready"}),
+            json!({"status": "done", "matches": true, "empty": false}),
+        )
+        .await;
+        let reply = fill(mock, "#a").await.unwrap();
+        assert_eq!(
+            crate::handler::cdp_domains::tests::reply_text(&reply),
+            "Successfully filled input '#a' with text."
+        );
+        let inserted = mock.commands_named("Input.insertText");
+        assert_eq!(inserted.len(), 1);
+        assert_eq!(inserted[0].params["text"], "SECRET");
+        assert_eq!(mock.commands_named("Runtime.evaluate").len(), 2);
     }
 }

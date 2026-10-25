@@ -264,6 +264,28 @@ pub(crate) async fn send_or(
         .map_err(|e| CallToolError::from_message(format!("{failure}: {e:?}")))
 }
 
+/// The value of a `util::js` snippet (`Runtime.evaluate` by value). A
+/// thrown exception, such as the `SyntaxError` of an invalid selector, is an
+/// error with its message rather than a missing value.
+pub(crate) async fn snippet_value(
+    target: &cdp_domains::cdp_target::CdpTarget,
+    expression: &str,
+) -> std::result::Result<serde_json::Value, CallToolError> {
+    let params = serde_json::json!({"expression": expression, "returnByValue": true});
+    let reply = send_or(target, "Runtime.evaluate", params, "CDP Error").await?;
+    let result = reply.result.unwrap_or_default();
+    if let Some(details) = result.get("exceptionDetails") {
+        let thrown = details
+            .pointer("/exception/description")
+            .or_else(|| details.get("text"))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("exception");
+        let first_line = thrown.lines().next().unwrap_or(thrown);
+        return Err(CallToolError::from_message(first_line.to_string()));
+    }
+    Ok(result.pointer("/result/value").cloned().unwrap_or_default())
+}
+
 /// `Browser.getVersion`, or `None` when it fails.
 async fn read_browser_version(client: &CdpClient) -> Option<BrowserVersion> {
     let reply = client

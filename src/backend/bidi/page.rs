@@ -169,13 +169,10 @@ pub(crate) async fn click(tab: &Tab, selector: &str) -> Result<(f64, f64), Backe
     Ok((x, y))
 }
 
-/// Focuses and clears the element, then types `text` key by key (spike H8).
-pub(crate) async fn fill(tab: &Tab, selector: &str, text: &str) -> Result<(), BackendError> {
-    let found = run_snippet(tab, &crate::util::js::focus_and_clear(selector)).await?;
-    if found != Value::Bool(true) {
-        return Err(BackendError::InvalidArgument(format!(
-            "Element not found for selector: {selector}"
-        )));
+/// Types `text` key by key into the focused element (spike H8).
+pub(crate) async fn type_text(tab: &Tab, text: &str) -> Result<(), BackendError> {
+    if text.is_empty() {
+        return Ok(());
     }
     let keys: Vec<Value> = text
         .chars()

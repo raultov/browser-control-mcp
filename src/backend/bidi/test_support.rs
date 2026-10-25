@@ -59,6 +59,24 @@ pub(crate) fn evaluate_success(remote: Value) -> Value {
     json!({"type": "success", "result": {"type": "success", "result": remote, "realm": "r1"}})
 }
 
+/// `value` as a BiDi remote value, so a mock can answer a `util::js`
+/// snippet with the plain JSON the page would return.
+pub(crate) fn remote(value: &Value) -> Value {
+    match value {
+        Value::Null => json!({"type": "null"}),
+        Value::Bool(b) => json!({"type": "boolean", "value": b}),
+        Value::Number(n) => json!({"type": "number", "value": n}),
+        Value::String(s) => json!({"type": "string", "value": s}),
+        Value::Array(items) => {
+            json!({"type": "array", "value": items.iter().map(remote).collect::<Vec<_>>()})
+        }
+        Value::Object(map) => {
+            let entries: Vec<Value> = map.iter().map(|(k, v)| json!([k, remote(v)])).collect();
+            json!({"type": "object", "value": entries})
+        }
+    }
+}
+
 /// Stops the handler's default Firefox session (one BiDi session per mock).
 pub(crate) async fn stop(handler: &McpHandler) {
     handler.firefox(None).await.unwrap().stop().await.unwrap();
