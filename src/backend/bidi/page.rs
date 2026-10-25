@@ -130,43 +130,26 @@ pub(crate) async fn run_snippet(tab: &Tab, expression: &str) -> Result<Value, Ba
     evaluate(tab, expression).await
 }
 
-/// Clicks the first element matching `selector` with real pointer input
-/// (spike H6); returns the viewport point reported for it.
-pub(crate) async fn click(tab: &Tab, selector: &str) -> Result<(f64, f64), BackendError> {
-    let not_found =
-        || BackendError::InvalidArgument(format!("Element not found for selector: {selector}"));
-    let center = run_snippet(tab, &crate::util::js::element_center(selector)).await?;
-    let (Some(x), Some(y)) = (center["x"].as_f64(), center["y"].as_f64()) else {
-        return Err(not_found());
-    };
-    let query = format!(
-        "document.querySelector({})",
-        crate::util::js::string_literal(selector)
-    );
-    let element = evaluate_raw(tab, &query, "root").await?;
-    let shared = element
-        .pointer("/result/sharedId")
-        .cloned()
-        .ok_or_else(not_found)?;
-    let origin = json!({"type": "element", "element": {"sharedId": shared}});
+/// Clicks the viewport point `(x, y)` with real pointer input (spike H6).
+/// The input state is released even when the actions fail, so a later
+/// action does not start with the button held.
+pub(crate) async fn click_at(tab: &Tab, x: f64, y: f64) -> Result<(), BackendError> {
+    // The click snippet returns whole CSS pixels; BiDi wants integers.
+    let (x, y) = (x.round() as i64, y.round() as i64);
     let pointer = json!({"type": "pointer", "id": "mouse", "parameters": {"pointerType": "mouse"}, "actions": [
-        {"type": "pointerMove", "x": 0, "y": 0, "origin": origin},
+        {"type": "pointerMove", "x": x, "y": y, "origin": "viewport"},
         {"type": "pointerDown", "button": 0},
         {"type": "pointerUp", "button": 0},
     ]});
     let context = tab.context_id();
-    command(
+    let clicked = command(
         tab,
         "input.performActions",
         json!({"context": context, "actions": [pointer]}),
     )
-    .await?;
-    command(tab, "input.releaseActions", json!({"context": context})).await?;
-    if let Some(handle) = element.get("result").and_then(|r| r.get("handle")) {
-        let disown = json!({"handles": [handle], "target": tab.script_target()});
-        let _ = command(tab, "script.disown", disown).await;
-    }
-    Ok((x, y))
+    .await;
+    let released = command(tab, "input.releaseActions", json!({"context": context})).await;
+    clicked.and(released).map(|_| ())
 }
 
 /// Types `text` key by key into the focused element (spike H8).

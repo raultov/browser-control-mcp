@@ -26,6 +26,14 @@ from a copy of its code: entries describe the differences from that release.
   reports its `SyntaxError` instead of "Element not found". The description
   no longer promises a `change` event: it fires when the field loses focus,
   as for a user.
+- `click_element` no longer reports a click that hit another element or
+  nothing (both browsers). The element is scrolled into view first (Chrome
+  used to click off-screen coordinates into the void; Firefox failed with
+  "move target out of bounds"), and the call fails without clicking when it
+  has no visible box (Chrome used to click the page corner at (0, 0)) or
+  when another element covers the point, naming it (an overlay used to get
+  the click on both). Both browsers click the same checked viewport point;
+  Firefox no longer leaves the pointer pressed when its actions fail.
 
 ## [0.2.0-beta.2] - 2026-10-14
 

@@ -51,7 +51,7 @@ see the note.
 | `scroll` | ✓ | ✓ | |
 | `inspect_dom` | ✓ | ✓ | |
 | `capture_screenshot` | ✓ | ✓ | |
-| `click_element` | ✓ | ✓ | |
+| `click_element` | ✓ | ✓ | scrolls the element into view; fails without clicking when it is hidden or covered |
 | `fill_input` | ✓ | ✓ | picks `<select>` options; fails without typing on elements that cannot take the text; Chrome inserts the text, Firefox types keys |
 | `evaluate_js` | ✓ | ✓ | |
 | `get_console_logs` | ✓ | ✓ | Firefox: page errors, CSS warnings and platform messages need the debugger port |

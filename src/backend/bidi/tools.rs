@@ -6,7 +6,9 @@ use super::page;
 use super::session::FirefoxSession;
 use crate::backend::BrowserKind;
 use crate::handler::cdp_domains::custom::get_custom_events::GetCustomEventsTool;
-use crate::handler::cdp_domains::input::click_element::ClickElementTool;
+use crate::handler::cdp_domains::input::click_element::{
+    ClickElementTool, click_point, clicked_reply,
+};
 use crate::handler::cdp_domains::input::fill_input::{
     FillInputTool, FillStart, fill_reply, fill_start, selected_reply,
 };
@@ -114,18 +116,19 @@ pub(crate) async fn scroll(params: CallToolRequestParams, handler: &McpHandler) 
     Ok(text("Successfully scrolled."))
 }
 
-/// `click_element`: real pointer input on the element.
+/// `click_element`: real pointer input at the point the shared snippet
+/// checked, with the same checks and replies as on Chrome.
 pub(crate) async fn click_element(
     params: CallToolRequestParams,
     handler: &McpHandler,
 ) -> ToolResult {
     let args: ClickElementTool = parse_args(params)?;
     let (_, _, tab) = target(handler, &ids(&args.instance_id, &args.tab_id)).await?;
-    let (x, y) = page::click(&tab.tab, &args.selector).await?;
-    Ok(text(format!(
-        "Successfully clicked on element '{}' at coordinates ({x}, {y})",
-        args.selector
-    )))
+    let expression = crate::util::js::click_point(&args.selector);
+    let point = page::run_snippet(&tab.tab, &expression).await?;
+    let (x, y) = click_point(&point, &args.selector)?;
+    page::click_at(&tab.tab, x, y).await?;
+    Ok(clicked_reply(&args.selector, x, y))
 }
 
 /// `fill_input`: replaces the element's content by typing, with the same
@@ -594,21 +597,16 @@ mod tests {
         ts::stop(&handler).await;
     }
 
-    /// A mock page where `#go` sits at (5, 7) as node `n1` (handle `h1`).
+    /// A mock page whose click snippet answers `point`.
+    fn page_with_point(mock: &MockFirefox, point: Value) {
+        mock.bidi().respond_with("script.evaluate", move |_| {
+            evaluate_success(ts::remote(&point))
+        });
+    }
+
+    /// A mock page where `#go` is visible at (5, 7).
     fn page_with_button(mock: &MockFirefox) {
-        mock.bidi()
-            .respond_with(
-                "script.evaluate",
-                |params| match params["resultOwnership"].as_str() {
-                    Some("root") => {
-                        evaluate_success(json!({"type": "node", "sharedId": "n1", "handle": "h1"}))
-                    }
-                    _ => evaluate_success(json!({"type": "object", "value": [
-                        ["x", {"type": "number", "value": 5}],
-                        ["y", {"type": "number", "value": 7}],
-                    ]})),
-                },
-            );
+        page_with_point(mock, json!({"status": "ok", "x": 5, "y": 7}));
     }
 
     /// The script and input commands the mock received, in order.
@@ -621,10 +619,12 @@ mod tests {
             .collect()
     }
 
-    /// BID-16: click_element clicks the element through input actions.
+    /// BID-16 / AUD-IN-01: click_element clicks, through input actions, the
+    /// viewport point the shared snippet checked (scrolled into view, not
+    /// covered), so both browsers click the same point.
     #[tokio::test]
-    async fn click_uses_element_origin_actions() {
-        // Given a page where "#go" exists
+    async fn click_uses_the_checked_viewport_point() {
+        // Given a page where "#go" is visible at (5, 7)
         let mock = MockFirefox::start(false).await.unwrap();
         page_with_button(&mock);
         let handler = ts::handler(&mock);
@@ -632,29 +632,41 @@ mod tests {
         let reply = click_element(call("click_element", json!({"selector": "#go"})), &handler)
             .await
             .unwrap();
-        // Then root-owned evaluate, pointer actions from the element, release, disown
+        // Then one check, pointer actions at that viewport point, release
         assert!(ts::text(&reply).contains("(5, 7)"), "{}", ts::text(&reply));
         assert_eq!(
             script_and_input(&mock),
             [
                 "script.evaluate",
-                "script.evaluate",
                 "input.performActions",
-                "input.releaseActions",
-                "script.disown"
+                "input.releaseActions"
             ]
         );
-        let evaluations = mock.bidi().commands_named("script.evaluate");
-        assert_eq!(evaluations[1].params["resultOwnership"], "root");
         let actions = &mock.bidi().commands_named("input.performActions")[0].params;
+        let first = &actions["actions"][0]["actions"][0];
         assert_eq!(
-            actions["actions"][0]["actions"][0]["origin"]["element"]["sharedId"],
-            "n1"
+            (&first["origin"], &first["x"], &first["y"]),
+            (&json!("viewport"), &json!(5), &json!(7))
         );
-        assert_eq!(
-            mock.bidi().commands_named("script.disown")[0].params["handles"],
-            json!(["h1"])
+        ts::stop(&handler).await;
+    }
+
+    /// AUD-IN-03: on Firefox too, a covered element is not clicked.
+    #[tokio::test]
+    async fn click_on_covered_element_sends_no_input() {
+        let mock = MockFirefox::start(false).await.unwrap();
+        let covered = json!({"status": "covered", "by": "div#overlay", "x": 81, "y": 240});
+        page_with_point(&mock, covered);
+        let handler = ts::handler(&mock);
+        let error = click_element(call("click_element", json!({"selector": "#b"})), &handler)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.starts_with("Element '#b' is covered by 'div#overlay'"),
+            "{error}"
         );
+        assert_eq!(script_and_input(&mock), ["script.evaluate"]);
         ts::stop(&handler).await;
     }
 

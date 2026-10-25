@@ -25,15 +25,30 @@ pub fn scroll_into_view(selector: &str) -> String {
     )
 }
 
-/// The viewport centre `{x, y}` of the first element matching `selector`, or `null`.
-pub fn element_center(selector: &str) -> String {
-    on_element(
-        selector,
-        "null",
-        "const rect = el.getBoundingClientRect(); \
-         return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };",
-    )
+/// Scrolls the first element matching `selector` into view and returns the
+/// viewport point a click should use, once checked that a click there
+/// reaches the element: `{status: 'ok', x, y}`, or `missing`, `hidden` (no
+/// visible box), `outside` (not in the viewport even after scrolling) or
+/// `covered` (with `by`, the element on top, and `x`, `y`). A pointer click
+/// lands on whatever is at the point, so without the check an overlay, or
+/// the page corner for a hidden element, would get it.
+pub fn click_point(selector: &str) -> String {
+    on_element(selector, "{ status: 'missing' }", CLICK_POINT)
 }
+
+const CLICK_POINT: &str = "el.scrollIntoView({ behavior: 'instant', block: 'center', inline: 'center' }); \
+    const box = Array.from(el.getClientRects()).find(r => r.width > 0 && r.height > 0); \
+    if (!box || getComputedStyle(el).visibility !== 'visible') return { status: 'hidden' }; \
+    const left = Math.max(box.left, 0), right = Math.min(box.right, innerWidth); \
+    const top = Math.max(box.top, 0), bottom = Math.min(box.bottom, innerHeight); \
+    if (right <= left || bottom <= top) return { status: 'outside' }; \
+    const x = Math.round((left + right) / 2), y = Math.round((top + bottom) / 2); \
+    const hit = document.elementFromPoint(x, y); \
+    if (hit && hit !== el && !el.contains(hit)) { \
+        const kind = typeof hit.className === 'string' && hit.className.trim() ? '.' + hit.className.trim().split(/\\s+/)[0] : ''; \
+        return { status: 'covered', by: hit.tagName.toLowerCase() + (hit.id ? '#' + hit.id : '') + kind, x, y }; \
+    } \
+    return { status: 'ok', x, y };";
 
 /// Readies the first element matching `selector` for `text` (`fill_input`).
 /// A text field or contenteditable element is focused and emptied (through
@@ -156,7 +171,7 @@ mod tests {
         // When each snippet embeds it
         for expression in [
             scroll_into_view(selector),
-            element_center(selector),
+            click_point(selector),
             prepare_fill(selector, selector),
             fill_result(selector, selector),
         ] {
