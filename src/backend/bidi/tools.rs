@@ -789,6 +789,51 @@ mod tests {
         ts::stop(&handler).await;
     }
 
+    /// AUD-EV-12 (Firefox): an object result is held by reference and
+    /// measured in the page; one over the limit is described, never sent
+    /// whole, and the reference is released.
+    #[tokio::test]
+    async fn large_objects_are_measured_in_the_page() {
+        // Given a page where the expression is an array too large to return
+        let mock = MockFirefox::start(false).await.unwrap();
+        mock.bidi().respond_with("script.evaluate", |_| {
+            evaluate_success(json!({"type": "array", "handle": "h1"}))
+        });
+        mock.bidi().respond_with("script.callFunction", |_| {
+            evaluate_success(ts::remote(&json!({"__bcm_too_large__": 25_000_000})))
+        });
+        let handler = ts::handler(&mock);
+        // When evaluate_js runs
+        let args = json!({"expression": "big"});
+        let reply = evaluate_js(call("evaluate_js", args), &handler)
+            .await
+            .unwrap();
+        // Then the reply describes it
+        let body: Value = serde_json::from_str(&ts::text(&reply)).unwrap();
+        assert_eq!(body["value"], Value::Null);
+        assert_eq!(body["subtype"], "array");
+        assert_eq!(body["truncated"], true);
+        assert!(
+            body["description"].as_str().unwrap().contains("25000000"),
+            "{body}"
+        );
+        // And the evaluation was by reference, the read measured, the handle released
+        let sent = &mock.bidi().commands_named("script.evaluate")[0].params;
+        assert_eq!(sent["resultOwnership"], "root");
+        assert_eq!(sent["serializationOptions"]["maxObjectDepth"], 0);
+        let read = &mock.bidi().commands_named("script.callFunction")[0].params;
+        assert_eq!(read["this"], json!({"handle": "h1"}));
+        assert!(
+            read["functionDeclaration"]
+                .as_str()
+                .unwrap()
+                .contains("JSON.stringify")
+        );
+        let released = &mock.bidi().commands_named("script.disown")[0].params;
+        assert_eq!(released["handles"], json!(["h1"]));
+        ts::stop(&handler).await;
+    }
+
     /// AUD-IN-08: on Firefox too, a non-editable element fails and no key is typed.
     #[tokio::test]
     async fn fill_non_editable_sends_no_keys() {

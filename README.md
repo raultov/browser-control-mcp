@@ -54,7 +54,7 @@ see the note.
 | `click_element` | ✓ | ✓ | scrolls the element into view; fails without clicking when it is hidden or covered |
 | `fill_input` | ✓ | ✓ | picks `<select>` options; fails without typing on elements that cannot take the text; Chrome inserts the text, Firefox types keys |
 | `handle_dialog` | ✓ | ✓ | accepts or dismisses the open `alert` / `confirm` / `prompt` / `beforeunload` dialog |
-| `evaluate_js` | ✓ | ✓ | |
+| `evaluate_js` | ✓ | ✓ | `value` at most 100 000 characters (`truncated: true`) |
 | `get_console_logs` | ✓ | ✓ | Firefox: page errors, CSS warnings and platform messages need the debugger port |
 | `get_network_logs` | ✓ | ✓ | Firefox: WebSocket frames need the debugger port |
 | `get_custom_events` | ✓ | partial | Firefox: events of the modules subscribed with `send_bidi_command` |
@@ -292,6 +292,9 @@ claude mcp add browser-control-mcp -- npx -y @raultov/browser-control-mcp
   by their source, Firefox only as `function`). A thrown exception or a
   rejected promise fails with what was thrown and its 1-based line and
   column, e.g. `ReferenceError: x is not defined (line 1, column 1)`.
+  A `value` over 100 000 characters is not returned whole: a string keeps
+  its first 100 000, an object or array is measured in the page and only
+  described; the reply then carries `"truncated": true`.
 - **Per-tab state.** Console logs, network traffic, breakpoints and custom
   events are kept per tab, in bounded buffers. A tab's console buffer (last
   1000 messages) is cleared when the tab moves to another site (registrable

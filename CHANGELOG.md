@@ -12,6 +12,13 @@ from a copy of its code: entries describe the differences from that release.
 
 ### Fixed
 
+- `evaluate_js` returns at most 100 000 characters of `value`: a longer
+  string is cut, and an object or array whose JSON form is longer is
+  measured in the page and only described ("too large to return (N
+  characters of JSON)"), so it never crosses the connection; the reply
+  says `"truncated": true`. A 3-million-element array used to time out on
+  Firefox and a 20 MB object to drop the connection. A string result over
+  16 MB still drops it (the next call reconnects).
 - `inspect_dom` searches and cuts in the page, so a large document no
   longer crosses the connection (a 20 MB page used to drop it on Chrome).
   Without `query` it returns at most 100 000 characters, after a

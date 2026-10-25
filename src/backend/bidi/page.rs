@@ -3,7 +3,7 @@
 use super::protocol_error;
 use super::remote_value;
 use crate::backend::error::BackendError;
-use crate::handler::evaluation::{Evaluation, exception_message};
+use crate::handler::evaluation::{self, Evaluation, exception_message};
 use crate::handler::navigation::{LOAD_TIMEOUT, NOT_LOADED_NOTE, NavigationOutcome, load_before};
 use bidi_browser_lite::{BidiError, ReadinessState, Tab};
 use serde_json::{Value, json};
@@ -158,11 +158,62 @@ pub(crate) async fn evaluate(tab: &Tab, expression: &str) -> Result<Value, Backe
 }
 
 /// `evaluate_js`: the result in the shared shape, or the exception as an
-/// error worded as on Chrome.
+/// error worded as on Chrome. An object is held by reference (a handle,
+/// without its contents) and read by value only when its JSON form fits
+/// ([`evaluation::MEASURE`]): a large one would cross the connection whole.
 pub(crate) async fn evaluate_js(tab: &Tab, expression: &str) -> Result<Evaluation, BackendError> {
-    let reply = evaluate_raw(tab, expression, "none").await?;
+    let params = json!({
+        "expression": expression,
+        "target": tab.script_target(),
+        "awaitPromise": true,
+        "resultOwnership": "root",
+        "serializationOptions": {"maxObjectDepth": 0},
+    });
+    let reply = command(tab, "script.evaluate", params).await?;
+    let outcome = match thrown(&reply) {
+        Ok(()) => measured(tab, &reply["result"]).await,
+        Err(error) => Err(error),
+    };
+    let handles: Vec<&Value> = [&reply["result"], &reply["exceptionDetails"]["exception"]]
+        .into_iter()
+        .filter_map(|remote| remote.get("handle"))
+        .collect();
+    if !handles.is_empty() {
+        let release = json!({"handles": handles, "target": tab.script_target()});
+        // Best effort: the handles also go with the page's realm.
+        let _ = command(tab, "script.disown", release).await;
+    }
+    outcome
+}
+
+/// The shared result for `remote`, read by value through
+/// [`evaluation::MEASURE`] when it is an object held by a handle.
+async fn measured(tab: &Tab, remote: &Value) -> Result<Evaluation, BackendError> {
+    let Some(handle) = remote.get("handle") else {
+        return Ok(remote_value::evaluation(remote));
+    };
+    let params = json!({
+        "functionDeclaration": evaluation::MEASURE,
+        "this": {"handle": handle},
+        "arguments": [{"type": "number", "value": evaluation::EVAL_MAX_CHARS}],
+        "target": tab.script_target(),
+        "awaitPromise": false,
+        "resultOwnership": "none",
+    });
+    let reply = command(tab, "script.callFunction", params).await?;
     thrown(&reply)?;
-    Ok(remote_value::evaluation(&reply["result"]))
+    let read = &reply["result"];
+    match evaluation::measured_length(&remote_value::to_json(read)) {
+        Some(chars) => {
+            let shown = remote_value::evaluation(remote);
+            Ok(Evaluation::too_large(
+                &shown.kind,
+                shown.subtype.as_deref(),
+                chars,
+            ))
+        }
+        None => Ok(remote_value::evaluation(read)),
+    }
 }
 
 /// The value of a `script.evaluate` reply, or its exception as an error.

@@ -6,10 +6,30 @@
 //! `promise`...). `value` is the JSON form of the result, `null` when it has
 //! none (functions, DOM nodes, symbols, `NaN`, bigints, maps...), and then
 //! `description` says what it was. A thrown exception is a tool error with
-//! [`exception_message`]'s wording.
+//! [`exception_message`]'s wording. A result over [`EVAL_MAX_CHARS`] is cut
+//! (strings) or described (objects) and marked `truncated: true`.
 
 use rust_mcp_sdk::schema::CallToolResult;
 use serde_json::{Value, json};
+
+/// Most characters a result's `value` may take in a reply: larger results
+/// flood the agent (and over 16 MB drop the browser connection).
+pub(crate) const EVAL_MAX_CHARS: usize = 100_000;
+
+/// The marker [`MEASURE`] answers for an object over the limit.
+const TOO_LARGE: &str = "__bcm_too_large__";
+
+/// Called on an object result with [`EVAL_MAX_CHARS`] as argument: the
+/// object itself, or `{TOO_LARGE: length}` when its JSON form is longer, so
+/// a large object never crosses the connection (read it with
+/// [`measured_length`]).
+pub(crate) const MEASURE: &str = "function (limit) { let json; try { json = JSON.stringify(this); } catch (e) { return this; } \
+     return json !== undefined && json.length > limit ? { __bcm_too_large__: json.length } : this; }";
+
+/// The JSON length [`MEASURE`] reported, when the object was over the limit.
+pub(crate) fn measured_length(by_value: &Value) -> Option<u64> {
+    by_value.get(TOO_LARGE).and_then(Value::as_u64)
+}
 
 /// An evaluation result in the shared shape.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -22,6 +42,8 @@ pub(crate) struct Evaluation {
     pub(crate) subtype: Option<String>,
     /// What the value was, when `value` cannot show it.
     pub(crate) description: Option<String>,
+    /// `value` was cut or dropped for size (see [`EVAL_MAX_CHARS`]).
+    pub(crate) truncated: bool,
 }
 
 impl Evaluation {
@@ -32,6 +54,7 @@ impl Evaluation {
             kind: kind.to_string(),
             subtype: subtype.map(str::to_string),
             description: None,
+            truncated: false,
         }
     }
 
@@ -42,7 +65,47 @@ impl Evaluation {
             kind: kind.to_string(),
             subtype: subtype.map(str::to_string),
             description: Some(description.to_string()),
+            truncated: false,
         }
+    }
+
+    /// An object whose JSON form (`chars` characters) is over the limit.
+    pub(crate) fn too_large(kind: &str, subtype: Option<&str>, chars: u64) -> Self {
+        Self {
+            truncated: true,
+            ..Self::described(
+                kind,
+                subtype,
+                &format!(
+                    "too large to return ({chars} characters of JSON); read parts of it with a narrower expression"
+                ),
+            )
+        }
+    }
+
+    /// The result within [`EVAL_MAX_CHARS`]: a long string keeps its start,
+    /// a larger JSON form is dropped for a description.
+    pub(crate) fn bounded(&self) -> Self {
+        if let Value::String(text) = &self.value {
+            let length = text.chars().count();
+            if length <= EVAL_MAX_CHARS {
+                return self.clone();
+            }
+            return Self {
+                value: Value::String(text.chars().take(EVAL_MAX_CHARS).collect()),
+                description: Some(format!(
+                    "string of {length} characters; value holds the first {EVAL_MAX_CHARS}"
+                )),
+                truncated: true,
+                ..self.clone()
+            };
+        }
+        let chars = self.value.to_string().chars().count();
+        if chars <= EVAL_MAX_CHARS {
+            return self.clone();
+        }
+        let chars = u64::try_from(chars).unwrap_or(u64::MAX);
+        Self::too_large(&self.kind, self.subtype.as_deref(), chars)
     }
 
     /// The reply object.
@@ -54,12 +117,15 @@ impl Evaluation {
         if let Some(description) = &self.description {
             reply["description"] = json!(description);
         }
+        if self.truncated {
+            reply["truncated"] = json!(true);
+        }
         reply
     }
 
-    /// The tool reply: the reply object as pretty JSON.
+    /// The tool reply: the bounded reply object as pretty JSON.
     pub(crate) fn reply(&self) -> CallToolResult {
-        let body = serde_json::to_string_pretty(&self.to_json()).unwrap_or_default();
+        let body = serde_json::to_string_pretty(&self.bounded().to_json()).unwrap_or_default();
         CallToolResult::text_content(vec![body.into()])
     }
 }
@@ -140,6 +206,40 @@ fn thrown_value(value: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// AUD-EV-12: a reply never carries more than `EVAL_MAX_CHARS`: a long
+    /// string is cut and marked, a large object is described.
+    #[test]
+    fn large_results_are_bounded() {
+        assert!(MEASURE.contains(TOO_LARGE));
+        assert_eq!(measured_length(&json!({TOO_LARGE: 7})), Some(7));
+        assert_eq!(measured_length(&json!({"a": 7})), None);
+        let long = Evaluation::json("string", None, json!("x".repeat(EVAL_MAX_CHARS + 5)));
+        let body = long.bounded().to_json();
+        assert_eq!(body["value"].as_str().unwrap().len(), EVAL_MAX_CHARS);
+        assert_eq!(body["truncated"], true);
+        assert_eq!(
+            body["description"],
+            format!(
+                "string of {} characters; value holds the first {EVAL_MAX_CHARS}",
+                EVAL_MAX_CHARS + 5
+            )
+        );
+        let big: Vec<u32> = (0..60_000).collect();
+        let array = Evaluation::json("object", Some("array"), json!(big));
+        let body = array.bounded().to_json();
+        assert_eq!(body["value"], Value::Null);
+        assert_eq!(body["truncated"], true);
+        assert!(
+            body["description"]
+                .as_str()
+                .unwrap()
+                .starts_with("too large to return ("),
+            "{body}"
+        );
+        let small = Evaluation::json("number", None, json!(3));
+        assert_eq!(small.bounded(), small);
+    }
 
     fn chrome(key: &str) -> Value {
         let all: Value = serde_json::from_str(include_str!(

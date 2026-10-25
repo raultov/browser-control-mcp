@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 
 #[macros::mcp_tool(
     name = "evaluate_js",
-    description = "Executes arbitrary JavaScript code in the page context, returning evaluated results as JSON-serializable values. Side effects: may modify DOM, state, or trigger network requests. Prerequisites: requires an active Chrome tab; script context must allow execution. Returns: JSON {value, type, subtype?, description?}: `type` is JavaScript's typeof, `value` the JSON form (null when there is none: functions, DOM nodes, symbols, NaN, bigints, maps...; then `description` says what it was). A thrown exception or rejected promise fails the call with what was thrown and its line and column. Use this for dynamic inspection, DOM manipulation, complex interactions. Alternatives: 'inspect_dom' for read-only DOM queries, 'click_element' for UI interactions."
+    description = "Executes arbitrary JavaScript code in the page context, returning evaluated results as JSON-serializable values. Side effects: may modify DOM, state, or trigger network requests. Prerequisites: requires an active Chrome tab; script context must allow execution. Returns: JSON {value, type, subtype?, description?}: `type` is JavaScript's typeof, `value` the JSON form (null when there is none: functions, DOM nodes, symbols, NaN, bigints, maps...; then `description` says what it was). A value over 100000 characters is cut (strings) or only described (objects, measured in the page), with `truncated: true`. A thrown exception or rejected promise fails the call with what was thrown and its line and column. Use this for dynamic inspection, DOM manipulation, complex interactions. Alternatives: 'inspect_dom' for read-only DOM queries, 'click_element' for UI interactions."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct EvaluateJsTool {
@@ -88,15 +88,22 @@ async fn read_outcome(
         Some(id) if evaluation::has_json_form(remote) => by_value(target, id).await,
         _ => None,
     };
+    if let Some(chars) = by_value.as_ref().and_then(evaluation::measured_length) {
+        let text = |key: &str| remote.get(key).and_then(Value::as_str);
+        let kind = text("type").unwrap_or("object");
+        return Ok(Evaluation::too_large(kind, text("subtype"), chars));
+    }
     Ok(evaluation::from_cdp(remote, by_value))
 }
 
 /// The by-value form of a remote object, or `None` when Chrome cannot
-/// serialise it (e.g. `window`: "Object reference chain is too long").
+/// serialise it (e.g. `window`: "Object reference chain is too long"). The
+/// object is measured in the page first ([`evaluation::MEASURE`]).
 async fn by_value(target: &CdpTarget, object_id: &str) -> Option<Value> {
     let params = json!({
         "objectId": object_id,
-        "functionDeclaration": "function () { return this; }",
+        "functionDeclaration": evaluation::MEASURE,
+        "arguments": [{"value": evaluation::EVAL_MAX_CHARS}],
         "returnByValue": true,
     });
     let reply = target
@@ -235,6 +242,42 @@ mod tests {
         );
         let released = &mock.commands_named("Runtime.releaseObjectGroup")[0].params;
         assert_eq!(released["objectGroup"], GROUP);
+    }
+
+    /// AUD-EV-12: the by-value read measures the object in the page; one
+    /// over the limit is described, never sent whole.
+    #[tokio::test]
+    async fn large_objects_are_measured_in_the_page() {
+        let mock = spawn_recording_mock().await;
+        mock.respond_with("Runtime.evaluate", |_| {
+            json!({"result": {"result": {"type": "object", "className": "Object", "description": "Object", "objectId": "o1"}}})
+        });
+        mock.respond_with("Runtime.callFunctionOn", |_| {
+            json!({"result": {"result": {"type": "object", "value": {"__bcm_too_large__": 25_000_000}}}})
+        });
+        let handler = mock_handler(mock.http_port);
+        let args = json!({"expression": "big"});
+        let reply = EvaluateJsTool::handle(call("evaluate_js", args), &handler)
+            .await
+            .unwrap();
+        let body: Value = serde_json::from_str(&reply_text(&reply)).unwrap();
+        assert_eq!(body["value"], Value::Null);
+        assert_eq!(body["truncated"], true);
+        assert!(
+            body["description"].as_str().unwrap().contains("25000000"),
+            "{body}"
+        );
+        let read = &mock.commands_named("Runtime.callFunctionOn")[0].params;
+        assert!(
+            read["functionDeclaration"]
+                .as_str()
+                .unwrap()
+                .contains("JSON.stringify")
+        );
+        assert_eq!(
+            read["arguments"][0]["value"],
+            crate::handler::evaluation::EVAL_MAX_CHARS
+        );
     }
 
     /// EVL-03 / EVL-04: a node is described without a by-value read; a
