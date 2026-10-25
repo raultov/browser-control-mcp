@@ -10,6 +10,14 @@ from a copy of its code: entries describe the differences from that release.
 
 ## [Unreleased]
 
+### Fixed
+
+- Replies up to 256 MB no longer drop the connection: built with `cdp-lite`
+  0.3.1 and `bidi-lite` 0.1.4, which accept WebSocket messages up to 256 MiB
+  (the WebSocket library's default closed the connection on a frame over
+  16 MiB, e.g. an `evaluate_js` string of 20 MB). The lost-connection error
+  now names the 256 MB limit.
+
 ## [0.3.1-beta.3] - 2026-10-25
 
 Public **BETA**. Size limits: large pages, results, scripts, logs and

@@ -13,7 +13,7 @@ use rust_mcp_sdk::schema::CallToolResult;
 use serde_json::{Value, json};
 
 /// Most characters a result's `value` may take in a reply: larger results
-/// flood the agent (and over 16 MB drop the browser connection).
+/// flood the agent (and over 256 MB drop the browser connection).
 pub(crate) const EVAL_MAX_CHARS: usize = 100_000;
 
 /// The marker [`MEASURE`] answers for an object over the limit.

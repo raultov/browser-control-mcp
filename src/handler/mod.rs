@@ -307,7 +307,7 @@ pub(crate) fn cdp_failure(failure: &str, error: &cdp_browser_lite::CdpError) -> 
             message.clone()
         }
         cdp_browser_lite::CdpError::Disconnected => format!(
-            "{failure}: the DevTools connection to Chrome dropped. Chrome closes it when a reply exceeds 16 MB (a huge evaluate_js result, page, script or response body): keep results small (slice strings, query the DOM). The next call reconnects; tab ids are re-assigned (call list_tabs)."
+            "{failure}: the DevTools connection to Chrome dropped. A reply over 256 MB (a huge evaluate_js result, page, script or response body) closes it: keep results small (slice strings, query the DOM). The next call reconnects; tab ids are re-assigned (call list_tabs)."
         ),
         other => format!("{failure}: {other}"),
     }
@@ -674,12 +674,12 @@ impl BrowserSession {
         self.reconnect_if_dropped().await
     }
 
-    /// Chrome closes the DevTools WebSocket when one of its messages exceeds
-    /// the client's 16 MB frame limit (a huge `evaluate_js` result, page or
-    /// script): the tabs registered over it would answer `Connection lost`
-    /// forever. A dead connection is forgotten with its tabs, and the
-    /// session reconnects and waits for the pages to register again (with
-    /// new tab ids).
+    /// The DevTools WebSocket closes when one of Chrome's messages exceeds
+    /// the client's 256 MB limit (cdp-lite's `MAX_MESSAGE_SIZE`; a huge
+    /// `evaluate_js` result, page or script): the tabs registered over it
+    /// would answer `Connection lost` forever. A dead connection is
+    /// forgotten with its tabs, and the session reconnects and waits for the
+    /// pages to register again (with new tab ids).
     async fn reconnect_if_dropped(&self) -> std::result::Result<(), CallToolError> {
         let tab_client = {
             let registry = crate::util::sync::read(&self.tabs);
@@ -1419,7 +1419,7 @@ mod tests {
     }
 
     /// AUD-EV-23: a tab whose DevTools connection dropped (Chrome closes it
-    /// on a message over 16 MB) while the browser lives is forgotten and the
+    /// on a message over 256 MB) while the browser lives is forgotten and the
     /// session reconnects, instead of answering "Connection lost" forever.
     #[tokio::test]
     async fn dropped_connection_is_reconnected() {
@@ -1454,7 +1454,7 @@ mod tests {
     #[test]
     fn lost_connection_error_is_explained() {
         let text = cdp_failure("CDP Error", &cdp_browser_lite::CdpError::Disconnected);
-        assert!(text.contains("16 MB"), "{text}");
+        assert!(text.contains("256 MB"), "{text}");
         assert!(text.contains("next call reconnects"), "{text}");
     }
 

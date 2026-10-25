@@ -128,7 +128,7 @@ pub fn fill_result(selector: &str, text: &str) -> String {
 
 /// Most characters of HTML `inspect_dom` returns without a query: the
 /// whole document of a large page would flood the agent, and a reply over
-/// 16 MB closes the browser connection.
+/// 256 MB closes the browser connection.
 pub const DOM_MAX_CHARS: usize = 100_000;
 
 /// Most characters of context on each side of an `inspect_dom` match.

@@ -216,7 +216,7 @@ impl GetNetworkLogsTool {
 }
 
 /// Largest response body fetched for `get_network_logs` (bytes): Firefox
-/// keeps none larger, and on Chrome a reply over 16 MB drops the connection.
+/// keeps none larger, and on Chrome a huge reply would drop the connection.
 pub(crate) const BODY_LIMIT: u64 = 2_000_000;
 
 /// Most characters of a request or response body in a reply.
@@ -420,7 +420,8 @@ mod tests {
     }
 
     /// AUD-OB-13: Chrome does not fetch a body over BODY_LIMIT (Firefox
-    /// does not keep one): a reply over 16 MB would drop the connection.
+    /// does not keep one): bodies that large are slow, and huge ones would
+    /// drop the connection.
     #[tokio::test]
     async fn bodies_over_the_limit_are_not_fetched() {
         use crate::handler::cdp_domains::tests::{mock_handler, spawn_recording_mock};
