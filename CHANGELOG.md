@@ -12,6 +12,9 @@ from a copy of its code: entries describe the differences from that release.
 
 ### Fixed
 
+- `search_scripts` previews a long line (minified code) as the match with
+  100 characters on each side, `…` where it was cut: one hit in a 1.6 MB
+  one-line script returned the whole line.
 - `evaluate_js` returns at most 100 000 characters of `value`: a longer
   string is cut, and an object or array whose JSON form is longer is
   measured in the page and only described ("too large to return (N

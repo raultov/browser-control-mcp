@@ -65,7 +65,7 @@ see the note.
 | `resume` | ✓ | ✓ | |
 | `step_over` | ✓ | ✓ | |
 | `evaluate_on_call_frame` | ✓ | ✓ | |
-| `search_scripts` | ✓ | ✓ | |
+| `search_scripts` | ✓ | ✓ | a long line's preview is 100 characters on each side of the match |
 | `pause_on_load` | ✓ | ✗ | TODO on Firefox, see [Limitations and TODO](#limitations-and-todo) |
 | `enable_proxy_auth` | ✓ | partial | needs `--proxy-server`; untested on Firefox against a real proxy |
 | `send_cdp_command` | ✓ | ✗ | raw Chrome DevTools Protocol |

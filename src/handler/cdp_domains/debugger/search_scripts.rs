@@ -7,7 +7,7 @@ use serde_json::json;
 
 #[macros::mcp_tool(
     name = "search_scripts",
-    description = "Searches all cached script sources for a text pattern and returns matching locations (line and column numbers). Side effects: none (read-only query). Prerequisites: scripts must have been parsed and cached by the debugger. Returns: JSON array of matches with script ID, line/column numbers, and line preview. Use this to locate code before setting breakpoints. Alternatives: 'set_breakpoint' for direct breakpoint placement, 'evaluate_js' for runtime code discovery."
+    description = "Searches all cached script sources for a text pattern and returns matching locations (line and column numbers). Side effects: none (read-only query). Prerequisites: scripts must have been parsed and cached by the debugger. Returns: JSON array of matches with script ID, line/column numbers, and line preview (a line over 400 characters, e.g. minified code, only around the match, `…` where cut). Use this to locate code before setting breakpoints. Alternatives: 'set_breakpoint' for direct breakpoint placement, 'evaluate_js' for runtime code discovery."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct SearchScriptsTool {
@@ -81,6 +81,40 @@ pub(crate) struct ScriptText<'a> {
     pub(crate) start: (u32, u32),
 }
 
+/// Characters of a long line `search_scripts` previews on each side of a
+/// match: a minified script is one line of megabytes.
+const PREVIEW_CONTEXT: usize = 100;
+
+/// The line of `query`'s first match in `source`: the whole line, trimmed,
+/// or for a line over `4 * PREVIEW_CONTEXT` characters the match with
+/// [`PREVIEW_CONTEXT`] characters on each side, `…` where it was cut.
+fn line_preview(source: &str, query: &str) -> String {
+    let at = source.find(query).unwrap_or_default();
+    let start = source[..at].rfind('\n').map_or(0, |i| i + 1);
+    let end = source[at..].find('\n').map_or(source.len(), |i| at + i);
+    let line = &source[start..end];
+    if line.chars().count() <= 4 * PREVIEW_CONTEXT {
+        return line.trim().to_string();
+    }
+    let keep_after = query.chars().count() + PREVIEW_CONTEXT;
+    let ahead: Vec<char> = source[start..at]
+        .chars()
+        .rev()
+        .take(PREVIEW_CONTEXT + 1)
+        .collect();
+    let behind: Vec<char> = source[at..end].chars().take(keep_after + 1).collect();
+    let mut preview = String::new();
+    if ahead.len() > PREVIEW_CONTEXT {
+        preview.push('…');
+    }
+    preview.extend(ahead.iter().take(PREVIEW_CONTEXT).rev());
+    preview.extend(behind.iter().take(keep_after));
+    if behind.len() > keep_after {
+        preview.push('…');
+    }
+    preview
+}
+
 /// Matches and errors of one `search_scripts` call. The query language is
 /// shared by every browser: `@source` dumps the first 1000 characters of
 /// each script, `debug` lists lengths, anything else is a text search
@@ -106,7 +140,7 @@ impl SearchReport {
             }
             "debug" => Some(json!({"id": id, "source_len": source.len()})),
             _ => find_line_column(source, query).map(|(line, column)| {
-                let preview = source.lines().nth(line as usize).unwrap_or("").trim();
+                let preview = line_preview(source, query);
                 let column = if line == 0 {
                     column.saturating_add(start_column)
                 } else {
@@ -349,6 +383,37 @@ mod tests {
             text.contains("Total cached scripts: 1"),
             "must count only the TAB script, got: {text}"
         );
+    }
+
+    /// AUD-DB-08: a match in a long line (minified code) previews only the
+    /// text around it, marked as cut, never the whole line.
+    #[test]
+    fn long_line_preview_is_a_window_around_the_match() {
+        // Given a 1.6 MB single-line script with a match in the middle
+        let filler = "é".repeat(800_000);
+        let source = format!("{filler}needle(){filler}\nnext();");
+        let script = ScriptText {
+            id: "1",
+            hash: "h",
+            source: &source,
+            start: (0, 0),
+        };
+        let mut report = SearchReport::default();
+        // When it is searched
+        report.add_source("needle", &script);
+        // Then the preview holds the match with PREVIEW_CONTEXT characters on each side
+        let preview = report.results[0]["linePreview"].as_str().unwrap();
+        let before = "é".repeat(PREVIEW_CONTEXT);
+        let after = "é".repeat(PREVIEW_CONTEXT - 2);
+        assert_eq!(preview, format!("…{before}needle(){after}…"));
+        assert_eq!(report.results[0]["columnNumber"], 800_000);
+        // And a short line is still shown whole
+        let short = ScriptText {
+            source: "a();\n  needle(1);\n",
+            ..script
+        };
+        report.add_source("needle", &short);
+        assert_eq!(report.results[1]["linePreview"], "needle(1);");
     }
 
     /// AUD-DB-02: matches in an inline script are reported in document
