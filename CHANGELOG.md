@@ -15,6 +15,11 @@ from a copy of its code: entries describe the differences from that release.
 - Security: with `RUST_LOG=trace` the MCP transport logged every incoming
   tool call in full, including the `enable_proxy_auth` password and raw
   protocol params. Its logs are now capped at `info`, like `cdp-lite`'s.
+- Security: `get_network_logs` returned request bodies (login forms with
+  passwords, token exchanges) and API-key headers such as `X-Api-Key` in
+  full by default. Request bodies and every header whose name contains
+  `token`, `secret`, `api-key`, `apikey`, `password`, `session`, `csrf` or
+  `xsrf` are now `<redacted>` unless `include_sensitive_headers: true`.
 - `fill_input` no longer types into the wrong element or reports a fill
   that did not happen (both browsers). An element that cannot take the text
   (a plain element, disabled, read-only, a non-text input such as a

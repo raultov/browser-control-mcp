@@ -479,8 +479,11 @@ incompatible:
 - The Firefox debugger port needs `devtools.chrome.enabled`: any local
   process that reaches that port gets chrome (privileged) access to the
   browser. Use `--no-firefox-debugger` when you do not need the debugger.
-- Credential headers (`Authorization`, `Cookie`, `Set-Cookie`, ...) are
-  redacted in `get_network_logs` unless `include_sensitive_headers: true`.
+- Credential headers (`Authorization`, `Cookie`, `Set-Cookie`, and any
+  header whose name contains `token`, `secret`, `api-key`, `password`,
+  `session` or `csrf`) and request bodies are redacted in
+  `get_network_logs` unless `include_sensitive_headers: true`. URLs and
+  response bodies are returned as they are.
 - Logs carry tool names, ids, protocol method names and sizes, never
   payloads, cookies or URLs with queries.
 

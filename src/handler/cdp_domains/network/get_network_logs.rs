@@ -41,7 +41,7 @@ pub struct GetNetworkLogsTool {
     #[serde(default)]
     pub include_details: Option<bool>,
 
-    /// Return the values of sensitive headers (Authorization, Proxy-Authorization, Cookie, Set-Cookie) instead of `"<redacted>"`. Constraints: boolean. Interactions: only meaningful with include_details. Defaults to: false.
+    /// Return request bodies and the values of sensitive headers (Authorization, Proxy-Authorization, Cookie, Set-Cookie, and any header whose name contains token, secret, api-key, apikey, password, session, csrf or xsrf) instead of `"<redacted>"`. Constraints: boolean. Interactions: only meaningful with include_details. Defaults to: false.
     #[serde(default)]
     pub include_sensitive_headers: Option<bool>,
 
@@ -252,9 +252,13 @@ fn frames_json(frames: Frames, include_details: bool) -> serde_json::Value {
     serde_json::Value::Object(summary.collect())
 }
 
-/// Hides the values of credential-carrying headers in every request.
+/// Hides the values of credential-carrying headers and the request bodies
+/// (login forms, OAuth token exchanges) in every request.
 fn redact_requests(requests: &mut Requests) {
     for request in requests.values_mut() {
+        if request.request_post_data.is_some() {
+            request.request_post_data = Some(crate::cli::REDACTED.to_string());
+        }
         for headers in [&mut request.request_headers, &mut request.response_headers]
             .into_iter()
             .flatten()
@@ -543,5 +547,46 @@ mod tests {
             r.response_headers.as_ref().unwrap()["Set-Cookie"],
             crate::cli::REDACTED
         );
+    }
+
+    /// AUD-OB-03: request bodies and API-key style headers are redacted by
+    /// default too (a login POST body used to reach the agent in full).
+    #[test]
+    fn request_bodies_and_token_headers_are_redacted_by_default() {
+        // Given a login POST with API-key and CSRF headers
+        let headers = json!({
+            "X-Api-Key": "k", "X-CSRF-Token": "c", "x-goog-api-key": "g",
+            "X-Session-Id": "s", "WWW-Authenticate": "Basic", "Content-Type": "text/plain"
+        });
+        let request = crate::handler::NetworkRequest {
+            url: "https://a/login".into(),
+            method: "POST".into(),
+            resource_type: None,
+            request_headers: Some(headers),
+            request_post_data: Some("user=alice&password=AUDIT-SECRET-PW".into()),
+            response_status: Some(200),
+            response_status_text: None,
+            response_headers: None,
+            response_body: None,
+            redirects: Vec::new(),
+        };
+        let mut requests = std::collections::HashMap::from([("R1".to_string(), request)]);
+        // When the default (redacting) path runs
+        redact_requests(&mut requests);
+        // Then the body and every credential-like header are hidden
+        let r = &requests["R1"];
+        assert_eq!(r.request_post_data.as_deref(), Some(crate::cli::REDACTED));
+        let req = r.request_headers.as_ref().unwrap();
+        for name in [
+            "X-Api-Key",
+            "X-CSRF-Token",
+            "x-goog-api-key",
+            "X-Session-Id",
+        ] {
+            assert_eq!(req[name], crate::cli::REDACTED, "{name}");
+        }
+        // And challenges and ordinary headers stay readable
+        assert_eq!(req["WWW-Authenticate"], "Basic");
+        assert_eq!(req["Content-Type"], "text/plain");
     }
 }
