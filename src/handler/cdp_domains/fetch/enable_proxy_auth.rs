@@ -67,10 +67,14 @@ impl EnableProxyAuthTool {
         let session = handler.session(tool.instance_id.clone()).await?;
         let target = session.target(tool.tab_id.clone()).await?;
         let resource_type = tool.resource_type.as_deref().unwrap_or("Document");
+        // Subscribed before Fetch.enable: a request paused in between would
+        // otherwise wait for nobody.
+        let fetch_events = target.on_domain("Fetch");
         enable_fetch(&target, resource_type).await?;
 
         let mut tasks = ListenerHandles::default();
-        tasks.push(tokio::spawn(answer_challenges(target.clone(), credentials)));
+        let answers = answer_challenges(target.clone(), fetch_events, credentials);
+        tasks.push(tokio::spawn(answers));
         tasks.push(tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(500)).await;
             prewarm(&target, &prewarm_url).await;
@@ -133,28 +137,37 @@ async fn enable_fetch(target: &CdpTarget, resource_type: &str) -> Result<(), Cal
 }
 
 /// Continues paused requests and answers auth challenges until 30 s pass
-/// without Fetch events, then disables Fetch.
-async fn answer_challenges(target: CdpTarget, credentials: ProxyCredentials) {
+/// without Fetch events, then disables Fetch. Falling behind (lagged
+/// events) is survived: the skipped requests are lost, but stopping would
+/// leave Fetch enabled with nobody continuing any later request. Whatever
+/// ends the loop disables Fetch.
+async fn answer_challenges(
+    target: CdpTarget,
+    mut fetch_events: cdp_browser_lite::EventFilter,
+    credentials: ProxyCredentials,
+) {
     tracing::debug!("proxy auth handler started");
-    let mut fetch_events = target.on_domain("Fetch");
     loop {
         match tokio::time::timeout(Duration::from_secs(30), fetch_events.next()).await {
             Ok(Some(Ok(event))) => handle_fetch_event(&target, &event, &credentials).await,
+            Ok(Some(Err(cdp_browser_lite::CdpError::Lagged { skipped }))) => {
+                tracing::warn!(skipped, "proxy auth handler fell behind; Fetch events lost");
+            }
             Ok(Some(Err(e))) => {
                 tracing::warn!(
                     error = error_kind(&e),
-                    "proxy auth: Fetch event stream error"
+                    "proxy auth: Fetch event stream error; disabling Fetch"
                 );
                 break;
             }
             Ok(None) => break,
             Err(_) => {
                 tracing::info!("proxy auth handler idle for 30s; disabling Fetch");
-                let _ = target.send_raw_command("Fetch.disable", NoParams).await;
                 break;
             }
         }
     }
+    let _ = target.send_raw_command("Fetch.disable", NoParams).await;
 }
 
 async fn handle_fetch_event(
@@ -371,6 +384,85 @@ mod tests {
         .await
         .unwrap();
         CdpTarget::Client(client)
+    }
+
+    /// AUD-RW-04: when the handler falls behind (lagged events) it keeps
+    /// answering; it used to stop with Fetch still enabled, so every later
+    /// request of the tab stayed paused for good.
+    #[tokio::test]
+    async fn lagging_handler_keeps_answering() {
+        // Given a page connection whose event ring holds 2 events
+        let mock = crate::handler::cdp_domains::tests::spawn_recording_mock().await;
+        let ws = format!("ws://127.0.0.1:{}/devtools/page/mock-1", mock.ws_port);
+        let client = cdp_browser_lite::CdpClient::connect_with_capacity(
+            &ws,
+            std::time::Duration::from_secs(5),
+            2,
+        )
+        .await
+        .unwrap();
+        let target = CdpTarget::Client(client);
+        let events = target.on_domain("Fetch");
+        let handler = tokio::spawn(answer_challenges(target, events, creds()));
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        // When a burst of paused requests overruns it
+        for i in 0..20 {
+            mock.emit(
+                "Fetch.requestPaused",
+                json!({"requestId": format!("burst-{i}")}),
+                None,
+            );
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        // Then a request paused afterwards is still continued
+        mock.emit(
+            "Fetch.requestPaused",
+            json!({"requestId": "after-lag"}),
+            None,
+        );
+        let mut answered = false;
+        for _ in 0..100 {
+            answered = mock
+                .commands_named("Fetch.continueRequest")
+                .iter()
+                .any(|c| c.params["requestId"] == "after-lag");
+            if answered {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        handler.abort();
+        assert!(answered, "the handler stopped after lagging");
+    }
+
+    /// AUD-RW-05: a request paused as soon as Fetch is enabled is continued
+    /// (the handler subscribes before enabling, as on Firefox).
+    #[tokio::test]
+    async fn request_paused_right_after_enable_is_continued() {
+        let mock = crate::handler::cdp_domains::tests::spawn_recording_mock().await;
+        crate::handler::cdp_domains::tests::fire_after(
+            mock,
+            "Fetch.enable",
+            "Fetch.requestPaused",
+            json!({"requestId": "first"}),
+        );
+        let handler = proxy_handler(mock.http_port);
+        let args = json!({"username": "u", "password": "p", "prewarm_url": "http://127.0.0.1:1/"});
+        EnableProxyAuthTool::handle(call(args), &handler)
+            .await
+            .unwrap();
+        let mut continued = false;
+        for _ in 0..100 {
+            continued = mock
+                .commands_named("Fetch.continueRequest")
+                .iter()
+                .any(|c| c.params["requestId"] == "first");
+            if continued {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(continued);
     }
 
     /// SEC-03: Proxy pre-warm logs only the host.

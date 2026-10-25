@@ -60,6 +60,11 @@ from a copy of its code: entries describe the differences from that release.
   once the tab registered a moment later, so the first page's network
   requests were missing from `get_network_logs` and `search_scripts` found
   nothing right after it.
+- Chrome `enable_proxy_auth` no longer stops answering after falling behind
+  a burst of events (it left request interception on with nobody
+  continuing the tab's requests, so they hung); whatever ends the handler
+  turns interception off. It also subscribes before enabling interception,
+  so a request paused right away is not missed.
 - `fill_input` no longer types into the wrong element or reports a fill
   that did not happen (both browsers). An element that cannot take the text
   (a plain element, disabled, read-only, a non-text input such as a
