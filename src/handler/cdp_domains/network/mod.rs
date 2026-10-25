@@ -77,11 +77,7 @@ fn on_ws_frame(st: &mut NetworkState, request_id: &str, params: &serde_json::Val
         .unwrap_or_default();
     st.push_ws_frame(
         request_id.to_string(),
-        WebSocketFrame {
-            url,
-            payload_data,
-            is_sent,
-        },
+        WebSocketFrame::new(url, payload_data, is_sent),
     );
 }
 

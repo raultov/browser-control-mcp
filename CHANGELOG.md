@@ -12,6 +12,14 @@ from a copy of its code: entries describe the differences from that release.
 
 ### Fixed
 
+- Observation buffers keep a bounded copy of each item: a console message
+  keeps 10 000 characters, a WebSocket payload 64 000 (`payload_len` is
+  the whole length), custom event params over 64 000 characters of JSON
+  become `{"truncated": true, "characters": N}`, and `get_network_logs`
+  shows at most 64 000 characters of a request or response body. Each cut
+  text ends with `… [cut: the first N of M characters]`. Chrome no longer
+  fetches a response body whose `Content-Length` is over 2 MB (Firefox
+  keeps none larger). Two 3 MB console messages made a 6 MB reply.
 - `search_scripts` previews a long line (minified code) as the match with
   100 characters on each side, `…` where it was cut: one hit in a 1.6 MB
   one-line script returned the whole line.

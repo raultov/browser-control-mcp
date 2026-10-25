@@ -11,6 +11,19 @@ use tokio::sync::Mutex;
 /// Maximum number of buffered custom events per state (oldest dropped first).
 pub(crate) const MAX_CUSTOM_EVENTS: usize = 1000;
 
+/// Most characters of JSON kept of an event's params.
+const PARAMS_MAX_CHARS: usize = 64_000;
+
+/// `params` when their JSON fits [`PARAMS_MAX_CHARS`], else a note with its
+/// length: a domain's events can carry megabytes (whole sources, bodies).
+pub(crate) fn bounded_params(params: &serde_json::Value) -> serde_json::Value {
+    let characters = params.to_string().chars().count();
+    if characters <= PARAMS_MAX_CHARS {
+        return params.clone();
+    }
+    serde_json::json!({"truncated": true, "characters": characters})
+}
+
 /// Stores `event` if its domain is one the agent enabled through
 /// `send_cdp_command`.
 pub(crate) async fn process_custom_event(event: &WsResponse, state: &Arc<Mutex<CustomState>>) {
@@ -27,7 +40,7 @@ pub(crate) async fn process_custom_event(event: &WsResponse, state: &Arc<Mutex<C
         }
         st.events.push_back(CustomEvent {
             method: method.to_string(),
-            params: params.clone(),
+            params: bounded_params(params),
             timestamp: chrono::Utc::now().to_rfc3339(),
         });
     }
@@ -70,6 +83,17 @@ pub(crate) async fn clear_custom_listeners(state: &Arc<Mutex<CustomState>>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// AUD-OB-13: an event's params over the limit are replaced by a note.
+    #[test]
+    fn large_event_params_are_replaced() {
+        let small = serde_json::json!({"a": 1});
+        assert_eq!(bounded_params(&small), small);
+        let big = serde_json::json!({"data": "z".repeat(PARAMS_MAX_CHARS)});
+        let kept = bounded_params(&big);
+        assert_eq!(kept["truncated"], true);
+        assert_eq!(kept["characters"], PARAMS_MAX_CHARS + 11);
+    }
     use crate::handler::cdp_domains::tests::spawn_mock_chrome_server;
 
     async fn mock_target() -> CdpTarget {

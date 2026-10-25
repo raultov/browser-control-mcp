@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 #[macros::mcp_tool(
     name = "get_network_logs",
-    description = "Retrieves intercepted HTTP/REST requests and WebSocket frames from network activity cache with filtering. Side effects: when 'clear' is true the returned requests and WebSocket frames (those the filters selected) are removed from the cache; the rest stays. Prerequisites: requires active Chrome tab with network monitoring enabled. Returns: JSON array of requests/WebSocket frames with optional full details ('include_details' defaults to true; set false for summary only). Parameters: 'current_navigation_only' limits results to current navigation only (defaults to false, retaining up to 3 navigations). Rate limits: none. Use this to audit API calls, debug network issues, inspect WebSocket traffic. Alternatives: browser DevTools Network tab, HAR file export."
+    description = "Retrieves intercepted HTTP/REST requests and WebSocket frames from network activity cache with filtering. Side effects: when 'clear' is true the returned requests and WebSocket frames (those the filters selected) are removed from the cache; the rest stays. Prerequisites: requires active Chrome tab with network monitoring enabled. Returns: JSON array of requests/WebSocket frames with optional full details ('include_details' defaults to true; set false for summary only). Bodies and WebSocket payloads show at most 64000 characters ('… [cut: ...]' where cut; payload_len is the whole length); response bodies over 2 MB are not kept. Parameters: 'current_navigation_only' limits results to current navigation only (defaults to false, retaining up to 3 navigations). Rate limits: none. Use this to audit API calls, debug network issues, inspect WebSocket traffic. Alternatives: browser DevTools Network tab, HAR file export."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct GetNetworkLogsTool {
@@ -215,11 +215,22 @@ impl GetNetworkLogsTool {
     }
 }
 
+/// Largest response body fetched for `get_network_logs` (bytes): Firefox
+/// keeps none larger, and on Chrome a reply over 16 MB drops the connection.
+pub(crate) const BODY_LIMIT: u64 = 2_000_000;
+
+/// Most characters of a request or response body in a reply.
+const BODY_MAX_CHARS: usize = 64_000;
+
 /// `Network.getResponseBody` for answered requests of the current navigation
-/// (bodies are only kept in the returned copy).
+/// (bodies are only kept in the returned copy), but not for one whose
+/// `Content-Length` is over [`BODY_LIMIT`].
 async fn fetch_bodies(target: &CdpTarget, requests: &mut Requests, current: &HashSet<String>) {
     for (req_id, req) in requests.iter_mut() {
-        if !current.contains(req_id) || req.response_status.is_none() || req.response_body.is_some()
+        if !current.contains(req_id)
+            || req.response_status.is_none()
+            || req.response_body.is_some()
+            || content_length(req).is_some_and(|length| length > BODY_LIMIT)
         {
             continue;
         }
@@ -234,8 +245,26 @@ async fn fetch_bodies(target: &CdpTarget, requests: &mut Requests, current: &Has
     }
 }
 
-fn requests_json(requests: Requests, include_details: bool) -> serde_json::Value {
+/// The response's `Content-Length` header, when it has one.
+fn content_length(request: &NetworkRequest) -> Option<u64> {
+    let headers = request.response_headers.as_ref()?.as_object()?;
+    let (_, value) = headers
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))?;
+    value.as_str()?.trim().parse().ok()
+}
+
+fn requests_json(mut requests: Requests, include_details: bool) -> serde_json::Value {
     if include_details {
+        let cap = |body: &mut Option<String>| {
+            if let Some(text) = body {
+                *text = crate::util::text::capped(text, BODY_MAX_CHARS);
+            }
+        };
+        for request in requests.values_mut() {
+            cap(&mut request.response_body);
+            cap(&mut request.request_post_data);
+        }
         return serde_json::to_value(&requests).unwrap_or_default();
     }
     let summary = requests.into_iter().map(|(id, req)| {
@@ -258,7 +287,7 @@ fn frames_json(frames: Frames, include_details: bool) -> serde_json::Value {
     let summary = frames.into_iter().map(|(id, frames)| {
         let rows: Vec<_> = frames
             .into_iter()
-            .map(|f| json!({"url": f.url, "is_sent": f.is_sent, "payload_len": f.payload_data.len()}))
+            .map(|f| json!({"url": f.url, "is_sent": f.is_sent, "payload_len": f.payload_len}))
             .collect();
         (id, serde_json::Value::Array(rows))
     });
@@ -339,20 +368,86 @@ mod tests {
         // Mock WS frames
         st.push_ws_frame(
             "ws-1".to_string(),
-            WebSocketFrame {
-                url: "wss://socket.com/feed".to_string(),
-                payload_data: "hello server".to_string(),
-                is_sent: true,
-            },
+            WebSocketFrame::new(
+                "wss://socket.com/feed".to_string(),
+                "hello server".to_string(),
+                true,
+            ),
         );
         st.push_ws_frame(
             "ws-1".to_string(),
-            WebSocketFrame {
-                url: "wss://socket.com/feed".to_string(),
-                payload_data: "welcome client".to_string(),
-                is_sent: false,
-            },
+            WebSocketFrame::new(
+                "wss://socket.com/feed".to_string(),
+                "welcome client".to_string(),
+                false,
+            ),
         );
+    }
+
+    fn answered(headers: serde_json::Value, body: Option<String>) -> NetworkRequest {
+        NetworkRequest {
+            url: "https://example.com/big".to_string(),
+            method: "POST".to_string(),
+            resource_type: Some("XHR".to_string()),
+            request_headers: None,
+            request_post_data: Some("p".repeat(BODY_MAX_CHARS + 1)),
+            response_status: Some(200),
+            response_status_text: Some("OK".to_string()),
+            response_headers: Some(headers),
+            response_body: body,
+            redirects: Vec::new(),
+        }
+    }
+
+    /// AUD-OB-13: bodies are cut in the reply, on every browser.
+    #[test]
+    fn large_bodies_are_capped_in_the_reply() {
+        let args: GetNetworkLogsTool =
+            serde_json::from_value(json!({"include_sensitive_headers": true})).unwrap();
+        let body = Some("b".repeat(1_000_000));
+        let snapshot = NetworkSnapshot {
+            requests: HashMap::from([("r1".to_string(), answered(json!({}), body))]),
+            frames: HashMap::new(),
+            current_ids: HashSet::new(),
+        };
+        let reply = args.finish(snapshot, Vec::new());
+        let text = crate::handler::cdp_domains::tests::reply_text(&reply);
+        let output: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let request = &output["requests"]["r1"];
+        let cut = |key: &str| request[key].as_str().unwrap().to_string();
+        assert!(cut("response_body").ends_with("[cut: the first 64000 of 1000000 characters]"));
+        assert!(cut("request_post_data").ends_with("[cut: the first 64000 of 64001 characters]"));
+    }
+
+    /// AUD-OB-13: Chrome does not fetch a body over BODY_LIMIT (Firefox
+    /// does not keep one): a reply over 16 MB would drop the connection.
+    #[tokio::test]
+    async fn bodies_over_the_limit_are_not_fetched() {
+        use crate::handler::cdp_domains::tests::{mock_handler, spawn_recording_mock};
+        let mock = spawn_recording_mock().await;
+        let handler = mock_handler(mock.http_port);
+        let target = handler
+            .session(None)
+            .await
+            .unwrap()
+            .target(None)
+            .await
+            .unwrap();
+        let mut requests = HashMap::from([
+            (
+                "big".to_string(),
+                answered(json!({"content-length": "20000000"}), None),
+            ),
+            (
+                "small".to_string(),
+                answered(json!({"Content-Length": "12"}), None),
+            ),
+        ]);
+        let current = HashSet::from(["big".to_string(), "small".to_string()]);
+        fetch_bodies(&target, &mut requests, &current).await;
+        let fetched = mock.commands_named("Network.getResponseBody");
+        assert_eq!(fetched.len(), 1);
+        assert_eq!(fetched[0].params["requestId"], "small");
     }
 
     #[tokio::test]

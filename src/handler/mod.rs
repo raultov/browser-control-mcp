@@ -69,8 +69,27 @@ pub struct NetworkRequest {
 #[derive(Clone, Debug, ::serde::Serialize, ::serde::Deserialize)]
 pub struct WebSocketFrame {
     pub url: String,
+    /// The payload, within [`WS_PAYLOAD_MAX`] characters.
     pub payload_data: String,
+    /// Length of the whole payload (bytes).
+    pub payload_len: usize,
     pub is_sent: bool,
+}
+
+/// Most characters kept of a WebSocket payload: 500 frames of a connection
+/// streaming megabytes would fill memory and every reply.
+pub(crate) const WS_PAYLOAD_MAX: usize = 64_000;
+
+impl WebSocketFrame {
+    /// A frame keeping at most [`WS_PAYLOAD_MAX`] characters of `payload`.
+    pub(crate) fn new(url: String, payload: String, is_sent: bool) -> Self {
+        Self {
+            url,
+            payload_len: payload.len(),
+            payload_data: crate::util::text::capped(&payload, WS_PAYLOAD_MAX),
+            is_sent,
+        }
+    }
 }
 
 pub(crate) const MAX_REQUESTS_PER_NAVIGATION: usize = 1000;
@@ -1167,11 +1186,7 @@ mod tests {
         let mut network = NetworkState::default();
         for i in 0..500 {
             network.insert_ws_connection(i.to_string(), "wss://x".into());
-            let frame = WebSocketFrame {
-                url: String::new(),
-                payload_data: String::new(),
-                is_sent: true,
-            };
+            let frame = WebSocketFrame::new(String::new(), String::new(), true);
             network.push_ws_frame(i.to_string(), frame);
         }
         let mut webmcp = cdp_domains::webmcp::WebmcpState::default();
@@ -1383,6 +1398,24 @@ mod tests {
         session.target(None).await.unwrap();
         // Then the session-level debugger was disabled once
         assert_eq!(fallback("Debugger.disable"), 1);
+    }
+
+    /// AUD-OB-13: a huge WebSocket payload is kept cut, with its length.
+    #[test]
+    fn large_ws_payload_is_capped_with_its_length() {
+        let frame = WebSocketFrame::new("wss://x".into(), "y".repeat(1_000_000), false);
+        assert_eq!(frame.payload_len, 1_000_000);
+        assert!(frame.payload_data.starts_with(&"y".repeat(WS_PAYLOAD_MAX)));
+        assert!(
+            frame
+                .payload_data
+                .ends_with("[cut: the first 64000 of 1000000 characters]")
+        );
+        let small = WebSocketFrame::new("wss://x".into(), "ping".into(), true);
+        assert_eq!(
+            (small.payload_data.as_str(), small.payload_len),
+            ("ping", 4)
+        );
     }
 
     /// AUD-EV-23: a tab whose DevTools connection dropped (Chrome closes it

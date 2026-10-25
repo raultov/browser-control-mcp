@@ -1,5 +1,19 @@
 //! Text helpers that must never panic on multi-byte input.
 
+/// `text` within `max` characters: its start, then a note naming the total
+/// (observation buffers keep a bounded copy of each item).
+pub fn capped(text: &str, max: usize) -> String {
+    if text.len() <= max {
+        return text.to_string();
+    }
+    let total = text.chars().count();
+    if total <= max {
+        return text.to_string();
+    }
+    let start: String = text.chars().take(max).collect();
+    format!("{start}… [cut: the first {max} of {total} characters]")
+}
+
 /// The `inspect_dom` text from the page's outcome (`util::js::dom_query`):
 /// the document, after a note when it was cut, or the first match with its
 /// context (same output on every browser).
@@ -34,6 +48,16 @@ pub fn dom_report(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// AUD-OB-13: a long text keeps its start and says how much was cut.
+    #[test]
+    fn capped_keeps_the_start_and_names_the_total() {
+        assert_eq!(capped("short", 10), "short");
+        assert_eq!(
+            capped("ééééé", 3),
+            "ééé… [cut: the first 3 of 5 characters]"
+        );
+    }
 
     /// AUD-IN-27: the page sends at most `DOM_MAX_CHARS` of HTML; a cut
     /// document says so first. Positions are characters (AUD-IN-26).

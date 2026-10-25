@@ -18,9 +18,6 @@ fn is_privileged_start_page(url: &str) -> bool {
     matches!(url, "about:home" | "about:newtab" | "about:welcome")
 }
 
-/// Largest response body Firefox keeps for `get_network_logs` (bytes).
-const BODY_LIMIT: u64 = 2_000_000;
-
 /// How long `stop` waits for the debuggers to detach.
 const DETACH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
 
@@ -322,8 +319,7 @@ impl FirefoxSession {
         *self.pump.lock().await = handles;
         // Response bodies are only kept for requests made after a collector
         // exists (spike H11). Best effort: older Firefox versions lack it.
-        let collector =
-            serde_json::json!({"dataTypes": ["response"], "maxEncodedDataSize": BODY_LIMIT});
+        let collector = serde_json::json!({"dataTypes": ["response"], "maxEncodedDataSize": crate::handler::cdp_domains::network::get_network_logs::BODY_LIMIT});
         let _ = client
             .send_raw_command("network.addDataCollector", collector)
             .await;

@@ -276,7 +276,7 @@ async fn on_custom(method: &str, params: &Value, state: &PumpState) {
     }
     custom.events.push_back(CustomEvent {
         method: method.to_string(),
-        params: params.clone(),
+        params: crate::handler::cdp_domains::custom::bounded_params(params),
         timestamp: chrono::Utc::now().to_rfc3339(),
     });
 }

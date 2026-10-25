@@ -6,7 +6,7 @@ use rust_mcp_sdk::{
 
 #[macros::mcp_tool(
     name = "get_console_logs",
-    description = "Retrieves the tab's console messages (log, warning, error, info levels and uncaught exceptions), oldest first. The buffer is per tab, holds the last 1000 messages, and is cleared when the tab moves to another site (kept across subdomains of one site, reloads and same-page navigations). Side effects: with 'clear' true the returned messages are removed from the buffer. Returns: JSON {messages: [{source, level, text, timestamp, url, line_number}], total (matching messages), truncated (more matched than 'limit'), notes?}. Use this to debug script errors, monitor page health, inspect exception traces. Alternatives: browser DevTools Console, error logging services."
+    description = "Retrieves the tab's console messages (log, warning, error, info levels and uncaught exceptions), oldest first. The buffer is per tab, holds the last 1000 messages (each at most 10000 characters, '… [cut: ...]' where cut), and is cleared when the tab moves to another site (kept across subdomains of one site, reloads and same-page navigations). Side effects: with 'clear' true the returned messages are removed from the buffer. Returns: JSON {messages: [{source, level, text, timestamp, url, line_number}], total (matching messages), truncated (more matched than 'limit'), notes?}. Use this to debug script errors, monitor page health, inspect exception traces. Alternatives: browser DevTools Console, error logging services."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct GetConsoleLogsTool {

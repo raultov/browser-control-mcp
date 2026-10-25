@@ -38,6 +38,16 @@ const DUPLICATE_WINDOW_MS: f64 = 2000.0;
 /// How many recent messages are compared for duplicates.
 const DUPLICATE_LOOKBACK: usize = 64;
 
+/// Most characters kept of a console message's text: a page can log
+/// megabytes, which `get_console_logs` would return whole.
+const CONSOLE_TEXT_MAX: usize = 10_000;
+
+/// `msg` with its text within [`CONSOLE_TEXT_MAX`].
+fn bounded(mut msg: ConsoleMessage) -> ConsoleMessage {
+    msg.text = crate::util::text::capped(&msg.text, CONSOLE_TEXT_MAX);
+    msg
+}
+
 #[derive(Default)]
 pub(crate) struct LogState {
     pub messages: VecDeque<ConsoleMessage>,
@@ -52,6 +62,11 @@ pub(crate) struct LogState {
 
 impl LogState {
     pub(crate) fn push_message(&mut self, msg: ConsoleMessage) {
+        self.push_bounded(bounded(msg));
+    }
+
+    /// Pushes a message whose text is already bounded.
+    fn push_bounded(&mut self, msg: ConsoleMessage) {
         self.messages.push_back(msg);
         if self.messages.len() > MAX_CONSOLE_MESSAGES {
             self.messages.pop_front();
@@ -68,6 +83,7 @@ impl LogState {
         {
             return;
         }
+        let msg = bounded(msg);
         let twin = self
             .messages
             .iter_mut()
@@ -81,7 +97,7 @@ impl LogState {
         match twin {
             Some(existing) if msg.channel == Channel::Watcher => *existing = msg,
             Some(_) => {}
-            None => self.push_message(msg),
+            None => self.push_bounded(msg),
         }
     }
 
@@ -260,6 +276,23 @@ pub(crate) fn start_log_listener(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// AUD-OB-13: a huge console message is kept cut, on both feeds.
+    #[test]
+    fn long_console_text_is_capped() {
+        let params = json!({"entry": {"source": "javascript", "level": "info", "text": "x".repeat(3_000_000), "timestamp": 1.0}});
+        let mut state = LogState::default();
+        state.push_message(console_message("Log.entryAdded", &params).unwrap());
+        state.push_deduplicated(console_message("Log.entryAdded", &params).unwrap());
+        for message in &state.messages {
+            assert!(message.text.starts_with(&"x".repeat(CONSOLE_TEXT_MAX)));
+            assert!(
+                message
+                    .text
+                    .ends_with("[cut: the first 10000 of 3000000 characters]")
+            );
+        }
+    }
 
     #[test]
     fn log_entry_becomes_a_console_message() {

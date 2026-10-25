@@ -99,11 +99,8 @@ pub(crate) fn on_websocket(network: &mut NetworkState, resource: &Value) {
                 },
                 None => String::new(),
             };
-            let frame = WebSocketFrame {
-                url: network.ws_connections.get(&id).cloned().unwrap_or_default(),
-                payload_data: payload,
-                is_sent: kind == "frameSent",
-            };
+            let url = network.ws_connections.get(&id).cloned().unwrap_or_default();
+            let frame = WebSocketFrame::new(url, payload, kind == "frameSent");
             network.push_ws_frame(id, frame);
         }
         _ => {}
