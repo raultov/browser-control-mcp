@@ -32,6 +32,13 @@ from a copy of its code: entries describe the differences from that release.
   error. A second breakpoint at the same location is refused naming the
   first: Firefox keeps one per location, so removing either id used to
   remove both.
+- Firefox `evaluate_js` no longer changes the type of nested values: `NaN`
+  and `±Infinity` inside objects and arrays were strings (`"NaN"`), `-0`
+  was `"-0"`, a BigInt was a string of digits, `undefined` was `null` in
+  objects and a cycle was `{}`. Nested values now follow JSON as on Chrome
+  (`null`, `0`, `undefined` left out); an object holding a BigInt or a
+  cycle has no JSON form and is described (`"Object"`, `value: null`), and
+  an object reached twice without a cycle is serialised both times.
 - `fill_input` no longer types into the wrong element or reports a fill
   that did not happen (both browsers). An element that cannot take the text
   (a plain element, disabled, read-only, a non-text input such as a

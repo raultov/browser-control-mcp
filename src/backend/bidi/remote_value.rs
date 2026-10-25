@@ -27,8 +27,17 @@ pub(crate) fn evaluation(remote: &Value) -> Evaluation {
         }
         "symbol" => Evaluation::described(kind, None, "Symbol()"),
         "function" => Evaluation::described(kind, None, "function"),
-        "array" => Evaluation::json("object", Some("array"), to_json(remote)),
-        "object" => Evaluation::json("object", None, to_json(remote)),
+        "array" => match json_form(remote) {
+            Some(json) => Evaluation::json("object", Some("array"), json),
+            None => {
+                let count = value.and_then(Value::as_array).map_or(0, Vec::len);
+                Evaluation::described("object", Some("array"), &format!("Array({count})"))
+            }
+        },
+        "object" => match json_form(remote) {
+            Some(json) => Evaluation::json("object", None, json),
+            None => Evaluation::described("object", None, "Object"),
+        },
         "window" => Evaluation::described("object", None, "Window"),
         "node" => Evaluation::described("object", Some("node"), &node_description(value)),
         other => described_object(other, value),
@@ -93,47 +102,90 @@ fn capitalised(word: &str) -> String {
         .unwrap_or_default()
 }
 
-/// Converts a `RemoteValue` (spike H3) into plain JSON. Values without a JSON
-/// form keep a small descriptive object (`{"type": "node", "sharedId": ..}`).
+/// Converts a `RemoteValue` (spike H3) into plain JSON (`null` when it has
+/// no JSON form, see `json_form`).
 pub fn to_json(remote: &Value) -> Value {
-    let value = remote.get("value");
-    match remote.get("type").and_then(Value::as_str) {
-        Some("undefined" | "null") => Value::Null,
-        Some("string" | "boolean" | "bigint") => value.cloned().unwrap_or(Value::Null),
-        Some("number") => value.cloned().unwrap_or(Value::Null),
-        Some("array" | "set") => Value::Array(items(value)),
-        Some("object") => Value::Object(entries(value)),
-        Some("map") => Value::Object(entries(value)),
-        Some("date" | "regexp") => value.cloned().unwrap_or(Value::Null),
-        Some(other) => opaque(other, remote),
-        None => Value::Null,
+    json_form(remote).unwrap_or_default()
+}
+
+/// A `RemoteValue` as JSON, following `JSON.stringify` like Chrome's
+/// by-value results: `NaN` and `±Infinity` are `null`, `-0` is `0`,
+/// `undefined` is left out of objects (`null` in arrays). A BigInt or a
+/// cycle anywhere inside means there is no JSON form (`None`), rather than
+/// a number turned into a string or a cycle turned into `{}`. Values JSON
+/// cannot hold keep a small descriptive object (`{"type": "node",
+/// "sharedId": ..}`).
+pub(crate) fn json_form(remote: &Value) -> Option<Value> {
+    Converter::default().convert(remote)
+}
+
+/// Objects converted so far, by BiDi `internalId`: BiDi sends an object's
+/// value only the first time it is reached, so a later reference is a copy
+/// of it, or a cycle when it is reached from inside itself (not done yet).
+#[derive(Default)]
+struct Converter {
+    done: std::collections::HashMap<String, Value>,
+}
+
+impl Converter {
+    fn convert(&mut self, remote: &Value) -> Option<Value> {
+        let value = remote.get("value");
+        let internal = remote.get("internalId").and_then(Value::as_str);
+        if let (Some(id), None) = (internal, value) {
+            return self.done.get(id).cloned();
+        }
+        let json = match remote.get("type").and_then(Value::as_str) {
+            Some("undefined" | "null") | None => Some(Value::Null),
+            Some("string" | "boolean" | "date" | "regexp") => value.cloned().or(Some(Value::Null)),
+            Some("number") => Some(number(value)),
+            Some("bigint") => None,
+            Some("array" | "set") => self.items(value).map(Value::Array),
+            Some("object" | "map") => self.entries(value).map(Value::Object),
+            Some(other) => Some(opaque(other, remote)),
+        };
+        if let (Some(id), Some(json)) = (internal, &json) {
+            self.done.insert(id.to_string(), json.clone());
+        }
+        json
     }
-}
 
-fn items(value: Option<&Value>) -> Vec<Value> {
-    value
-        .and_then(Value::as_array)
-        .map(|list| list.iter().map(to_json).collect())
-        .unwrap_or_default()
-}
+    fn items(&mut self, value: Option<&Value>) -> Option<Vec<Value>> {
+        let list = value.and_then(Value::as_array).cloned().unwrap_or_default();
+        list.iter().map(|item| self.convert(item)).collect()
+    }
 
-/// `[[key, value], ...]` pairs; a key is a string or a `RemoteValue`.
-fn entries(value: Option<&Value>) -> Map<String, Value> {
-    let pairs = value.and_then(Value::as_array).cloned().unwrap_or_default();
-    pairs
-        .iter()
-        .filter_map(|pair| {
-            let key = pair.get(0)?;
+    /// `[[key, value], ...]` pairs; a key is a string or a `RemoteValue`.
+    fn entries(&mut self, value: Option<&Value>) -> Option<Map<String, Value>> {
+        let pairs = value.and_then(Value::as_array).cloned().unwrap_or_default();
+        let mut map = Map::new();
+        for pair in &pairs {
+            let (Some(key), Some(item)) = (pair.get(0), pair.get(1)) else {
+                continue;
+            };
+            if item.get("type").and_then(Value::as_str) == Some("undefined") {
+                continue;
+            }
             let key = match key.as_str() {
                 Some(key) => key.to_string(),
-                None => match to_json(key) {
+                None => match self.convert(key)? {
                     Value::String(s) => s,
                     other => other.to_string(),
                 },
             };
-            Some((key, to_json(pair.get(1)?)))
-        })
-        .collect()
+            map.insert(key, self.convert(item)?);
+        }
+        Some(map)
+    }
+}
+
+/// A BiDi number: special values travel as strings (`"NaN"`, `"-0"`,
+/// `"Infinity"`, `"-Infinity"`); JSON has `0` for `-0` and nothing else.
+fn number(value: Option<&Value>) -> Value {
+    match value {
+        Some(Value::String(special)) if special == "-0" => json!(0),
+        Some(Value::Number(n)) => Value::Number(n.clone()),
+        _ => Value::Null,
+    }
 }
 
 fn opaque(kind: &str, remote: &Value) -> Value {
@@ -155,7 +207,7 @@ mod tests {
             (json!({"type":"number","value":3}), json!(3)),
             (json!({"type":"string","value":"hi"}), json!("hi")),
             (json!({"type":"undefined"}), Value::Null),
-            (json!({"type":"number","value":"NaN"}), json!("NaN")),
+            (json!({"type":"number","value":"NaN"}), Value::Null),
             (
                 json!({"type":"array","value":[{"type":"boolean","value":true}]}),
                 json!([true]),
@@ -232,6 +284,55 @@ mod tests {
         for (remote, expected) in rows {
             assert_eq!(evaluation(&remote).to_json(), expected, "{remote}");
         }
+    }
+
+    /// AUD-EV-01: nested values follow JSON, as Chrome's by-value results
+    /// do: numbers stay numbers (NaN and ±Infinity become null, -0 is 0),
+    /// undefined is left out of objects and null in arrays.
+    #[test]
+    fn nested_special_values_follow_json() {
+        let number = |v: Value| json!({"type": "number", "value": v});
+        let remote = json!({"type": "object", "value": [
+            ["a", number(json!("NaN"))],
+            ["b", number(json!("-0"))],
+            ["c", number(json!("Infinity"))],
+            ["d", {"type": "undefined"}],
+            ["e", {"type": "array", "value": [{"type": "undefined"}, number(json!(1))]}],
+        ]});
+        assert_eq!(
+            evaluation(&remote).to_json(),
+            json!({"value": {"a": null, "b": 0, "c": null, "e": [null, 1]}, "type": "object"})
+        );
+    }
+
+    /// AUD-EV-01: a nested BigInt or a cycle leaves the object without a
+    /// JSON form, described as on Chrome, instead of a string or `{}`.
+    #[test]
+    fn objects_without_json_form_are_described() {
+        let bigint = json!({"type": "object", "value": [["b", {"type": "bigint", "value": "10"}]]});
+        let cycle = json!({"type": "object", "internalId": "1", "value": [
+            ["a", {"type": "number", "value": 1}],
+            ["self", {"type": "object", "internalId": "1"}],
+        ]});
+        let list = json!({"type": "array", "value": [{"type": "bigint", "value": "1"}]});
+        let described = json!({"value": null, "type": "object", "description": "Object"});
+        assert_eq!(evaluation(&bigint).to_json(), described);
+        assert_eq!(evaluation(&cycle).to_json(), described);
+        assert_eq!(
+            evaluation(&list).to_json(),
+            json!({"value": null, "type": "object", "subtype": "array", "description": "Array(1)"})
+        );
+    }
+
+    /// AUD-EV-01: an object reached twice (not a cycle) is serialised both
+    /// times; BiDi sends its value only the first time.
+    #[test]
+    fn shared_references_are_resolved() {
+        let shared = json!({"type": "object", "value": [
+            ["a", {"type": "object", "internalId": "7", "value": [["x", {"type": "number", "value": 1}]]}],
+            ["b", {"type": "object", "internalId": "7"}],
+        ]});
+        assert_eq!(to_json(&shared), json!({"a": {"x": 1}, "b": {"x": 1}}));
     }
 
     #[test]
