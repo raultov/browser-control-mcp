@@ -18,6 +18,10 @@ from a copy of its code: entries describe the differences from that release.
 
 ### Fixed
 
+- Chrome `pause_on_load` no longer leaves its `debugger;` script injected
+  (after which every later load paused): calling it again replaces the
+  previous script, and a `resume` Chrome refuses because the reload has not
+  paused yet keeps the script pending, so the next `resume` removes it.
 - JavaScript dialogs no longer hang the tools. A call during which the page
   opens a dialog (`evaluate_js` running `alert()`, a `click_element` on a
   button that asks `confirm()`, a `navigate` stopped by `beforeunload`)

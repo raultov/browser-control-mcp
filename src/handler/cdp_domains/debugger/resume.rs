@@ -33,7 +33,20 @@ impl ResumeTool {
         super::sync_pauses(&target, &debugger_state).await;
         let params = serde_json::json!({});
         let failure = "Failed to resume execution";
-        crate::handler::send_or(&target, "Debugger.resume", params, failure).await?;
+        // As text: the error type is not `Send` across the awaits below.
+        let resumed = crate::handler::send_or(&target, "Debugger.resume", params, failure)
+            .await
+            .map_err(|e| e.to_string());
+        if let Err(e) = resumed {
+            // Not paused yet (the reload has not reached it): the script
+            // stays pending, so the pause still comes and the next resume
+            // removes it.
+            if pause_script.is_some() {
+                debugger_state.lock().await.pause_on_load_script = pause_script;
+                super::sync_pauses(&target, &debugger_state).await;
+            }
+            return Err(CallToolError::from_message(e));
+        }
         if let Some(identifier) = pause_script {
             let params = serde_json::json!({ "identifier": identifier });
             let _ = target
@@ -123,6 +136,35 @@ mod tests {
                 .await
                 .pause_on_load_script
                 .is_none()
+        );
+    }
+
+    /// AUD-DB-05: a resume Chrome refuses (nothing paused yet) keeps the
+    /// pause_on_load script, so the next resume still removes it (it was
+    /// forgotten while still injected).
+    #[tokio::test]
+    async fn refused_resume_keeps_the_pause_on_load_script() {
+        use crate::handler::cdp_domains::tests::{call, mock_handler, spawn_recording_mock};
+        let mock = spawn_recording_mock().await;
+        mock.respond_with("Debugger.resume", |_| {
+            json!({"error": {"code": -32000, "message": "Can only perform operation while paused."}})
+        });
+        let handler = mock_handler(mock.http_port);
+        let session = handler.session(None).await.unwrap();
+        session.debugger_state.lock().await.pause_on_load_script = Some("1".into());
+        ResumeTool::handle(call("resume", json!({})), &handler)
+            .await
+            .unwrap_err();
+        let script = session
+            .debugger_state
+            .lock()
+            .await
+            .pause_on_load_script
+            .clone();
+        assert_eq!(script.as_deref(), Some("1"));
+        assert!(
+            mock.commands_named("Page.removeScriptToEvaluateOnNewDocument")
+                .is_empty()
         );
     }
 }

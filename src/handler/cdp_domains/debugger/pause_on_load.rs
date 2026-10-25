@@ -25,49 +25,33 @@ impl PauseOnLoadTool {
         params: CallToolRequestParams,
         handler: &McpHandler,
     ) -> Result<CallToolResult, CallToolError> {
-        let args_value = serde_json::Value::Object(params.arguments.unwrap_or_default());
-        let args: PauseOnLoadTool = serde_json::from_value(args_value)
-            .map_err(|e| CallToolError::from_message(e.to_string()))?;
+        use crate::handler::send_or;
+        let args: PauseOnLoadTool = crate::handler::parse_args(params)?;
         let session = handler.session(args.instance_id.clone()).await?;
         let target = session.target(args.tab_id.clone()).await?;
 
-        target
-            .send_raw_command("Debugger.enable", cdp_browser_lite::NoParams)
-            .await
-            .map_err(|e| {
-                CallToolError::from_message(crate::handler::cdp_failure(
-                    "CDP Debugger.enable error",
-                    &e,
-                ))
-            })?;
-
-        let added = target
-            .send_raw_command(
-                "Page.addScriptToEvaluateOnNewDocument",
-                json!({ "source": "debugger;" }),
-            )
-            .await
-            .map_err(|e| {
-                CallToolError::from_message(crate::handler::cdp_failure(
-                    "CDP Page.addScript... error",
-                    &e,
-                ))
-            })?;
+        let failure = "CDP Debugger.enable error";
+        send_or(&target, "Debugger.enable", json!({}), failure).await?;
+        let script = json!({ "source": "debugger;" });
+        let method = "Page.addScriptToEvaluateOnNewDocument";
+        let added = send_or(&target, method, script, "CDP Page.addScript... error").await?;
         let identifier = crate::handler::extract_from_value(&added.result, "identifier");
         let debugger_state = session.debugger_state(args.tab_id.clone())?;
-        debugger_state.lock().await.pause_on_load_script = identifier.map(str::to_string);
+        let previous = std::mem::replace(
+            &mut debugger_state.lock().await.pause_on_load_script,
+            identifier.map(str::to_string),
+        );
+        // One script at a time: an earlier one would pause every later load.
+        if let Some(identifier) = previous {
+            let params = json!({ "identifier": identifier });
+            let _ = target
+                .send_raw_command("Page.removeScriptToEvaluateOnNewDocument", params)
+                .await;
+        }
         // The injected `debugger;` must pause even without breakpoints.
         super::sync_pauses(&target, &debugger_state).await;
 
-        target
-            .send_raw_command("Page.reload", cdp_browser_lite::NoParams)
-            .await
-            .map_err(|e| {
-                CallToolError::from_message(crate::handler::cdp_failure(
-                    "CDP Page.reload error",
-                    &e,
-                ))
-            })?;
+        send_or(&target, "Page.reload", json!({}), "CDP Page.reload error").await?;
 
         Ok(CallToolResult::text_content(vec![
             "Debugger enabled and paused on the next executed statement. Page reloaded.".into(),
@@ -128,5 +112,35 @@ mod tests {
             "Content didn't match: {}",
             content_str
         );
+    }
+
+    /// AUD-DB-05: calling pause_on_load again replaces its script (the
+    /// first one used to stay injected, so every later load paused).
+    #[tokio::test]
+    async fn second_pause_on_load_replaces_the_first_script() {
+        use crate::handler::cdp_domains::tests::{call, mock_handler, spawn_recording_mock};
+        let mock = spawn_recording_mock().await;
+        let next = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        mock.respond_with("Page.addScriptToEvaluateOnNewDocument", move |_| {
+            let n = next.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+            json!({"identifier": n.to_string()})
+        });
+        let handler = mock_handler(mock.http_port);
+        for _ in 0..2 {
+            PauseOnLoadTool::handle(call("pause_on_load", json!({})), &handler)
+                .await
+                .unwrap();
+        }
+        let removed = mock.commands_named("Page.removeScriptToEvaluateOnNewDocument");
+        assert_eq!(removed.len(), 1);
+        assert_eq!(removed[0].params["identifier"], "1");
+        let session = handler.session(None).await.unwrap();
+        let script = session
+            .debugger_state
+            .lock()
+            .await
+            .pause_on_load_script
+            .clone();
+        assert_eq!(script.as_deref(), Some("2"));
     }
 }
