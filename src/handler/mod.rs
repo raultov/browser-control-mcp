@@ -316,6 +316,32 @@ pub(crate) fn parse_chrome_major(product: &str) -> Option<u32> {
     major_str.parse::<u32>().ok()
 }
 
+/// How long the first call on a fresh connection waits for the browser's
+/// page to register as a tab (target discovery runs in the background).
+const FIRST_TAB_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// The active tab of `tabs` as a target, once one is registered, polling
+/// until `limit`.
+async fn wait_for_active_tab(
+    tabs: &std::sync::RwLock<chrome_instance::tab_registry::TabRegistry>,
+    limit: std::time::Duration,
+) -> Option<cdp_domains::cdp_target::CdpTarget> {
+    let deadline = tokio::time::Instant::now() + limit;
+    loop {
+        {
+            let registry = crate::util::sync::read(tabs);
+            let active = registry.active_tab_id.as_ref();
+            if let Some(entry) = active.and_then(|id| registry.tabs.get(id)) {
+                return Some(cdp_domains::cdp_target::CdpTarget::Tab(entry.tab.clone()));
+            }
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return None;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+}
+
 /// `fn <field>(&self, tab_id)`: the tab's copy of a per-domain state, or the
 /// session-level one when no tab is registered (same field name in both).
 macro_rules! state_accessor {
@@ -345,6 +371,9 @@ pub(crate) struct BrowserSession {
     /// Proxy-auth handler task per target (`None` = the session-level page),
     /// so enabling it again replaces the previous handler instead of stacking.
     pub(crate) proxy_auth_tasks: cdp_domains::fetch::ProxyAuthTasks,
+    /// Set when a fresh connection started target discovery and no call has
+    /// waited for the browser's page to register as a tab yet.
+    first_tab_pending: std::sync::atomic::AtomicBool,
 }
 
 impl BrowserSession {
@@ -383,6 +412,7 @@ impl BrowserSession {
             browser_version: Default::default(),
             proxy_auth_tasks: Default::default(),
             enable_webmcp,
+            first_tab_pending: Default::default(),
         }
     }
 
@@ -392,6 +422,8 @@ impl BrowserSession {
         *self.client.lock().await = None;
         *self.session_listeners.lock().await = cdp_domains::event_pump::ListenerHandles::default();
         *self.browser_version.lock().await = None;
+        self.first_tab_pending
+            .store(false, std::sync::atomic::Ordering::SeqCst);
         self.proxy_auth_tasks.lock().await.clear();
         cdp_domains::custom::clear_custom_listeners(&self.custom_state).await;
         crate::util::sync::write(&self.tabs).clear();
@@ -466,6 +498,8 @@ impl BrowserSession {
                     self.enable_webmcp,
                 ),
             );
+            self.first_tab_pending
+                .store(true, std::sync::atomic::Ordering::SeqCst);
         }
         *self.session_listeners.lock().await = handles;
     }
@@ -527,61 +561,63 @@ impl BrowserSession {
         handles
     }
 
+    /// The registered tab a call addresses: `tab_id` (an error when unknown),
+    /// else the active tab; `None` when no tab is registered yet.
+    fn registered_target(
+        &self,
+        tab_id: Option<String>,
+    ) -> std::result::Result<Option<cdp_domains::cdp_target::CdpTarget>, CallToolError> {
+        let registry = crate::util::sync::read(&self.tabs);
+        let tab = |id: &String| {
+            registry
+                .tabs
+                .get(id)
+                .map(|entry| cdp_domains::cdp_target::CdpTarget::Tab(entry.tab.clone()))
+        };
+        let Some(id) = tab_id else {
+            return Ok(registry.active_tab_id.as_ref().and_then(tab));
+        };
+        if let Some(found) = tab(&id) {
+            return Ok(Some(found));
+        }
+        let available: Vec<_> = registry.tabs.keys().cloned().collect();
+        let avail_str = if available.is_empty() {
+            "none (if Chrome was restarted, previous tab IDs are no longer valid)".to_string()
+        } else {
+            available.join(", ")
+        };
+        Err(CallToolError::from_message(format!(
+            "Tab with ID '{}' not found in this session. Available tabs: {}. Use 'list_tabs' to discover current tab IDs.",
+            id, avail_str
+        )))
+    }
+
     pub(crate) async fn target(
         &self,
         tab_id: Option<String>,
     ) -> std::result::Result<cdp_domains::cdp_target::CdpTarget, CallToolError> {
-        enum Lookup {
-            Found(cdp_domains::cdp_target::CdpTarget),
-            NotFound(String),
-            FallbackToDefault,
+        if let Some(found) = self.registered_target(tab_id)? {
+            return Ok(found);
         }
-
-        let lookup = {
-            let registry = crate::util::sync::read(&self.tabs);
-            if let Some(id) = tab_id {
-                if let Some(entry) = registry.tabs.get(&id) {
-                    Lookup::Found(cdp_domains::cdp_target::CdpTarget::Tab(entry.tab.clone()))
-                } else {
-                    Lookup::NotFound(id)
-                }
-            } else if let Some(ref active_id) = registry.active_tab_id
-                && let Some(entry) = registry.tabs.get(active_id)
-            {
-                Lookup::Found(cdp_domains::cdp_target::CdpTarget::Tab(entry.tab.clone()))
-            } else {
-                Lookup::FallbackToDefault
-            }
-        };
-
-        match lookup {
-            Lookup::Found(target) => return Ok(target),
-            Lookup::NotFound(id) => {
-                let registry = crate::util::sync::read(&self.tabs);
-                let available: Vec<_> = registry.tabs.keys().cloned().collect();
-                let avail_str = if available.is_empty() {
-                    "none (if Chrome was restarted, previous tab IDs are no longer valid)"
-                        .to_string()
-                } else {
-                    available.join(", ")
-                };
-                return Err(CallToolError::from_message(format!(
-                    "Tab with ID '{}' not found in this session. Available tabs: {}. Use 'list_tabs' to discover current tab IDs.",
-                    id, avail_str
-                )));
-            }
-            Lookup::FallbackToDefault => {}
+        let client = self.get_or_connect().await?.clone();
+        // A fresh connection discovers the browser's page in the background:
+        // the first call waits for it, so its traffic lands in the tab's
+        // state, which every later call reads (the session-level copy is
+        // only read while no tab is registered).
+        if self
+            .first_tab_pending
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+            && let Some(tab) = wait_for_active_tab(&self.tabs, FIRST_TAB_WAIT).await
+        {
+            return Ok(tab);
         }
-
-        let client_guard = self.get_or_connect().await?;
-        if let Some(ref client) = *client_guard {
-            Ok(cdp_domains::cdp_target::CdpTarget::Client(client.clone()))
-        } else {
-            Err(CallToolError::from_message(
-                "Failed to retrieve target: no active tabs or default connection available"
-                    .to_string(),
-            ))
-        }
+        client
+            .map(cdp_domains::cdp_target::CdpTarget::Client)
+            .ok_or_else(|| {
+                CallToolError::from_message(
+                    "Failed to retrieve target: no active tabs or default connection available",
+                )
+            })
     }
 
     fn tab_or_fallback_state<T, F, G>(
@@ -1136,6 +1172,50 @@ mod tests {
         assert_eq!(col, 0);
 
         assert_eq!(find_line_column(source, "not_found"), None);
+    }
+
+    /// AUD-LC-29: the first call on a fresh Chrome waits for its page to
+    /// register as a tab and uses it, so the tab's state (network, scripts)
+    /// sees that call's traffic instead of a session-level copy that tools
+    /// stop reading once the tab registers.
+    #[tokio::test]
+    async fn first_call_waits_for_the_first_tab() {
+        use cdp_browser_lite::BrowserClient;
+        // Given an empty registry where the page registers 50 ms later
+        let tabs = Arc::new(std::sync::RwLock::new(
+            chrome_instance::tab_registry::TabRegistry::new(4),
+        ));
+        let port = cdp_domains::tests::spawn_mock_chrome_server().await;
+        let browser = BrowserClient::connect(
+            &format!("127.0.0.1:{port}"),
+            std::time::Duration::from_secs(2),
+        )
+        .await
+        .unwrap();
+        let tab = browser.attach("T-first").await.unwrap();
+        let later = tabs.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            let info = chrome_instance::tab_registry::NewTab::new(None, "about:blank");
+            crate::util::sync::write(&later)
+                .register_tab(tab, info, false)
+                .unwrap();
+        });
+        // When the first call looks for its target
+        let found = wait_for_active_tab(&tabs, std::time::Duration::from_secs(2)).await;
+        // Then it gets that tab
+        assert!(
+            matches!(found, Some(cdp_domains::cdp_target::CdpTarget::Tab(ref t)) if t.target_id() == "T-first")
+        );
+        // And with no page at all it gives up after the limit
+        let empty = Arc::new(std::sync::RwLock::new(
+            chrome_instance::tab_registry::TabRegistry::new(4),
+        ));
+        assert!(
+            wait_for_active_tab(&empty, std::time::Duration::from_millis(60))
+                .await
+                .is_none()
+        );
     }
 
     /// AUD-DB-01: a match at the start of a line is on that line, column 0

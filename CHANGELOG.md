@@ -48,6 +48,12 @@ from a copy of its code: entries describe the differences from that release.
 - `get_console_logs`: `console.warn` is level `warning` on Firefox too (it
   was `warn`, so `level_filter: "warning"` found nothing there and `"warn"`
   nothing on Chrome); `level_filter` accepts `warn` as an alias.
+- Chrome: the first call on a fresh instance (usually `navigate`) waits
+  for the browser's page to register as a tab and uses it. It used to run
+  on a session-level connection whose captured state stopped being read
+  once the tab registered a moment later, so the first page's network
+  requests were missing from `get_network_logs` and `search_scripts` found
+  nothing right after it.
 - `fill_input` no longer types into the wrong element or reports a fill
   that did not happen (both browsers). An element that cannot take the text
   (a plain element, disabled, read-only, a non-text input such as a
