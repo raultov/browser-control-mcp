@@ -12,7 +12,7 @@ use tokio_stream::StreamExt;
 
 #[macros::mcp_tool(
     name = "enable_proxy_auth",
-    description = "Activates proxy authentication interception via Fetch domain, supplying credentials for authenticated proxies. Side effects: starts background event listener that auto-terminates after 30s inactivity; initiates pre-warming navigation. Auth requirements: username and password credentials required. Prerequisites: Chrome must be started with proxy-server flag. Rate limits: 30-second timeout per inactivity period. Returns: confirmation of proxy auth activation. Use this after 'restart_browser' with proxy settings. Alternatives: manual proxy configuration in system settings."
+    description = "Activates proxy authentication interception via Fetch domain, supplying credentials for authenticated proxies. Side effects: starts background event listener that auto-terminates after 30s inactivity; initiates pre-warming navigation. Auth requirements: username and password credentials required. Prerequisites: Chrome must be started with proxy-server flag. Rate limits: 30-second timeout per inactivity period. A request whose proxy rejects the credentials twice is cancelled (it fails) instead of retried forever; call again with the right credentials. Returns: confirmation of proxy auth activation. Use this after 'restart_browser' with proxy settings. Alternatives: manual proxy configuration in system settings."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct EnableProxyAuthTool {
@@ -39,6 +39,34 @@ pub struct EnableProxyAuthTool {
 pub(crate) struct ProxyCredentials {
     pub(crate) username: String,
     pub(crate) password: String,
+}
+
+/// How many times one request gets the credentials. A proxy that answers
+/// 407 again rejected them: resending them made the browser retry forever
+/// (Firefox re-raised the same request hundreds of times a second), each
+/// time with the password. Two tolerates a digest nonce that went stale.
+pub(crate) const MAX_AUTH_ATTEMPTS: u32 = 2;
+
+/// Requests whose proxy challenges are counted at once.
+const TRACKED_REQUESTS: usize = 256;
+
+/// Proxy challenges answered per request id (see [`MAX_AUTH_ATTEMPTS`]).
+#[derive(Default)]
+pub(crate) struct AuthAttempts {
+    counts: crate::util::bounded::BoundedMap<String, u32, TRACKED_REQUESTS>,
+}
+
+impl AuthAttempts {
+    /// Counts a proxy challenge for `request`: `true` while it may still
+    /// get the credentials.
+    pub(crate) fn allow(&mut self, request: &str) -> bool {
+        if let Some(count) = self.counts.get_mut(request) {
+            *count += 1;
+            return *count <= MAX_AUTH_ATTEMPTS;
+        }
+        self.counts.insert(request.to_string(), 1);
+        true
+    }
 }
 
 pub(crate) const DEFAULT_PREWARM_URL: &str = "http://api.ipify.org?format=json";
@@ -147,9 +175,12 @@ async fn answer_challenges(
     credentials: ProxyCredentials,
 ) {
     tracing::debug!("proxy auth handler started");
+    let mut attempts = AuthAttempts::default();
     loop {
         match tokio::time::timeout(Duration::from_secs(30), fetch_events.next()).await {
-            Ok(Some(Ok(event))) => handle_fetch_event(&target, &event, &credentials).await,
+            Ok(Some(Ok(event))) => {
+                handle_fetch_event(&target, &event, &credentials, &mut attempts).await
+            }
             Ok(Some(Err(cdp_browser_lite::CdpError::Lagged { skipped }))) => {
                 tracing::warn!(skipped, "proxy auth handler fell behind; Fetch events lost");
             }
@@ -174,6 +205,7 @@ async fn handle_fetch_event(
     target: &CdpTarget,
     event: &WsResponse,
     credentials: &ProxyCredentials,
+    attempts: &mut AuthAttempts,
 ) {
     let Some(params) = event.params.as_ref() else {
         return;
@@ -189,7 +221,7 @@ async fn handle_fetch_event(
                 .await;
         }
         Some("Fetch.authRequired") => {
-            let response = auth_challenge_response(params, credentials);
+            let response = auth_challenge_response(params, credentials, attempts);
             let params = json!({"requestId": request_id, "authChallengeResponse": response});
             let result = target
                 .send_raw_command("Fetch.continueWithAuth", params)
@@ -202,14 +234,28 @@ async fn handle_fetch_event(
 
 /// Credentials go only to a proxy's challenge (HTTP 407, `source: "Proxy"`);
 /// a site's 401 gets the browser's default handling, never our password.
+/// A request challenged more than [`MAX_AUTH_ATTEMPTS`] times is cancelled:
+/// the proxy rejected the credentials.
 fn auth_challenge_response(
     params: &serde_json::Value,
     credentials: &ProxyCredentials,
+    attempts: &mut AuthAttempts,
 ) -> serde_json::Value {
     let from_proxy = params
         .pointer("/authChallenge/source")
         .and_then(|v| v.as_str())
         == Some("Proxy");
+    let request = params
+        .get("requestId")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    if from_proxy && !attempts.allow(request) {
+        tracing::warn!(
+            request,
+            "proxy rejected the credentials; challenge cancelled"
+        );
+        return json!({"response": "CancelAuth"});
+    }
     if from_proxy {
         json!({
             "response": "ProvideCredentials",
@@ -532,15 +578,35 @@ mod tests {
         let creds = creds();
         // When a site's challenge arrives
         let site = json!({"requestId": "R1", "authChallenge": {"source": "Server", "origin": "https://a"}});
-        let answer = auth_challenge_response(&site, &creds);
+        let mut attempts = AuthAttempts::default();
+        let answer = auth_challenge_response(&site, &creds, &mut attempts);
         // Then the browser's default handling is used and no credentials are sent
         assert_eq!(answer, json!({"response": "Default"}));
         // And a proxy's challenge gets the credentials
         let proxy =
             json!({"requestId": "R2", "authChallenge": {"source": "Proxy", "origin": "http://p"}});
-        let answer = auth_challenge_response(&proxy, &creds);
+        let answer = auth_challenge_response(&proxy, &creds, &mut attempts);
         assert_eq!(answer["response"], "ProvideCredentials");
         assert_eq!(answer["username"], "alice");
+    }
+
+    /// AUD-RW-06: a request the proxy keeps challenging gets the credentials
+    /// MAX_AUTH_ATTEMPTS times, then the challenge is cancelled (wrong
+    /// credentials looped, each attempt sending the password again).
+    #[test]
+    fn rejected_credentials_are_not_resent_forever() {
+        let creds = creds();
+        let mut attempts = AuthAttempts::default();
+        let proxy = |id: &str| json!({"requestId": id, "authChallenge": {"source": "Proxy"}});
+        for _ in 0..MAX_AUTH_ATTEMPTS {
+            let answer = auth_challenge_response(&proxy("R1"), &creds, &mut attempts);
+            assert_eq!(answer["response"], "ProvideCredentials");
+        }
+        let answer = auth_challenge_response(&proxy("R1"), &creds, &mut attempts);
+        assert_eq!(answer, json!({"response": "CancelAuth"}));
+        // And another request still gets them
+        let answer = auth_challenge_response(&proxy("R2"), &creds, &mut attempts);
+        assert_eq!(answer["response"], "ProvideCredentials");
     }
 
     /// SEC-16: Enabling proxy auth twice keeps a single handler.

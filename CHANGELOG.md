@@ -12,6 +12,11 @@ from a copy of its code: entries describe the differences from that release.
 
 ### Fixed
 
+- `enable_proxy_auth` with wrong credentials no longer loops: a request the
+  proxy challenges again after two answers is cancelled. Firefox re-raised
+  the same request forever (about 50 challenges a second, each carrying the
+  password); Chrome retried tens of times. On Firefox, calling the tool
+  again also removes the previous intercept (each call added one more).
 - On Chrome, an instance attached to a browser that was already running on
   its port (not launched by the server) no longer reports a restart or stop
   that did not happen. `restart_browser` (and a `copy_cookies` relaunch)

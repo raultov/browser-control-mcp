@@ -210,6 +210,8 @@ pub(crate) struct FirefoxSession {
     pub(crate) custom_modules: Arc<RwLock<Vec<String>>>,
     /// The `enable_proxy_auth` handler, replaced (aborted) on a new call.
     pub(crate) proxy_task: Mutex<ListenerHandles>,
+    /// The `network.addIntercept` id of that handler, removed by the next call.
+    pub(crate) proxy_intercept: Mutex<Option<String>>,
     /// The connection the pump listens on (its liveness is the session's).
     pump_client: RwLock<Option<bidi_browser_lite::BidiClient>>,
     /// Set when Firefox died under the session: calls report it instead of
@@ -230,6 +232,7 @@ impl FirefoxSession {
             own_subscription: RwLock::new(None),
             custom_modules: Default::default(),
             proxy_task: Mutex::new(ListenerHandles::default()),
+            proxy_intercept: Mutex::new(None),
             pump_client: RwLock::new(None),
             crashed: Default::default(),
         }
@@ -401,6 +404,7 @@ impl FirefoxSession {
         let _ = tokio::time::timeout(DETACH_TIMEOUT, detach).await;
         *self.pump.lock().await = ListenerHandles::default();
         *self.proxy_task.lock().await = ListenerHandles::default();
+        *self.proxy_intercept.lock().await = None;
         write(&self.custom_modules).clear();
         write(&self.tabs).clear();
         *write(&self.own_subscription) = None;

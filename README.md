@@ -67,7 +67,7 @@ see the note.
 | `evaluate_on_call_frame` | ✓ | ✓ | |
 | `search_scripts` | ✓ | ✓ | a long line's preview is 100 characters on each side of the match |
 | `pause_on_load` | ✓ | ✗ | TODO on Firefox, see [Limitations and TODO](#limitations-and-todo) |
-| `enable_proxy_auth` | ✓ | partial | needs `--proxy-server`; untested on Firefox against a real proxy |
+| `enable_proxy_auth` | ✓ | partial | needs `--proxy-server`; a request the proxy rejects twice is cancelled; untested on Firefox against a real proxy |
 | `send_cdp_command` | ✓ | ✗ | raw Chrome DevTools Protocol |
 | `send_bidi_command` | ✗ | ✓ | raw WebDriver BiDi; refuses `session.new`, `session.end`, `browser.close` |
 | `send_rdp_request` | ✗ | ✓ | raw Firefox RDP request to an actor (`thread`, `console`, `root` shortcuts) |
