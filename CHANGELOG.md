@@ -10,6 +10,15 @@ from a copy of its code: entries describe the differences from that release.
 
 ## [Unreleased]
 
+## [0.3.3-beta.4] - 2026-10-27
+
+Public **BETA**. Tools that reported success for something that did not
+happen now say what happened, and proxy credentials are handled more
+safely. Some replies change: an unknown tool argument is an error,
+`navigate`/`reload` add `status`, a download URL fails, and
+`restart_browser`/`stop_browser` on an attached Chrome refuse or only
+disconnect.
+
 ### Fixed
 
 - Credentials written in a proxy URL (`http://user:pass@host:port`, from
