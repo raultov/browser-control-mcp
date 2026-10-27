@@ -1,4 +1,4 @@
-.PHONY: all fmt fmt-check clippy clippy-windows test test-lib doc dupes dupes-cleanup publish-check version-check check build install e2e check-all help
+.PHONY: all fmt fmt-check clippy clippy-windows test test-lib doc dupes dupes-cleanup publish-check version-check changelog-check check build install e2e check-all help
 
 # cargo-dupes reads dupes.toml ONLY from the analysed path (no parent lookup)
 # and silently passes when it finds none, so the gate refuses to run without it.
@@ -57,6 +57,15 @@ dupes-cleanup:
 publish-check:
 	cargo publish --dry-run --allow-dirty --locked
 
+# The release notes come from CHANGELOG.md: GitHub masks a URL with
+# credentials (scheme://user:pass@) as a secret and drops the release plan,
+# so no binary, npm or Homebrew release is built.
+changelog-check:
+	@if grep -nE '[a-z][a-z0-9+.-]*://[^[:space:]/@`]+:[^[:space:]/@`]*@' CHANGELOG.md; then \
+		echo "CHANGELOG.md has a URL with credentials (GitHub masks it and skips the release builds)"; \
+		exit 1; \
+	fi
+
 # package.json (npm installer / glama metadata) must carry Cargo.toml's version
 version-check:
 	@cargo_v=$$(awk -F'"' '/^version/ {print $$2; exit}' Cargo.toml); \
@@ -69,7 +78,7 @@ version-check:
 	fi
 
 # All local quality gates, sequentially; stops at the first red one
-check: fmt-check clippy test doc dupes publish-check version-check
+check: fmt-check clippy test doc dupes publish-check version-check changelog-check
 
 # Release binary
 build:
@@ -101,7 +110,7 @@ check-all: check e2e
 help:
 	@echo "Available targets:"
 	@echo "  make (or make all)  - Alias for 'make check'"
-	@echo "  make check          - All gates (fmt-check, clippy, test, doc, dupes, publish-check, version-check)"
+	@echo "  make check          - All gates (fmt-check, clippy, test, doc, dupes, publish-check, version-check, changelog-check)"
 	@echo "  make test-lib       - Library unit tests only (fast inner loop, not a gate)"
 	@echo "  make check-all      - Quality gates AND the E2E smoke against real browsers"
 	@echo "  make fmt            - Auto-fix formatting"

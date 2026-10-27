@@ -124,7 +124,7 @@ instance's capabilities before dispatching to its browser's implementation.
 ## Gates
 
 ```sh
-make check        # fmt-check, clippy -D warnings, test, doc, dupes (0), publish-check, version-check
+make check        # fmt-check, clippy -D warnings, test, doc, dupes (0), publish-check, version-check, changelog-check
 make test-lib     # fast loop, not a gate
 make e2e          # real Chrome + Firefox over stdio MCP (headless; E2E_VISIBLE=1 shows them; not in make check)
 make check-all    # make check + make e2e
