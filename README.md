@@ -40,8 +40,8 @@ see the note.
 | `open_instance` | ✓ | partial | `features`, `copy_cookies` and `source_profile` are Chrome only |
 | `close_instance` | ✓ | ✓ | |
 | `list_instances` | ✓ | ✓ | each instance reports its `browser` and `capabilities` |
-| `restart_browser` | ✓ | ✓ | was `restart_chrome` |
-| `stop_browser` | ✓ | ✓ | was `stop_chrome`; on an attached Firefox it ends the session, the browser keeps running |
+| `restart_browser` | ✓ | ✓ | was `restart_chrome`; refused on a Chrome already running on the port (attached, not launched by the server) |
+| `stop_browser` | ✓ | ✓ | was `stop_chrome`; on an attached Chrome or Firefox it only disconnects (Firefox: ends the session), the browser keeps running and the reply says so |
 | `open_tab` | ✓ | ✓ | |
 | `close_tab` | ✓ | ✓ | |
 | `list_tabs` | ✓ | ✓ | |

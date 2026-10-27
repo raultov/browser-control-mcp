@@ -7,7 +7,7 @@ use rust_mcp_sdk::{
 
 #[macros::mcp_tool(
     name = "restart_browser",
-    description = "Stops and restarts the Chrome instance selected by 'instance_id' (the default instance when omitted) with remote debugging enabled, optionally configuring proxy and opt-in capability presets. Side effects: destructive - terminates that instance's Chrome process and all its open tabs; closes its debugging connection; other instances keep running. Prerequisites: requires CHROME_PATH environment variable or chrome in PATH. Returns: restart success confirmation listing the presets applied. Use this to reset browser state, apply proxy settings, enable experimental browser capabilities, recover from crashes. Alternatives: 'reload' to refresh page without restart, 'navigate' to load new content. Parameters: 'features' accepts a closed set - 'WEBGL_SOFTWARE' (forces SwiftShader software WebGL for GPU-less environments); arbitrary Chrome flags are not accepted."
+    description = "Stops and restarts the Chrome instance selected by 'instance_id' (the default instance when omitted) with remote debugging enabled, optionally configuring proxy and opt-in capability presets. Side effects: destructive - terminates that instance's Chrome process and all its open tabs; closes its debugging connection; other instances keep running. Prerequisites: requires CHROME_PATH environment variable or chrome in PATH. Returns: restart success confirmation listing the presets applied. An instance attached to a Chrome that was already running on its port (not launched by this server) is not restarted: the call fails saying so. Use this to reset browser state, apply proxy settings, enable experimental browser capabilities, recover from crashes. Alternatives: 'reload' to refresh page without restart, 'navigate' to load new content. Parameters: 'features' accepts a closed set - 'WEBGL_SOFTWARE' (forces SwiftShader software WebGL for GPU-less environments); arbitrary Chrome flags are not accepted."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct RestartChromeTool {
@@ -50,6 +50,7 @@ impl RestartChromeTool {
         )
         .map_err(CallToolError::from_message)?;
 
+        session.check_not_attached().await?;
         // Before taking the manager: a first connection holds the client
         // slot while it waits for the manager (one lock order everywhere).
         session.reset_connection_state().await;
@@ -81,22 +82,28 @@ impl RestartChromeTool {
                 e
             )));
         }
-
-        // Update features in registry descriptor if descriptor exists
-        let instance_id_str = tool
-            .instance_id
-            .clone()
-            .unwrap_or_else(|| "default".to_string());
-        let descriptors_list = handler.registry.list_descriptors();
-        if let Some(desc) = descriptors_list.iter().find(|d| d.id == instance_id_str) {
-            let mut updated_desc = desc.clone();
-            updated_desc.features = features.iter().map(|f| f.as_name().to_string()).collect();
-            handler.registry.register_descriptor(updated_desc);
+        // Nothing ran yet, and a Chrome already on the port was attached.
+        if manager.is_attached().await {
+            return Err(CallToolError::from_message(
+                super::attached_restart_refused(manager.get_port()),
+            ));
         }
 
+        record_features(handler, tool.instance_id.as_deref(), &features);
         Ok(CallToolResult::text_content(vec![
             format!("Chrome instance restarted successfully. Features: {summary}.").into(),
         ]))
+    }
+}
+
+/// Updates the features of the instance's registry descriptor, if any.
+fn record_features(handler: &McpHandler, instance_id: Option<&str>, features: &[ChromeFeature]) {
+    let instance_id = instance_id.unwrap_or("default");
+    let descriptors = handler.registry.list_descriptors();
+    if let Some(desc) = descriptors.iter().find(|d| d.id == instance_id) {
+        let mut updated = desc.clone();
+        updated.features = features.iter().map(|f| f.as_name().to_string()).collect();
+        handler.registry.register_descriptor(updated);
     }
 }
 
@@ -138,6 +145,41 @@ mod tests {
         let tool: Result<RestartChromeTool, _> = serde_json::from_value(json!({}));
         assert!(tool.is_ok());
         assert!(tool.unwrap().features.is_none());
+    }
+
+    /// AUD-LC-06: restarting a Chrome the server did not launch (attached
+    /// on its port) fails, saying why, instead of reporting a restart that
+    /// kept the same process and ignored the presets.
+    #[tokio::test]
+    async fn attached_chrome_is_not_restarted() {
+        // Given the default instance attached to a Chrome already running
+        let mut handler = McpHandler::new_test();
+        let mut manager = MockChromeManager::new(9222);
+        manager.set_running(true);
+        manager.set_attached(true);
+        Arc::get_mut(&mut handler.default_session)
+            .unwrap()
+            .chrome_manager = Arc::new(Mutex::new(manager));
+        // When restart_browser asks for a preset
+        let params: CallToolRequestParams = serde_json::from_value(json!({
+            "name": "restart_browser",
+            "arguments": {"features": ["WEBGL_SOFTWARE"]}
+        }))
+        .unwrap();
+        let error = RestartChromeTool::handle(params, &handler)
+            .await
+            .unwrap_err()
+            .to_string();
+        // Then it fails naming the port, and nothing was stopped or changed
+        assert!(error.contains("did not launch"), "{error}");
+        assert!(error.contains("port 9222"), "{error}");
+        let manager = handler.default_session.chrome_manager.lock().await;
+        let mock = manager
+            .as_any()
+            .downcast_ref::<MockChromeManager>()
+            .unwrap();
+        assert!(mock.is_running_mock());
+        assert!(mock.features().is_empty());
     }
 
     #[tokio::test]

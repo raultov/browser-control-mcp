@@ -109,6 +109,13 @@ impl crate::handler::chrome_instance::ChromeManager for CdpBrowserManager {
         self.params.features()
     }
 
+    async fn is_attached(&self) -> bool {
+        match self.browser.as_ref() {
+            Some(browser) => !browser.is_managed().await,
+            None => false,
+        }
+    }
+
     async fn is_running(&self) -> bool {
         if let Some(browser) = self.browser.as_ref() {
             browser.is_alive().await
@@ -153,6 +160,11 @@ pub(crate) trait ManagedBrowser: Send + Sync {
         None
     }
     async fn stop(&self) -> crate::handler::chrome_instance::ManagerResult<()>;
+    /// Whether the browser was launched here (`false`: a Chrome already
+    /// listening on the port was attached, and `stop` only disconnects).
+    async fn is_managed(&self) -> bool {
+        true
+    }
 }
 
 #[async_trait]
@@ -207,6 +219,10 @@ impl ManagedBrowser for RealBrowser {
             .await
             .map_err(crate::handler::chrome_instance::ManagerError::from)
     }
+
+    async fn is_managed(&self) -> bool {
+        self.browser.is_managed().await
+    }
 }
 
 pub(crate) struct RealLauncher {
@@ -252,6 +268,8 @@ pub(crate) struct FakeBrowser {
     pub(crate) stop_calls: std::sync::atomic::AtomicU32,
     /// Makes `stop` fail, as a browser that cannot be killed.
     pub(crate) fail_stop: std::sync::atomic::AtomicBool,
+    /// Found running on the port instead of launched.
+    pub(crate) attached: std::sync::atomic::AtomicBool,
 }
 
 #[cfg(test)]
@@ -263,6 +281,7 @@ impl FakeBrowser {
             stopped: std::sync::atomic::AtomicBool::new(false),
             stop_calls: std::sync::atomic::AtomicU32::new(0),
             fail_stop: std::sync::atomic::AtomicBool::new(false),
+            attached: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -307,6 +326,10 @@ impl ManagedBrowser for FakeBrowser {
         self.stopped
             .store(true, std::sync::atomic::Ordering::SeqCst);
         Ok(())
+    }
+
+    async fn is_managed(&self) -> bool {
+        !self.attached.load(std::sync::atomic::Ordering::SeqCst)
     }
 }
 
@@ -404,6 +427,10 @@ impl ManagedBrowser for FakeBrowserHandle {
     async fn stop(&self) -> crate::handler::chrome_instance::ManagerResult<()> {
         self.0.stop().await
     }
+
+    async fn is_managed(&self) -> bool {
+        self.0.is_managed().await
+    }
 }
 
 #[cfg(test)]
@@ -421,6 +448,25 @@ mod tests {
                 ..Default::default()
             },
         )
+    }
+
+    /// AUD-LC-06: a Chrome found already running on the port (attached, not
+    /// launched) is told apart from one this manager launched.
+    #[tokio::test]
+    async fn attached_browser_is_reported() {
+        let launched = FakeBrowser::new(9222);
+        let found = FakeBrowser::new(9222);
+        found
+            .attached
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let launcher = FakeLauncher::script(vec![launched, found]);
+        let mut mgr = CdpBrowserManager::new(params(9222), Box::new(launcher));
+        assert!(!mgr.is_attached().await, "nothing ensured yet");
+        mgr.ensure_instance().await.unwrap();
+        assert!(!mgr.is_attached().await);
+        mgr.stop_instance().await.unwrap();
+        mgr.ensure_instance().await.unwrap();
+        assert!(mgr.is_attached().await);
     }
 
     #[tokio::test]

@@ -12,6 +12,12 @@ from a copy of its code: entries describe the differences from that release.
 
 ### Fixed
 
+- On Chrome, an instance attached to a browser that was already running on
+  its port (not launched by the server) no longer reports a restart or stop
+  that did not happen. `restart_browser` (and a `copy_cookies` relaunch)
+  fails saying the server cannot relaunch it, and nothing is changed;
+  `stop_browser` disconnects and says the browser keeps running. Both said
+  "successfully" while the same process kept running without the presets.
 - `navigate` and `reload` report the document's HTTP status (`"status":
   404`), and an error status (400 and up) adds a note. A 404 used to look
   like any success, and an error with an empty body failed on Chrome

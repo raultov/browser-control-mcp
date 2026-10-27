@@ -553,6 +553,17 @@ mod e2e {
         assert!(failures.is_empty(), "{browser}: failed steps {failures:?}");
     }
 
+    /// What `stop_browser` answers in the attach suite of `variable`: Chrome
+    /// only disconnects from a browser it did not launch and says so;
+    /// Firefox ends its automation session.
+    fn stop_reply(variable: &str) -> &'static str {
+        if variable.contains("CHROME") {
+            "keeps running"
+        } else {
+            "stopped successfully"
+        }
+    }
+
     /// Attach mode: steps 3, 5 and 11 on the default instance, then
     /// `stop_browser`; a second attach must succeed afterwards.
     async fn attach(variable: &str) {
@@ -567,12 +578,8 @@ mod e2e {
         mcp.steps(runtime_steps("default")).await;
         mcp.steps(debugger_steps("default", &base)).await;
         let stop = json!({"instance_id": "default"});
-        mcp.step(
-            ("stop_browser", "stop_browser"),
-            stop,
-            "stopped successfully",
-        )
-        .await;
+        mcp.step(("stop_browser", "stop_browser"), stop, stop_reply(variable))
+            .await;
         let mut failures = mcp.finish().await;
 
         let mut again = Mcp::start(&args).await;

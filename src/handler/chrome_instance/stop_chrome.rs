@@ -6,7 +6,7 @@ use rust_mcp_sdk::{
 
 #[macros::mcp_tool(
     name = "stop_browser",
-    description = "Gracefully terminates the Chrome instance selected by 'instance_id' (the default instance when omitted) and closes all its debugging connections. Side effects: destructive - kills the Chrome process of that instance only; its open tabs are closed; unsaved data lost; other instances keep running. Prerequisites: the instance must be running. Returns: termination success confirmation. Use this to clean up resources, prevent zombie processes, or end a debugging session. Alternatives: 'restart_browser' to restart instead of stop, 'close_instance' to also remove a secondary instance from the registry."
+    description = "Gracefully terminates the Chrome instance selected by 'instance_id' (the default instance when omitted) and closes all its debugging connections. Side effects: destructive - kills the Chrome process of that instance only; its open tabs are closed; unsaved data lost; other instances keep running. Prerequisites: the instance must be running. Returns: termination success confirmation; for a Chrome that was already running on the port (attached, not launched by this server) it only disconnects, and the reply says the browser keeps running. Use this to clean up resources, prevent zombie processes, or end a debugging session. Alternatives: 'restart_browser' to restart instead of stop, 'close_instance' to also remove a secondary instance from the registry."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct StopChromeTool {
@@ -29,6 +29,8 @@ impl StopChromeTool {
         // slot while it waits for the manager (one lock order everywhere).
         session.reset_connection_state().await;
         let mut manager = session.chrome_manager.lock().await;
+        let attached = manager.is_attached().await;
+        let port = manager.get_port();
 
         if let Err(e) = manager.stop_instance().await {
             return Err(CallToolError::from_message(format!(
@@ -37,9 +39,14 @@ impl StopChromeTool {
             )));
         }
 
-        Ok(CallToolResult::text_content(vec![
-            "Chrome instance stopped successfully.".into(),
-        ]))
+        let text = if attached {
+            format!(
+                "Disconnected from the Chrome on port {port}: this server did not launch it (it was already running there), so it keeps running."
+            )
+        } else {
+            "Chrome instance stopped successfully.".to_string()
+        };
+        Ok(CallToolResult::text_content(vec![text.into()]))
     }
 }
 
@@ -65,6 +72,28 @@ mod tests {
     async fn test_stop_chrome_tool_deserialization() {
         let tool: Result<StopChromeTool, _> = serde_json::from_value(json!({}));
         assert!(tool.is_ok());
+    }
+
+    /// AUD-LC-06: stopping a Chrome the server did not launch disconnects
+    /// and says that it keeps running (it said "stopped successfully").
+    #[tokio::test]
+    async fn attached_chrome_is_disconnected_not_stopped() {
+        let mut handler = McpHandler::new_test();
+        let mut manager = MockChromeManager::new(9222);
+        manager.set_running(true);
+        manager.set_attached(true);
+        Arc::get_mut(&mut handler.default_session)
+            .unwrap()
+            .chrome_manager = Arc::new(Mutex::new(manager));
+        let params: CallToolRequestParams =
+            serde_json::from_value(json!({"name": "stop_browser", "arguments": {}})).unwrap();
+        let reply = StopChromeTool::handle(params, &handler).await.unwrap();
+        let text = format!("{:?}", reply.content);
+        assert!(
+            text.contains("Disconnected from the Chrome on port 9222"),
+            "{text}"
+        );
+        assert!(text.contains("keeps running"), "{text}");
     }
 
     #[tokio::test]

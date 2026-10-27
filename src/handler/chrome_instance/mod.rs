@@ -47,6 +47,14 @@ pub(crate) use manager_error;
 use crate::handler::chrome_instance::cookie_seed::SeedReport;
 use crate::handler::chrome_instance::launch::ChromeFeature;
 
+/// Why `restart_browser` refuses an instance attached to a Chrome that was
+/// already running on its `port`.
+pub(crate) fn attached_restart_refused(port: u16) -> String {
+    format!(
+        "The Chrome on port {port} was already running when this instance connected to it: this server did not launch it, so restart_browser cannot stop or relaunch it, and proxy, features and cookies cannot be applied. Close that Chrome yourself (or start the server with another --port) to let the server launch its own; stop_browser only disconnects from it."
+    )
+}
+
 #[async_trait]
 pub trait ChromeManager: Send + Sync {
     async fn ensure_instance(&mut self) -> crate::handler::chrome_instance::ManagerResult<()>;
@@ -80,6 +88,12 @@ pub trait ChromeManager: Send + Sync {
     async fn is_running(&self) -> bool {
         false
     }
+    /// Whether the instance is attached to a Chrome that was already
+    /// listening on its port, which this server did not launch and cannot
+    /// stop or relaunch. Defaults to `false`.
+    async fn is_attached(&self) -> bool {
+        false
+    }
     /// Whether a browser this manager launched has died since (crashed or
     /// killed from outside) and was not stopped yet. Defaults to `false`.
     async fn crashed(&self) -> bool {
@@ -98,6 +112,7 @@ pub struct MockChromeManager {
     proxy: Option<String>,
     running: bool,
     crashed: bool,
+    attached: bool,
     seed_report: Option<SeedReport>,
 }
 
@@ -109,6 +124,7 @@ impl MockChromeManager {
             proxy: None,
             running: false,
             crashed: false,
+            attached: false,
             seed_report: None,
         }
     }
@@ -116,6 +132,11 @@ impl MockChromeManager {
     #[cfg(test)]
     pub fn set_running(&mut self, running: bool) {
         self.running = running;
+    }
+
+    #[cfg(test)]
+    pub fn set_attached(&mut self, attached: bool) {
+        self.attached = attached;
     }
 
     #[cfg(test)]
@@ -180,6 +201,10 @@ impl ChromeManager for MockChromeManager {
 
     async fn is_running(&self) -> bool {
         self.running
+    }
+
+    async fn is_attached(&self) -> bool {
+        self.running && self.attached
     }
 
     async fn crashed(&self) -> bool {

@@ -700,6 +700,18 @@ impl BrowserSession {
 
     /// Fails with [`BROWSER_GONE`] when the browser died, forgetting its
     /// tabs and connections (they belong to the dead process).
+    /// Refuses a restart of an instance attached to a Chrome this server
+    /// did not launch (see [`chrome_instance::attached_restart_refused`]).
+    pub(crate) async fn check_not_attached(&self) -> std::result::Result<(), CallToolError> {
+        let manager = self.chrome_manager.lock().await;
+        if manager.is_attached().await {
+            return Err(CallToolError::from_message(
+                chrome_instance::attached_restart_refused(manager.get_port()),
+            ));
+        }
+        Ok(())
+    }
+
     /// Also replaces a DevTools connection that dropped while the browser
     /// lives (see [`Self::reconnect_if_dropped`]).
     pub(crate) async fn check_browser(&self) -> std::result::Result<(), CallToolError> {
