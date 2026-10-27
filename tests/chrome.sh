@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Starts/stops a dedicated, visible Chrome for the attach-mode E2E smoke.
-# Never headless.
+# Starts/stops a dedicated Chrome for the attach-mode E2E smoke. Headless
+# by default; E2E_VISIBLE=1 opens a window.
 set -euo pipefail
 
 E2E_BASE="${BROWSER_CONTROL_MCP_E2E_HOME:-$HOME/.local/share/browser-control-mcp/e2e}"
@@ -58,8 +58,14 @@ start_chrome() {
   mkdir -p "$PROFILE_DIR"
   local bin
   bin=$(chrome_bin)
-  echo "Starting Chrome (visible) with CDP on :$CHROME_PORT..."
-  "$bin" --remote-debugging-port="$CHROME_PORT" --user-data-dir="$PROFILE_DIR" \
+  local mode=() label="headless"
+  if [ "${E2E_VISIBLE:-0}" = 1 ]; then
+    label="visible"
+  else
+    mode=(--headless=new)
+  fi
+  echo "Starting Chrome ($label) with CDP on :$CHROME_PORT..."
+  "$bin" "${mode[@]}" --remote-debugging-port="$CHROME_PORT" --user-data-dir="$PROFILE_DIR" \
     --no-first-run --no-default-browser-check about:blank > "$LOG_FILE" 2>&1 &
   local pid=$!
   echo "$pid" > "$PID_FILE"

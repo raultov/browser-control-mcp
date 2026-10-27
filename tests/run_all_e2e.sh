@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# E2E smoke against real, visible Chrome and Firefox over stdio MCP
-# (`make e2e`). Not a quality gate: it needs both browsers and a display.
-# Linux and macOS only.
+# E2E smoke against real Chrome and Firefox over stdio MCP (`make e2e`).
+# Not a quality gate: it needs both browsers. Headless by default, so no
+# window opens on the host; E2E_VISIBLE=1 shows them. Linux and macOS only.
 set -uo pipefail
 
 cd "$(dirname "$0")/.."
@@ -10,6 +10,12 @@ CHROME_PORT="${CHROME_PORT:-9333}"
 FIREFOX_PORT="${FIREFOX_PORT:-9444}"
 RDP_PORT="${RDP_PORT:-6100}"
 export CHROME_PORT FIREFOX_PORT RDP_PORT
+
+# The launched suites pass --headless to the server; the attach suites use
+# browsers tests/chrome.sh and tests/firefox.sh start headless too.
+if [ "${E2E_VISIBLE:-0}" != 1 ]; then
+  export BCM_E2E_ARGS="${BCM_E2E_ARGS:-} --headless"
+fi
 
 started=()
 cleanup() {

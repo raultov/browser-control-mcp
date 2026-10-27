@@ -89,7 +89,7 @@ install: build
 	@cp -f target/release/$(BIN)$(EXT) "$(DESTDIR)/$(BIN)$(EXT)"
 	@echo "Installed $(DESTDIR)/$(BIN)$(EXT)"
 
-# Smoke against real Chrome and Firefox (Linux/macOS; visible windows).
+# Smoke against real Chrome and Firefox (Linux/macOS; headless, E2E_VISIBLE=1 shows them).
 # Not part of `make check`. See README > Development.
 E2E_SCRIPT ?= tests/run_all_e2e.sh
 e2e:

@@ -126,7 +126,7 @@ instance's capabilities before dispatching to its browser's implementation.
 ```sh
 make check        # fmt-check, clippy -D warnings, test, doc, dupes (0), publish-check, version-check
 make test-lib     # fast loop, not a gate
-make e2e          # real Chrome + Firefox over stdio MCP (visible windows; not in make check)
+make e2e          # real Chrome + Firefox over stdio MCP (headless; E2E_VISIBLE=1 shows them; not in make check)
 make check-all    # make check + make e2e
 cargo clippy --all-targets --all-features --target x86_64-pc-windows-gnu -- -D warnings   # Windows cross-check
 ```
@@ -134,8 +134,8 @@ cargo clippy --all-targets --all-features --target x86_64-pc-windows-gnu -- -D w
 ## Running browsers for the smoke
 
 ```sh
-tests/chrome.sh start    # visible Chrome, CDP on :9333
-tests/firefox.sh start   # visible Firefox (never headless), BiDi on :9444/session, RDP on ws:6100
+tests/chrome.sh start    # headless Chrome (E2E_VISIBLE=1: visible), CDP on :9333
+tests/firefox.sh start   # headless Firefox (E2E_VISIBLE=1: visible), BiDi on :9444/session, RDP on ws:6100
 make e2e
 tests/firefox.sh stop; tests/chrome.sh stop
 ```

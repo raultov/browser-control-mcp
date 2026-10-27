@@ -506,7 +506,7 @@ incompatible:
 
 ```sh
 make check        # fmt, clippy -D warnings, tests, docs, duplication, packaging, version
-make e2e          # E2E smoke against real, visible Chrome and Firefox (Linux, macOS)
+make e2e          # E2E smoke against real Chrome and Firefox, headless (E2E_VISIBLE=1 shows them; Linux, macOS)
 make check-all    # both
 ```
 

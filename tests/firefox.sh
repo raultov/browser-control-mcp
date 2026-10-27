@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Starts/stops a dedicated, visible Firefox for the attach-mode E2E smoke
-# (adapted from bidi-lite/tests/firefox.sh). Never headless.
+# Starts/stops a dedicated Firefox for the attach-mode E2E smoke (adapted
+# from bidi-lite/tests/firefox.sh). Headless by default; E2E_VISIBLE=1 opens
+# a window.
 set -euo pipefail
 
 # Snap Firefox only reads profiles under $HOME/snap/firefox/common.
@@ -56,8 +57,14 @@ user_pref("app.update.auto", false);
 user_pref("app.update.enabled", false);
 EOF
   local firefox_bin="${FIREFOX_PATH:-$(command -v firefox || echo /usr/bin/firefox)}"
-  echo "Starting Firefox (visible) with BiDi on :$FIREFOX_PORT and RDP on ws:$RDP_PORT..."
-  "$firefox_bin" --no-remote --profile "$PROFILE_DIR" \
+  local mode=() label="headless"
+  if [ "${E2E_VISIBLE:-0}" = 1 ]; then
+    label="visible"
+  else
+    mode=(--headless)
+  fi
+  echo "Starting Firefox ($label) with BiDi on :$FIREFOX_PORT and RDP on ws:$RDP_PORT..."
+  "$firefox_bin" "${mode[@]}" --no-remote --profile "$PROFILE_DIR" \
     --remote-debugging-port="$FIREFOX_PORT" \
     --start-debugger-server "ws:$RDP_PORT" > "$LOG_FILE" 2>&1 &
   local pid=$!
