@@ -68,6 +68,7 @@ tempfile = "3.27.0"
 tokio = { version = "1.53.2", features = ["full"] }
 tokio-stream = "0.1.19"
 url = "2.5.8"
+percent-encoding = "2.3.2"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 thiserror = "2.0.21"

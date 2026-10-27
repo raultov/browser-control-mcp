@@ -173,8 +173,11 @@ impl LaunchParams {
             .connect_timeout(std::time::Duration::from_secs(10))
             .command_timeout(std::time::Duration::from_secs(10))
             .startup_timeout(std::time::Duration::from_secs(10));
+        // Without credentials: the command line is readable by any local
+        // user (`ps`), and Chrome ignores them there (enable_proxy_auth
+        // answers the proxy's 407 instead).
         if let Some(proxy) = &self.proxy {
-            builder = builder.proxy(proxy.clone());
+            builder = builder.proxy(crate::util::url::without_userinfo(proxy));
         }
         // A seeded profile only works if Chrome can decrypt the imported
         // cookies, which requires access to the desktop secret store. When the
@@ -341,6 +344,21 @@ mod tests {
         params.browser.window_size = crate::cli::WindowSize::parse("1280x800").unwrap();
         let config = params.to_config(&params.plan());
         assert!(format!("{config:?}").contains("window_size: Some((1280, 800))"));
+    }
+
+    /// AUD-LC-08: proxy credentials never reach Chrome's command line
+    /// (anyone can read it with `ps`; Chrome ignores them there anyway).
+    #[test]
+    fn proxy_credentials_stay_off_the_command_line() {
+        let mut params = default_params();
+        params.set_proxy(Some("http://alice:s3cr3t@127.0.0.1:3128".to_string()));
+        let config = params.to_config(&params.plan());
+        let text = format!("{config:?}");
+        assert!(
+            !text.contains("s3cr3t") && !text.contains("alice"),
+            "{text}"
+        );
+        assert!(text.contains("http://127.0.0.1:3128"), "{text}");
     }
 
     #[test]

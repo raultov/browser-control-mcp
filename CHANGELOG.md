@@ -12,6 +12,12 @@ from a copy of its code: entries describe the differences from that release.
 
 ### Fixed
 
+- Credentials written in a proxy URL (`http://user:pass@host:port`, from
+  `--proxy-server`, `open_instance`'s `proxy` or `restart_browser`) no
+  longer reach the browser: Chrome got them on its command line, readable
+  by any local user with `ps` (and ignored them), and Firefox refused to
+  launch. `enable_proxy_auth` now falls back to the credentials of
+  `--proxy-server`.
 - `enable_proxy_auth` with wrong credentials no longer loops: a request the
   proxy challenges again after two answers is cancelled. Firefox re-raised
   the same request forever (about 50 challenges a second, each carrying the

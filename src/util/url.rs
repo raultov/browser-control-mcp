@@ -15,6 +15,22 @@ pub fn without_userinfo(raw: &str) -> String {
     }
 }
 
+/// The `(username, password)` written in `raw` (e.g. a proxy URL),
+/// percent-decoded; `None` without a username.
+pub fn userinfo(raw: &str) -> Option<(String, String)> {
+    let parsed = url::Url::parse(raw).ok()?;
+    let decode = |part: &str| {
+        percent_encoding::percent_decode_str(part)
+            .decode_utf8_lossy()
+            .into_owned()
+    };
+    let username = Some(parsed.username()).filter(|u| !u.is_empty())?;
+    Some((
+        decode(username),
+        decode(parsed.password().unwrap_or_default()),
+    ))
+}
+
 /// Scheme, host and port only: what the logs may say about a URL the agent
 /// navigates to. Paths and queries can carry tokens.
 pub fn redacted(raw: &str) -> String {
@@ -72,6 +88,15 @@ pub fn raw_navigation_url<'a>(method: &str, params: &'a serde_json::Value) -> Op
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// AUD-LC-08: the credentials of a proxy URL, decoded.
+    #[test]
+    fn userinfo_is_decoded() {
+        let found = userinfo("http://al%40ice:s3%3Acr3t@p:3128");
+        assert_eq!(found, Some(("al@ice".into(), "s3:cr3t".into())));
+        assert_eq!(userinfo("http://p:3128"), None);
+        assert_eq!(userinfo("not a url"), None);
+    }
 
     #[test]
     fn without_userinfo_strips_credentials_only() {

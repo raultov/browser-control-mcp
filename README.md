@@ -339,6 +339,11 @@ claude mcp add browser-control-mcp -- npx -y @raultov/browser-control-mcp
 | `--firefox-rdp-port <PORT>` | none | — | debugger port of the attached Firefox (needs `--firefox-port`) |
 | `--no-firefox-debugger` | off | — | launch Firefox without its debugger port (no debugger tools) |
 
+Credentials written in a proxy URL (`http://user:pass@host:port`) never reach
+the browser's command line; `enable_proxy_auth` uses those of `--proxy-server`
+when neither its arguments nor `--proxy-username`/`--proxy-password` give
+them.
+
 `--proxy` and `--webmcp` are aliases. To attach to your own Firefox, start it
 with `--remote-debugging-port <port>` (and `--start-debugger-server ws:<rdp>`
 plus `devtools.debugger.remote-enabled` and `devtools.chrome.enabled` for the

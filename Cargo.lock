@@ -192,6 +192,7 @@ dependencies = [
  "chrono",
  "clap",
  "futures-util",
+ "percent-encoding",
  "psl",
  "rust-mcp-sdk",
  "serde",

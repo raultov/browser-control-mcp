@@ -49,8 +49,10 @@ impl FirefoxSpec {
                 .port(0)
                 .rdp(!self.firefox.no_firefox_debugger),
         };
+        // bidi-browser-lite refuses a proxy URL with credentials;
+        // enable_proxy_auth reads them from --proxy-server instead.
         if let Some(proxy) = &self.proxy {
-            builder = builder.proxy(proxy.clone());
+            builder = builder.proxy(crate::util::url::without_userinfo(proxy));
         }
         if let Some(path) = &self.firefox.firefox_path {
             builder = builder.firefox_path(path.clone());
@@ -119,6 +121,18 @@ mod tests {
             text.contains("/opt/ff") && text.contains("proxy: Some"),
             "{text}"
         );
+    }
+
+    /// AUD-LC-08 (Firefox): a proxy URL with credentials launches (they are
+    /// left to enable_proxy_auth; bidi-browser-lite refused the URL).
+    #[test]
+    fn proxy_url_with_credentials_launches() {
+        let spec = FirefoxSpec {
+            proxy: Some("http://alice:s3cr3t@127.0.0.1:3128".into()),
+            ..Default::default()
+        };
+        let config = spec.config().unwrap();
+        assert!(config.validate().is_ok());
     }
 
     /// CLI-06: --user-profile with a launched Firefox fails clearly.

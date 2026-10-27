@@ -13,7 +13,7 @@ use rust_mcp_sdk::{
 pub struct RestartChromeTool {
     /// Chrome instance id from open_instance/list_instances. Omit for the default instance.
     pub instance_id: Option<String>,
-    /// Proxy server URL (e.g., `http://proxy.example.com:8080`). Constraints: valid proxy URL with protocol and port. Interactions: applied to new Chrome instance; requires 'enable_proxy_auth' for authenticated proxies. Defaults to: the instance's current proxy (from open_instance or the previous restart), else the server's --proxy-server.
+    /// Proxy server URL (e.g., `http://proxy.example.com:8080`). Constraints: valid proxy URL with protocol and port. Interactions: applied to new Chrome instance without any credentials written in it; requires 'enable_proxy_auth' for authenticated proxies. Defaults to: the instance's current proxy (from open_instance or the previous restart), else the server's --proxy-server.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub proxy_server: Option<String>,
 

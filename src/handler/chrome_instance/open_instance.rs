@@ -24,7 +24,7 @@ pub struct OpenInstanceTool {
     pub label: Option<String>,
     /// Optional headless mode. Encouraged to be set to false so that the user can see what happens with the browser. Defaults to false.
     pub headless: Option<bool>,
-    /// Optional proxy server configuration.
+    /// Optional proxy server URL (e.g. `http://proxy.example.com:8080`). Credentials written in the URL are not passed to the browser (its command line is readable by other local users): give them to 'enable_proxy_auth'.
     pub proxy: Option<String>,
     /// Optional feature presets (e.g. WEBGL_SOFTWARE).
     pub features: Option<Vec<ChromeFeature>>,

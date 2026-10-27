@@ -120,15 +120,23 @@ impl EnableProxyAuthTool {
         ]))
     }
 
-    /// Tool arguments first, then the command line.
+    /// Tool arguments first, then the command line's flags, then the
+    /// credentials written in `--proxy-server` (never passed to the browser).
     pub(crate) fn credentials(
         &self,
         handler: &McpHandler,
     ) -> Result<ProxyCredentials, CallToolError> {
+        let in_url = handler
+            .proxy
+            .proxy_server
+            .as_deref()
+            .and_then(crate::util::url::userinfo);
+        let (url_username, url_password) = in_url.unzip();
         let username = self
             .username
             .clone()
             .or_else(|| handler.proxy.proxy_username.clone())
+            .or(url_username)
             .ok_or_else(|| {
                 CallToolError::from_message(
                     "Proxy credentials missing: username required. Provide 'username' in tool arguments or start browser-control-mcp with --proxy-username.",
@@ -138,6 +146,7 @@ impl EnableProxyAuthTool {
             .password
             .clone()
             .or_else(|| handler.proxy.proxy_password.clone())
+            .or(url_password)
             .ok_or_else(|| {
                 CallToolError::from_message(
                     "Proxy credentials missing: password required. Provide 'password' in tool arguments or start browser-control-mcp with --proxy-password.",
@@ -412,6 +421,27 @@ mod tests {
     fn call(arguments: serde_json::Value) -> CallToolRequestParams {
         serde_json::from_value(json!({"name": "enable_proxy_auth", "arguments": arguments}))
             .unwrap()
+    }
+
+    /// AUD-LC-08: credentials in --proxy-server are used by
+    /// enable_proxy_auth (they no longer go to Chrome's command line).
+    #[test]
+    fn proxy_url_credentials_are_the_last_fallback() {
+        let mut handler = McpHandler::new_test();
+        handler.proxy.proxy_server = Some("http://alice:s3cr3t@p:3128".into());
+        let tool: EnableProxyAuthTool = serde_json::from_value(json!({})).unwrap();
+        let found = tool.credentials(&handler).unwrap();
+        assert_eq!(
+            (found.username.as_str(), found.password.as_str()),
+            ("alice", "s3cr3t")
+        );
+        handler.proxy.proxy_username = Some("bob".into());
+        let tool: EnableProxyAuthTool = serde_json::from_value(json!({"password": "pw"})).unwrap();
+        let found = tool.credentials(&handler).unwrap();
+        assert_eq!(
+            (found.username.as_str(), found.password.as_str()),
+            ("bob", "pw")
+        );
     }
 
     fn creds() -> ProxyCredentials {
