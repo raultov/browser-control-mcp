@@ -322,7 +322,7 @@ claude mcp add browser-control-mcp -- npx -y @raultov/browser-control-mcp
 | --- | --- | --- | --- |
 | `--browser <chrome\|firefox>` | `chrome` | browser of the default instance | browser of the default instance |
 | `--local` | off | navigation limited to local addresses | same |
-| `--headless` | off | headless Chrome | headless Firefox |
+| `--headless` | off | headless Chrome (also the default of `open_instance`'s `headless`) | headless Firefox (same) |
 | `--window-size <W>x<H>` | `1920x1080` | window of launched Chrome (`--window-size`) | window of launched Firefox (`--width`/`--height`) |
 | `--host <HOST>` | `127.0.0.1` | debugging host | debugging host |
 | `--port <PORT>` | `9222` | debugging port of the default instance | ignored (use `--firefox-port`) |

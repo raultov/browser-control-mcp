@@ -21,6 +21,9 @@ disconnect.
 
 ### Fixed
 
+- `open_instance` without `headless` follows the server's `--headless` flag.
+  It always opened a window, even on a server started with `--headless`
+  (where there may be no display, as in the Docker image).
 - Credentials written in a proxy URL (`http://user:pass@host:port`, from
   `--proxy-server`, `open_instance`'s `proxy` or `restart_browser`) no
   longer reach the browser: Chrome got them on its command line, readable

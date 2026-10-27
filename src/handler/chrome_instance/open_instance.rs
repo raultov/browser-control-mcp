@@ -13,7 +13,7 @@ use tokio::sync::Mutex;
 
 #[macros::mcp_tool(
     name = "open_instance",
-    description = "Opens a new independent browser instance (Chrome or Firefox, see 'browser'). Side effects: launches a separate browser process with its own profile directory and remote-debugging port. Prerequisites: rejected when the server runs in --user-profile mode (Chrome's singleton profile lock). Returns: structured JSON with 'instance_id' (pass it as the 'instance_id' argument of other tools), 'host', 'port' and 'profile_dir'. Use this to isolate browsing sessions, cookies, proxies or WebMCP contexts from one another. Alternatives: 'open_tab' for additional tabs within an existing instance. Parameters: 'features' accepts a closed set - 'WEBGL_SOFTWARE' (forces SwiftShader software WebGL for GPU-less environments); 'headless' defaults to false (prefer false so the user can see the browser)."
+    description = "Opens a new independent browser instance (Chrome or Firefox, see 'browser'). Side effects: launches a separate browser process with its own profile directory and remote-debugging port. Prerequisites: rejected when the server runs in --user-profile mode (Chrome's singleton profile lock). Returns: structured JSON with 'instance_id' (pass it as the 'instance_id' argument of other tools), 'host', 'port' and 'profile_dir'. Use this to isolate browsing sessions, cookies, proxies or WebMCP contexts from one another. Alternatives: 'open_tab' for additional tabs within an existing instance. Parameters: 'features' accepts a closed set - 'WEBGL_SOFTWARE' (forces SwiftShader software WebGL for GPU-less environments); 'headless' defaults to the server's --headless flag (off unless the server was started with it)."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct OpenInstanceTool {
@@ -22,7 +22,7 @@ pub struct OpenInstanceTool {
     pub browser: Option<BrowserArg>,
     /// Optional label to identify the instance. The label becomes the instance_id returned by this tool and accepted by the 'instance_id' argument of other tools. If omitted, a dynamic label is generated.
     pub label: Option<String>,
-    /// Optional headless mode. Encouraged to be set to false so that the user can see what happens with the browser. Defaults to false.
+    /// Optional headless mode. Defaults to the server's --headless flag (false unless the server was started with it, e.g. in Docker where there is no display).
     pub headless: Option<bool>,
     /// Optional proxy server URL (e.g. `http://proxy.example.com:8080`). Credentials written in the URL are not passed to the browser (its command line is readable by other local users): give them to 'enable_proxy_auth'.
     pub proxy: Option<String>,
@@ -102,12 +102,19 @@ impl OpenInstanceTool {
         Ok(CallToolResult::text_content(vec![reply.to_string().into()]))
     }
 
+    /// Whether the new instance runs headless: the `headless` argument, else
+    /// the server's --headless flag (a window cannot open without a display).
+    pub(crate) fn headless_for(&self, handler: &McpHandler) -> bool {
+        self.headless
+            .unwrap_or(handler.base_params.browser.headless)
+    }
+
     /// Launch parameters of a secondary instance: port 0 (ephemeral,
     /// coordinated by the pool), no automation infobar, never the user
     /// profile (it must allow multiple profile dirs).
     fn launch_params(&self, handler: &McpHandler) -> LaunchParams {
         let browser = crate::cli::BrowserFlags {
-            headless: self.headless.unwrap_or(false),
+            headless: self.headless_for(handler),
             enable_automation: false,
             user_profile: false,
             window_size: handler.base_params.browser.window_size,
@@ -184,6 +191,30 @@ async fn launch(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// AUD-LC-30: without `headless`, a new instance follows the server's
+    /// --headless flag (it opened a window even with --headless, which fails
+    /// where there is no display, e.g. the Docker image).
+    #[test]
+    fn headless_defaults_to_the_server_flag() {
+        let mut handler = McpHandler::new_test();
+        let args = |value: serde_json::Value| -> OpenInstanceTool {
+            serde_json::from_value(value).unwrap()
+        };
+        handler.base_params.browser.headless = true;
+        assert!(
+            args(serde_json::json!({}))
+                .launch_params(&handler)
+                .browser
+                .headless
+        );
+        assert!(args(serde_json::json!({})).headless_for(&handler));
+        let shown = args(serde_json::json!({"headless": false}));
+        assert!(!shown.launch_params(&handler).browser.headless);
+        handler.base_params.browser.headless = false;
+        assert!(!args(serde_json::json!({})).headless_for(&handler));
+        assert!(args(serde_json::json!({"headless": true})).headless_for(&handler));
+    }
 
     /// TOL-04: open_instance exposes the browser selector.
     #[test]

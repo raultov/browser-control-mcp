@@ -423,7 +423,7 @@ pub(crate) async fn open_instance(
         None => handler.registry.generate_id(BrowserKind::Firefox),
     };
     let mut spec = handler.firefox_spec.clone();
-    spec.browser.headless = args.headless.unwrap_or(false);
+    spec.browser.headless = args.headless_for(handler);
     spec.browser.user_profile = false;
     spec.firefox.firefox_port = None;
     spec.firefox.firefox_rdp_port = None;
