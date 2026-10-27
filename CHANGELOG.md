@@ -10,6 +10,18 @@ from a copy of its code: entries describe the differences from that release.
 
 ## [Unreleased]
 
+## [0.3.4-beta.4] - 2026-10-27
+
+Public **BETA**. The same server as 0.3.3-beta.4, which was published on
+crates.io but without binaries, npm package or Homebrew formula: its
+release notes made GitHub skip the builds. See 0.3.3-beta.4 below for the
+changes.
+
+### Fixed
+
+- The release notes no longer quote a URL with credentials, which GitHub
+  treats as a secret; `make check` now refuses one in this file.
+
 ## [0.3.3-beta.4] - 2026-10-27
 
 Public **BETA**. Tools that reported success for something that did not
