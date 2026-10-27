@@ -10,6 +10,13 @@ from a copy of its code: entries describe the differences from that release.
 
 ## [Unreleased]
 
+### Fixed
+
+- A tool call with an argument the tool does not have now fails before
+  anything runs, naming the argument it was probably meant to be (`tabId`
+  answers "did you mean `tab_id`?"). Unknown arguments were ignored, so a
+  `tabId` typo ran on the active tab.
+
 ## [0.3.2-beta.3] - 2026-10-25
 
 Public **BETA**. Replies up to 256 MB no longer drop the browser connection

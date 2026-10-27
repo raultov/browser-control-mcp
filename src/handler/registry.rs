@@ -322,6 +322,7 @@ pub(crate) async fn call(
             entry.gate.disabled_message(&params.name),
         ));
     }
+    check_arguments(&(entry.tool)(), &params)?;
     let browser = target_browser(handler, &params);
     let needs = argument_needs(&params).chain(entry.needs.iter().copied());
     handler
@@ -344,6 +345,36 @@ fn unknown_tool(name: String) -> CallToolError {
         )),
         None => CallToolError::unknown_tool(name),
     }
+}
+
+/// Refuses an argument the tool's schema does not have: serde ignores
+/// unknown fields, so a typo (`tabId`) silently fell back to a default (the
+/// active tab) and the call ran on the wrong target.
+fn check_arguments(tool: &Tool, params: &CallToolRequestParams) -> Result<(), CallToolError> {
+    let known: Vec<&str> = tool
+        .input_schema
+        .properties
+        .iter()
+        .flat_map(|properties| properties.keys().map(String::as_str))
+        .collect();
+    let unknown = params
+        .arguments
+        .iter()
+        .flat_map(|arguments| arguments.keys())
+        .find(|key| !known.contains(&key.as_str()));
+    let Some(unknown) = unknown else {
+        return Ok(());
+    };
+    let squashed = |name: &str| name.replace('_', "").to_ascii_lowercase();
+    let hint = match known.iter().find(|k| squashed(k) == squashed(unknown)) {
+        Some(meant) => format!("did you mean `{meant}`?"),
+        None if known.is_empty() => "it takes no arguments".to_string(),
+        None => format!("Valid arguments: {}", known.join(", ")),
+    };
+    Err(CallToolError::from_message(format!(
+        "Unknown argument `{unknown}` for `{}`; {hint}",
+        params.name
+    )))
 }
 
 fn argument(params: &CallToolRequestParams, key: &str) -> Option<serde_json::Value> {
@@ -444,6 +475,33 @@ mod tests {
     async fn error_of(handler: &McpHandler, name: &str, arguments: serde_json::Value) -> String {
         let result = call(handler, params(name, arguments)).await;
         format!("{:?}", result.expect_err("the call must fail"))
+    }
+
+    /// AUD-RW-12: an argument the tool does not have fails the call before
+    /// anything runs, naming the argument it was probably meant to be (a
+    /// `tabId` typo used to run on the active tab).
+    #[tokio::test]
+    async fn unknown_arguments_are_refused() {
+        // Given a handler with no browser
+        let handler = McpHandler::new_test();
+        // When evaluate_js gets `tabId` instead of `tab_id`
+        let error = error_of(
+            &handler,
+            "evaluate_js",
+            serde_json::json!({"expression": "1", "tabId": "tab-2"}),
+        )
+        .await;
+        // Then it fails naming the argument and its likely meaning
+        assert!(
+            error.contains("Unknown argument `tabId` for `evaluate_js`"),
+            "{error}"
+        );
+        assert!(error.contains("did you mean `tab_id`?"), "{error}");
+        // And an argument with no close match lists the valid ones
+        let error = error_of(&handler, "list_tabs", serde_json::json!({"verbose": true})).await;
+        assert!(error.contains("Valid arguments: instance_id"), "{error}");
+        let error = error_of(&handler, "list_instances", serde_json::json!({"all": true})).await;
+        assert!(error.contains("it takes no arguments"), "{error}");
     }
 
     /// REV-10: once shutdown started, tool calls are refused (a call in

@@ -273,7 +273,9 @@ claude mcp add browser-control-mcp -- npx -y @raultov/browser-control-mcp
   lazily, on the first tool that needs them, with an ephemeral profile.
 - **Tabs.** `open_tab`, `list_tabs`, `switch_tab`, `close_tab`. Every tool
   takes `instance_id` and `tab_id`; without them it targets the default
-  instance and its active tab.
+  instance and its active tab. An argument a tool does not have fails the
+  call before anything runs (a `tabId` typo answers "did you mean
+  `tab_id`?"), so a typo never falls back to the active tab.
 - **Same replies on both browsers.** `navigate` and `reload` answer once the
   page fired `load` (at most 30 s, else with a note): a first line
   (`Navigated to <final URL>.` / `Page reloaded.`), then
