@@ -281,7 +281,11 @@ claude mcp add browser-control-mcp -- npx -y @raultov/browser-control-mcp
   (`Navigated to <final URL>.` / `Page reloaded.`), then
   `{"url": "<final URL, after redirects>", "tab_id": "tab-N", "browser": {...}}`,
   where `browser` holds the protocol's ids (CDP `frameId`/`loaderId`, BiDi
-  `navigation`). `open_tab` answers `{tab_id, target_id, url, label}` with the
+  `navigation`), plus `"status"`, the document's HTTP status, for http(s)
+  pages (an error status, 400 and up, also adds a note; an error page with
+  an empty body is reported the same way on both browsers). A URL the
+  browser downloads fails with `Navigation failed: the URL is a
+  download...`. `open_tab` answers `{tab_id, target_id, url, label}` with the
   final URL. A network error (unknown host, refused connection...) fails with
   `Navigation failed: <browser's code> (<url>)`, e.g.
   `net::ERR_NAME_NOT_RESOLVED` on Chrome and `NS_ERROR_UNKNOWN_HOST` on
@@ -425,7 +429,7 @@ incompatible:
 
 | Tool | 0.1.x | 0.2.0 |
 | --- | --- | --- |
-| `navigate`, `reload` | Chrome: raw `Page.navigate` reply (`frameId`, `loaderId`, `errorText`) without waiting, `{}` on reload; Firefox: `{navigation, url}` | `{url, tab_id, browser, notes?}` after `load`; `url` is the final URL; protocol ids under `browser` |
+| `navigate`, `reload` | Chrome: raw `Page.navigate` reply (`frameId`, `loaderId`, `errorText`) without waiting, `{}` on reload; Firefox: `{navigation, url}` | `{url, tab_id, browser, status?, notes?}` after `load`; `url` is the final URL; protocol ids under `browser`; `status` is the document's HTTP status |
 | `navigate`, `open_tab` to an unreachable host | Chrome: success (`errorText` inside, or a `chrome-error://` tab) | error `Navigation failed: <code> (<url>)`; `open_tab` names the tab, which stays open |
 | `evaluate_js` | Chrome: `{"result": {type, value, ...}}`; Firefox: the bare value | `{value, type, subtype?, description?}` |
 | `set_breakpoint` | Chrome: CDP id (`1:3:0:http://…`) and `locations`; Firefox: `{breakpointId, url, lineNumber, columnNumber}` | `{breakpoint_id: "bp-N", url, line_number, column_number, resolved}` |

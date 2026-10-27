@@ -4,6 +4,7 @@
 
 use super::page;
 use super::session::FirefoxSession;
+use crate::backend::BackendError;
 use crate::backend::BrowserKind;
 use crate::handler::cdp_domains::custom::get_custom_events::GetCustomEventsTool;
 use crate::handler::cdp_domains::input::click_element::{
@@ -21,7 +22,8 @@ use crate::handler::cdp_domains::runtime::evaluate_js::EvaluateJsTool;
 use crate::handler::cdp_domains::runtime::inspect_dom::InspectDomTool;
 use crate::handler::chrome_instance::registry::InstanceDescriptor;
 use crate::handler::chrome_instance::{close_instance, open_instance, open_tab, switch_tab};
-use crate::handler::{McpHandler, TargetArgs, parse_args};
+use crate::handler::navigation::NavigationOutcome;
+use crate::handler::{McpHandler, NetworkRequest, TargetArgs, parse_args};
 use crate::util::sync::{read, write};
 use rust_mcp_sdk::schema::{CallToolError, CallToolRequestParams, CallToolResult};
 use serde_json::{Value, json};
@@ -101,7 +103,27 @@ pub(crate) async fn navigate(params: CallToolRequestParams, handler: &McpHandler
     check_local(handler, &args.url)?;
     let (_, id, tab) = target(handler, &ids(&args.instance_id, &args.tab_id)).await?;
     let outcome = page::navigate(&tab.tab, &args.url).await?;
+    let document = navigation_document(&tab, &outcome, &args.url).await;
+    if document.as_ref().is_some_and(NetworkRequest::is_attachment) {
+        return Err(BackendError::Navigation {
+            reason: crate::handler::navigation::DOWNLOAD.to_string(),
+            url: args.url,
+        }
+        .into());
+    }
+    let outcome = outcome.with_status(document.and_then(|d| d.response_status));
     Ok(outcome.reply(&format!("Navigated to {}.", outcome.url), Some(&id)))
+}
+
+/// The logged document request of the navigation `outcome` reports (by
+/// its BiDi `navigation` id), when `url` is http(s).
+async fn navigation_document(
+    tab: &super::session::FirefoxTab,
+    outcome: &NavigationOutcome,
+    url: &str,
+) -> Option<NetworkRequest> {
+    let navigation = outcome.browser.get("navigation").and_then(Value::as_str);
+    crate::handler::navigation::document_response(&tab.network, navigation, url).await
 }
 
 /// `reload`.
@@ -109,6 +131,8 @@ pub(crate) async fn reload(params: CallToolRequestParams, handler: &McpHandler) 
     let ids: TargetArgs = parse_args(params)?;
     let (_, id, tab) = target(handler, &ids).await?;
     let outcome = page::reload(&tab.tab).await?;
+    let document = navigation_document(&tab, &outcome, &outcome.url).await;
+    let outcome = outcome.with_status(document.and_then(|d| d.response_status));
     Ok(outcome.reply("Page reloaded.", Some(&id)))
 }
 
@@ -507,6 +531,62 @@ mod tests {
 
     use super::super::test_support::{self as ts, evaluate_success};
     use bidi_browser_lite::test_support::MockFirefox;
+
+    /// A Firefox whose navigation `n1` got a document response with
+    /// `status` and `headers` (BiDi header list).
+    async fn navigation_answered(status: i64, headers: Value) -> (MockFirefox, McpHandler) {
+        let mock = MockFirefox::start(false).await.unwrap();
+        mock.bidi().respond_with(
+            "browsingContext.navigate",
+            |_| json!({"navigation": "n1", "url": "http://127.0.0.1:8/page"}),
+        );
+        let handler = ts::handler(&mock);
+        handler
+            .firefox(None)
+            .await
+            .unwrap()
+            .browser()
+            .await
+            .unwrap();
+        let request = json!({"request": "r1", "url": "http://127.0.0.1:8/page", "method": "GET", "headers": []});
+        let sent = json!({"context": "ctx-0", "navigation": "n1", "request": request.clone()});
+        mock.bidi().emit("network.beforeRequestSent", sent);
+        let response = json!({"status": status, "statusText": "", "headers": headers});
+        let done = json!({"context": "ctx-0", "navigation": "n1", "request": request, "response": response});
+        mock.bidi().emit("network.responseCompleted", done);
+        (mock, handler)
+    }
+
+    /// AUD-EV-11 (Firefox): the document's HTTP status is in the reply.
+    #[tokio::test]
+    async fn navigate_reports_the_http_status() {
+        let (_mock, handler) = navigation_answered(404, json!([])).await;
+        let args = json!({"url": "http://127.0.0.1:8/page"});
+        let reply = navigate(call("navigate", args), &handler).await.unwrap();
+        let body = ts::json_of(&reply);
+        assert_eq!(body["status"], 404, "{body}");
+        assert_eq!(body["notes"][0], "the server answered HTTP 404");
+        ts::stop(&handler).await;
+    }
+
+    /// AUD-EV-21 (Firefox): a URL Firefox downloads fails, saying so (it
+    /// used to answer "Navigated to <previous URL>").
+    #[tokio::test]
+    async fn download_fails_saying_so() {
+        let attachment = json!([{"name": "Content-Disposition", "value": {"type": "string", "value": "attachment; filename=a.bin"}}]);
+        let (_mock, handler) = navigation_answered(200, attachment).await;
+        let args = json!({"url": "http://127.0.0.1:8/page"});
+        let error = navigate(call("navigate", args), &handler)
+            .await
+            .unwrap_err()
+            .to_string();
+        let download = crate::handler::navigation::DOWNLOAD;
+        assert_eq!(
+            error,
+            format!("Navigation failed: {download} (http://127.0.0.1:8/page)")
+        );
+        ts::stop(&handler).await;
+    }
 
     /// BID-12 / NAV-01 / NAV-02: navigate waits for completion and answers
     /// the committed URL (after redirects) in the shared shape.

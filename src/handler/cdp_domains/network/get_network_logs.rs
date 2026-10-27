@@ -247,11 +247,11 @@ async fn fetch_bodies(target: &CdpTarget, requests: &mut Requests, current: &Has
 
 /// The response's `Content-Length` header, when it has one.
 fn content_length(request: &NetworkRequest) -> Option<u64> {
-    let headers = request.response_headers.as_ref()?.as_object()?;
-    let (_, value) = headers
-        .iter()
-        .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))?;
-    value.as_str()?.trim().parse().ok()
+    request
+        .response_header("content-length")?
+        .trim()
+        .parse()
+        .ok()
 }
 
 fn requests_json(mut requests: Requests, include_details: bool) -> serde_json::Value {

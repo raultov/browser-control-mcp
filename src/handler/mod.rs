@@ -95,6 +95,26 @@ impl WebSocketFrame {
 pub(crate) const MAX_REQUESTS_PER_NAVIGATION: usize = 1000;
 pub(crate) const MAX_NAVIGATIONS_RETAINED: usize = 3;
 pub(crate) const MAX_WS_FRAMES_PER_CONNECTION: usize = 500;
+/// Navigations whose document request id is remembered (Firefox).
+pub(crate) const MAX_DOCUMENTS: usize = 16;
+
+impl NetworkRequest {
+    /// The value of the response header `name` (any case).
+    pub(crate) fn response_header(&self, name: &str) -> Option<&str> {
+        let headers = self.response_headers.as_ref()?.as_object()?;
+        let (_, value) = headers
+            .iter()
+            .find(|(key, _)| key.eq_ignore_ascii_case(name))?;
+        value.as_str()
+    }
+
+    /// Whether the response asks to be saved (`Content-Disposition:
+    /// attachment`), so the browser downloads it instead of showing it.
+    pub(crate) fn is_attachment(&self) -> bool {
+        self.response_header("content-disposition")
+            .is_some_and(|value| value.trim().to_ascii_lowercase().starts_with("attachment"))
+    }
+}
 pub(crate) const MAX_CONSOLE_MESSAGES: usize = 1000;
 
 #[derive(Default, Clone)]
@@ -111,6 +131,9 @@ pub(crate) struct NetworkState {
         std::collections::VecDeque<WebSocketFrame>,
         MAX_WS_CONNECTIONS,
     >,
+    /// Document request id per navigation id, where they differ (BiDi's
+    /// `navigation`; Chrome's document request id is its loader id).
+    pub documents: crate::util::bounded::BoundedMap<String, String, MAX_DOCUMENTS>,
 }
 
 impl Default for NetworkState {
@@ -121,6 +144,7 @@ impl Default for NetworkState {
             navigations,
             ws_connections: Default::default(),
             ws_frames: Default::default(),
+            documents: Default::default(),
         }
     }
 }
@@ -146,6 +170,19 @@ impl NetworkState {
                 bucket.requests.remove(&oldest_id);
             }
         }
+    }
+
+    /// Records that `request_id` is the document of navigation `navigation`.
+    pub(crate) fn note_document(&mut self, navigation: String, request_id: String) {
+        self.documents.insert(navigation, request_id);
+    }
+
+    /// The document request of navigation (or loader) `id`.
+    pub(crate) fn document(&self, id: &str) -> Option<&NetworkRequest> {
+        let request_id = self.documents.get(id).map_or(id, String::as_str);
+        self.navigations
+            .iter()
+            .find_map(|bucket| bucket.requests.get(request_id))
     }
 
     pub(crate) fn find_request_mut(&mut self, id: &str) -> Option<&mut NetworkRequest> {
@@ -1398,6 +1435,33 @@ mod tests {
         session.target(None).await.unwrap();
         // Then the session-level debugger was disabled once
         assert_eq!(fallback("Debugger.disable"), 1);
+    }
+
+    /// AUD-EV-11: a navigation's document request is found by the
+    /// navigation's id: Chrome's document request id is its loader id,
+    /// Firefox maps navigation ids to request ids.
+    #[test]
+    fn document_request_is_found_by_navigation_id() {
+        let request = |status| NetworkRequest {
+            url: "http://a/".into(),
+            method: "GET".into(),
+            resource_type: None,
+            request_headers: None,
+            request_post_data: None,
+            response_status: status,
+            response_status_text: None,
+            response_headers: None,
+            response_body: None,
+            redirects: Vec::new(),
+        };
+        let mut network = NetworkState::default();
+        network.insert_request("L1".into(), request(Some(404)));
+        network.insert_request("r7".into(), request(Some(500)));
+        network.note_document("nav-1".into(), "r7".into());
+        let status = |id: &str| network.document(id).and_then(|r| r.response_status);
+        assert_eq!(status("L1"), Some(404));
+        assert_eq!(status("nav-1"), Some(500));
+        assert_eq!(status("nav-2"), None);
     }
 
     /// AUD-OB-13: a huge WebSocket payload is kept cut, with its length.

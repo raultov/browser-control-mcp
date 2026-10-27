@@ -77,14 +77,16 @@ async fn open_url(
     let _ = registered
         .send_raw_command("Network.enable", serde_json::json!({}))
         .await;
-    let outcome = crate::handler::cdp_domains::page::navigate::navigate_and_wait(&registered, url)
-        .await
-        .map_err(|e| {
-            CallToolError::from_message(crate::handler::navigation::open_tab_navigation_failed(
-                &e.to_string(),
-                tab_id,
-            ))
-        })?;
+    let network = session.network_state(Some(tab_id.to_string()))?;
+    let outcome =
+        crate::handler::cdp_domains::page::navigate::navigate_and_wait(&registered, &network, url)
+            .await
+            .map_err(|e| {
+                CallToolError::from_message(crate::handler::navigation::open_tab_navigation_failed(
+                    &e.to_string(),
+                    tab_id,
+                ))
+            })?;
     Ok(outcome.url)
 }
 

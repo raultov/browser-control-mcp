@@ -227,6 +227,9 @@ pub(crate) fn on_network(method: &str, params: &Value, network: &mut crate::hand
         return;
     };
     if method == "network.beforeRequestSent" {
+        if let Some(navigation) = str_field(params, "navigation") {
+            network.note_document(navigation.to_string(), id.to_string());
+        }
         network.insert_request(
             id.to_string(),
             NetworkRequest {

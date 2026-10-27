@@ -79,16 +79,41 @@ pub(crate) mod tests {
         event: &'static str,
         params: serde_json::Value,
     ) {
+        fire_events_after(mock, command, vec![(event, params)]);
+    }
+
+    /// Emits `events`, in order, on the session of the next `command` the
+    /// mock receives.
+    pub(crate) fn fire_events_after(
+        mock: &'static cdp_browser_lite::test_support::mock_devtools::MockDevTools,
+        command: &'static str,
+        events: Vec<(&'static str, serde_json::Value)>,
+    ) {
         let seen = mock.commands_named(command).len();
         tokio::spawn(async move {
-            for _ in 0..500 {
-                if let Some(cmd) = mock.commands_named(command).get(seen) {
-                    mock.emit(event, params, cmd.session_id.as_deref());
-                    return;
-                }
-                tokio::time::sleep(Duration::from_millis(5)).await;
+            let Some(session) = next_command_session(mock, command, seen).await else {
+                return;
+            };
+            for (event, params) in events {
+                mock.emit(event, params, session.as_deref());
             }
         });
+    }
+
+    /// The session of the `seen`-th `command` the mock receives (within
+    /// 2.5 s).
+    async fn next_command_session(
+        mock: &cdp_browser_lite::test_support::mock_devtools::MockDevTools,
+        command: &str,
+        seen: usize,
+    ) -> Option<Option<String>> {
+        for _ in 0..500 {
+            if let Some(cmd) = mock.commands_named(command).get(seen) {
+                return Some(cmd.session_id.clone());
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        None
     }
 
     /// Makes the mock's current history entry `url` (the committed URL).

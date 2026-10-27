@@ -1,16 +1,20 @@
 use crate::backend::BackendError;
+use crate::handler::NetworkState;
 use crate::handler::cdp_domains::cdp_target::CdpTarget;
-use crate::handler::navigation::{LOAD_TIMEOUT, NOT_LOADED_NOTE, NavigationOutcome, load_before};
+use crate::handler::navigation::{
+    DOWNLOAD, LOAD_TIMEOUT, NOT_LOADED_NOTE, NavigationOutcome, document_response, load_before,
+};
 use crate::handler::{BrowserSession, McpHandler, is_local_address};
 use rust_mcp_sdk::{
     macros,
     schema::{CallToolError, CallToolRequestParams, CallToolResult},
 };
 use serde_json::{Value, json};
+use tokio::sync::Mutex;
 
 #[macros::mcp_tool(
     name = "navigate",
-    description = "Navigates the current Chrome tab to a specified URL, loading new page content. Side effects: destructive of current page state; discards unsaved work. Prerequisites: requires an active Chrome tab; URL must be valid and accessible (subject to local-only restrictions if enabled). Returns: JSON {url (final, after redirects), tab_id, browser (protocol ids), notes?} once the page fired `load` (at most 30 s); a network error (unknown host, refused connection...) fails the call with 'Navigation failed: <reason> (<url>)'. Auth requirements: subject to same-origin policy; may require credentials for restricted URLs. Rate limits: none. Use this to change the current page. Alternatives: 'reload' to refresh current page. Note: copy_cookies imports the user's real Chrome cookies, giving this browser access to their authenticated sessions — always ask the user before setting it to true. If the target instance is already running, setting copy_cookies is destructive: the instance is relaunched and all its open tabs are closed. In that case the call fails first with the list of tabs to be closed, so you can warn the user and re-issue with confirm_restart: true."
+    description = "Navigates the current Chrome tab to a specified URL, loading new page content. Side effects: destructive of current page state; discards unsaved work. Prerequisites: requires an active Chrome tab; URL must be valid and accessible (subject to local-only restrictions if enabled). Returns: JSON {url (final, after redirects), tab_id, browser (protocol ids), status? (the document's HTTP status; 400 and up also adds a note), notes?} once the page fired `load` (at most 30 s); a network error (unknown host, refused connection...) or a URL the browser downloads fails the call with 'Navigation failed: <reason> (<url>)'. Auth requirements: subject to same-origin policy; may require credentials for restricted URLs. Rate limits: none. Use this to change the current page. Alternatives: 'reload' to refresh current page. Note: copy_cookies imports the user's real Chrome cookies, giving this browser access to their authenticated sessions — always ask the user before setting it to true. If the target instance is already running, setting copy_cookies is destructive: the instance is relaunched and all its open tabs are closed. In that case the call fails first with the list of tabs to be closed, so you can warn the user and re-issue with confirm_restart: true."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct NavigateTool {
@@ -49,7 +53,8 @@ impl NavigateTool {
             args.import_cookies(handler, &session).await?;
         }
         let target = session.target(args.tab_id.clone()).await?;
-        let outcome = navigate_and_wait(&target, &args.url).await?;
+        let network = session.network_state(args.tab_id.clone())?;
+        let outcome = navigate_and_wait(&target, &network, &args.url).await?;
         let tab_id = session.tab_id_of(args.tab_id.as_deref());
         Ok(outcome.reply(&format!("Navigated to {}.", outcome.url), tab_id.as_deref()))
     }
@@ -109,9 +114,11 @@ impl NavigateTool {
 /// Navigates `target` and waits (at most [`LOAD_TIMEOUT`]) for the new
 /// document to fire `load`. Chrome answers `Page.navigate` as soon as the
 /// navigation starts and reports a network error only as `errorText` inside
-/// a successful reply: that becomes a tool error here.
+/// a successful reply: that becomes a tool error here ([`check_error`]).
+/// `network` is the tab's request log, where the document's HTTP status is.
 pub(crate) async fn navigate_and_wait(
     target: &CdpTarget,
+    network: &Mutex<NetworkState>,
     url: &str,
 ) -> Result<NavigationOutcome, CallToolError> {
     // Subscribed first: `load` can fire before the reply is read.
@@ -126,7 +133,8 @@ pub(crate) async fn navigate_and_wait(
         // outlasts the command timeout while the navigation goes on.
         Err(cdp_browser_lite::CdpError::Timeout { .. }) => {
             let loaded = load_before(&mut page_events, deadline, is_load).await;
-            return Ok(finish(target, url, json!({}), loaded).await);
+            let outcome = finish(target, url, json!({}), loaded).await;
+            return Ok(with_status(outcome, target, network).await);
         }
         Err(e) => {
             return Err(CallToolError::from_message(crate::handler::cdp_failure(
@@ -136,20 +144,46 @@ pub(crate) async fn navigate_and_wait(
         }
     };
     let browser = reply.result.unwrap_or_else(|| json!({}));
-    if let Some(reason) = browser
-        .get("errorText")
-        .and_then(Value::as_str)
-        .filter(|e| !e.is_empty())
-    {
-        return Err(BackendError::Navigation {
-            reason: reason.to_string(),
-            url: url.to_string(),
-        }
-        .into());
-    }
+    check_error(&browser, network, url).await?;
     // Same-document navigations (fragment, history) have no loader and fire no `load`.
     let loaded = browser.get("loaderId").is_none() || wait_for_load(&mut page_events).await;
-    Ok(finish(target, url, browser, loaded).await)
+    let outcome = finish(target, url, browser, loaded).await;
+    Ok(with_status(outcome, target, network).await)
+}
+
+/// Fails on the `errorText` of a `Page.navigate` reply, saying so for a
+/// download. An error status with an empty body
+/// (`ERR_HTTP_RESPONSE_CODE_FAILURE`, Chrome then shows its own page) is
+/// not a failure when the response is logged: the server answered, and the
+/// reply carries its status, as on Firefox.
+async fn check_error(
+    browser: &Value,
+    network: &Mutex<NetworkState>,
+    url: &str,
+) -> Result<(), CallToolError> {
+    let text = |key: &str| browser.get(key).and_then(Value::as_str);
+    let Some(reason) = text("errorText").filter(|e| !e.is_empty()) else {
+        return Ok(());
+    };
+    if browser.get("isDownload").and_then(Value::as_bool) == Some(true) {
+        return Err(navigation_failed(DOWNLOAD, url));
+    }
+    let answered = reason == "net::ERR_HTTP_RESPONSE_CODE_FAILURE"
+        && document_response(network, text("loaderId"), url)
+            .await
+            .is_some();
+    if answered {
+        return Ok(());
+    }
+    Err(navigation_failed(reason, url))
+}
+
+fn navigation_failed(reason: &str, url: &str) -> CallToolError {
+    BackendError::Navigation {
+        reason: reason.to_string(),
+        url: url.to_string(),
+    }
+    .into()
 }
 
 /// The outcome once the page settled: its committed URL, plus a note when
@@ -172,7 +206,35 @@ pub(crate) async fn finish(
         url,
         browser,
         notes,
+        status: None,
     }
+}
+
+/// `outcome` with its document's HTTP status, read from the tab's request
+/// log `network` (the document request id is its loader id).
+pub(crate) async fn with_status(
+    outcome: NavigationOutcome,
+    target: &CdpTarget,
+    network: &Mutex<NetworkState>,
+) -> NavigationOutcome {
+    let loader = match outcome.browser.get("loaderId").and_then(Value::as_str) {
+        Some(id) => Some(id.to_string()),
+        None => main_loader(target).await,
+    };
+    let document = document_response(network, loader.as_deref(), &outcome.url).await;
+    outcome.with_status(document.and_then(|d| d.response_status))
+}
+
+/// The loader id of the tab's current document (its document request id),
+/// for replies that carry none (`Page.reload`, a timed-out navigation).
+async fn main_loader(target: &CdpTarget) -> Option<String> {
+    let reply = target
+        .send_raw_command("Page.getFrameTree", json!({}))
+        .await
+        .ok()?
+        .result?;
+    let loader = reply.pointer("/frameTree/frame/loaderId")?.as_str()?;
+    Some(loader.to_string())
 }
 
 /// Waits for `Page.loadEventFired` on `events`; `false` after [`LOAD_TIMEOUT`].
@@ -266,8 +328,10 @@ mod tests {
     }
 
     use crate::handler::cdp_domains::tests::{
-        call, committed_url, fire_load_after, mock_handler, reply_text, spawn_recording_mock,
+        call, committed_url, fire_events_after, fire_load_after, mock_handler, reply_text,
+        spawn_recording_mock,
     };
+    use crate::handler::navigation::DOWNLOAD;
 
     /// The JSON object after the first line of a reply.
     fn body(reply: &CallToolResult) -> Value {
@@ -300,6 +364,88 @@ mod tests {
         assert_eq!(body["browser"]["loaderId"], "L1");
         assert!(body.get("tab_id").is_some());
         assert!(body.get("notes").is_none(), "load fired: {body}");
+    }
+
+    /// The CDP events of a document response with `status` on loader `L1`.
+    fn document_events(status: i64) -> Vec<(&'static str, Value)> {
+        let url = "http://127.0.0.1:8/page";
+        vec![
+            (
+                "Network.requestWillBeSent",
+                json!({"requestId": "L1", "loaderId": "L1", "type": "Document", "request": {"url": url, "method": "GET", "headers": {}}}),
+            ),
+            (
+                "Network.responseReceived",
+                json!({"requestId": "L1", "loaderId": "L1", "type": "Document", "response": {"url": url, "status": status, "statusText": "", "headers": {}}}),
+            ),
+            ("Page.loadEventFired", json!({"timestamp": 1.0})),
+        ]
+    }
+
+    /// AUD-EV-11: the document's HTTP status is in the reply; an error
+    /// status adds a note.
+    #[tokio::test]
+    async fn navigate_reports_the_http_status() {
+        // Given a server answering 404
+        let mock = spawn_recording_mock().await;
+        mock.respond_with(
+            "Page.navigate",
+            |_| json!({"frameId": "F1", "loaderId": "L1"}),
+        );
+        committed_url(mock, "http://127.0.0.1:8/page");
+        fire_events_after(mock, "Page.navigate", document_events(404));
+        let handler = mock_handler(mock.http_port);
+        // When navigate runs
+        let args = json!({"url": "http://127.0.0.1:8/page"});
+        let reply = NavigateTool::handle(call("navigate", args), &handler)
+            .await
+            .unwrap();
+        // Then the reply has the status and says it is an error
+        let body = body(&reply);
+        assert_eq!(body["status"], 404, "{body}");
+        assert_eq!(body["notes"][0], "the server answered HTTP 404");
+    }
+
+    /// AUD-EV-11: an error status with an empty body is a navigation that
+    /// reached the server (Chrome reports ERR_HTTP_RESPONSE_CODE_FAILURE and
+    /// shows its own page; Firefox shows the empty page).
+    #[tokio::test]
+    async fn empty_error_page_is_reported_with_its_status() {
+        // Given a server answering 500 with no body
+        let mock = spawn_recording_mock().await;
+        mock.respond_with("Page.navigate", |_| {
+            json!({"frameId": "F1", "loaderId": "L1", "errorText": "net::ERR_HTTP_RESPONSE_CODE_FAILURE"})
+        });
+        committed_url(mock, "http://127.0.0.1:8/page");
+        fire_events_after(mock, "Page.navigate", document_events(500));
+        let handler = mock_handler(mock.http_port);
+        // When navigate runs
+        let args = json!({"url": "http://127.0.0.1:8/page"});
+        let reply = NavigateTool::handle(call("navigate", args), &handler)
+            .await
+            .unwrap();
+        // Then it succeeds with the status
+        let body = body(&reply);
+        assert_eq!(body["status"], 500, "{body}");
+        assert_eq!(body["notes"][0], "the server answered HTTP 500");
+    }
+
+    /// AUD-EV-21: a URL the browser downloads fails, saying so (same on Firefox).
+    #[tokio::test]
+    async fn download_fails_saying_so() {
+        let mock = spawn_recording_mock().await;
+        mock.respond_with("Page.navigate", |_| {
+            json!({"frameId": "F1", "loaderId": "L1", "errorText": "net::ERR_ABORTED", "isDownload": true})
+        });
+        let handler = mock_handler(mock.http_port);
+        let args = json!({"url": "http://127.0.0.1:8/a.bin"});
+        let error = NavigateTool::handle(call("navigate", args), &handler)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            format!("Navigation failed: {DOWNLOAD} (http://127.0.0.1:8/a.bin)")
+        );
     }
 
     /// NAV-03: a network error fails the call (Chrome reports it inside a

@@ -12,6 +12,14 @@ from a copy of its code: entries describe the differences from that release.
 
 ### Fixed
 
+- `navigate` and `reload` report the document's HTTP status (`"status":
+  404`), and an error status (400 and up) adds a note. A 404 used to look
+  like any success, and an error with an empty body failed on Chrome
+  (`ERR_HTTP_RESPONSE_CODE_FAILURE`) but succeeded on Firefox: it is now a
+  success with its status on both.
+- `navigate` to a URL the browser downloads fails with `Navigation failed:
+  the URL is a download...` on both browsers. Firefox answered "Navigated
+  to" the previous page; Chrome failed with `net::ERR_ABORTED`.
 - A tool call with an argument the tool does not have now fails before
   anything runs, naming the argument it was probably meant to be (`tabId`
   answers "did you mean `tab_id`?"). Unknown arguments were ignored, so a

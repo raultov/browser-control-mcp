@@ -136,6 +136,7 @@ async fn settled(tab: &Tab, browser: Value, requested: &str) -> NavigationOutcom
         url,
         browser,
         notes: Vec::new(),
+        status: None,
     }
 }
 

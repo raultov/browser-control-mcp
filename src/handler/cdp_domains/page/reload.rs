@@ -7,7 +7,7 @@ use serde_json::json;
 
 #[macros::mcp_tool(
     name = "reload",
-    description = "Reloads the current page, discarding all unsaved changes and re-fetching resources from the server. Side effects: destructive of unsaved state; clears dynamic DOM state. Prerequisites: requires an active Chrome tab. Returns: JSON {url, tab_id, browser, notes?} once the page fired `load` (at most 30 s), the same shape as 'navigate'. Use this to refresh page content or reset to initial load state. Alternatives: 'navigate' to load a different URL, 'pause_on_load' to debug reload execution."
+    description = "Reloads the current page, discarding all unsaved changes and re-fetching resources from the server. Side effects: destructive of unsaved state; clears dynamic DOM state. Prerequisites: requires an active Chrome tab. Returns: JSON {url, tab_id, browser, status?, notes?} once the page fired `load` (at most 30 s), the same shape as 'navigate'. Use this to refresh page content or reset to initial load state. Alternatives: 'navigate' to load a different URL, 'pause_on_load' to debug reload execution."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct ReloadTool {
@@ -40,7 +40,9 @@ impl ReloadTool {
         })?;
         let loaded = super::navigate::wait_for_load(&mut page_events).await;
         let browser = resp.result.unwrap_or_else(|| json!({}));
+        let network = session.network_state(ids.tab_id.clone())?;
         let outcome = super::navigate::finish(&target, "", browser, loaded).await;
+        let outcome = super::navigate::with_status(outcome, &target, &network).await;
         let tab_id = session.tab_id_of(ids.tab_id.as_deref());
         Ok(outcome.reply("Page reloaded.", tab_id.as_deref()))
     }
