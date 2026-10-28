@@ -6,7 +6,7 @@ use rust_mcp_sdk::{
 
 #[macros::mcp_tool(
     name = "get_custom_events",
-    description = "EXPERIMENTAL: Retrieves unhandled CDP events from domains not covered by specialized listeners (network, console, etc.). Side effects: none (read-only cache access). Prerequisites: requires active Chrome connection with send_cdp_command or custom domain listeners active. Returns: JSON array of custom events with method, parameters, and timestamp. Use this to see Target, Debugger, or other domain events. Alternatives: domain-specific listeners (get_network_logs, get_console_logs)."
+    description = "EXPERIMENTAL: Retrieves unhandled CDP events from domains not covered by specialized listeners (network, console, etc.). Side effects: with 'clear' true the returned events are removed from the buffer. Prerequisites: requires active Chrome connection with send_cdp_command or custom domain listeners active. Returns: JSON {events: [{method, params, timestamp}] (the newest 'limit' matching events, oldest first), total (matching events), truncated (more matched than 'limit')}. Use this to see Target, Debugger, or other domain events. Alternatives: domain-specific listeners (get_network_logs, get_console_logs)."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct GetCustomEventsTool {
@@ -17,9 +17,12 @@ pub struct GetCustomEventsTool {
     /// Filter events by CDP method name (case-sensitive). Constraints: string matching format 'Domain.eventName'. Interactions: when omitted, returns all events. Defaults to: None (no filtering).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub filter_method: Option<String>,
-    /// Maximum number of events to return. Constraints: positive integer (0 = unlimited, clamped to cache size). Interactions: limits result set size. Defaults to: 100.
+    /// Maximum number of events to return, the newest ones. Constraints: positive integer (0 = unlimited, clamped to cache size). Interactions: limits result set size. Defaults to: 100.
     #[serde(default = "default_limit")]
     pub limit: u32,
+    /// Remove the returned events from the buffer, so the next call only sees new ones. Defaults to: false.
+    #[serde(default)]
+    pub clear: Option<bool>,
 }
 
 fn default_limit() -> u32 {
@@ -32,21 +35,34 @@ impl GetCustomEventsTool {
         &self,
         custom_state: &std::sync::Arc<tokio::sync::Mutex<crate::handler::CustomState>>,
     ) -> CallToolResult {
-        let st = custom_state.lock().await;
-        let filtered_events: Vec<_> = st
-            .events
-            .iter()
-            .filter(|e| self.filter_method.as_ref().is_none_or(|f| &e.method == f))
-            .take(effective_limit(self.limit))
-            .cloned()
+        let mut st = custom_state.lock().await;
+        let matching: Vec<usize> = (0..st.events.len())
+            .filter(|&i| {
+                let method = &st.events[i].method;
+                self.filter_method.as_ref().is_none_or(|f| method == f)
+            })
             .collect();
+        let total = matching.len();
+        let returned = &matching[total.saturating_sub(effective_limit(self.limit))..];
+        let events: Vec<_> = returned.iter().map(|&i| st.events[i].clone()).collect();
+        if self.clear.unwrap_or(false) {
+            let mut index = 0;
+            st.events.retain(|_| {
+                let keep = !returned.contains(&index);
+                index += 1;
+                keep
+            });
+        }
+        drop(st);
+        let reply = serde_json::json!({
+            "events": events,
+            "total": total,
+            "truncated": total > events.len(),
+        });
         CallToolResult::text_content(vec![
-            format!(
-                "Found {} custom events. Captured events: {}",
-                filtered_events.len(),
-                serde_json::to_string_pretty(&filtered_events).unwrap_or_default()
-            )
-            .into(),
+            serde_json::to_string_pretty(&reply)
+                .unwrap_or_default()
+                .into(),
         ])
     }
 
@@ -135,8 +151,61 @@ mod tests {
         assert!(result.is_ok());
         let call_result = result.unwrap();
         let content_str = format!("{:?}", call_result.content);
-        assert!(content_str.contains("Found 1 custom events"));
+        assert!(content_str.contains("\\\"total\\\": 1"), "{content_str}");
         assert!(content_str.contains("Target.targetCreated"));
+    }
+
+    /// The `report` of `args` over a buffer of events `k0..k{n}`.
+    async fn report_over(
+        n: usize,
+        args: serde_json::Value,
+    ) -> (
+        serde_json::Value,
+        std::sync::Arc<tokio::sync::Mutex<crate::handler::CustomState>>,
+    ) {
+        let state = std::sync::Arc::new(tokio::sync::Mutex::new(
+            crate::handler::CustomState::default(),
+        ));
+        for i in 0..n {
+            state.lock().await.events.push_back(CustomEvent {
+                method: "Page.k".into(),
+                params: json!({"key": format!("k{i}")}),
+                timestamp: String::new(),
+            });
+        }
+        let tool: GetCustomEventsTool = serde_json::from_value(args).unwrap();
+        let reply = tool.report(&state).await;
+        let text = reply.content[0].as_text_content().unwrap().text.clone();
+        (serde_json::from_str(&text).unwrap(), state)
+    }
+
+    /// AUD-OB-12: `limit` keeps the newest events (it kept the oldest, so
+    /// new ones never showed), the reply is JSON, and `clear` removes what
+    /// was returned.
+    #[tokio::test]
+    async fn newest_events_are_returned_and_cleared() {
+        let (reply, state) = report_over(5, json!({"limit": 3, "clear": true})).await;
+        let keys: Vec<_> = reply["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["params"]["key"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(keys, ["k2", "k3", "k4"]);
+        assert_eq!(
+            (reply["total"].clone(), reply["truncated"].clone()),
+            (json!(5), json!(true))
+        );
+        let left: Vec<_> = state
+            .lock()
+            .await
+            .events
+            .iter()
+            .map(|e| e.params["key"].clone())
+            .collect();
+        assert_eq!(left, [json!("k0"), json!("k1")]);
+        let (reply, _) = report_over(2, json!({})).await;
+        assert_eq!(reply["truncated"], false);
     }
 
     /// FIX-04: get_custom_events limit 0 means unlimited.
@@ -165,6 +234,7 @@ mod tests {
         let result = GetCustomEventsTool::handle(params, &handler).await.unwrap();
         // Then all 150 are returned
         let text = result.content[0].as_text_content().unwrap().text.clone();
-        assert!(text.starts_with("Found 150 custom events"), "{text}");
+        let reply: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(reply["events"].as_array().unwrap().len(), 150, "{text}");
     }
 }

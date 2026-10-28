@@ -57,7 +57,7 @@ see the note.
 | `evaluate_js` | ✓ | ✓ | `value` at most 100 000 characters (`truncated: true`) |
 | `get_console_logs` | ✓ | ✓ | a message keeps at most 10 000 characters; Firefox: page errors, CSS warnings and platform messages need the debugger port |
 | `get_network_logs` | ✓ | ✓ | a failed request has `error`, a binary body `response_body_encoding: "base64"`; bodies at most 64 000 characters, none over 2 MB; a WebSocket payload keeps 64 000 (`payload_len` is the whole); Firefox: WebSocket frames need the debugger port |
-| `get_custom_events` | ✓ | partial | params over 64 000 characters of JSON are replaced by `{truncated, characters}`; Firefox: events of the modules subscribed with `send_bidi_command` |
+| `get_custom_events` | ✓ | partial | `{events, total, truncated}`, the newest `limit` events; `clear` removes the returned ones; params over 64 000 characters of JSON are replaced by `{truncated, characters}`; Firefox: events of the modules subscribed with `send_bidi_command` |
 | `get_performance_metrics` | ✓ | partial | Firefox: `Nodes`, `Frames`, `Resources`, `TransferSize` from the Web Performance APIs (no Performance domain), plus a note |
 | `profile_page_performance` | ✓ | partial | Firefox: FCP, LCP, DCL and Load from the Web Performance APIs; no trace, so `total_blocking_time_ms` and `top_long_tasks` are `null` |
 | `set_breakpoint` | ✓ | partial | Firefox: by URL only (no `script_id` / `script_hash`) |
@@ -310,7 +310,8 @@ claude mcp add browser-control-mcp -- npx -y @raultov/browser-control-mcp
   `{"messages": [...], "total", "truncated", "notes"?}`: at most `limit`
   (default 200) of the most recent matching messages, oldest first; `clear`
   removes only the returned ones; a note says when a site change cleared
-  messages. On Chrome both log tools connect first, so on an attached
+  messages. `get_custom_events` answers `{"events", "total", "truncated"}`
+  the same way. On Chrome both log tools connect first, so on an attached
   browser the first call already sees the page's console messages (Chrome
   replays them; network requests sent before the connection are not
   captured, and the reply says so).
@@ -444,6 +445,7 @@ incompatible:
 | `remove_breakpoint` | Chrome: CDP id, reply `{}` | `bp-N` id, reply `{removed}` |
 | `step_over`, `resume` | Chrome: text only; Firefox `step_over`: `{paused, location: {line (1-based), column}}` | `{paused, location: {url, line_number, column_number} \| null}`, 0-based |
 | `evaluate_on_call_frame` | Chrome: raw `RemoteObject` (exceptions as success); Firefox: bare value | the `evaluate_js` shape; exceptions are errors (`Evaluation threw: ...`) |
+| `get_custom_events` | `Found N custom events. Captured events: [...]`, the oldest events | `{events, total, truncated}`, the newest `limit` events; `clear` removes the returned ones |
 | `get_console_logs` | a JSON array; `clear` emptied the whole buffer | `{messages, total, truncated, notes?}`, at most `limit` (200) messages; `clear` removes the returned ones; the buffer is cleared on cross-site navigation |
 
 ## Limitations and TODO

@@ -12,6 +12,10 @@ from a copy of its code: entries describe the differences from that release.
 
 ### Fixed
 
+- `get_custom_events` returns the newest `limit` events (it returned the
+  oldest, so new events never showed once the buffer held more), answers
+  pure JSON `{"events", "total", "truncated"}` (the text started with
+  `Found N custom events.`), and takes `clear` to remove what it returned.
 - `get_network_logs`: on Chrome the page's own document is in its
   navigation's bucket, so `current_navigation_only` lists it and its body
   is returned (it was left in the previous navigation, without a body). A
