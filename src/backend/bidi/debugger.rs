@@ -54,6 +54,11 @@ pub(crate) struct TabDebugger {
     _watch: ListenerHandles,
 }
 
+/// A tab's debugger, locked on its own: the session's map of debuggers is
+/// only locked to look one up, so a long call on one tab does not block
+/// the other tabs' tools.
+pub(crate) type SharedDebugger = Arc<tokio::sync::Mutex<TabDebugger>>;
+
 /// Applies thread states to the tracked pause (latest wins: after a step
 /// `resumed` and the new `paused` arrive in one packet).
 pub(crate) fn apply_states(pause: &StdMutex<Option<PauseInfo>>, states: Vec<ThreadState>) {
@@ -174,14 +179,27 @@ pub(crate) async fn watch_tab(
     let Ok(entry) = attach(browser, tab).await else {
         return false;
     };
+    insert_or_detach(session, id, entry).await;
+    true
+}
+
+/// Keeps `entry` as tab `id`'s debugger, unless another call attached one
+/// meanwhile (that one wins, this one is detached); the tab's debugger.
+async fn insert_or_detach(
+    session: &FirefoxSession,
+    id: &str,
+    entry: TabDebugger,
+) -> SharedDebugger {
     let mut debuggers = session.debuggers.lock().await;
-    if debuggers.contains_key(id) {
+    if let Some(existing) = debuggers.get(id) {
+        let existing = existing.clone();
         drop(debuggers);
         let _ = entry.debugger.detach().await;
-        return true;
+        return existing;
     }
-    debuggers.insert(id.to_string(), entry);
-    true
+    let shared: SharedDebugger = Arc::new(tokio::sync::Mutex::new(entry));
+    debuggers.insert(id.to_string(), shared.clone());
+    shared
 }
 
 /// Forgets the debuggers of tabs that are gone (the page or the user closed
@@ -198,11 +216,12 @@ async fn prune_and_check(session: &FirefoxSession, id: &str) -> bool {
         .filter(|tab_id| !open.contains(tab_id))
         .cloned()
         .collect();
-    let detached: Vec<TabDebugger> = gone.iter().filter_map(|g| debuggers.remove(g)).collect();
+    let detached: Vec<SharedDebugger> = gone.iter().filter_map(|g| debuggers.remove(g)).collect();
     let watched = debuggers.contains_key(id);
     drop(debuggers);
     for entry in detached {
-        let _ = entry.debugger.detach().await;
+        let debugger = entry.lock().await.debugger.clone();
+        let _ = debugger.detach().await;
     }
     watched
 }
@@ -223,7 +242,8 @@ pub(crate) async fn watch_session_tab(
 }
 
 /// Runs `f` with the tab's debugger, attaching it first if needed. Lock
-/// order: the browser (session slot) before the debuggers.
+/// order: the browser (session slot), then the map of debuggers (only to
+/// look the tab's up), then the tab's debugger, held while `f` runs.
 async fn with_debugger<T>(
     session: &FirefoxSession,
     tab_id: Option<&str>,
@@ -232,17 +252,13 @@ async fn with_debugger<T>(
     let (id, tab) = session.tab(tab_id).await?;
     let browser = session.browser().await?;
     prune_and_check(session, &id).await;
-    let mut debuggers = session.debuggers.lock().await;
-    if !debuggers.contains_key(&id) {
-        let entry = attach(&browser, &tab).await?;
-        debuggers.insert(id.clone(), entry);
-    }
-    match debuggers.get_mut(&id) {
-        Some(entry) => f(entry).await,
-        None => Err(BackendError::InvalidArgument(
-            "debugger not attached".into(),
-        )),
-    }
+    let found = session.debuggers.lock().await.get(&id).cloned();
+    let shared = match found {
+        Some(shared) => shared,
+        None => insert_or_detach(session, &id, attach(&browser, &tab).await?).await,
+    };
+    let mut entry = shared.lock().await;
+    f(&mut entry).await
 }
 
 fn rdp_error(request: &str, error: &bidi_browser_lite::BidiError) -> BackendError {
@@ -593,7 +609,8 @@ fn text(value: impl Into<String>) -> CallToolResult {
 pub(crate) async fn detach_all(session: &FirefoxSession) {
     let debuggers: Vec<_> = session.debuggers.lock().await.drain().collect();
     for (_, tab) in debuggers {
-        let _ = tab.debugger.detach().await;
+        let debugger = tab.lock().await.debugger.clone();
+        let _ = debugger.detach().await;
     }
 }
 
@@ -601,7 +618,8 @@ pub(crate) async fn detach_all(session: &FirefoxSession) {
 pub(crate) async fn detach_tab(session: &FirefoxSession, tab_id: &str) {
     let debugger = session.debuggers.lock().await.remove(tab_id);
     if let Some(tab) = debugger {
-        let _ = tab.debugger.detach().await;
+        let debugger = tab.lock().await.debugger.clone();
+        let _ = debugger.detach().await;
     }
 }
 
@@ -697,8 +715,9 @@ mod tests {
     /// Waits until the state task of `tab` tracked a pause.
     async fn wait_paused(session: &FirefoxSession, tab: &str) {
         for _ in 0..100 {
-            if let Some(entry) = session.debuggers.lock().await.get(tab)
-                && current_pause(entry).is_some()
+            let entry = session.debuggers.lock().await.get(tab).cloned();
+            if let Some(entry) = entry
+                && current_pause(&*entry.lock().await).is_some()
             {
                 return;
             }
@@ -817,6 +836,44 @@ mod tests {
             "server1.conn0.tabDescriptor3",
             "{watched:?}"
         );
+        ts::stop(&handler).await;
+    }
+
+    /// Holds tab-1's debugger (as a long call would) from `started` until
+    /// `held` fires.
+    async fn hold_debugger(
+        session: Arc<FirefoxSession>,
+        started: tokio::sync::oneshot::Sender<()>,
+        held: tokio::sync::oneshot::Receiver<()>,
+    ) -> Result<(), BackendError> {
+        with_debugger(&session, Some("tab-1"), async |_| {
+            let _ = started.send(());
+            let _ = held.await;
+            Ok(())
+        })
+        .await
+    }
+
+    /// AUD-DB-10: a debugger call in progress on one tab does not block
+    /// another tab's tools (one lock covered every tab's debugger: a 10 s
+    /// evaluate_on_call_frame on tab-1 delayed get_console_logs on tab-2).
+    #[tokio::test]
+    async fn a_busy_debugger_does_not_block_other_tabs() {
+        // Given tab-1's debugger busy in a call that does not end yet
+        let mock = ts::firefox_with_debugger().await;
+        let handler = ts::handler(&mock);
+        let session = handler.firefox(None).await.unwrap();
+        session.browser().await.unwrap();
+        let (release, held) = tokio::sync::oneshot::channel::<()>();
+        let (started, running) = tokio::sync::oneshot::channel::<()>();
+        let busy = tokio::spawn(hold_debugger(session.clone(), started, held));
+        running.await.unwrap();
+        // When another tab's attach check runs
+        let other = tokio::time::timeout(WAIT, prune_and_check(&session, "tab-9")).await;
+        // Then it answers at once
+        assert!(other.is_ok(), "blocked by tab-1's debugger call");
+        let _ = release.send(());
+        busy.await.unwrap().unwrap();
         ts::stop(&handler).await;
     }
 
@@ -1087,7 +1144,8 @@ mod tests {
         );
         let session = handler.firefox(None).await.unwrap();
         for _ in 0..100 {
-            let sources = session.debuggers.lock().await["tab-1"].debugger.sources();
+            let entry = session.debuggers.lock().await["tab-1"].clone();
+            let sources = entry.lock().await.debugger.sources();
             if sources.iter().any(|s| s.actor.ends_with("source30")) {
                 break;
             }

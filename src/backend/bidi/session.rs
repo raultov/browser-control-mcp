@@ -203,7 +203,7 @@ pub(crate) struct FirefoxSession {
     /// Events lost because the pump fell behind (reported once, then reset).
     pub(crate) lagged: Arc<AtomicU64>,
     /// Debuggers attached per tab (RDP), see `debugger.rs`.
-    pub(crate) debuggers: Mutex<HashMap<String, super::debugger::TabDebugger>>,
+    pub(crate) debuggers: Mutex<HashMap<String, super::debugger::SharedDebugger>>,
     /// Subscription id of the pump (`send_bidi_command` may not remove it).
     pub(crate) own_subscription: RwLock<Option<String>>,
     /// Modules the agent subscribed to through `send_bidi_command`.

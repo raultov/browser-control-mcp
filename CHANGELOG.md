@@ -19,6 +19,10 @@ from a copy of its code: entries describe the differences from that release.
   later call on the tab timed out too. An expression waiting on a promise
   that never settles says so after 10 s. Firefox cannot stop a running
   script from outside: its error says so and points to `close_tab`.
+- On Firefox, a slow debugger call on one tab (e.g. a long
+  `evaluate_on_call_frame`) no longer blocks the logs and debugger tools of
+  the other tabs: each tab's debugger has its own lock (one lock covered
+  them all, delaying `get_console_logs` on another tab by 9.5 s).
 
 - `get_custom_events` returns the newest `limit` events (it returned the
   oldest, so new events never showed once the buffer held more), answers
