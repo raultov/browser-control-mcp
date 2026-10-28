@@ -12,6 +12,14 @@ from a copy of its code: entries describe the differences from that release.
 
 ### Fixed
 
+- `evaluate_js` with an endless loop no longer kills the tab on Chrome:
+  the script is stopped after 8 s and the call says so ("the script ran for
+  more than 8 s ... the page keeps working"); later calls work at once. It
+  used to fail after 20 s with `Runtime.evaluate timed out`, and every
+  later call on the tab timed out too. An expression waiting on a promise
+  that never settles says so after 10 s. Firefox cannot stop a running
+  script from outside: its error says so and points to `close_tab`.
+
 - `get_custom_events` returns the newest `limit` events (it returned the
   oldest, so new events never showed once the buffer held more), answers
   pure JSON `{"events", "total", "truncated"}` (the text started with

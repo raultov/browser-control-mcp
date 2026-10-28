@@ -170,7 +170,11 @@ pub(crate) async fn evaluate_js(tab: &Tab, expression: &str) -> Result<Evaluatio
         "resultOwnership": "root",
         "serializationOptions": {"maxObjectDepth": 0},
     });
-    let reply = command(tab, "script.evaluate", params).await?;
+    let method = "script.evaluate";
+    let reply = unless_prompt(tab, method, tab.send_raw_command(method, params))
+        .await?
+        .map(|reply| reply.result.unwrap_or(Value::Null))
+        .map_err(|e| evaluation_error(&e))?;
     let outcome = match thrown(&reply) {
         Ok(()) => measured(tab, &reply["result"]).await,
         Err(error) => Err(error),
@@ -185,6 +189,18 @@ pub(crate) async fn evaluate_js(tab: &Tab, expression: &str) -> Result<Evaluatio
         let _ = command(tab, "script.disown", release).await;
     }
     outcome
+}
+
+/// A failed `script.evaluate` as the agent should read it: without a
+/// result in time a script may still run, and Firefox offers no way to stop
+/// it from outside (Chrome stops it).
+fn evaluation_error(error: &BidiError) -> BackendError {
+    match error {
+        BidiError::Timeout { .. } => BackendError::InvalidArgument(
+            "no result after 10 s: the expression waits for a promise that never settles, or a script still runs (an endless loop freezes the tab, and Firefox cannot stop it from outside). If the tab no longer answers, close it with close_tab.".into(),
+        ),
+        other => protocol_error("script.evaluate", other),
+    }
 }
 
 /// The shared result for `remote`, read by value through
@@ -380,6 +396,21 @@ mod tests {
         .unwrap();
         let err = outcome(&string["result"]).unwrap_err().to_string();
         assert_eq!(err, "boom (line 1, column 7)");
+    }
+
+    /// AUD-EV-06 (Firefox): an evaluation without a result in time says
+    /// what may be going on and how to get the tab back.
+    #[test]
+    fn evaluation_timeout_is_explained() {
+        let error = evaluation_error(&BidiError::Timeout {
+            method: "script.evaluate".into(),
+            timeout: std::time::Duration::from_secs(10),
+        })
+        .to_string();
+        assert!(error.contains("no result after 10 s"), "{error}");
+        assert!(error.contains("close_tab"), "{error}");
+        let other = evaluation_error(&BidiError::Disconnected).to_string();
+        assert!(other.contains("connection to Firefox dropped"), "{other}");
     }
 
     /// BID-18: capture_screenshot maps format, quality and origin.

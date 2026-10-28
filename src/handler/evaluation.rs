@@ -16,6 +16,19 @@ use serde_json::{Value, json};
 /// flood the agent (and over 256 MB drop the browser connection).
 pub(crate) const EVAL_MAX_CHARS: usize = 100_000;
 
+/// How long Chrome lets an evaluation run before stopping it (ms), below
+/// the 10 s command timeout: a script still running then (an endless loop)
+/// kept the page's thread busy, and every later call on the tab failed.
+pub(crate) const EVAL_TIMEOUT_MS: u64 = 8_000;
+
+/// Why an evaluation Chrome stopped after [`EVAL_TIMEOUT_MS`] failed.
+pub(crate) const STOPPED: &str =
+    "the script ran for more than 8 s (an endless loop?) and was stopped; the page keeps working";
+
+/// Why an evaluation got no result before the command timeout: no script
+/// runs any more (Chrome stops those), so it waits for something.
+pub(crate) const NO_RESULT: &str = "no result after 10 s: the expression waits for a promise that never settles; the page keeps working";
+
 /// The marker [`MEASURE`] answers for an object over the limit.
 const TOO_LARGE: &str = "__bcm_too_large__";
 

@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 
 #[macros::mcp_tool(
     name = "evaluate_js",
-    description = "Executes arbitrary JavaScript code in the page context, returning evaluated results as JSON-serializable values. Side effects: may modify DOM, state, or trigger network requests. Prerequisites: requires an active Chrome tab; script context must allow execution. Returns: JSON {value, type, subtype?, description?}: `type` is JavaScript's typeof, `value` the JSON form (null when there is none: functions, DOM nodes, symbols, NaN, bigints, maps...; then `description` says what it was). A value over 100000 characters is cut (strings) or only described (objects, measured in the page), with `truncated: true`. A thrown exception or rejected promise fails the call with what was thrown and its line and column. Use this for dynamic inspection, DOM manipulation, complex interactions. Alternatives: 'inspect_dom' for read-only DOM queries, 'click_element' for UI interactions."
+    description = "Executes arbitrary JavaScript code in the page context, returning evaluated results as JSON-serializable values. Side effects: may modify DOM, state, or trigger network requests. Prerequisites: requires an active Chrome tab; script context must allow execution. Returns: JSON {value, type, subtype?, description?}: `type` is JavaScript's typeof, `value` the JSON form (null when there is none: functions, DOM nodes, symbols, NaN, bigints, maps...; then `description` says what it was). A value over 100000 characters is cut (strings) or only described (objects, measured in the page), with `truncated: true`. A thrown exception or rejected promise fails the call with what was thrown and its line and column. A script running over 8 s (an endless loop) is stopped on Chrome; Firefox cannot stop it, and a frozen tab is closed with close_tab. Use this for dynamic inspection, DOM manipulation, complex interactions. Alternatives: 'inspect_dom' for read-only DOM queries, 'click_element' for UI interactions."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct EvaluateJsTool {
@@ -59,19 +59,39 @@ pub(crate) async fn evaluate_remote(
 ) -> Result<Evaluation, String> {
     params["returnByValue"] = json!(false);
     params["objectGroup"] = json!(GROUP);
+    params["timeout"] = json!(evaluation::EVAL_TIMEOUT_MS);
+    let started = tokio::time::Instant::now();
     let outcome = match target.send_raw_command(method, params).await {
         Ok(reply) => read_outcome(target, reply.result.unwrap_or_default(), thrown).await,
         // A dialog blocks the page: releasing would wait for a timeout.
         Err(e) if crate::handler::dialogs::interrupted(&e) => {
             return Err(crate::handler::cdp_failure("CDP Error", &e));
         }
-        Err(e) => Err(crate::handler::cdp_failure("CDP Error", &e)),
+        Err(e) => Err(evaluation_failure(&e, started.elapsed())),
     };
     let release = json!({"objectGroup": GROUP});
     let _ = target
         .send_raw_command("Runtime.releaseObjectGroup", release)
         .await;
     outcome
+}
+
+/// A failed evaluation command (after `elapsed`) as the agent should read
+/// it: a script Chrome stopped after `EVAL_TIMEOUT_MS`, or no result in
+/// time, say so. Chrome reports a stopped script as "Execution was
+/// terminated", or as a bare "Internal error" when the expression awaited a
+/// promise (Chrome 156), hence the elapsed time.
+fn evaluation_failure(error: &cdp_browser_lite::CdpError, elapsed: std::time::Duration) -> String {
+    let limit = std::time::Duration::from_millis(evaluation::EVAL_TIMEOUT_MS);
+    match error {
+        cdp_browser_lite::CdpError::ProtocolError { message, .. }
+            if message.contains("Execution was terminated") || elapsed >= limit =>
+        {
+            evaluation::STOPPED.to_string()
+        }
+        cdp_browser_lite::CdpError::Timeout { .. } => evaluation::NO_RESULT.to_string(),
+        other => crate::handler::cdp_failure("CDP Error", other),
+    }
 }
 
 /// The evaluation of a reply, or its exception as an error.
@@ -242,6 +262,50 @@ mod tests {
         );
         let released = &mock.commands_named("Runtime.releaseObjectGroup")[0].params;
         assert_eq!(released["objectGroup"], GROUP);
+    }
+
+    /// AUD-EV-06: Chrome stops a script that runs too long (an endless loop
+    /// left the tab dead), and the error says what happened.
+    #[tokio::test]
+    async fn long_running_scripts_are_stopped() {
+        // Given a page where the expression never ends
+        let mock = spawn_recording_mock().await;
+        mock.respond_with(
+            "Runtime.evaluate",
+            |_| json!({"error": {"code": -32000, "message": "Execution was terminated"}}),
+        );
+        let handler = mock_handler(mock.http_port);
+        // When evaluate_js runs it
+        let args = json!({"expression": "while (true) {}"});
+        let error = EvaluateJsTool::handle(call("evaluate_js", args), &handler)
+            .await
+            .unwrap_err()
+            .to_string();
+        // Then Chrome was told to stop it before the command timeout
+        let sent = &mock.commands_named("Runtime.evaluate")[0].params;
+        let timeout = crate::handler::evaluation::EVAL_TIMEOUT_MS;
+        assert_eq!(sent["timeout"], timeout);
+        assert!(timeout < 10_000);
+        // And the error says it was stopped and the page still works
+        assert!(error.contains("ran for more than 8 s"), "{error}");
+        assert!(error.contains("the page keeps working"), "{error}");
+    }
+
+    /// AUD-EV-06: with `awaitPromise`, Chrome reports a stopped script as
+    /// a bare "Internal error" once the time limit passed.
+    #[test]
+    fn stopped_awaited_script_is_explained() {
+        let internal = cdp_browser_lite::CdpError::ProtocolError {
+            code: -32603,
+            message: "Internal error".into(),
+        };
+        let late = std::time::Duration::from_millis(crate::handler::evaluation::EVAL_TIMEOUT_MS);
+        assert_eq!(
+            evaluation_failure(&internal, late),
+            crate::handler::evaluation::STOPPED
+        );
+        let early = evaluation_failure(&internal, std::time::Duration::from_millis(5));
+        assert!(early.contains("Internal error"), "{early}");
     }
 
     /// AUD-EV-12: the by-value read measures the object in the page; one
