@@ -287,6 +287,8 @@ async fn fetch_bodies(
             Ok(reply) => {
                 let body = reply.pointer("/bytes/value").and_then(Value::as_str);
                 request.response_body = body.map(str::to_string);
+                let base64 = reply.pointer("/bytes/type").and_then(Value::as_str) == Some("base64");
+                request.response_body_encoding = base64.then(|| "base64".to_string());
             }
             // Kind only: the error text could quote the request.
             Err(_) => tracing::debug!(request = %id, "no response body kept by Firefox"),
@@ -1066,15 +1068,12 @@ mod tests {
         ts::stop(&firefox).await;
     }
 
-    /// BID-22: response bodies are fetched with network.getData (spike H11 ✅).
-    #[tokio::test]
-    async fn response_bodies_follow_spike() {
-        // Given one answered request of the current navigation on tab-1
+    /// The `get_network_logs` reply (and the mock) for one answered request
+    /// of the current navigation whose `network.getData` answers `bytes`.
+    async fn body_reply(bytes: Value) -> (MockFirefox, CallToolResult) {
         let mock = MockFirefox::start(false).await.unwrap();
-        mock.bidi().respond_with(
-            "network.getData",
-            |_| json!({"bytes": {"type": "string", "value": "{\"ok\":true}"}}),
-        );
+        mock.bidi()
+            .respond_with("network.getData", move |_| json!({"bytes": bytes.clone()}));
         let handler = ts::handler(&mock);
         let session = handler.firefox(None).await.unwrap();
         let (_, tab) = session.tab(None).await.unwrap();
@@ -1094,11 +1093,20 @@ mod tests {
                 super::super::pump::on_network(method, &event["params"], &mut network);
             }
         }
-        // When get_network_logs asks for details
         let args = json!({"include_details": true, "type_filter": "rest"});
         let reply = network_logs(call("get_network_logs", args), &handler)
             .await
             .unwrap();
+        ts::stop(&handler).await;
+        (mock, reply)
+    }
+
+    /// BID-22: response bodies are fetched with network.getData (spike H11 ✅).
+    #[tokio::test]
+    async fn response_bodies_follow_spike() {
+        // Given one answered request of the current navigation on tab-1
+        // When get_network_logs asks for details
+        let (mock, reply) = body_reply(json!({"type": "string", "value": "{\"ok\":true}"})).await;
         // Then the body came from network.getData for that request
         let sent = mock.bidi().commands_named("network.getData");
         assert_eq!(sent.len(), 1);
@@ -1109,7 +1117,23 @@ mod tests {
             "{}",
             ts::text(&reply)
         );
-        ts::stop(&handler).await;
+        assert!(!ts::text(&reply).contains("response_body_encoding"));
+    }
+
+    /// AUD-OB-15 (Firefox): a binary body says it is base64.
+    #[tokio::test]
+    async fn base64_bodies_are_marked() {
+        let (_mock, reply) = body_reply(json!({"type": "base64", "value": "iVBORw0K"})).await;
+        let body = ts::json_of(&reply);
+        let request = body["requests"]
+            .as_object()
+            .unwrap()
+            .values()
+            .next()
+            .unwrap()
+            .clone();
+        assert_eq!(request["response_body"], "iVBORw0K");
+        assert_eq!(request["response_body_encoding"], "base64");
     }
 
     /// The resources of a Firefox 157 fixture packet.

@@ -53,6 +53,10 @@ pub struct GetNetworkLogsTool {
 type Requests = HashMap<String, NetworkRequest>;
 type Frames = HashMap<String, VecDeque<WebSocketFrame>>;
 
+/// The note of the call that opened the connection: Chrome replays console
+/// messages to a new connection, but not network traffic.
+const NOT_CAPTURED_BEFORE: &str = "this call connected to the browser: requests sent before it are not captured (reload to see the page's own requests)";
+
 /// The parsed filters of one call, all lowercase.
 struct Filters {
     want_rest: bool,
@@ -110,17 +114,20 @@ impl GetNetworkLogsTool {
     ) -> Result<CallToolResult, CallToolError> {
         let args: GetNetworkLogsTool = crate::handler::parse_args(params)?;
         let session = handler.session(args.instance_id.clone()).await?;
+        // Connected first (see get_console_logs): an instance nothing has
+        // connected to yet has empty buffers.
+        let first = !session.is_connected().await;
+        let target = session.target(args.tab_id.clone()).await?;
+        if first {
+            session.settle_replayed_events().await;
+        }
         let network_state = session.network_state(args.tab_id.clone())?;
         let mut snapshot = args.collect(&network_state).await;
-        // `.ok()` first: the error type is not `Send` across the next await.
-        let target = match args.wants_bodies() {
-            true => session.target(args.tab_id.clone()).await.ok(),
-            false => None,
-        };
-        if let Some(target) = target {
+        if args.wants_bodies() {
             fetch_bodies(&target, &mut snapshot.requests, &snapshot.current_ids).await;
         }
-        Ok(args.finish(snapshot, Vec::new()))
+        let notes = first.then(|| NOT_CAPTURED_BEFORE.to_string());
+        Ok(args.finish(snapshot, notes.into_iter().collect()))
     }
 
     /// Whether response bodies should be fetched (REST requests with details).
@@ -238,9 +245,14 @@ async fn fetch_bodies(target: &CdpTarget, requests: &mut Requests, current: &Has
             .send_raw_command("Network.getResponseBody", json!({"requestId": req_id}))
             .await;
         if let Ok(reply) = reply
-            && let Some(body) = reply.result.as_ref().and_then(|r| r.get("body"))
+            && let Some(result) = reply.result.as_ref()
         {
-            req.response_body = body.as_str().map(str::to_string);
+            req.response_body = result
+                .get("body")
+                .and_then(|b| b.as_str())
+                .map(str::to_string);
+            let base64 = result.get("base64Encoded").and_then(|b| b.as_bool()) == Some(true);
+            req.response_body_encoding = base64.then(|| "base64".to_string());
         }
     }
 }
@@ -268,13 +280,16 @@ fn requests_json(mut requests: Requests, include_details: bool) -> serde_json::V
         return serde_json::to_value(&requests).unwrap_or_default();
     }
     let summary = requests.into_iter().map(|(id, req)| {
-        let row = json!({
+        let mut row = json!({
             "url": req.url,
             "method": req.method,
             "status": req.response_status,
             "statusText": req.response_status_text,
             "resourceType": req.resource_type
         });
+        if let Some(error) = req.error {
+            row["error"] = json!(error);
+        }
         (id, row)
     });
     serde_json::Value::Object(summary.collect())
@@ -313,6 +328,7 @@ fn redact_requests(requests: &mut Requests) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::handler::cdp_domains::tests::spawn_mock_chrome_server;
     use crate::handler::{NetworkRequest, WebSocketFrame};
     use rust_mcp_sdk::schema::ContentBlock;
 
@@ -339,13 +355,9 @@ mod tests {
                 url: "https://example.com/api/v1".to_string(),
                 method: "GET".to_string(),
                 resource_type: Some("XHR".to_string()),
-                request_headers: None,
-                request_post_data: None,
                 response_status: Some(200),
                 response_status_text: Some("OK".to_string()),
-                response_headers: None,
-                response_body: None,
-                redirects: Vec::new(),
+                ..Default::default()
             },
         );
 
@@ -355,13 +367,9 @@ mod tests {
                 url: "https://google.com/search".to_string(),
                 method: "GET".to_string(),
                 resource_type: Some("Document".to_string()),
-                request_headers: None,
-                request_post_data: None,
                 response_status: Some(200),
                 response_status_text: Some("OK".to_string()),
-                response_headers: None,
-                response_body: None,
-                redirects: Vec::new(),
+                ..Default::default()
             },
         );
 
@@ -389,13 +397,12 @@ mod tests {
             url: "https://example.com/big".to_string(),
             method: "POST".to_string(),
             resource_type: Some("XHR".to_string()),
-            request_headers: None,
             request_post_data: Some("p".repeat(BODY_MAX_CHARS + 1)),
             response_status: Some(200),
             response_status_text: Some("OK".to_string()),
             response_headers: Some(headers),
             response_body: body,
-            redirects: Vec::new(),
+            ..Default::default()
         }
     }
 
@@ -417,6 +424,49 @@ mod tests {
         let cut = |key: &str| request[key].as_str().unwrap().to_string();
         assert!(cut("response_body").ends_with("[cut: the first 64000 of 1000000 characters]"));
         assert!(cut("request_post_data").ends_with("[cut: the first 64000 of 64001 characters]"));
+    }
+
+    /// AUD-OB-15: a binary body says it is base64 (it read as text).
+    #[tokio::test]
+    async fn base64_bodies_are_marked() {
+        use crate::handler::cdp_domains::tests::{mock_handler, spawn_recording_mock};
+        let mock = spawn_recording_mock().await;
+        mock.respond_with(
+            "Network.getResponseBody",
+            |_| json!({"result": {"body": "iVBORw0K", "base64Encoded": true}}),
+        );
+        let handler = mock_handler(mock.http_port);
+        let target = handler
+            .session(None)
+            .await
+            .unwrap()
+            .target(None)
+            .await
+            .unwrap();
+        let mut requests = HashMap::from([("img".to_string(), answered(json!({}), None))]);
+        let current = HashSet::from(["img".to_string()]);
+        fetch_bodies(&target, &mut requests, &current).await;
+        let request = &requests["img"];
+        assert_eq!(request.response_body.as_deref(), Some("iVBORw0K"));
+        assert_eq!(request.response_body_encoding.as_deref(), Some("base64"));
+        let row = serde_json::to_value(request).unwrap();
+        assert_eq!(row["response_body_encoding"], "base64");
+    }
+
+    /// AUD-OB-07: the summary (include_details false) shows a failure.
+    #[test]
+    fn summary_shows_the_error() {
+        let failed = NetworkRequest {
+            url: "http://nope.invalid/".into(),
+            method: "GET".into(),
+            error: Some("net::ERR_NAME_NOT_RESOLVED".into()),
+            ..Default::default()
+        };
+        let rows = requests_json(HashMap::from([("r1".to_string(), failed)]), false);
+        assert_eq!(rows["r1"]["error"], "net::ERR_NAME_NOT_RESOLVED");
+        let ok = NetworkRequest::default();
+        let rows = requests_json(HashMap::from([("r2".to_string(), ok)]), false);
+        assert!(rows["r2"].get("error").is_none());
     }
 
     /// AUD-OB-13: Chrome does not fetch a body over BODY_LIMIT (Firefox
@@ -453,7 +503,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_network_logs_filter_type_rest() {
-        let handler = McpHandler::new_test();
+        let handler = McpHandler::new_test_with_port(spawn_mock_chrome_server().await);
         setup_mock_data(&handler).await;
 
         let params: CallToolRequestParams = serde_json::from_value(json!({
@@ -475,7 +525,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_network_logs_filter_type_websocket() {
-        let handler = McpHandler::new_test();
+        let handler = McpHandler::new_test_with_port(spawn_mock_chrome_server().await);
         setup_mock_data(&handler).await;
 
         let params: CallToolRequestParams = serde_json::from_value(json!({
@@ -497,7 +547,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_network_logs_filter_url() {
-        let handler = McpHandler::new_test();
+        let handler = McpHandler::new_test_with_port(spawn_mock_chrome_server().await);
         setup_mock_data(&handler).await;
 
         let params: CallToolRequestParams = serde_json::from_value(json!({
@@ -519,7 +569,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_network_logs_ws_direction_sent() {
-        let handler = McpHandler::new_test();
+        let handler = McpHandler::new_test_with_port(spawn_mock_chrome_server().await);
         setup_mock_data(&handler).await;
 
         let params: CallToolRequestParams = serde_json::from_value(json!({
@@ -542,7 +592,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_network_logs_ws_content_filter() {
-        let handler = McpHandler::new_test();
+        let handler = McpHandler::new_test_with_port(spawn_mock_chrome_server().await);
         setup_mock_data(&handler).await;
 
         let params: CallToolRequestParams = serde_json::from_value(json!({
@@ -569,7 +619,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_network_logs_include_details_false() {
-        let handler = McpHandler::new_test();
+        let handler = McpHandler::new_test_with_port(spawn_mock_chrome_server().await);
         setup_mock_data(&handler).await;
 
         let params: CallToolRequestParams = serde_json::from_value(json!({
@@ -598,7 +648,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_network_logs_clear() {
-        let handler = McpHandler::new_test();
+        let handler = McpHandler::new_test_with_port(spawn_mock_chrome_server().await);
         setup_mock_data(&handler).await;
 
         let params: CallToolRequestParams = serde_json::from_value(json!({
@@ -630,7 +680,7 @@ mod tests {
     /// a live connection keeps its URL.
     #[tokio::test]
     async fn clear_removes_only_the_returned_entries() {
-        let handler = McpHandler::new_test();
+        let handler = McpHandler::new_test_with_port(spawn_mock_chrome_server().await);
         setup_mock_data(&handler).await;
         handler
             .default_session
@@ -686,8 +736,7 @@ mod tests {
             response_status: Some(200),
             response_status_text: None,
             response_headers: Some(json!({"Set-Cookie": "s=2"})),
-            response_body: None,
-            redirects: Vec::new(),
+            ..Default::default()
         };
         let mut requests = std::collections::HashMap::from([("R1".to_string(), request)]);
         // When the default (redacting) path runs
@@ -716,14 +765,10 @@ mod tests {
         let request = crate::handler::NetworkRequest {
             url: "https://a/login".into(),
             method: "POST".into(),
-            resource_type: None,
             request_headers: Some(headers),
             request_post_data: Some("user=alice&password=AUDIT-SECRET-PW".into()),
             response_status: Some(200),
-            response_status_text: None,
-            response_headers: None,
-            response_body: None,
-            redirects: Vec::new(),
+            ..Default::default()
         };
         let mut requests = std::collections::HashMap::from([("R1".to_string(), request)]);
         // When the default (redacting) path runs

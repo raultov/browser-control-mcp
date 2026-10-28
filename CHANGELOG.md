@@ -10,6 +10,21 @@ from a copy of its code: entries describe the differences from that release.
 
 ## [Unreleased]
 
+### Fixed
+
+- `get_network_logs`: on Chrome the page's own document is in its
+  navigation's bucket, so `current_navigation_only` lists it and its body
+  is returned (it was left in the previous navigation, without a body). A
+  failed request carries `error` (Chrome `net::ERR_...`, Firefox
+  `NS_ERROR_...`, also in the summary); it looked like one still waiting on
+  Chrome, and Firefox put the error in `response_status_text`. A binary body
+  says `response_body_encoding: "base64"`.
+- On Chrome, `get_console_logs` and `get_network_logs` connect first: on an
+  instance nothing had connected to (an attached Chrome) they answered
+  empty buffers. The console messages the page logged before are now
+  returned; `get_network_logs` notes that earlier requests are not
+  captured.
+
 ## [0.3.4-beta.4] - 2026-10-27
 
 Public **BETA**. The same server as 0.3.3-beta.4, which was published on

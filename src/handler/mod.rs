@@ -50,7 +50,7 @@ impl DebuggerState {
     }
 }
 
-#[derive(Clone, Debug, ::serde::Serialize, ::serde::Deserialize)]
+#[derive(Clone, Debug, Default, ::serde::Serialize, ::serde::Deserialize)]
 pub struct NetworkRequest {
     pub url: String,
     pub method: String,
@@ -61,6 +61,13 @@ pub struct NetworkRequest {
     pub response_status_text: Option<String>,
     pub response_headers: Option<serde_json::Value>,
     pub response_body: Option<String>,
+    /// `"base64"` when `response_body` is base64 (a binary body).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_body_encoding: Option<String>,
+    /// Why the request failed (the browser's network error), when it did:
+    /// without it a failed request looked like one still waiting.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
     /// URLs this request was redirected from, oldest first.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub redirects: Vec<String>,
@@ -194,9 +201,23 @@ impl NetworkState {
         None
     }
 
-    pub(crate) fn split_after_navigation(&mut self) {
+    /// Starts a new navigation's bucket. `document` is the request id of
+    /// the navigation's document when it was sent before the split (Chrome
+    /// reports `frameNavigated` after the request): it moves to the new
+    /// bucket, where `current_navigation_only` looks for it.
+    pub(crate) fn split_after_navigation(&mut self, document: Option<&str>) {
+        let moved = document.and_then(|id| {
+            let bucket = self.navigations.front_mut()?;
+            let request = bucket.requests.remove(id)?;
+            bucket.order.retain(|other| other != id);
+            Some((id.to_string(), request))
+        });
         self.navigations.push_front(NavigationBucket::default());
         self.navigations.truncate(MAX_NAVIGATIONS_RETAINED);
+        if let (Some((id, request)), Some(bucket)) = (moved, self.navigations.front_mut()) {
+            bucket.order.push_back(id.clone());
+            bucket.requests.insert(id, request);
+        }
     }
 
     /// Remembers a WebSocket connection; the oldest one beyond the cap is
@@ -410,6 +431,9 @@ pub(crate) const BROWSER_GONE: &str = "The browser of this instance closed or cr
 /// How long the first call on a fresh connection waits for the browser's
 /// page to register as a tab (target discovery runs in the background).
 const FIRST_TAB_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// How long the first observation call waits for replayed events.
+const REPLAY_SETTLE: std::time::Duration = std::time::Duration::from_millis(200);
 
 /// The active tab of `tabs` as a target, once one is registered, polling
 /// until `limit`.
@@ -700,6 +724,20 @@ impl BrowserSession {
 
     /// Fails with [`BROWSER_GONE`] when the browser died, forgetting its
     /// tabs and connections (they belong to the dead process).
+    /// Whether a DevTools connection is open (a tab registered, or the
+    /// session-level client).
+    pub(crate) async fn is_connected(&self) -> bool {
+        let has_tab = !crate::util::sync::read(&self.tabs).tabs.is_empty();
+        has_tab || self.client.lock().await.is_some()
+    }
+
+    /// Lets the events Chrome replays on a fresh connection (console
+    /// messages logged before it) reach the tab's buffers: they arrive with
+    /// the domain's `enable` reply, but listener tasks apply them.
+    pub(crate) async fn settle_replayed_events(&self) {
+        tokio::time::sleep(REPLAY_SETTLE).await;
+    }
+
     /// Refuses a restart of an instance attached to a Chrome this server
     /// did not launch (see [`chrome_instance::attached_restart_refused`]).
     pub(crate) async fn check_not_attached(&self) -> std::result::Result<(), CallToolError> {
@@ -1457,14 +1495,8 @@ mod tests {
         let request = |status| NetworkRequest {
             url: "http://a/".into(),
             method: "GET".into(),
-            resource_type: None,
-            request_headers: None,
-            request_post_data: None,
             response_status: status,
-            response_status_text: None,
-            response_headers: None,
-            response_body: None,
-            redirects: Vec::new(),
+            ..Default::default()
         };
         let mut network = NetworkState::default();
         network.insert_request("L1".into(), request(Some(404)));

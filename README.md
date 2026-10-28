@@ -56,7 +56,7 @@ see the note.
 | `handle_dialog` | ✓ | ✓ | accepts or dismisses the open `alert` / `confirm` / `prompt` / `beforeunload` dialog |
 | `evaluate_js` | ✓ | ✓ | `value` at most 100 000 characters (`truncated: true`) |
 | `get_console_logs` | ✓ | ✓ | a message keeps at most 10 000 characters; Firefox: page errors, CSS warnings and platform messages need the debugger port |
-| `get_network_logs` | ✓ | ✓ | bodies at most 64 000 characters, none over 2 MB; a WebSocket payload keeps 64 000 (`payload_len` is the whole); Firefox: WebSocket frames need the debugger port |
+| `get_network_logs` | ✓ | ✓ | a failed request has `error`, a binary body `response_body_encoding: "base64"`; bodies at most 64 000 characters, none over 2 MB; a WebSocket payload keeps 64 000 (`payload_len` is the whole); Firefox: WebSocket frames need the debugger port |
 | `get_custom_events` | ✓ | partial | params over 64 000 characters of JSON are replaced by `{truncated, characters}`; Firefox: events of the modules subscribed with `send_bidi_command` |
 | `get_performance_metrics` | ✓ | partial | Firefox: `Nodes`, `Frames`, `Resources`, `TransferSize` from the Web Performance APIs (no Performance domain), plus a note |
 | `profile_page_performance` | ✓ | partial | Firefox: FCP, LCP, DCL and Load from the Web Performance APIs; no trace, so `total_blocking_time_ms` and `top_long_tasks` are `null` |
@@ -310,7 +310,10 @@ claude mcp add browser-control-mcp -- npx -y @raultov/browser-control-mcp
   `{"messages": [...], "total", "truncated", "notes"?}`: at most `limit`
   (default 200) of the most recent matching messages, oldest first; `clear`
   removes only the returned ones; a note says when a site change cleared
-  messages.
+  messages. On Chrome both log tools connect first, so on an attached
+  browser the first call already sees the page's console messages (Chrome
+  replays them; network requests sent before the connection are not
+  captured, and the reply says so).
 - **Firefox allows a single automation session.** Each Firefox instance holds
   one WebDriver BiDi session shared by its tabs; `close_instance`,
   `stop_browser` and every server shutdown path end it, so the next run can

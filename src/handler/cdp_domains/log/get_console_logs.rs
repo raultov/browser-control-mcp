@@ -89,7 +89,14 @@ impl GetConsoleLogsTool {
         let args: GetConsoleLogsTool = serde_json::from_value(args_value)
             .map_err(|e| CallToolError::from_message(e.to_string()))?;
         let session = handler.session(args.instance_id.clone()).await?;
-
+        // Connected first: on an instance nothing has connected to yet (an
+        // attached Chrome) the buffers are empty until the page's listeners
+        // run, and the page's earlier messages are replayed on connection.
+        let first = !session.is_connected().await;
+        session.target(args.tab_id.clone()).await?;
+        if first {
+            session.settle_replayed_events().await;
+        }
         let log_state = session.log_state(args.tab_id.clone())?;
         Ok(args.report(&log_state, None).await)
     }
@@ -98,6 +105,32 @@ impl GetConsoleLogsTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// AUD-OB-30: get_console_logs and get_network_logs connect first, so
+    /// on an instance nothing has connected to yet (an attached Chrome)
+    /// they read the page's buffers, not an empty session state.
+    #[tokio::test]
+    async fn observation_tools_connect_first() {
+        use crate::handler::cdp_domains::network::get_network_logs::GetNetworkLogsTool;
+        use crate::handler::cdp_domains::tests::{call, mock_handler, spawn_recording_mock};
+        for name in ["get_console_logs", "get_network_logs"] {
+            let mock = spawn_recording_mock().await;
+            let handler = mock_handler(mock.http_port);
+            let params = call(name, serde_json::json!({}));
+            let reply = match name {
+                "get_console_logs" => GetConsoleLogsTool::handle(params, &handler).await,
+                _ => GetNetworkLogsTool::handle(params, &handler).await,
+            };
+            assert!(reply.is_ok(), "{name}: {:?}", reply.err());
+            assert!(
+                !mock.commands_named("Runtime.enable").is_empty(),
+                "{name} read the buffers without connecting"
+            );
+            let text = crate::handler::cdp_domains::tests::reply_text(&reply.unwrap());
+            let noted = text.contains("requests sent before it are not captured");
+            assert_eq!(noted, name == "get_network_logs", "{name}: {text}");
+        }
+    }
     use crate::handler::cdp_domains::log::{ConsoleMessage, LogState};
     use serde_json::{Value, json};
     use std::sync::Arc;

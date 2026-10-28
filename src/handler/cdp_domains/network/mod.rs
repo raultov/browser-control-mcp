@@ -19,6 +19,7 @@ pub(crate) async fn process_network_event(event: &WsResponse, state: &Arc<Mutex<
     match method {
         "Network.requestWillBeSent" => on_request(&mut st, request_id, params),
         "Network.responseReceived" => on_response(&mut st, request_id, params),
+        "Network.loadingFailed" => on_failure(&mut st, request_id, params),
         "Network.webSocketCreated" => {
             let url = str_field(params, "url").unwrap_or("").to_string();
             st.insert_ws_connection(request_id.to_string(), url);
@@ -38,14 +39,9 @@ fn on_request(st: &mut NetworkState, request_id: &str, params: &serde_json::Valu
         NetworkRequest {
             url: str_field(req, "url").unwrap_or("").to_string(),
             method: str_field(req, "method").unwrap_or("").to_string(),
-            resource_type: None,
             request_headers: req.get("headers").cloned(),
             request_post_data: str_field(req, "postData").map(str::to_string),
-            response_status: None,
-            response_status_text: None,
-            response_headers: None,
-            response_body: None,
-            redirects: Vec::new(),
+            ..Default::default()
         },
     );
 }
@@ -63,6 +59,18 @@ fn on_response(st: &mut NetworkState, request_id: &str, params: &serde_json::Val
     if req.resource_type.is_none() {
         req.resource_type = str_field(params, "type").map(str::to_string);
     }
+}
+
+/// Records why a request failed (`errorText`, plus why it was blocked).
+fn on_failure(st: &mut NetworkState, request_id: &str, params: &serde_json::Value) {
+    let Some(req) = st.find_request_mut(request_id) else {
+        return;
+    };
+    let text = str_field(params, "errorText").unwrap_or("failed");
+    req.error = Some(match str_field(params, "blockedReason") {
+        Some(reason) => format!("{text} (blocked: {reason})"),
+        None => text.to_string(),
+    });
 }
 
 fn on_ws_frame(st: &mut NetworkState, request_id: &str, params: &serde_json::Value, is_sent: bool) {
@@ -132,14 +140,7 @@ mod tests {
                 NetworkRequest {
                     url: "https://example.com".into(),
                     method: "GET".into(),
-                    resource_type: None,
-                    request_headers: None,
-                    request_post_data: None,
-                    response_status: None,
-                    response_status_text: None,
-                    response_headers: None,
-                    response_body: None,
-                    redirects: Vec::new(),
+                    ..Default::default()
                 },
             );
         }
@@ -208,6 +209,30 @@ mod tests {
         assert_eq!(frames[0].payload_data, "ping");
         assert!(!frames[1].is_sent);
         assert_eq!(frames[1].payload_data, "pong");
+    }
+
+    /// AUD-OB-07: a failed request says why (it looked like one still
+    /// waiting: status and text null).
+    #[tokio::test]
+    async fn failed_request_records_its_error() {
+        let state = Arc::new(Mutex::new(NetworkState::default()));
+        let sent = json!({"requestId": "r1", "request": {"url": "http://nope.invalid/", "method": "GET", "headers": {}}});
+        process_network_event(&make_event("Network.requestWillBeSent", sent), &state).await;
+        let failed = json!({"requestId": "r1", "errorText": "net::ERR_NAME_NOT_RESOLVED", "canceled": false});
+        process_network_event(&make_event("Network.loadingFailed", failed), &state).await;
+        let blocked = json!({"requestId": "r1", "errorText": "net::ERR_BLOCKED_BY_CLIENT", "blockedReason": "inspector"});
+        let mut st = state.lock().await;
+        assert_eq!(
+            st.find_request_mut("r1").unwrap().error.as_deref(),
+            Some("net::ERR_NAME_NOT_RESOLVED")
+        );
+        drop(st);
+        process_network_event(&make_event("Network.loadingFailed", blocked), &state).await;
+        let mut st = state.lock().await;
+        assert_eq!(
+            st.find_request_mut("r1").unwrap().error.as_deref(),
+            Some("net::ERR_BLOCKED_BY_CLIENT (blocked: inspector)")
+        );
     }
 
     /// FIX-05: A redirect keeps one entry per request id with the redirect chain.

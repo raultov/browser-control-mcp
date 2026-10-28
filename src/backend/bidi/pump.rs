@@ -158,7 +158,7 @@ async fn on_navigation(method: &str, params: &Value, state: &PumpState) {
     };
     let (network, log) = top;
     match method {
-        "browsingContext.navigationStarted" => network.lock().await.split_after_navigation(),
+        "browsingContext.navigationStarted" => network.lock().await.split_after_navigation(None),
         // The final URL (after redirects) of a new document; fragment and
         // history navigations have their own events.
         "browsingContext.navigationCommitted" => {
@@ -237,12 +237,7 @@ pub(crate) fn on_network(method: &str, params: &Value, network: &mut crate::hand
                 method: string_or_empty(request, "method"),
                 resource_type: opt_string(request, "destination").filter(|d| !d.is_empty()),
                 request_headers: headers(request.get("headers")),
-                request_post_data: None,
-                response_status: None,
-                response_status_text: None,
-                response_headers: None,
-                response_body: None,
-                redirects: Vec::new(),
+                ..Default::default()
             },
         );
         return;
@@ -251,7 +246,7 @@ pub(crate) fn on_network(method: &str, params: &Value, network: &mut crate::hand
         return;
     };
     if method == "network.fetchError" {
-        entry.response_status_text = opt_string(params, "errorText");
+        entry.error = opt_string(params, "errorText");
         return;
     }
     if let Some(response) = params.get("response") {
@@ -400,6 +395,25 @@ mod tests {
         route(&event("network.beforeRequestSent", params), &client, &state).await;
         let network = read(&state.tabs).tabs["tab-1"].network.clone();
         assert_eq!(network.lock().await.iter_all().len(), 1);
+    }
+
+    /// AUD-OB-07 (Firefox): a fetch error is the request's error, as on
+    /// Chrome (it was put in the status text).
+    #[test]
+    fn fetch_error_is_the_request_error() {
+        let mut network = crate::handler::NetworkState::default();
+        let request =
+            json!({"request": "R1", "url": "http://nope.invalid/", "method": "GET", "headers": []});
+        on_network(
+            "network.beforeRequestSent",
+            &json!({"request": request.clone()}),
+            &mut network,
+        );
+        let failed = json!({"request": request, "errorText": "NS_ERROR_UNKNOWN_HOST"});
+        on_network("network.fetchError", &failed, &mut network);
+        let entry = network.find_request_mut("R1").unwrap();
+        assert_eq!(entry.error.as_deref(), Some("NS_ERROR_UNKNOWN_HOST"));
+        assert_eq!(entry.response_status_text, None);
     }
 
     /// BID-11: A top-level navigation starts a new bucket and updates the URL.

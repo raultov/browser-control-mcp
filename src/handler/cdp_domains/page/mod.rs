@@ -126,7 +126,12 @@ pub(crate) async fn process_page_event(
 ) {
     let (split_network, reset) = classify_page_event(event);
     if split_network {
-        state.lock().await.split_after_navigation();
+        let loader = event
+            .params
+            .as_ref()
+            .and_then(|p| p.pointer("/frame/loaderId"))
+            .and_then(|v| v.as_str());
+        state.lock().await.split_after_navigation(loader);
     }
     if let Some(sync) = webmcp {
         sync.purge_and_resync(reset).await;
@@ -190,6 +195,36 @@ pub(crate) fn start_page_listener(
 
 #[cfg(test)]
 mod tests {
+    /// AUD-OB-06: the document of a navigation is in the new navigation's
+    /// bucket (Chrome sends its request before `frameNavigated`, so it was
+    /// left in the previous one and `current_navigation_only` missed it).
+    #[tokio::test]
+    async fn document_request_moves_to_the_new_navigation() {
+        use crate::handler::cdp_domains::tests::make_event;
+        let state = Arc::new(Mutex::new(crate::handler::NetworkState::default()));
+        let request = |url: &str| crate::handler::NetworkRequest {
+            url: url.into(),
+            method: "GET".into(),
+            ..Default::default()
+        };
+        {
+            let mut st = state.lock().await;
+            st.insert_request("old".into(), request("http://a/old.js"));
+            st.insert_request("L2".into(), request("http://a/page"));
+        }
+        let navigated = json!({"frame": {"id": "F", "loaderId": "L2", "url": "http://a/page"}});
+        process_page_event(&make_event("Page.frameNavigated", navigated), &state, None).await;
+        let st = state.lock().await;
+        let current = &st.navigations[0];
+        assert!(
+            current.requests.contains_key("L2"),
+            "document not in the new bucket"
+        );
+        assert_eq!(current.order, ["L2"]);
+        assert!(!st.navigations[1].requests.contains_key("L2"));
+        assert!(st.navigations[1].requests.contains_key("old"));
+    }
+
     /// AUD-EV-05: the tab's open dialog follows Chrome's events.
     #[tokio::test]
     async fn dialog_state_follows_events() {
@@ -353,14 +388,7 @@ mod tests {
                 crate::handler::NetworkRequest {
                     url: "https://x.test/".into(),
                     method: "GET".into(),
-                    resource_type: None,
-                    request_headers: None,
-                    request_post_data: None,
-                    response_status: None,
-                    response_status_text: None,
-                    response_headers: None,
-                    response_body: None,
-                    redirects: Vec::new(),
+                    ..Default::default()
                 },
             );
         }
@@ -404,14 +432,7 @@ mod tests {
                 crate::handler::NetworkRequest {
                     url: "https://x.test/a".into(),
                     method: "GET".into(),
-                    resource_type: None,
-                    request_headers: None,
-                    request_post_data: None,
-                    response_status: None,
-                    response_status_text: None,
-                    response_headers: None,
-                    response_body: None,
-                    redirects: Vec::new(),
+                    ..Default::default()
                 },
             );
         }
