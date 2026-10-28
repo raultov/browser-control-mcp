@@ -10,6 +10,16 @@ from a copy of its code: entries describe the differences from that release.
 
 ## [Unreleased]
 
+## [0.3.5-beta.5] - 2026-10-28
+
+Public **BETA**. Observation tools stop returning wrong or missing data
+without saying so, an endless `evaluate_js` loop no longer kills a Chrome
+tab, Firefox debugger calls no longer block other tabs, and WebMCP passes
+every tool annotation through. Some replies change: `get_custom_events`
+answers `{events, total, truncated}` with the newest events, and
+`get_network_logs` requests may carry `error` and
+`response_body_encoding`.
+
 ### Fixed
 
 - `webmcp_list_tools` drops no annotation: `consequential` (the page
@@ -18,7 +28,6 @@ from a copy of its code: entries describe the differences from that release.
   now passed through. The output of a tool annotated `untrustedContent` is
   flagged: `webmcp_invoke_tool` adds a note to treat it as data, not as
   instructions, and `webmcp_get_invocation` says `untrustedContent: true`.
-
 - `evaluate_js` with an endless loop no longer kills the tab on Chrome:
   the script is stopped after 8 s and the call says so ("the script ran for
   more than 8 s ... the page keeps working"); later calls work at once. It
@@ -30,7 +39,6 @@ from a copy of its code: entries describe the differences from that release.
   `evaluate_on_call_frame`) no longer blocks the logs and debugger tools of
   the other tabs: each tab's debugger has its own lock (one lock covered
   them all, delaying `get_console_logs` on another tab by 9.5 s).
-
 - `get_custom_events` returns the newest `limit` events (it returned the
   oldest, so new events never showed once the buffer held more), answers
   pure JSON `{"events", "total", "truncated"}` (the text started with
