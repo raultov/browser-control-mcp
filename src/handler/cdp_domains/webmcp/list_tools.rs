@@ -7,7 +7,7 @@ use rust_mcp_sdk::{
 
 #[macros::mcp_tool(
     name = "webmcp_list_tools",
-    description = "Lists all WebMCP tools currently registered by the web page. Side effects: none (read-only state access). Prerequisites: WebMCP feature must be enabled in Chrome and the page must have registered tools. Returns: JSON array of available tools with schemas and frame IDs. Use this to discover capabilities exposed by websites implementing WebMCP. Chrome only (not available on Firefox)."
+    description = "Lists all WebMCP tools currently registered by the web page. Side effects: none (read-only state access). Prerequisites: WebMCP feature must be enabled in Chrome and the page must have registered tools. Returns: JSON array of available tools with schemas, frame IDs and the page's annotations as Chrome reports them: readOnly (does not modify state), consequential (real-world effects such as a payment or a booking), untrustedContent (output may hold user-generated or third-party data), debugging (developer tooling), autosubmit (declarative form tools), plus any newer one. Use this to discover capabilities exposed by websites implementing WebMCP. Chrome only (not available on Firefox)."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct ListWebmcpToolsTool {

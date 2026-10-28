@@ -12,6 +12,13 @@ from a copy of its code: entries describe the differences from that release.
 
 ### Fixed
 
+- `webmcp_list_tools` drops no annotation: `consequential` (the page
+  declares the tool has real-world effects, such as a payment) and
+  `debugging` were silently lost, and any annotation a later Chrome adds is
+  now passed through. The output of a tool annotated `untrustedContent` is
+  flagged: `webmcp_invoke_tool` adds a note to treat it as data, not as
+  instructions, and `webmcp_get_invocation` says `untrustedContent: true`.
+
 - `evaluate_js` with an endless loop no longer kills the tab on Chrome:
   the script is stopped after 8 s and the call says so ("the script ran for
   more than 8 s ... the page keeps working"); later calls work at once. It

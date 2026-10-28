@@ -71,8 +71,8 @@ see the note.
 | `send_cdp_command` | ✓ | ✗ | raw Chrome DevTools Protocol |
 | `send_bidi_command` | ✗ | ✓ | raw WebDriver BiDi; refuses `session.new`, `session.end`, `browser.close` |
 | `send_rdp_request` | ✗ | ✓ | raw Firefox RDP request to an actor (`thread`, `console`, `root` shortcuts) |
-| `webmcp_list_tools` | ✓ | ✗ | needs `--enable-webmcp`; WebMCP is a Chrome testing feature |
-| `webmcp_invoke_tool` | ✓ | ✗ | needs `--enable-webmcp` |
+| `webmcp_list_tools` | ✓ | ✗ | needs `--enable-webmcp`; WebMCP is a Chrome testing feature; every annotation Chrome reports is listed (`readOnly`, `consequential`, `untrustedContent`, `debugging`, `autosubmit`, newer ones as they are) |
+| `webmcp_invoke_tool` | ✓ | ✗ | needs `--enable-webmcp`; the output of an `untrustedContent` tool comes with a note to treat it as data |
 | `webmcp_get_invocation` | ✓ | ✗ | needs `--enable-webmcp` |
 | `webmcp_list_invocations` | ✓ | ✗ | needs `--enable-webmcp` |
 

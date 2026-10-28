@@ -1,0 +1,15 @@
+{
+  "method": "WebMCP.toolsAdded",
+  "params": {
+    "tools": [
+      {
+        "annotations": {"consequential": true, "debugging": false, "readOnly": false, "untrustedContent": true},
+        "description": "moves money",
+        "frameId": "A6A805AFA9B8063606A09E5A6AF77830",
+        "inputSchema": {"properties": {}, "type": "object"},
+        "name": "pay",
+        "stackTrace": {"callFrames": [{"columnNumber": 37, "functionName": "", "lineNumber": 0, "scriptId": "5", "url": ""}]}
+      }
+    ]
+  }
+}

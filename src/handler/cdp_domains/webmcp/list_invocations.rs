@@ -93,6 +93,7 @@ mod tests {
             status: status.map(String::from),
             output: None,
             error_text: None,
+            untrusted_content: false,
         }
     }
 

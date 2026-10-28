@@ -599,6 +599,7 @@ mod tests {
             status: Some("Completed".to_string()),
             output: None,
             error_text: None,
+            untrusted_content: false,
         }
     }
 

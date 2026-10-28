@@ -25,14 +25,29 @@ pub(crate) struct WebmcpNavSync {
     pub(crate) target: crate::handler::cdp_domains::cdp_target::CdpTarget,
 }
 
+/// The annotations a page declared on a WebMCP tool, as Chrome reports
+/// them (from `registerTool`'s `readOnlyHint`, `untrustedContentHint`,
+/// `consequentialHint` and `debugging`; `autosubmit` for declarative
+/// tools). A field a later Chrome adds is kept in `other`: an unknown field
+/// used to be dropped, which hid `consequential` from the agent.
 #[derive(Clone, Debug, ::serde::Serialize, ::serde::Deserialize)]
 pub struct WebmcpAnnotation {
     #[serde(rename = "readOnly", skip_serializing_if = "Option::is_none")]
     pub read_only: Option<bool>,
+    /// The tool's output may hold user-generated or third-party content.
     #[serde(rename = "untrustedContent", skip_serializing_if = "Option::is_none")]
     pub untrusted_content: Option<bool>,
+    /// Running the tool has real-world effects (a booking, a payment).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub consequential: Option<bool>,
+    /// The tool is meant for developer tooling, not end users.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub debugging: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub autosubmit: Option<bool>,
+    /// Annotations this server does not know yet, passed through as they are.
+    #[serde(flatten)]
+    pub other: serde_json::Map<String, serde_json::Value>,
 }
 
 #[derive(Clone, Debug, ::serde::Serialize, ::serde::Deserialize)]
@@ -67,6 +82,10 @@ pub struct WebmcpInvocation {
     pub output: Option<serde_json::Value>,
     #[serde(rename = "errorText", skip_serializing_if = "Option::is_none")]
     pub error_text: Option<String>,
+    /// The invoked tool declares untrusted output (`untrustedContent`):
+    /// replies with its output say to treat it as data.
+    #[serde(skip)]
+    pub untrusted_content: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ::serde::Serialize, ::serde::Deserialize, Default)]
@@ -134,7 +153,9 @@ pub(crate) async fn process_webmcp_event(event: &WsResponse, state: &Arc<Mutex<W
         ("WebMCP.toolsAdded", Some(tools)) => st.add_tools(tools),
         ("WebMCP.toolsRemoved", Some(tools)) => st.remove_tools(tools),
         ("WebMCP.toolInvoked", _) => {
-            if let Ok(invocation) = serde_json::from_value::<WebmcpInvocation>(params.clone()) {
+            if let Ok(mut invocation) = serde_json::from_value::<WebmcpInvocation>(params.clone()) {
+                invocation.untrusted_content =
+                    st.declares_untrusted(&invocation.frame_id, &invocation.tool_name);
                 st.invocations
                     .insert(invocation.invocation_id.clone(), invocation);
             }
@@ -154,6 +175,16 @@ impl WebmcpState {
                     .insert(tool.name.clone(), tool);
             }
         }
+    }
+
+    /// Whether the tool `name` of `frame_id` declares untrusted output.
+    fn declares_untrusted(&self, frame_id: &str, name: &str) -> bool {
+        self.tools
+            .get(frame_id)
+            .and_then(|tools| tools.get(name))
+            .and_then(|tool| tool.annotations.as_ref())
+            .and_then(|annotations| annotations.untrusted_content)
+            == Some(true)
     }
 
     fn remove_tools(&mut self, tools: &[serde_json::Value]) {
@@ -391,6 +422,7 @@ mod tests {
                 status: Some("Completed".to_string()),
                 output: None,
                 error_text: None,
+                untrusted_content: false,
             },
         );
 
@@ -406,5 +438,56 @@ mod tests {
             WebmcpAvailability::Enabled,
             "availability is not touched by a purge"
         );
+    }
+
+    /// The real `toolsAdded` event of a tool declaring `consequentialHint`
+    /// and `untrustedContentHint` (Chrome 156).
+    fn tools_added() -> WsResponse {
+        serde_json::from_str(include_str!(
+            "../../../../tests/fixtures/cdp/webmcp-tools-added.json"
+        ))
+        .unwrap()
+    }
+
+    /// AUD-RW-17: every annotation Chrome sends reaches the agent
+    /// (`consequential` and `debugging` were dropped), and one a later
+    /// Chrome adds is kept too.
+    #[tokio::test]
+    async fn annotations_are_kept_whole() {
+        let state = Arc::new(Mutex::new(WebmcpState::default()));
+        let mut event = tools_added();
+        if let Some(params) = event.params.as_mut() {
+            params["tools"][0]["annotations"]["futureHint"] = serde_json::json!(true);
+        }
+        process_webmcp_event(&event, &state).await;
+        let st = state.lock().await;
+        let tool = &st.tools["A6A805AFA9B8063606A09E5A6AF77830"]["pay"];
+        let listed = serde_json::to_value(tool).unwrap();
+        assert_eq!(
+            listed["annotations"],
+            serde_json::json!({"consequential": true, "debugging": false, "readOnly": false,
+                "untrustedContent": true, "futureHint": true})
+        );
+    }
+
+    /// AUD-RW-17: an invocation of a tool declaring untrusted content is
+    /// marked, so its output can be flagged.
+    #[tokio::test]
+    async fn invocations_of_untrusted_tools_are_marked() {
+        let state = Arc::new(Mutex::new(WebmcpState::default()));
+        process_webmcp_event(&tools_added(), &state).await;
+        let invoked = |id: &str, tool: &str| WsResponse {
+            method: Some("WebMCP.toolInvoked".into()),
+            params: Some(
+                serde_json::json!({"toolName": tool, "frameId": "A6A805AFA9B8063606A09E5A6AF77830",
+                "invocationId": id, "input": "{}"}),
+            ),
+            ..Default::default()
+        };
+        process_webmcp_event(&invoked("i1", "pay"), &state).await;
+        process_webmcp_event(&invoked("i2", "other"), &state).await;
+        let st = state.lock().await;
+        assert!(st.invocations["i1"].untrusted_content);
+        assert!(!st.invocations["i2"].untrusted_content);
     }
 }
