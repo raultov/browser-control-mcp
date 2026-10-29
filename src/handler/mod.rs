@@ -19,6 +19,9 @@ pub(crate) struct ScriptInfo {
     pub hash: String,
     pub start_line: i32,
     pub start_column: i32,
+    /// The script's last line in its resource (`endLine`).
+    #[serde(default)]
+    pub end_line: i32,
     /// The script's URL (empty for inline evals).
     #[serde(default)]
     pub url: String,
@@ -1339,6 +1342,7 @@ mod tests {
                 hash: String::new(),
                 start_line: 0,
                 start_column: 0,
+                end_line: 0,
                 url: String::new(),
             };
             debugger.scripts.insert(i.to_string(), info);

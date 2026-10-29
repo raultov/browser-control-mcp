@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 
 #[macros::mcp_tool(
     name = "set_breakpoint",
-    description = "Sets a debugger breakpoint at a specific location, pausing execution when reached. Side effects: modifies debugger state (breakpoint added until removed). Prerequisites: requires an active Chrome tab; target script must be loaded. Returns: JSON {breakpoint_id ('bp-N', for remove_breakpoint), url, line_number, column_number (0-based, where the browser bound it), resolved (false until a script with that URL loads)}. While a tab has no breakpoint (and no pause_on_load), the page's own `debugger;` statements do not pause it; the first breakpoint turns them on. Use this to debug specific code paths. Alternatives: 'pause_on_load' for early script execution, 'search_scripts' to find scripts by pattern."
+    description = "Sets a debugger breakpoint at a specific location, pausing execution when reached. Side effects: modifies debugger state (breakpoint added until removed). Prerequisites: requires an active Chrome tab; target script must be loaded. Returns: JSON {breakpoint_id ('bp-N', for remove_breakpoint), url, line_number, column_number (0-based, where the browser bound it), resolved (false until a script with that URL loads)}. A line with no code at or after it in a loaded script with that URL fails (nothing is set). While a tab has no breakpoint (and no pause_on_load), the page's own `debugger;` statements do not pause it; the first breakpoint turns them on. Use this to debug specific code paths. Alternatives: 'pause_on_load' for early script execution, 'search_scripts' to find scripts by pattern."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct SetBreakpointTool {
@@ -52,6 +52,17 @@ impl SetBreakpointTool {
             })?
             .to_string();
         let state = session.debugger_state(args.tab_id.clone())?;
+        let past_end = args.past_loaded_end(&reply, &*state.lock().await);
+        if let Some(last) = past_end {
+            let remove = json!({"breakpointId": native});
+            let _ = target
+                .send_raw_command("Debugger.removeBreakpoint", remove)
+                .await;
+            return Err(CallToolError::from_message(format!(
+                "There is no code at or after line {} in the loaded script with this URL (its last line is {last}): nothing was set. Pick a line with code ('search_scripts' finds it).",
+                args.line_number
+            )));
+        }
         let set = {
             let mut state = state.lock().await;
             let mut set = args.resolution(&reply, &state);
@@ -60,6 +71,26 @@ impl SetBreakpointTool {
         };
         super::sync_pauses(&target, &state).await;
         Ok(set.reply())
+    }
+
+    /// The last line of the loaded scripts with the requested URL (or
+    /// hash), when Chrome bound the breakpoint to none of them: it then
+    /// never fires, unless another script with that URL loads later.
+    fn past_loaded_end(&self, reply: &Value, state: &crate::handler::DebuggerState) -> Option<i32> {
+        let bound = reply["locations"].as_array().is_some_and(|l| !l.is_empty());
+        if bound || self.script_id.is_some() {
+            return None;
+        }
+        state
+            .scripts
+            .values()
+            .filter(|s| match (&self.url, &self.script_hash) {
+                (Some(url), _) => &s.url == url,
+                (None, Some(hash)) => &s.hash == hash,
+                (None, None) => false,
+            })
+            .map(|s| s.end_line)
+            .max()
     }
 
     /// Where Chrome bound the breakpoint: the first resolved location
@@ -218,5 +249,45 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(skips(), [json!(true), json!(false), json!(true)]);
+    }
+
+    /// AUD-DB-07: a line after the end of the loaded script with that URL
+    /// fails, saying where it ends, and the breakpoint is removed (it said
+    /// `resolved: false`, "until a script loads", for a script loaded
+    /// already). With no such script loaded the breakpoint waits for one.
+    #[tokio::test]
+    async fn line_past_a_loaded_script_fails() {
+        use crate::handler::cdp_domains::tests::{call, mock_handler, spawn_recording_mock};
+        let mock = spawn_recording_mock().await;
+        mock.respond_with(
+            "Debugger.setBreakpointByUrl",
+            |_| json!({"result": {"breakpointId": "1:9999:0:http://a/app.js", "locations": []}}),
+        );
+        let handler = mock_handler(mock.http_port);
+        let session = handler.session(None).await.unwrap();
+        session.target(None).await.unwrap();
+        let script = crate::handler::ScriptInfo {
+            hash: "h".into(),
+            start_line: 0,
+            start_column: 0,
+            end_line: 20,
+            url: "http://a/app.js".into(),
+        };
+        let state = session.debugger_state(None).unwrap();
+        state.lock().await.scripts.insert("7".into(), script);
+        let args = json!({"url": "http://a/app.js", "line_number": 9999});
+        let error = SetBreakpointTool::handle(call("set_breakpoint", args), &handler)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("no code at or after line 9999"), "{error}");
+        assert!(error.contains("its last line is 20"), "{error}");
+        let removed = &mock.commands_named("Debugger.removeBreakpoint")[0].params;
+        assert_eq!(removed["breakpointId"], "1:9999:0:http://a/app.js");
+        assert!(state.lock().await.breakpoints.is_empty());
+        // A URL no loaded script has still waits
+        let args = json!({"url": "http://a/later.js", "line_number": 3});
+        let reply = SetBreakpointTool::handle(call("set_breakpoint", args), &handler).await;
+        assert!(reply.is_ok(), "{:?}", reply.err());
     }
 }

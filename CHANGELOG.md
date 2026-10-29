@@ -12,6 +12,12 @@ from a copy of its code: entries describe the differences from that release.
 
 ### Fixed
 
+- `set_breakpoint` on Chrome fails for a line with no code at or after it
+  in the loaded script with that URL, saying where the script ends, and
+  sets nothing (as Firefox does). It answered `resolved: false`, which the
+  description explains as "until a script with that URL loads", for a
+  script that was loaded already: the breakpoint never fired.
+
 - `inspect_dom` includes open shadow roots (as `<template
   shadowrootmode="open">`) and the documents of same-origin iframes (each
   after an `<!-- iframe <src>: -->` comment), and notes the cross-origin

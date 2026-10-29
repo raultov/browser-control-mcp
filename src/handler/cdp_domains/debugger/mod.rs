@@ -42,6 +42,7 @@ pub(crate) async fn process_debugger_event(
             ) {
                 let start_line = position(&event.params, "startLine");
                 let start_column = position(&event.params, "startColumn");
+                let end_line = position(&event.params, "endLine");
                 let url = extract_from_value(&event.params, "url").unwrap_or_default();
 
                 let mut st = state.lock().await;
@@ -51,6 +52,7 @@ pub(crate) async fn process_debugger_event(
                         hash: hash.to_string(),
                         start_line,
                         start_column,
+                        end_line,
                         url: url.to_string(),
                     },
                 );
