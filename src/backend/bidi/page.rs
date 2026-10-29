@@ -203,14 +203,26 @@ fn evaluation_error(error: &BidiError) -> BackendError {
     }
 }
 
-/// The shared result for `remote`, read by value through
-/// [`evaluation::MEASURE`] when it is an object held by a handle.
+/// Reads a value held by a handle as it is (for those without a JSON form:
+/// maps, sets, nodes, errors...).
+const RETURN_THIS: &str = "function () { return this; }";
+
+/// The shared result for `remote`, read by value when it is held by a
+/// handle: an object or array through [`evaluation::MEASURE`] (its JSON
+/// form, as on Chrome), anything else as it is.
 async fn measured(tab: &Tab, remote: &Value) -> Result<Evaluation, BackendError> {
     let Some(handle) = remote.get("handle") else {
         return Ok(remote_value::evaluation(remote));
     };
+    let kind = remote.get("type").and_then(Value::as_str);
+    let json_like = matches!(kind, Some("object" | "array"));
+    let declaration = if json_like {
+        evaluation::MEASURE
+    } else {
+        RETURN_THIS
+    };
     let params = json!({
-        "functionDeclaration": evaluation::MEASURE,
+        "functionDeclaration": declaration,
         "this": {"handle": handle},
         "arguments": [{"type": "number", "value": evaluation::EVAL_MAX_CHARS}],
         "target": tab.script_target(),
@@ -220,17 +232,12 @@ async fn measured(tab: &Tab, remote: &Value) -> Result<Evaluation, BackendError>
     let reply = command(tab, "script.callFunction", params).await?;
     thrown(&reply)?;
     let read = &reply["result"];
-    match evaluation::measured_length(&remote_value::to_json(read)) {
-        Some(chars) => {
-            let shown = remote_value::evaluation(remote);
-            Ok(Evaluation::too_large(
-                &shown.kind,
-                shown.subtype.as_deref(),
-                chars,
-            ))
-        }
-        None => Ok(remote_value::evaluation(read)),
-    }
+    let json = remote_value::json_form(read).filter(|_| json_like);
+    let Some(json) = json else {
+        return Ok(remote_value::evaluation(read));
+    };
+    let subtype = (kind == Some("array")).then_some("array");
+    Ok(evaluation::from_measured("object", subtype, json))
 }
 
 /// The value of a `script.evaluate` reply, or its exception as an error.

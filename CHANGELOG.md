@@ -12,6 +12,15 @@ from a copy of its code: entries describe the differences from that release.
 
 ### Fixed
 
+- `evaluate_js` (and `evaluate_on_call_frame`) gives an object or array the
+  same `value` on both browsers: what `JSON.stringify` gives (`toJSON`
+  counts, functions drop out), and an object that is not a plain one has
+  its class in `description`. `navigator` and `new URL(...)` answered `{}`
+  without a word; now `{"value": {}, "description": "Navigator"}` and
+  `{"value": "<href>", "description": "URL"}`. Nested functions were `{}`
+  on Chrome and `{"type": "function"}` on Firefox, and `location` was `{}`
+  on Firefox.
+
 - `fill_input` types the same way on both browsers: Chrome now presses a
   key per character, as Firefox did, so the page's keydown and keyup
   handlers run and can cancel a key (a field refusing `a` got `abc` on

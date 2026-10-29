@@ -295,7 +295,11 @@ claude mcp add browser-control-mcp -- npx -y @raultov/browser-control-mcp
   `null`, `node`, `date`, `map`...), `value` is the JSON form and is `null`
   when there is none (functions, DOM nodes, symbols, `NaN`, bigints,
   maps...), `description` then says what it was (Chrome describes functions
-  by their source, Firefox only as `function`). A thrown exception or a
+  by their source, Firefox only as `function`). An object or array's
+  `value` is what `JSON.stringify` gives, on both browsers (`toJSON` counts:
+  a `URL` is its `href`; nested functions drop out), and an object that is
+  not a plain one has its class in `description` (`navigator`:
+  `{"value": {}, "description": "Navigator"}`). A thrown exception or a
   rejected promise fails with what was thrown and its 1-based line and
   column, e.g. `ReferenceError: x is not defined (line 1, column 1)`.
   A `value` over 100 000 characters is not returned whole: a string keeps

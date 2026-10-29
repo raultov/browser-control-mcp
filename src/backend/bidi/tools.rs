@@ -959,6 +959,42 @@ mod tests {
         ts::stop(&handler).await;
     }
 
+    /// AUD-EV-02 (Firefox): an object is read through MEASURE (its JSON
+    /// form, named by its class when not a plain one); one without a JSON
+    /// form (a Map) is read as it is.
+    #[tokio::test]
+    async fn objects_are_read_as_json_and_named() {
+        let mock = MockFirefox::start(false).await.unwrap();
+        mock.bidi().respond_with("script.evaluate", |params| {
+            let expression = params["expression"].as_str().unwrap_or_default();
+            let kind = if expression == "m" { "map" } else { "object" };
+            evaluate_success(json!({"type": kind, "handle": "h1"}))
+        });
+        mock.bidi().respond_with("script.callFunction", |params| {
+            let declaration = params["functionDeclaration"].as_str().unwrap_or_default();
+            if declaration.contains("JSON.stringify") {
+                evaluate_success(ts::remote(&json!({"__bcm_class__": "URL", "__bcm_value__": "http://a/"})))
+            } else {
+                evaluate_success(json!({"type": "map", "value": [[{"type": "number", "value": 1}, {"type": "number", "value": 2}]]}))
+            }
+        });
+        let handler = ts::handler(&mock);
+        let reply = evaluate_js(call("evaluate_js", json!({"expression": "u"})), &handler)
+            .await
+            .unwrap();
+        let body: Value = serde_json::from_str(&ts::text(&reply)).unwrap();
+        assert_eq!(
+            body,
+            json!({"value": "http://a/", "type": "object", "description": "URL"})
+        );
+        let reply = evaluate_js(call("evaluate_js", json!({"expression": "m"})), &handler)
+            .await
+            .unwrap();
+        let body: Value = serde_json::from_str(&ts::text(&reply)).unwrap();
+        assert_eq!(body["description"], "Map(1)", "{body}");
+        ts::stop(&handler).await;
+    }
+
     /// AUD-IN-14: a long text is typed in batches of KEYS_PER_ACTION
     /// characters, so no `input.performActions` outlasts the command timeout
     /// (20 000 characters timed out half typed).

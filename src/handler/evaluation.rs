@@ -5,7 +5,9 @@
 //! names (`array`, `null`, `node`, `date`, `regexp`, `map`, `set`, `error`,
 //! `promise`...). `value` is the JSON form of the result, `null` when it has
 //! none (functions, DOM nodes, symbols, `NaN`, bigints, maps...), and then
-//! `description` says what it was. A thrown exception is a tool error with
+//! `description` says what it was. An object or array's `value` is its
+//! `JSON.stringify` form, and an object that is not a plain one has its
+//! class in `description` ([`MEASURE`]). A thrown exception is a tool error with
 //! [`exception_message`]'s wording. A result over [`EVAL_MAX_CHARS`] is cut
 //! (strings) or described (objects) and marked `truncated: true`.
 
@@ -32,12 +34,43 @@ pub(crate) const NO_RESULT: &str = "no result after 10 s: the expression waits f
 /// The marker [`MEASURE`] answers for an object over the limit.
 const TOO_LARGE: &str = "__bcm_too_large__";
 
-/// Called on an object result with [`EVAL_MAX_CHARS`] as argument: the
-/// object itself, or `{TOO_LARGE: length}` when its JSON form is longer, so
-/// a large object never crosses the connection (read it with
-/// [`measured_length`]).
+/// The keys of [`MEASURE`]'s answer for an object that is not a plain one.
+const CLASS: &str = "__bcm_class__";
+const VALUE: &str = "__bcm_value__";
+
+/// Called on an object result with [`EVAL_MAX_CHARS`] as argument: its
+/// JSON form (`JSON.stringify`, so `toJSON` counts and functions drop out,
+/// the same on every browser), `{TOO_LARGE: length}` when that is longer
+/// (a large object never crosses the connection), or the object itself
+/// when it has none (a cycle). An object that is not plain (`navigator`,
+/// a `URL`, a class instance) answers `{CLASS: name, VALUE: json}`: its
+/// JSON form alone was `{}` without a word. Read with [`from_measured`].
 pub(crate) const MEASURE: &str = "function (limit) { let json; try { json = JSON.stringify(this); } catch (e) { return this; } \
-     return json !== undefined && json.length > limit ? { __bcm_too_large__: json.length } : this; }";
+     if (json === undefined) return this; \
+     if (json.length > limit) return { __bcm_too_large__: json.length }; \
+     const value = JSON.parse(json), proto = Object.getPrototypeOf(this); \
+     if (proto === Object.prototype || proto === null || Array.isArray(this)) return value; \
+     const name = (this.constructor && this.constructor.name) || Object.prototype.toString.call(this).slice(8, -1); \
+     return { __bcm_class__: name, __bcm_value__: value }; }";
+
+/// The shared result of an object of `kind`/`subtype` from what
+/// [`MEASURE`] answered (`read`, as plain JSON).
+pub(crate) fn from_measured(kind: &str, subtype: Option<&str>, read: Value) -> Evaluation {
+    if let Some(chars) = measured_length(&read) {
+        return Evaluation::too_large(kind, subtype, chars);
+    }
+    match read {
+        Value::Object(mut named) if named.contains_key(CLASS) && named.contains_key(VALUE) => {
+            let class = named.remove(CLASS);
+            let value = named.remove(VALUE).unwrap_or_default();
+            Evaluation {
+                description: class.as_ref().and_then(Value::as_str).map(str::to_string),
+                ..Evaluation::json(kind, subtype, value)
+            }
+        }
+        other => Evaluation::json(kind, subtype, other),
+    }
+}
 
 /// The JSON length [`MEASURE`] reported, when the object was over the limit.
 pub(crate) fn measured_length(by_value: &Value) -> Option<u64> {
@@ -220,13 +253,44 @@ fn thrown_value(value: &Value) -> String {
 mod tests {
     use super::*;
 
+    /// AUD-EV-02 / AUD-EV-12: MEASURE answers the JSON form, named or
+    /// too large, with the markers the readers look for.
+    #[test]
+    fn measure_uses_the_markers() {
+        assert!(MEASURE.contains("JSON.parse(json)"));
+        assert!(MEASURE.contains(CLASS) && MEASURE.contains(VALUE));
+        assert!(MEASURE.contains(TOO_LARGE));
+        assert_eq!(measured_length(&json!({TOO_LARGE: 7})), Some(7));
+        assert_eq!(measured_length(&json!({"a": 7})), None);
+    }
+
+    /// AUD-EV-02: what MEASURE answered becomes the shared result: the
+    /// JSON form, with the class of an object that is not a plain one
+    /// (`navigator` and `new URL()` were `{}` without a word).
+    #[test]
+    fn measured_reads_name_the_class() {
+        let navigator = json!({CLASS: "Navigator", VALUE: {}});
+        assert_eq!(
+            from_measured("object", None, navigator).to_json(),
+            json!({"value": {}, "type": "object", "description": "Navigator"})
+        );
+        let url = json!({CLASS: "URL", VALUE: "http://a/b"});
+        assert_eq!(
+            from_measured("object", None, url).to_json(),
+            json!({"value": "http://a/b", "type": "object", "description": "URL"})
+        );
+        assert_eq!(
+            from_measured("object", Some("array"), json!([1])).to_json(),
+            json!({"value": [1], "type": "object", "subtype": "array"})
+        );
+        let large = from_measured("object", None, json!({TOO_LARGE: 9}));
+        assert!(large.truncated);
+    }
+
     /// AUD-EV-12: a reply never carries more than `EVAL_MAX_CHARS`: a long
     /// string is cut and marked, a large object is described.
     #[test]
     fn large_results_are_bounded() {
-        assert!(MEASURE.contains(TOO_LARGE));
-        assert_eq!(measured_length(&json!({TOO_LARGE: 7})), Some(7));
-        assert_eq!(measured_length(&json!({"a": 7})), None);
         let long = Evaluation::json("string", None, json!("x".repeat(EVAL_MAX_CHARS + 5)));
         let body = long.bounded().to_json();
         assert_eq!(body["value"].as_str().unwrap().len(), EVAL_MAX_CHARS);

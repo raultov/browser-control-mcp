@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 
 #[macros::mcp_tool(
     name = "evaluate_js",
-    description = "Executes arbitrary JavaScript code in the page context, returning evaluated results as JSON-serializable values. Side effects: may modify DOM, state, or trigger network requests. Prerequisites: requires an active Chrome tab; script context must allow execution. Returns: JSON {value, type, subtype?, description?}: `type` is JavaScript's typeof, `value` the JSON form (null when there is none: functions, DOM nodes, symbols, NaN, bigints, maps...; then `description` says what it was). A value over 100000 characters is cut (strings) or only described (objects, measured in the page), with `truncated: true`. A thrown exception or rejected promise fails the call with what was thrown and its line and column. A script running over 8 s (an endless loop) is stopped on Chrome; Firefox cannot stop it, and a frozen tab is closed with close_tab. Use this for dynamic inspection, DOM manipulation, complex interactions. Alternatives: 'inspect_dom' for read-only DOM queries, 'click_element' for UI interactions."
+    description = "Executes arbitrary JavaScript code in the page context, returning evaluated results as JSON-serializable values. Side effects: may modify DOM, state, or trigger network requests. Prerequisites: requires an active Chrome tab; script context must allow execution. Returns: JSON {value, type, subtype?, description?}: `type` is JavaScript's typeof, `value` the JSON form (null when there is none: functions, DOM nodes, symbols, NaN, bigints, maps...; then `description` says what it was). An object or array's `value` is what JSON.stringify gives (toJSON counts, functions drop out), and an object that is not a plain one (navigator, a URL, a class instance) has its class in `description`. A value over 100000 characters is cut (strings) or only described (objects, measured in the page), with `truncated: true`. A thrown exception or rejected promise fails the call with what was thrown and its line and column. A script running over 8 s (an endless loop) is stopped on Chrome; Firefox cannot stop it, and a frozen tab is closed with close_tab. Use this for dynamic inspection, DOM manipulation, complex interactions. Alternatives: 'inspect_dom' for read-only DOM queries, 'click_element' for UI interactions."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct EvaluateJsTool {
@@ -108,12 +108,12 @@ async fn read_outcome(
         Some(id) if evaluation::has_json_form(remote) => by_value(target, id).await,
         _ => None,
     };
-    if let Some(chars) = by_value.as_ref().and_then(evaluation::measured_length) {
-        let text = |key: &str| remote.get(key).and_then(Value::as_str);
-        let kind = text("type").unwrap_or("object");
-        return Ok(Evaluation::too_large(kind, text("subtype"), chars));
-    }
-    Ok(evaluation::from_cdp(remote, by_value))
+    let Some(read) = by_value else {
+        return Ok(evaluation::from_cdp(remote, None));
+    };
+    let text = |key: &str| remote.get(key).and_then(Value::as_str);
+    let kind = text("type").unwrap_or("object");
+    Ok(evaluation::from_measured(kind, text("subtype"), read))
 }
 
 /// The by-value form of a remote object, or `None` when Chrome cannot
@@ -306,6 +306,30 @@ mod tests {
         );
         let early = evaluation_failure(&internal, std::time::Duration::from_millis(5));
         assert!(early.contains("Internal error"), "{early}");
+    }
+
+    /// AUD-EV-02: an object that is not a plain one is named by its class.
+    #[tokio::test]
+    async fn class_instances_are_named() {
+        let mock = spawn_recording_mock().await;
+        mock.respond_with("Runtime.evaluate", |_| {
+            json!({"result": {"result": {"type": "object", "className": "Navigator", "description": "Navigator", "objectId": "o1"}}})
+        });
+        mock.respond_with("Runtime.callFunctionOn", |_| {
+            json!({"result": {"result": {"type": "object", "value": {"__bcm_class__": "Navigator", "__bcm_value__": {}}}}})
+        });
+        let handler = mock_handler(mock.http_port);
+        let reply = EvaluateJsTool::handle(
+            call("evaluate_js", json!({"expression": "navigator"})),
+            &handler,
+        )
+        .await
+        .unwrap();
+        let body: Value = serde_json::from_str(&reply_text(&reply)).unwrap();
+        assert_eq!(
+            body,
+            json!({"value": {}, "type": "object", "description": "Navigator"})
+        );
     }
 
     /// AUD-EV-12: the by-value read measures the object in the page; one
