@@ -295,28 +295,33 @@ pub(crate) async fn click_at(tab: &Tab, x: f64, y: f64) -> Result<(), BackendErr
         .map(|_| ())
 }
 
-/// Types `text` key by key into the focused element (spike H8).
+/// Characters typed per `input.performActions`: Firefox types about a
+/// thousand a second, and one command must end within the command timeout
+/// (20 000 characters at once timed out half typed).
+pub(crate) const KEYS_PER_ACTION: usize = 500;
+
+/// Types `text` key by key into the focused element (spike H8), in
+/// batches of [`KEYS_PER_ACTION`] characters.
 pub(crate) async fn type_text(tab: &Tab, text: &str) -> Result<(), BackendError> {
     if text.is_empty() {
         return Ok(());
     }
-    let keys: Vec<Value> = text
-        .chars()
-        .flat_map(|c| {
-            let value = c.to_string();
-            [
-                json!({"type": "keyDown", "value": value}),
-                json!({"type": "keyUp", "value": value}),
-            ]
-        })
-        .collect();
-    let actions = json!([{"type": "key", "id": "keyboard", "actions": keys}]);
-    command(
-        tab,
-        "input.performActions",
-        json!({"context": tab.context_id(), "actions": actions}),
-    )
-    .await?;
+    let chars: Vec<char> = text.chars().collect();
+    for batch in chars.chunks(KEYS_PER_ACTION) {
+        let keys: Vec<Value> = batch
+            .iter()
+            .flat_map(|c| {
+                let value = c.to_string();
+                [
+                    json!({"type": "keyDown", "value": value}),
+                    json!({"type": "keyUp", "value": value}),
+                ]
+            })
+            .collect();
+        let actions = json!([{"type": "key", "id": "keyboard", "actions": keys}]);
+        let params = json!({"context": tab.context_id(), "actions": actions});
+        command(tab, "input.performActions", params).await?;
+    }
     command(
         tab,
         "input.releaseActions",

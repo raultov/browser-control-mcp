@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 
 #[macros::mcp_tool(
     name = "fill_input",
-    description = "Focuses an input field via CSS selector, clears it and inserts text using native input simulation, so the text replaces the previous content; fires input events ('change' fires when the field loses focus, as for a user). For a <select>, picks the option whose value or label equals the text. Side effects: replaces the DOM input value; triggers input event handlers. Prerequisites: element must exist, be visible, and be an input/textarea or contenteditable element; a disabled, read-only, non-text or unfocusable element fails without typing anything, and so does a field left empty after typing (it rejected the text). Returns: success confirmation, with a note when the field holds something other than the text (a mask or maxlength reformatted it). Use this to populate form fields, search boxes, text areas, selects. Alternatives: 'evaluate_js' for direct value assignment without events, 'click_element' to focus manually."
+    description = "Focuses an input field via CSS selector, clears it and inserts text using native input simulation, so the text replaces the previous content; types it key by key (the page's keydown/keyup handlers run and may cancel a key, as for a user; newlines and tabs are inserted as text) and fires input events; 'change' fires when the field loses focus, as for a user, or at the end of the fill when the browser window has no focus (it would never come then). Typing takes about 1 ms per character: for very long text set the value with 'evaluate_js'. For a <select>, picks the option whose value or label equals the text. Side effects: replaces the DOM input value; triggers input event handlers. Prerequisites: element must exist, be visible, and be an input/textarea or contenteditable element; a disabled, read-only, non-text or unfocusable element fails without typing anything, and so does a field left empty after typing (it rejected the text). Returns: success confirmation, with a note when the field holds something other than the text (a mask or maxlength reformatted it). Use this to populate form fields, search boxes, text areas, selects. Alternatives: 'evaluate_js' for direct value assignment without events, 'click_element' to focus manually."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct FillInputTool {
@@ -85,6 +85,29 @@ pub(crate) fn fill_reply(value: &Value, selector: &str) -> Result<CallToolResult
     ]))
 }
 
+/// The CDP commands that type `c`: the key press that types it, so the
+/// page sees keydown, keypress, beforeinput, input and keyup and its
+/// handlers can cancel the key, as on Firefox (BiDi key actions;
+/// `Input.insertText` skipped every key event). A control character
+/// (newline, tab) is inserted as text instead: as a key, Chrome would press
+/// Tab or Enter, moving the focus or submitting the form.
+fn typing(c: char) -> Vec<(&'static str, Value)> {
+    let key = c.to_string();
+    if c.is_control() {
+        return vec![("Input.insertText", json!({"text": key}))];
+    }
+    vec![
+        (
+            "Input.dispatchKeyEvent",
+            json!({"type": "keyDown", "key": key, "text": key, "unmodifiedText": key}),
+        ),
+        (
+            "Input.dispatchKeyEvent",
+            json!({"type": "keyUp", "key": key}),
+        ),
+    ]
+}
+
 impl FillInputTool {
     pub async fn handle(
         params: CallToolRequestParams,
@@ -99,9 +122,10 @@ impl FillInputTool {
         if let FillStart::Selected = fill_start(&prepared, &args.selector)? {
             return Ok(selected_reply(&args.selector));
         }
-        if !args.text.is_empty() {
-            let text = json!({"text": args.text});
-            crate::handler::send_or(&target, "Input.insertText", text, "CDP Error").await?;
+        for c in args.text.chars() {
+            for (method, params) in typing(c) {
+                crate::handler::send_or(&target, method, params, "CDP Error").await?;
+            }
         }
         let check = crate::util::js::fill_result(&args.selector, &args.text);
         fill_reply(
@@ -188,7 +212,7 @@ mod tests {
             error,
             format!("Element '#d' is not editable ({reason}); nothing was typed.")
         );
-        assert!(mock.commands_named("Input.insertText").is_empty());
+        assert!(mock.commands_named("Input.dispatchKeyEvent").is_empty());
     }
 
     /// AUD-IN-09: a <select> gets the option matching the text, without typing.
@@ -204,7 +228,7 @@ mod tests {
             text,
             "Successfully selected the option matching the text in '#s'."
         );
-        assert!(mock.commands_named("Input.insertText").is_empty());
+        assert!(mock.commands_named("Input.dispatchKeyEvent").is_empty());
         let prepare = &mock.commands_named("Runtime.evaluate")[0].params;
         let expression = prepare["expression"].as_str().unwrap();
         assert!(expression.contains("HTMLSelectElement"), "{expression}");
@@ -234,7 +258,7 @@ mod tests {
         // When fill_input types into it
         let error = fill(mock, "#num").await.unwrap_err().to_string();
         // Then the text was inserted, but the call fails saying the field rejected it
-        assert_eq!(mock.commands_named("Input.insertText").len(), 1);
+        assert_eq!(mock.commands_named("Input.dispatchKeyEvent").len(), 12);
         assert!(error.starts_with("'#num' is empty after typing"), "{error}");
     }
 
@@ -256,6 +280,40 @@ mod tests {
         assert!(!text.contains("SECRET"), "{text}");
     }
 
+    /// AUD-IN-12: Chrome types key by key, as Firefox does, so the page's
+    /// keydown handlers run and can cancel a key (insertText skipped them:
+    /// Chrome wrote `abc` where Firefox wrote `bc`).
+    #[tokio::test]
+    async fn text_is_typed_key_by_key() {
+        let mock = page_answering(
+            json!({"status": "ready"}),
+            json!({"status": "done", "matches": true, "empty": false}),
+        )
+        .await;
+        let handler = crate::handler::cdp_domains::tests::mock_handler(mock.http_port);
+        let args = json!({"selector": "#a", "text": "a😀\n"});
+        let params = crate::handler::cdp_domains::tests::call("fill_input", args);
+        FillInputTool::handle(params, &handler).await.unwrap();
+        let keys: Vec<Value> = mock
+            .commands_named("Input.dispatchKeyEvent")
+            .into_iter()
+            .map(|c| c.params)
+            .collect();
+        assert_eq!(
+            keys,
+            [
+                json!({"type": "keyDown", "key": "a", "text": "a", "unmodifiedText": "a"}),
+                json!({"type": "keyUp", "key": "a"}),
+                json!({"type": "keyDown", "key": "😀", "text": "😀", "unmodifiedText": "😀"}),
+                json!({"type": "keyUp", "key": "😀"}),
+            ]
+        );
+        // And a control character is inserted as text (a key would move the focus)
+        let inserted = mock.commands_named("Input.insertText");
+        assert_eq!(inserted.len(), 1);
+        assert_eq!(inserted[0].params, json!({"text": "\n"}));
+    }
+
     /// AUD-IN-08: the happy path types the text once, then checks the field.
     #[tokio::test]
     async fn editable_field_is_typed_and_checked() {
@@ -269,9 +327,9 @@ mod tests {
             crate::handler::cdp_domains::tests::reply_text(&reply),
             "Successfully filled input '#a' with text."
         );
-        let inserted = mock.commands_named("Input.insertText");
-        assert_eq!(inserted.len(), 1);
-        assert_eq!(inserted[0].params["text"], "SECRET");
+        let keys = mock.commands_named("Input.dispatchKeyEvent");
+        assert_eq!(keys.len(), 12);
+        assert_eq!(keys[0].params["text"], "S");
         assert_eq!(mock.commands_named("Runtime.evaluate").len(), 2);
     }
 }

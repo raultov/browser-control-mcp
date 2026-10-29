@@ -52,7 +52,7 @@ see the note.
 | `inspect_dom` | ✓ | ✓ | at most 100 000 characters without `query` (cut in the page) |
 | `capture_screenshot` | ✓ | ✓ | `full_page` at most 16 384 px per side (a text note says when cut) |
 | `click_element` | ✓ | ✓ | scrolls the element into view; fails without clicking when it is hidden or covered |
-| `fill_input` | ✓ | ✓ | picks `<select>` options; fails without typing on elements that cannot take the text; Chrome inserts the text, Firefox types keys |
+| `fill_input` | ✓ | ✓ | picks `<select>` options; fails without typing on elements that cannot take the text; types key by key on both (key handlers run; newlines and tabs inserted as text), about 1 ms per character; `change` on leaving the field, or at the end when the window has no focus |
 | `handle_dialog` | ✓ | ✓ | accepts or dismisses the open `alert` / `confirm` / `prompt` / `beforeunload` dialog |
 | `evaluate_js` | ✓ | ✓ | `value` at most 100 000 characters (`truncated: true`); Chrome stops a script after 8 s, Firefox cannot (a looping tab is closed with `close_tab`) |
 | `get_console_logs` | ✓ | ✓ | a message keeps at most 10 000 characters; Firefox: page errors, CSS warnings and platform messages need the debugger port |

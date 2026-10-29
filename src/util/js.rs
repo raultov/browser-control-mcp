@@ -68,6 +68,10 @@ const CLICK_POINT: &str = "el.scrollIntoView({ behavior: 'instant', block: 'cent
     } \
     return { status: 'ok', x, y };";
 
+/// The property where the preparation keeps the value it found, for the
+/// check to fire `change` (a symbol: it never collides with the page's).
+const FILL_BEFORE: &str = "Symbol.for('browser-control-mcp.fill-before')";
+
 /// Readies the first element matching `selector` for `text` (`fill_input`).
 /// A text field or contenteditable element is focused and emptied (through
 /// the native `value` setter, which frameworks such as React observe), so
@@ -104,6 +108,7 @@ const PREPARE_FILL: &str = "if (el instanceof HTMLSelectElement) { \
     const active = document.activeElement; \
     if (active !== el && !(el.isContentEditable && active && active.contains(el))) return { status: 'not_editable', reason: 'it cannot take focus (hidden or inert)' }; \
     if (field) { \
+        el[Symbol.for('browser-control-mcp.fill-before')] = el.value; \
         const value = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), 'value'); \
         if (value && value.set) { value.set.call(el, ''); } else { el.value = ''; } \
     } else { el.textContent = ''; } \
@@ -112,14 +117,21 @@ const PREPARE_FILL: &str = "if (el instanceof HTMLSelectElement) { \
 
 /// What the element matching `selector` holds after `text` was typed:
 /// `{status: 'missing'}` or `{status: 'done', matches, empty}` (the value
-/// itself never leaves the page, as it may be a password).
+/// itself never leaves the page, as it may be a password). `change` is the
+/// browser's, when the field loses focus, as for a user; but a window
+/// without focus (Firefox headless, a background window) fires no blur, so
+/// there an input or textarea whose value differs from the one the
+/// preparation found gets `change` here.
 pub fn fill_result(selector: &str, text: &str) -> String {
     on_element(
         selector,
         "{ status: 'missing' }",
         &format!(
             "const text = {}; \
-             const value = el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement ? el.value : el.textContent; \
+             const field = el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement; \
+             const value = field ? el.value : el.textContent; \
+             if (field) {{ const before = el[{FILL_BEFORE}]; delete el[{FILL_BEFORE}]; \
+               if (!document.hasFocus() && value !== before) el.dispatchEvent(new Event('change', {{ bubbles: true }})); }} \
              return {{ status: 'done', matches: value === text, empty: value === '' }};",
             string_literal(text)
         ),
@@ -242,6 +254,28 @@ mod tests {
             "{expression}"
         );
         assert!(dom_query(None, 1, 1).contains("const query = null;"));
+    }
+
+    /// AUD-IN-11: `change` comes from the browser when the field loses
+    /// focus; in a window without focus (no blur ever comes: Firefox
+    /// headless) the check fires it for a field whose value changed.
+    #[test]
+    fn fill_fires_change_when_the_value_changed() {
+        let prepare = prepare_fill("#q", "x");
+        assert!(
+            prepare.contains(&format!("el[{FILL_BEFORE}] = ")),
+            "{prepare}"
+        );
+        let check = fill_result("#q", "x");
+        assert!(check.contains(&format!("el[{FILL_BEFORE}]")), "{check}");
+        assert!(
+            check.contains("new Event('change', { bubbles: true })"),
+            "{check}"
+        );
+        assert!(
+            check.contains("!document.hasFocus() && value !== before"),
+            "{check}"
+        );
     }
 
     /// The `const text = <literal>;` of a fill snippet, parsed back as JSON.

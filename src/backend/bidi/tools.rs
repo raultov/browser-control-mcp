@@ -959,6 +959,36 @@ mod tests {
         ts::stop(&handler).await;
     }
 
+    /// AUD-IN-14: a long text is typed in batches of KEYS_PER_ACTION
+    /// characters, so no `input.performActions` outlasts the command timeout
+    /// (20 000 characters timed out half typed).
+    #[tokio::test]
+    async fn long_text_is_typed_in_batches() {
+        let mock = MockFirefox::start(false).await.unwrap();
+        let typed = json!({"status": "done", "matches": true, "empty": false});
+        fill_page(&mock, json!({"status": "ready"}), typed);
+        let handler = ts::handler(&mock);
+        let text = "x".repeat(page::KEYS_PER_ACTION * 2 + 1);
+        let args = json!({"selector": "#a", "text": text});
+        fill_input(call("fill_input", args), &handler)
+            .await
+            .unwrap();
+        let batches = mock.bidi().commands_named("input.performActions");
+        assert_eq!(batches.len(), 3);
+        let keys = |i: usize| {
+            batches[i].params["actions"][0]["actions"]
+                .as_array()
+                .unwrap()
+                .len()
+        };
+        assert_eq!(
+            (keys(0), keys(1), keys(2)),
+            (page::KEYS_PER_ACTION * 2, page::KEYS_PER_ACTION * 2, 2)
+        );
+        assert_eq!(mock.bidi().commands_named("input.releaseActions").len(), 1);
+        ts::stop(&handler).await;
+    }
+
     /// AUD-IN-08: on Firefox too, a non-editable element fails and no key is typed.
     #[tokio::test]
     async fn fill_non_editable_sends_no_keys() {

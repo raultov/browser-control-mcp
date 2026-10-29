@@ -10,6 +10,21 @@ from a copy of its code: entries describe the differences from that release.
 
 ## [Unreleased]
 
+### Fixed
+
+- `fill_input` types the same way on both browsers: Chrome now presses a
+  key per character, as Firefox did, so the page's keydown and keyup
+  handlers run and can cancel a key (a field refusing `a` got `abc` on
+  Chrome and `bc` on Firefox; now `bc` on both). Newlines and tabs are
+  inserted as text on both (as a key, Chrome pressed Tab and the rest of
+  the text left the field). Typing takes about 1 ms per character, so a
+  very long text is slower on Chrome than before.
+- `fill_input` on Firefox types a long text in batches of 500 characters:
+  20 000 characters timed out half typed, now they take about 20 s.
+- `fill_input` fires `change` once, as for a user: the browser fires it
+  when the field loses focus, and when the window has no focus (Firefox
+  headless, which never fired it) the fill fires it at the end.
+
 ## [0.3.5-beta.5] - 2026-10-28
 
 Public **BETA**. Observation tools stop returning wrong or missing data
