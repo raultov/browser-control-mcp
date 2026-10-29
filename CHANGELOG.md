@@ -10,6 +10,18 @@ from a copy of its code: entries describe the differences from that release.
 
 ## [Unreleased]
 
+## [0.3.6-beta.6] - 2026-10-29
+
+Public **BETA**. `fill_input` types the same way on both browsers,
+`evaluate_js` gives objects the same value and names their class,
+`inspect_dom` reads shadow roots and same-origin iframes, network logs
+carry cookies and no longer wait on open streams, and raw commands that
+would break the server's capture are refused. Some behaviour changes:
+`fill_input` presses a key per character (about 1 ms each on Chrome),
+`evaluate_js` values are their `JSON.stringify` form, `inspect_dom`
+returns more HTML, and `send_cdp_command` refuses `*.disable` of the
+captured domains and `Browser.close`.
+
 ### Fixed
 
 - `set_breakpoint` on Chrome fails for a line with no code at or after it
