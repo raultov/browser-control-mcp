@@ -15,7 +15,7 @@ pub struct CaptureScreenshotTool {
     pub instance_id: Option<String>,
     /// The Tab ID of the target tab. Omit to use the active tab.
     pub tab_id: Option<String>,
-    /// Output image format. Constraints: must be 'png', 'jpeg', or 'webp'. Interactions: 'quality' applies only to 'jpeg' and 'webp' formats. Defaults to: "png".
+    /// Output image format. Constraints: 'png', 'jpeg' (or 'jpg') or 'webp', any case; anything else fails before capturing. Interactions: 'quality' applies only to 'jpeg' and 'webp' formats. Defaults to: "png".
     pub format: Option<String>,
     /// Compression quality (0-100, higher=better quality). Constraints: integer between 0 and 100. Interactions: only applies when 'format' is 'jpeg' or 'webp'; ignored for 'png'. Defaults to: 100.
     pub quality: Option<u32>,
@@ -32,7 +32,7 @@ impl CaptureScreenshotTool {
         let target =
             crate::handler::resolve_target(handler, args.instance_id.clone(), args.tab_id.clone())
                 .await?;
-        let format = args.format.clone().unwrap_or_else(|| "png".to_string());
+        let format = image_format(args.format.as_deref())?;
         let mut command_params = json!({"format": format, "fromSurface": true});
         if let (Some(q), Some(map)) = (args.quality, command_params.as_object_mut()) {
             map.insert("quality".to_string(), json!(q));
@@ -54,7 +54,7 @@ impl CaptureScreenshotTool {
         let base64_data = data.ok_or_else(|| {
             CallToolError::from_message("No data returned from Page.captureScreenshot")
         })?;
-        Ok(image_reply(base64_data.to_string(), &format, note))
+        Ok(image_reply(base64_data.to_string(), format, note))
     }
 }
 
@@ -74,8 +74,35 @@ pub(crate) fn full_page_note(width: f64, height: f64) -> Option<String> {
     ))
 }
 
-/// The tool reply: the image, then `note` when there is one.
+/// The capture format `format` names (any case; `jpg` is `jpeg`), `png`
+/// when omitted. Checked before anything is sent: Firefox answered a PNG
+/// for a format it does not know, labelled with that format.
+pub(crate) fn image_format(format: Option<&str>) -> Result<&'static str, CallToolError> {
+    let Some(name) = format else {
+        return Ok("png");
+    };
+    match name.to_ascii_lowercase().as_str() {
+        "png" => Ok("png"),
+        "jpeg" | "jpg" => Ok("jpeg"),
+        "webp" => Ok("webp"),
+        _ => Err(CallToolError::from_message(format!(
+            "Unsupported image format '{name}': use png, jpeg or webp."
+        ))),
+    }
+}
+
+/// The image format of base64 `data`, from its first bytes.
+fn format_of(data: &str) -> Option<&'static str> {
+    [("iVBORw0KGgo", "png"), ("/9j/", "jpeg"), ("UklGR", "webp")]
+        .into_iter()
+        .find(|(prefix, _)| data.starts_with(prefix))
+        .map(|(_, format)| format)
+}
+
+/// The tool reply: the image, labelled with the format of its bytes (else
+/// `format`, the one requested), then `note` when there is one.
 pub(crate) fn image_reply(data: String, format: &str, note: Option<String>) -> CallToolResult {
+    let format = format_of(&data).unwrap_or(format);
     let image = ImageContent::new(data, format!("image/{format}"), None, None);
     let mut content = vec![ContentBlock::ImageContent(image)];
     content.extend(note.map(|text| ContentBlock::TextContent(text.into())));
@@ -199,5 +226,49 @@ mod tests {
         };
         assert!(note.text.contains("16384 of 30000"), "{}", note.text);
         assert_eq!(full_page_note(1905.0, 300.0), None);
+    }
+
+    /// AUD-IN-20: the format is checked before anything is sent; `jpg` and
+    /// any case are accepted (Firefox labelled a PNG `image/gif`).
+    #[test]
+    fn formats_are_checked() {
+        assert_eq!(image_format(None).unwrap(), "png");
+        assert_eq!(image_format(Some("JPEG")).unwrap(), "jpeg");
+        assert_eq!(image_format(Some("jpg")).unwrap(), "jpeg");
+        assert_eq!(image_format(Some("webp")).unwrap(), "webp");
+        let error = image_format(Some("gif")).unwrap_err().to_string();
+        assert_eq!(
+            error,
+            "Unsupported image format 'gif': use png, jpeg or webp."
+        );
+    }
+
+    /// AUD-IN-20: the reply's MIME type is the one of the image's bytes.
+    #[test]
+    fn mime_type_follows_the_bytes() {
+        let mime = |data: &str| {
+            let reply = image_reply(data.to_string(), "jpeg", None);
+            let ContentBlock::ImageContent(image) = &reply.content[0] else {
+                panic!("no image");
+            };
+            image.mime_type.clone()
+        };
+        assert_eq!(mime("iVBORw0KGgoAAAANSUhEUg"), "image/png");
+        assert_eq!(mime("/9j/4AAQSkZJRg"), "image/jpeg");
+        assert_eq!(mime("UklGRlYAAABXRUJQ"), "image/webp");
+        assert_eq!(mime("AAAA"), "image/jpeg");
+    }
+
+    /// AUD-IN-20: Chrome gets no capture command for a bad format.
+    #[tokio::test]
+    async fn bad_format_sends_nothing() {
+        use crate::handler::cdp_domains::tests::{call, mock_handler, spawn_recording_mock};
+        let mock = spawn_recording_mock().await;
+        let handler = mock_handler(mock.http_port);
+        let args = json!({"format": "gif"});
+        let result =
+            CaptureScreenshotTool::handle(call("capture_screenshot", args), &handler).await;
+        assert!(result.is_err());
+        assert!(mock.commands_named("Page.captureScreenshot").is_empty());
     }
 }

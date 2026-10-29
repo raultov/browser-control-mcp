@@ -199,7 +199,7 @@ pub(crate) async fn capture_screenshot(
 ) -> ToolResult {
     let args: CaptureScreenshotTool = parse_args(params)?;
     let (_, _, tab) = target(handler, &ids(&args.instance_id, &args.tab_id)).await?;
-    let format = args.format.clone().unwrap_or_else(|| "png".into());
+    let format = capture_screenshot::image_format(args.format.as_deref())?;
     let full_page = args.full_page.unwrap_or(false);
     let (clip, note) = if full_page {
         let size = page::run_snippet(&tab.tab, crate::util::js::DOCUMENT_SIZE).await?;
@@ -216,13 +216,13 @@ pub(crate) async fn capture_screenshot(
         (None, None)
     };
     let request = page::ShotRequest {
-        format: &format,
+        format,
         quality: args.quality,
         full_page,
         clip,
     };
     let data = page::screenshot(&tab.tab, &request).await?;
-    Ok(capture_screenshot::image_reply(data, &format, note))
+    Ok(capture_screenshot::image_reply(data, format, note))
 }
 
 // ---- observation ----
@@ -992,6 +992,26 @@ mod tests {
             .unwrap();
         let body: Value = serde_json::from_str(&ts::text(&reply)).unwrap();
         assert_eq!(body["description"], "Map(1)", "{body}");
+        ts::stop(&handler).await;
+    }
+
+    /// AUD-IN-20 (Firefox): a bad format fails before any capture (Firefox
+    /// answered a PNG, labelled `image/gif`).
+    #[tokio::test]
+    async fn bad_format_sends_nothing() {
+        let mock = MockFirefox::start(false).await.unwrap();
+        let handler = ts::handler(&mock);
+        let args = json!({"format": "gif"});
+        let error = capture_screenshot(call("capture_screenshot", args), &handler)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("Unsupported image format 'gif'"), "{error}");
+        assert!(
+            mock.bidi()
+                .commands_named("browsingContext.captureScreenshot")
+                .is_empty()
+        );
         ts::stop(&handler).await;
     }
 

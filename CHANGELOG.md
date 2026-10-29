@@ -12,6 +12,12 @@ from a copy of its code: entries describe the differences from that release.
 
 ### Fixed
 
+- `capture_screenshot` checks `format` before capturing: `png`, `jpeg`
+  (or `jpg`) and `webp`, any case; anything else fails saying so. Firefox
+  answered a PNG labelled `image/gif` (or `image/jpg`), and Chrome a raw
+  `Invalid image format`. The reply's MIME type is the one of the image's
+  bytes.
+
 - `send_cdp_command` refuses the commands that silently stopped what the
   server captures (`Network.disable`, `Page.disable`, `Runtime.disable`,
   `Log.disable`, `Debugger.disable`) or closed the browser
