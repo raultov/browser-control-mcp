@@ -4,9 +4,41 @@ use rust_mcp_sdk::{
     schema::{CallToolError, CallToolRequestParams, CallToolResult},
 };
 
+/// Commands that would silently stop what the server captures or break
+/// the instance, with what to do instead.
+const REFUSED: &[(&str, &str)] = &[
+    (
+        "Network.disable",
+        "get_network_logs reads this domain's events, and they would stop without a word",
+    ),
+    (
+        "Page.disable",
+        "navigate, reload, dialogs and the network log follow this domain's events",
+    ),
+    (
+        "Runtime.disable",
+        "get_console_logs reads this domain's events, and they would stop without a word",
+    ),
+    (
+        "Log.disable",
+        "get_console_logs reads this domain's events, and they would stop without a word",
+    ),
+    (
+        "Debugger.disable",
+        "breakpoints and search_scripts need the debugger; remove_breakpoint and resume instead",
+    ),
+    ("Browser.close", "use close_instance or stop_browser"),
+];
+
+/// Commands that are sent, with what the agent should know afterwards.
+const NOTED: &[(&str, &str)] = &[(
+    "Fetch.enable",
+    "requests now pause until answered with Fetch.continueRequest, Fetch.fulfillRequest or Fetch.failRequest (their Fetch.requestPaused events are in get_custom_events); Fetch.disable lets them through again",
+)];
+
 #[macros::mcp_tool(
     name = "send_cdp_command",
-    description = "EXPERIMENTAL: Sends raw Chrome DevTools Protocol (CDP) commands to the browser for advanced use cases not covered by specialized tools. Side effects: depends on command; may modify page state, DOM, or trigger navigation. Auth requirements: subject to local-only restrictions if enabled (Page.navigate and Target.createTarget checked). Prerequisites: requires knowledge of CDP protocol; active Chrome connection. Returns: raw CDP command response as JSON. Use this only when specialized tools inadequate. Alternatives: use domain-specific tools (navigate, click_element, evaluate_js). Chrome only (not available on Firefox)."
+    description = "EXPERIMENTAL: Sends raw Chrome DevTools Protocol (CDP) commands to the browser for advanced use cases not covered by specialized tools. Side effects: depends on command; may modify page state, DOM, or trigger navigation. Auth requirements: subject to local-only restrictions if enabled (Page.navigate and Target.createTarget checked). Refuses commands that would silently stop what the server captures or close the browser: Network.disable, Page.disable, Runtime.disable, Log.disable, Debugger.disable, Browser.close. Fetch.enable comes with a note: requests then pause until answered. Prerequisites: requires knowledge of CDP protocol; active Chrome connection. Returns: raw CDP command response as JSON. Use this only when specialized tools inadequate. Alternatives: use domain-specific tools (navigate, click_element, evaluate_js). Chrome only (not available on Firefox)."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct SendCdpCommandTool {
@@ -30,6 +62,12 @@ impl SendCdpCommandTool {
             params.arguments.unwrap_or_default(),
         ))
         .map_err(|e| CallToolError::from_message(format!("Failed to parse arguments: {}", e)))?;
+        if let Some((_, why)) = REFUSED.iter().find(|(m, _)| *m == tool.method) {
+            return Err(CallToolError::from_message(format!(
+                "`{}` is refused: {why}",
+                tool.method
+            )));
+        }
         let parsed_params: serde_json::Value = match &tool.params {
             Some(s) if !s.trim().is_empty() => serde_json::from_str(s).map_err(|e| {
                 CallToolError::from_message(format!("Invalid JSON in params: {}", e))
@@ -58,13 +96,16 @@ impl SendCdpCommandTool {
 
         let response = target.send_raw_command(&tool.method, parsed_params).await;
         match response {
-            Ok(res) => Ok(CallToolResult::text_content(vec![
-                crate::handler::reply_text(
+            Ok(res) => {
+                let mut text = crate::handler::reply_text(
                     &format!("Command '{}' executed successfully.", tool.method),
                     &res,
-                )
-                .into(),
-            ])),
+                );
+                if let Some((_, note)) = NOTED.iter().find(|(m, _)| *m == tool.method) {
+                    text.push_str(&format!("\nNote: {note}"));
+                }
+                Ok(CallToolResult::text_content(vec![text.into()]))
+            }
             Err(e) => Err(CallToolError::from_message(format!(
                 "Failed to execute CDP command '{}': {}",
                 tool.method, e
@@ -82,6 +123,53 @@ mod tests {
     use serde_json::json;
     use std::sync::Arc;
     use tokio::sync::Mutex;
+
+    /// AUD-RW-09: a command that would silently stop what the server
+    /// captures (Network.disable left get_network_logs empty) is refused
+    /// before anything is sent.
+    #[tokio::test]
+    async fn state_breaking_commands_are_refused() {
+        use crate::handler::cdp_domains::tests::{call, mock_handler, spawn_recording_mock};
+        let mock = spawn_recording_mock().await;
+        let handler = mock_handler(mock.http_port);
+        for method in [
+            "Network.disable",
+            "Page.disable",
+            "Runtime.disable",
+            "Log.disable",
+            "Debugger.disable",
+            "Browser.close",
+        ] {
+            let args = json!({"method": method});
+            let error = SendCdpCommandTool::handle(call("send_cdp_command", args), &handler)
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.starts_with(&format!("`{method}` is refused: ")),
+                "{error}"
+            );
+            assert!(mock.commands_named(method).is_empty(), "{method} was sent");
+        }
+    }
+
+    /// AUD-RW-09: Fetch.enable is sent, with a note: every matching request
+    /// now waits for the agent.
+    #[tokio::test]
+    async fn fetch_enable_comes_with_a_note() {
+        use crate::handler::cdp_domains::tests::{
+            call, mock_handler, reply_text, spawn_recording_mock,
+        };
+        let mock = spawn_recording_mock().await;
+        let handler = mock_handler(mock.http_port);
+        let args = json!({"method": "Fetch.enable", "params": "{}"});
+        let reply = SendCdpCommandTool::handle(call("send_cdp_command", args), &handler)
+            .await
+            .unwrap();
+        assert_eq!(mock.commands_named("Fetch.enable").len(), 1);
+        let text = reply_text(&reply);
+        assert!(text.contains("Note: requests now pause"), "{text}");
+    }
 
     #[tokio::test]
     async fn test_send_cdp_command_schema() {

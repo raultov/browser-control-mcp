@@ -12,6 +12,13 @@ from a copy of its code: entries describe the differences from that release.
 
 ### Fixed
 
+- `send_cdp_command` refuses the commands that silently stopped what the
+  server captures (`Network.disable`, `Page.disable`, `Runtime.disable`,
+  `Log.disable`, `Debugger.disable`) or closed the browser
+  (`Browser.close`), saying what depends on them; `Network.disable` used to
+  leave `get_network_logs` empty without a word. `Fetch.enable` is sent with
+  a note that requests now pause until answered.
+
 - `evaluate_js` (and `evaluate_on_call_frame`) gives an object or array the
   same `value` on both browsers: what `JSON.stringify` gives (`toJSON`
   counts, functions drop out), and an object that is not a plain one has

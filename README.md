@@ -68,7 +68,7 @@ see the note.
 | `search_scripts` | ✓ | ✓ | a long line's preview is 100 characters on each side of the match |
 | `pause_on_load` | ✓ | ✗ | TODO on Firefox, see [Limitations and TODO](#limitations-and-todo) |
 | `enable_proxy_auth` | ✓ | partial | needs `--proxy-server`; a request the proxy rejects twice is cancelled; untested on Firefox against a real proxy |
-| `send_cdp_command` | ✓ | ✗ | raw Chrome DevTools Protocol |
+| `send_cdp_command` | ✓ | ✗ | raw Chrome DevTools Protocol; refuses `Network`/`Page`/`Runtime`/`Log`/`Debugger.disable` and `Browser.close`; `Fetch.enable` comes with a note |
 | `send_bidi_command` | ✗ | ✓ | raw WebDriver BiDi; refuses `session.new`, `session.end`, `browser.close` |
 | `send_rdp_request` | ✗ | ✓ | raw Firefox RDP request to an actor (`thread`, `console`, `root` shortcuts) |
 | `webmcp_list_tools` | ✓ | ✗ | needs `--enable-webmcp`; WebMCP is a Chrome testing feature; every annotation Chrome reports is listed (`readOnly`, `consequential`, `untrustedContent`, `debugging`, `autosubmit`, newer ones as they are) |
