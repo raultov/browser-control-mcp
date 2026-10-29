@@ -20,6 +20,11 @@ pub(crate) async fn process_network_event(event: &WsResponse, state: &Arc<Mutex<
         "Network.requestWillBeSent" => on_request(&mut st, request_id, params),
         "Network.responseReceived" => on_response(&mut st, request_id, params),
         "Network.loadingFailed" => on_failure(&mut st, request_id, params),
+        "Network.requestWillBeSentExtraInfo" | "Network.responseReceivedExtraInfo" => {
+            let response = method == "Network.responseReceivedExtraInfo";
+            let headers = params.get("headers").cloned().unwrap_or_default();
+            st.note_extra_headers(request_id, response, headers);
+        }
         "Network.webSocketCreated" => {
             let url = str_field(params, "url").unwrap_or("").to_string();
             st.insert_ws_connection(request_id.to_string(), url);
@@ -44,6 +49,7 @@ fn on_request(st: &mut NetworkState, request_id: &str, params: &serde_json::Valu
             ..Default::default()
         },
     );
+    st.apply_extra_headers(request_id);
 }
 
 fn on_response(st: &mut NetworkState, request_id: &str, params: &serde_json::Value) {
@@ -59,6 +65,7 @@ fn on_response(st: &mut NetworkState, request_id: &str, params: &serde_json::Val
     if req.resource_type.is_none() {
         req.resource_type = str_field(params, "type").map(str::to_string);
     }
+    st.apply_extra_headers(request_id);
 }
 
 /// Records why a request failed (`errorText`, plus why it was blocked).
@@ -209,6 +216,42 @@ mod tests {
         assert_eq!(frames[0].payload_data, "ping");
         assert!(!frames[1].is_sent);
         assert_eq!(frames[1].payload_data, "pong");
+    }
+
+    /// AUD-OB-17: the headers Chrome only reports in the ExtraInfo events
+    /// (Cookie, Set-Cookie) reach the request, whichever event comes first.
+    #[tokio::test]
+    async fn extra_info_headers_are_merged() {
+        let state = Arc::new(Mutex::new(NetworkState::default()));
+        let event = |method: &str, params: serde_json::Value| make_event(method, params);
+        // Request ExtraInfo before the request, response ExtraInfo before the response
+        let extra = json!({"requestId": "r1", "headers": {"Cookie": "s=1", "Host": "a"}});
+        process_network_event(&event("Network.requestWillBeSentExtraInfo", extra), &state).await;
+        let sent = json!({"requestId": "r1", "request": {"url": "http://a/", "method": "GET", "headers": {"Accept": "*/*"}}});
+        process_network_event(&event("Network.requestWillBeSent", sent), &state).await;
+        let extra = json!({"requestId": "r1", "headers": {"set-cookie": "s=2\nt=3"}});
+        process_network_event(&event("Network.responseReceivedExtraInfo", extra), &state).await;
+        let answered = json!({"requestId": "r1", "response": {"status": 200, "headers": {"Content-Type": "text/html", "Set-Cookie": "s=2"}}});
+        process_network_event(&event("Network.responseReceived", answered), &state).await;
+        let mut st = state.lock().await;
+        let req = st.find_request_mut("r1").unwrap();
+        assert_eq!(
+            req.request_headers,
+            Some(json!({"Accept": "*/*", "Cookie": "s=1", "Host": "a"}))
+        );
+        assert_eq!(
+            req.response_headers,
+            Some(json!({"Content-Type": "text/html", "set-cookie": "s=2\nt=3"}))
+        );
+        drop(st);
+        // And an ExtraInfo arriving after its request is merged too
+        let sent = json!({"requestId": "r2", "request": {"url": "http://a/x", "method": "GET", "headers": {}}});
+        process_network_event(&event("Network.requestWillBeSent", sent), &state).await;
+        let extra = json!({"requestId": "r2", "headers": {"Cookie": "late=1"}});
+        process_network_event(&event("Network.requestWillBeSentExtraInfo", extra), &state).await;
+        let mut st = state.lock().await;
+        let headers = st.find_request_mut("r2").unwrap().request_headers.clone();
+        assert_eq!(headers, Some(json!({"Cookie": "late=1"})));
     }
 
     /// AUD-OB-07: a failed request says why (it looked like one still

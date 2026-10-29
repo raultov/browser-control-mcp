@@ -141,6 +141,37 @@ pub(crate) struct NetworkState {
     /// Document request id per navigation id, where they differ (BiDi's
     /// `navigation`; Chrome's document request id is its loader id).
     pub documents: crate::util::bounded::BoundedMap<String, String, MAX_DOCUMENTS>,
+    /// Headers Chrome reports only in its ExtraInfo events (Cookie,
+    /// Set-Cookie...), per request id: they may come before or after the
+    /// request and its response, so they are kept and merged each time.
+    pub extra_headers: crate::util::bounded::BoundedMap<String, ExtraHeaders, MAX_EXTRA_HEADERS>,
+}
+
+/// Requests whose ExtraInfo headers are kept.
+pub(crate) const MAX_EXTRA_HEADERS: usize = 256;
+
+/// The ExtraInfo headers of one request (see [`NetworkState::extra_headers`]).
+#[derive(Clone, Debug, Default)]
+pub struct ExtraHeaders {
+    /// From `Network.requestWillBeSentExtraInfo`.
+    pub request: Option<serde_json::Value>,
+    /// From `Network.responseReceivedExtraInfo`.
+    pub response: Option<serde_json::Value>,
+}
+
+/// `extra` merged into `headers` (a name in any case replaces the same name).
+fn merge_headers(headers: &mut Option<serde_json::Value>, extra: &serde_json::Value) {
+    let Some(extra) = extra.as_object() else {
+        return;
+    };
+    let merged = headers.get_or_insert_with(|| serde_json::json!({}));
+    let Some(map) = merged.as_object_mut() else {
+        return;
+    };
+    for (name, value) in extra {
+        map.retain(|key, _| !key.eq_ignore_ascii_case(name));
+        map.insert(name.clone(), value.clone());
+    }
 }
 
 impl Default for NetworkState {
@@ -152,6 +183,7 @@ impl Default for NetworkState {
             ws_connections: Default::default(),
             ws_frames: Default::default(),
             documents: Default::default(),
+            extra_headers: Default::default(),
         }
     }
 }
@@ -176,6 +208,43 @@ impl NetworkState {
             {
                 bucket.requests.remove(&oldest_id);
             }
+        }
+    }
+
+    /// Keeps ExtraInfo headers of `id` (`response` false: the request's)
+    /// and merges what is known into the logged request.
+    pub(crate) fn note_extra_headers(
+        &mut self,
+        id: &str,
+        response: bool,
+        headers: serde_json::Value,
+    ) {
+        if self.extra_headers.get_mut(id).is_none() {
+            self.extra_headers
+                .insert(id.to_string(), ExtraHeaders::default());
+        }
+        if let Some(extra) = self.extra_headers.get_mut(id) {
+            match response {
+                true => extra.response = Some(headers),
+                false => extra.request = Some(headers),
+            }
+        }
+        self.apply_extra_headers(id);
+    }
+
+    /// Merges the kept ExtraInfo headers of `id` into its logged request.
+    pub(crate) fn apply_extra_headers(&mut self, id: &str) {
+        let Some(extra) = self.extra_headers.get(id).cloned() else {
+            return;
+        };
+        let Some(request) = self.find_request_mut(id) else {
+            return;
+        };
+        if let Some(headers) = &extra.request {
+            merge_headers(&mut request.request_headers, headers);
+        }
+        if let Some(headers) = &extra.response {
+            merge_headers(&mut request.response_headers, headers);
         }
     }
 

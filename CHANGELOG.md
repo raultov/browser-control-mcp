@@ -12,6 +12,13 @@ from a copy of its code: entries describe the differences from that release.
 
 ### Fixed
 
+- `get_network_logs` on Chrome returns the `Cookie` and `Set-Cookie`
+  headers (redacted unless `include_sensitive_headers: true`): Chrome
+  reports them only in its ExtraInfo events, which were ignored, so they
+  were missing even when asked for. On Firefox a repeated header (several
+  `Set-Cookie`) keeps every value, joined by newlines as on Chrome; only
+  the last one was kept.
+
 - `capture_screenshot` checks `format` before capturing: `png`, `jpeg`
   (or `jpg`) and `webp`, any case; anything else fails saying so. Firefox
   answered a PNG labelled `image/gif` (or `image/jpg`), and Chrome a raw

@@ -8,7 +8,7 @@ use crate::handler::{CustomEvent, NetworkRequest};
 use crate::util::json::{opt_string, str_field, string_or_empty};
 use crate::util::sync::{read, write};
 use bidi_browser_lite::{BrowserClient, WsResponse};
-use serde_json::Value;
+use serde_json::{Map, Value};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use tokio::sync::broadcast::{self, error::RecvError};
@@ -201,20 +201,26 @@ pub(crate) fn console_message(params: &Value) -> ConsoleMessage {
     }
 }
 
-/// BiDi headers `[{name, value: {type, value}}]` as `{name: value}`.
+/// BiDi headers `[{name, value: {type, value}}]` as `{name: value}`; a
+/// repeated header (several Set-Cookie) keeps every value, joined by
+/// newlines as Chrome reports them.
 fn headers(list: Option<&Value>) -> Option<Value> {
     let list = list?.as_array()?;
-    let map = list
-        .iter()
-        .filter_map(|h| {
-            let name = str_field(h, "name")?;
-            let value = h
-                .get("value")
-                .and_then(|v| str_field(v, "value"))
-                .unwrap_or_default();
-            Some((name.to_string(), Value::String(value.to_string())))
-        })
-        .collect();
+    let mut map = Map::new();
+    for header in list {
+        let Some(name) = str_field(header, "name") else {
+            continue;
+        };
+        let value = header
+            .get("value")
+            .and_then(|v| str_field(v, "value"))
+            .unwrap_or_default();
+        let joined = match map.get(name).and_then(Value::as_str) {
+            Some(before) => format!("{before}\n{value}"),
+            None => value.to_string(),
+        };
+        map.insert(name.to_string(), Value::String(joined));
+    }
     Some(Value::Object(map))
 }
 
@@ -395,6 +401,22 @@ mod tests {
         route(&event("network.beforeRequestSent", params), &client, &state).await;
         let network = read(&state.tabs).tabs["tab-1"].network.clone();
         assert_eq!(network.lock().await.iter_all().len(), 1);
+    }
+
+    /// AUD-OB-17 (Firefox): repeated headers (several Set-Cookie) are kept,
+    /// joined by newlines as Chrome does (only the last one was kept).
+    #[test]
+    fn repeated_headers_are_joined() {
+        let header = |name: &str, value: &str| json!({"name": name, "value": {"type": "string", "value": value}});
+        let list = json!([
+            header("Set-Cookie", "a=1"),
+            header("Content-Type", "text/html"),
+            header("Set-Cookie", "b=2")
+        ]);
+        assert_eq!(
+            headers(Some(&list)),
+            Some(json!({"Set-Cookie": "a=1\nb=2", "Content-Type": "text/html"}))
+        );
     }
 
     /// AUD-OB-07 (Firefox): a fetch error is the request's error, as on
