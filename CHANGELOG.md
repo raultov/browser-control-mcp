@@ -12,6 +12,12 @@ from a copy of its code: entries describe the differences from that release.
 
 ### Fixed
 
+- `get_network_logs` asks for a response body only once the response
+  finished loading, and the reply notes the ones still loading (an open
+  event stream). On Firefox an open server-sent events stream made every
+  call wait 10 s for its body; now it answers at once. Each body waits at
+  most 2 s.
+
 - `get_network_logs` on Chrome returns the `Cookie` and `Set-Cookie`
   headers (redacted unless `include_sensitive_headers: true`): Chrome
   reports them only in its ExtraInfo events, which were ignored, so they

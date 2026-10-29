@@ -71,6 +71,10 @@ pub struct NetworkRequest {
     /// URLs this request was redirected from, oldest first.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub redirects: Vec<String>,
+    /// The response finished loading (or failed): only then is its body
+    /// asked for (an open stream never finishes).
+    #[serde(skip)]
+    pub finished: bool,
 }
 
 #[derive(Clone, Debug, ::serde::Serialize, ::serde::Deserialize)]

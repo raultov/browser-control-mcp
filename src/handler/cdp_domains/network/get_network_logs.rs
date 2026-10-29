@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 #[macros::mcp_tool(
     name = "get_network_logs",
-    description = "Retrieves intercepted HTTP/REST requests and WebSocket frames from network activity cache with filtering. Side effects: when 'clear' is true the returned requests and WebSocket frames (those the filters selected) are removed from the cache; the rest stays. Prerequisites: requires active Chrome tab with network monitoring enabled. Returns: JSON array of requests/WebSocket frames with optional full details ('include_details' defaults to true; set false for summary only). Bodies and WebSocket payloads show at most 64000 characters ('… [cut: ...]' where cut; payload_len is the whole length); response bodies over 2 MB are not kept. Parameters: 'current_navigation_only' limits results to current navigation only (defaults to false, retaining up to 3 navigations). Rate limits: none. Use this to audit API calls, debug network issues, inspect WebSocket traffic. Alternatives: browser DevTools Network tab, HAR file export."
+    description = "Retrieves intercepted HTTP/REST requests and WebSocket frames from network activity cache with filtering. Side effects: when 'clear' is true the returned requests and WebSocket frames (those the filters selected) are removed from the cache; the rest stays. Prerequisites: requires active Chrome tab with network monitoring enabled. Returns: JSON array of requests/WebSocket frames with optional full details ('include_details' defaults to true; set false for summary only). Bodies and WebSocket payloads show at most 64000 characters ('… [cut: ...]' where cut; payload_len is the whole length); response bodies over 2 MB are not kept, and a response still loading (an open event stream) has none yet (a note says how many). Parameters: 'current_navigation_only' limits results to current navigation only (defaults to false, retaining up to 3 navigations). Rate limits: none. Use this to audit API calls, debug network issues, inspect WebSocket traffic. Alternatives: browser DevTools Network tab, HAR file export."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct GetNetworkLogsTool {
@@ -123,11 +123,16 @@ impl GetNetworkLogsTool {
         }
         let network_state = session.network_state(args.tab_id.clone())?;
         let mut snapshot = args.collect(&network_state).await;
+        let mut notes: Vec<String> = first
+            .then(|| NOT_CAPTURED_BEFORE.to_string())
+            .into_iter()
+            .collect();
         if args.wants_bodies() {
-            fetch_bodies(&target, &mut snapshot.requests, &snapshot.current_ids).await;
+            let loading =
+                fetch_bodies(&target, &mut snapshot.requests, &snapshot.current_ids).await;
+            notes.extend(still_loading_note(loading));
         }
-        let notes = first.then(|| NOT_CAPTURED_BEFORE.to_string());
-        Ok(args.finish(snapshot, notes.into_iter().collect()))
+        Ok(args.finish(snapshot, notes))
     }
 
     /// Whether response bodies should be fetched (REST requests with details).
@@ -229,22 +234,54 @@ pub(crate) const BODY_LIMIT: u64 = 2_000_000;
 /// Most characters of a request or response body in a reply.
 const BODY_MAX_CHARS: usize = 64_000;
 
-/// `Network.getResponseBody` for answered requests of the current navigation
-/// (bodies are only kept in the returned copy), but not for one whose
-/// `Content-Length` is over [`BODY_LIMIT`].
-async fn fetch_bodies(target: &CdpTarget, requests: &mut Requests, current: &HashSet<String>) {
+/// Longest wait for one response body: a body is only asked for once its
+/// response finished, so this only bounds a browser that does not answer.
+pub(crate) const BODY_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Whether the body of `request` (`id`) is asked for: an answered request
+/// of the current navigation, finished loading, without a body yet, and
+/// not over [`BODY_LIMIT`].
+pub(crate) fn wants_body(id: &str, request: &NetworkRequest, current: &HashSet<String>) -> bool {
+    current.contains(id)
+        && request.response_status.is_some()
+        && request.finished
+        && request.response_body.is_none()
+        && content_length(request).is_none_or(|length| length <= BODY_LIMIT)
+}
+
+/// How many answered requests of the current navigation are still loading
+/// (an open stream such as server-sent events): their bodies are not asked
+/// for, as the browser would only answer once they end.
+pub(crate) fn still_loading(requests: &Requests, current: &HashSet<String>) -> usize {
+    requests
+        .iter()
+        .filter(|(id, r)| current.contains(*id) && r.response_status.is_some() && !r.finished)
+        .count()
+}
+
+/// The note for `count` responses still loading, when there are any.
+pub(crate) fn still_loading_note(count: usize) -> Option<String> {
+    let plural = if count == 1 { "response" } else { "responses" };
+    (count > 0).then(|| {
+        format!("{count} {plural} still loading (e.g. an open event stream): no body until it ends")
+    })
+}
+
+/// `Network.getResponseBody` for the requests [`wants_body`] picks (bodies
+/// are only kept in the returned copy); how many are still loading.
+async fn fetch_bodies(
+    target: &CdpTarget,
+    requests: &mut Requests,
+    current: &HashSet<String>,
+) -> usize {
+    let loading = still_loading(requests, current);
     for (req_id, req) in requests.iter_mut() {
-        if !current.contains(req_id)
-            || req.response_status.is_none()
-            || req.response_body.is_some()
-            || content_length(req).is_some_and(|length| length > BODY_LIMIT)
-        {
+        if !wants_body(req_id, req, current) {
             continue;
         }
-        let reply = target
-            .send_raw_command("Network.getResponseBody", json!({"requestId": req_id}))
-            .await;
-        if let Ok(reply) = reply
+        let ask = target.send_raw_command("Network.getResponseBody", json!({"requestId": req_id}));
+        let reply = tokio::time::timeout(BODY_WAIT, ask).await;
+        if let Ok(Ok(reply)) = reply
             && let Some(result) = reply.result.as_ref()
         {
             req.response_body = result
@@ -255,6 +292,7 @@ async fn fetch_bodies(target: &CdpTarget, requests: &mut Requests, current: &Has
             req.response_body_encoding = base64.then(|| "base64".to_string());
         }
     }
+    loading
 }
 
 /// The response's `Content-Length` header, when it has one.
@@ -402,8 +440,43 @@ mod tests {
             response_status_text: Some("OK".to_string()),
             response_headers: Some(headers),
             response_body: body,
+            finished: true,
             ..Default::default()
         }
+    }
+
+    /// AUD-OB-14: a response still loading (an open stream) is not asked
+    /// for its body (Firefox waited 10 s for one), and is counted for a
+    /// note.
+    #[tokio::test]
+    async fn unfinished_responses_are_noted_not_fetched() {
+        use crate::handler::cdp_domains::tests::{mock_handler, spawn_recording_mock};
+        let mock = spawn_recording_mock().await;
+        let handler = mock_handler(mock.http_port);
+        let target = handler
+            .session(None)
+            .await
+            .unwrap()
+            .target(None)
+            .await
+            .unwrap();
+        let streaming = NetworkRequest {
+            finished: false,
+            ..answered(json!({}), None)
+        };
+        let mut requests = HashMap::from([
+            ("done".to_string(), answered(json!({}), None)),
+            ("sse".to_string(), streaming),
+        ]);
+        let current = HashSet::from(["done".to_string(), "sse".to_string()]);
+        let loading = fetch_bodies(&target, &mut requests, &current).await;
+        assert_eq!(loading, 1);
+        let fetched = mock.commands_named("Network.getResponseBody");
+        assert_eq!(fetched.len(), 1);
+        assert_eq!(fetched[0].params["requestId"], "done");
+        let note = still_loading_note(1).unwrap();
+        assert!(note.starts_with("1 response still loading"), "{note}");
+        assert_eq!(still_loading_note(0), None);
     }
 
     /// AUD-OB-13: bodies are cut in the reply, on every browser.

@@ -20,6 +20,11 @@ pub(crate) async fn process_network_event(event: &WsResponse, state: &Arc<Mutex<
         "Network.requestWillBeSent" => on_request(&mut st, request_id, params),
         "Network.responseReceived" => on_response(&mut st, request_id, params),
         "Network.loadingFailed" => on_failure(&mut st, request_id, params),
+        "Network.loadingFinished" => {
+            if let Some(req) = st.find_request_mut(request_id) {
+                req.finished = true;
+            }
+        }
         "Network.requestWillBeSentExtraInfo" | "Network.responseReceivedExtraInfo" => {
             let response = method == "Network.responseReceivedExtraInfo";
             let headers = params.get("headers").cloned().unwrap_or_default();
@@ -73,6 +78,7 @@ fn on_failure(st: &mut NetworkState, request_id: &str, params: &serde_json::Valu
     let Some(req) = st.find_request_mut(request_id) else {
         return;
     };
+    req.finished = true;
     let text = str_field(params, "errorText").unwrap_or("failed");
     req.error = Some(match str_field(params, "blockedReason") {
         Some(reason) => format!("{text} (blocked: {reason})"),
@@ -252,6 +258,21 @@ mod tests {
         let mut st = state.lock().await;
         let headers = st.find_request_mut("r2").unwrap().request_headers.clone();
         assert_eq!(headers, Some(json!({"Cookie": "late=1"})));
+    }
+
+    /// AUD-OB-14: a request is finished once Chrome says it loaded (or
+    /// failed), not when its headers arrive.
+    #[tokio::test]
+    async fn loading_finished_marks_the_request() {
+        let state = Arc::new(Mutex::new(NetworkState::default()));
+        let sent = json!({"requestId": "r1", "request": {"url": "http://a/", "method": "GET", "headers": {}}});
+        process_network_event(&make_event("Network.requestWillBeSent", sent), &state).await;
+        let answered = json!({"requestId": "r1", "response": {"status": 200, "headers": {}}});
+        process_network_event(&make_event("Network.responseReceived", answered), &state).await;
+        assert!(!state.lock().await.find_request_mut("r1").unwrap().finished);
+        let done = json!({"requestId": "r1", "encodedDataLength": 10});
+        process_network_event(&make_event("Network.loadingFinished", done), &state).await;
+        assert!(state.lock().await.find_request_mut("r1").unwrap().finished);
     }
 
     /// AUD-OB-07: a failed request says why (it looked like one still

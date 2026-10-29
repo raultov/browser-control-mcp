@@ -14,7 +14,7 @@ use crate::handler::cdp_domains::input::fill_input::{
     FillInputTool, FillStart, fill_reply, fill_start, selected_reply,
 };
 use crate::handler::cdp_domains::log::get_console_logs::GetConsoleLogsTool;
-use crate::handler::cdp_domains::network::get_network_logs::GetNetworkLogsTool;
+use crate::handler::cdp_domains::network::get_network_logs::{self, GetNetworkLogsTool};
 use crate::handler::cdp_domains::page::capture_screenshot::{self, CaptureScreenshotTool};
 use crate::handler::cdp_domains::page::navigate::NavigateTool;
 use crate::handler::cdp_domains::page::scroll::ScrollTool;
@@ -249,10 +249,12 @@ pub(crate) async fn network_logs(
     let (session, id, tab) = target(handler, &ids(&args.instance_id, &args.tab_id)).await?;
     let watched = super::debugger::watch_session_tab(&session, &id, &tab).await;
     let mut snapshot = args.collect(&tab.network).await;
-    if args.wants_bodies() {
-        fetch_bodies(&tab.tab, &mut snapshot).await;
-    }
     let mut notes = Vec::new();
+    if args.wants_bodies() {
+        notes.extend(get_network_logs::still_loading_note(
+            fetch_bodies(&tab.tab, &mut snapshot).await,
+        ));
+    }
     let wants_frames = args
         .type_filter
         .as_deref()
@@ -273,27 +275,33 @@ fn frames_note(has_debugger: bool) -> &'static str {
     }
 }
 
-/// Response bodies of answered requests of the current navigation (spike H11).
+/// Response bodies of the requests `get_network_logs::wants_body` picks
+/// (spike H11); how many are still loading (Firefox answers
+/// `network.getData` for those only once they end).
 async fn fetch_bodies(
     tab: &bidi_browser_lite::Tab,
-    snapshot: &mut crate::handler::cdp_domains::network::get_network_logs::NetworkSnapshot,
-) {
+    snapshot: &mut get_network_logs::NetworkSnapshot,
+) -> usize {
+    let current = &snapshot.current_ids;
+    let loading = get_network_logs::still_loading(&snapshot.requests, current);
     for (id, request) in snapshot.requests.iter_mut() {
-        if !snapshot.current_ids.contains(id) || request.response_status.is_none() {
+        if !get_network_logs::wants_body(id, request, current) {
             continue;
         }
         let params = json!({"dataType": "response", "request": id});
-        match page::command(tab, "network.getData", params).await {
-            Ok(reply) => {
+        let ask = page::command(tab, "network.getData", params);
+        match tokio::time::timeout(get_network_logs::BODY_WAIT, ask).await {
+            Ok(Ok(reply)) => {
                 let body = reply.pointer("/bytes/value").and_then(Value::as_str);
                 request.response_body = body.map(str::to_string);
                 let base64 = reply.pointer("/bytes/type").and_then(Value::as_str) == Some("base64");
                 request.response_body_encoding = base64.then(|| "base64".to_string());
             }
             // Kind only: the error text could quote the request.
-            Err(_) => tracing::debug!(request = %id, "no response body kept by Firefox"),
+            _ => tracing::debug!(request = %id, "no response body kept by Firefox"),
         }
     }
+    loading
 }
 
 /// `get_custom_events`: events of modules subscribed with `send_bidi_command`.
@@ -1204,6 +1212,47 @@ mod tests {
             ts::text(&reply)
         );
         assert!(!ts::text(&reply).contains("response_body_encoding"));
+    }
+
+    /// AUD-OB-14 (Firefox): a response still loading (only
+    /// responseStarted) is not asked for its body, and the reply says so
+    /// (network.getData waited 10 s for an open event stream).
+    #[tokio::test]
+    async fn unfinished_responses_are_noted_not_fetched() {
+        let mock = MockFirefox::start(false).await.unwrap();
+        let handler = ts::handler(&mock);
+        let session = handler.firefox(None).await.unwrap();
+        let (_, tab) = session.tab(None).await.unwrap();
+        {
+            let mut network = tab.network.lock().await;
+            for (method, fixture) in [
+                (
+                    "network.beforeRequestSent",
+                    include_str!("../../../tests/fixtures/bidi/event-before-request-sent.json"),
+                ),
+                (
+                    "network.responseStarted",
+                    include_str!("../../../tests/fixtures/bidi/event-response-completed.json"),
+                ),
+            ] {
+                let event: Value = serde_json::from_str(fixture).unwrap();
+                super::super::pump::on_network(method, &event["params"], &mut network);
+            }
+        }
+        let args = json!({"include_details": true, "type_filter": "rest"});
+        let reply = network_logs(call("get_network_logs", args), &handler)
+            .await
+            .unwrap();
+        assert!(mock.bidi().commands_named("network.getData").is_empty());
+        let notes = &ts::json_of(&reply)["notes"];
+        assert!(
+            notes[0]
+                .as_str()
+                .unwrap()
+                .starts_with("1 response still loading"),
+            "{notes}"
+        );
+        ts::stop(&handler).await;
     }
 
     /// AUD-OB-15 (Firefox): a binary body says it is base64.

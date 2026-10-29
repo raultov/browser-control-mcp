@@ -253,7 +253,11 @@ pub(crate) fn on_network(method: &str, params: &Value, network: &mut crate::hand
     };
     if method == "network.fetchError" {
         entry.error = opt_string(params, "errorText");
+        entry.finished = true;
         return;
+    }
+    if method == "network.responseCompleted" {
+        entry.finished = true;
     }
     if let Some(response) = params.get("response") {
         entry.response_status = response.get("status").and_then(Value::as_i64);
@@ -401,6 +405,25 @@ mod tests {
         route(&event("network.beforeRequestSent", params), &client, &state).await;
         let network = read(&state.tabs).tabs["tab-1"].network.clone();
         assert_eq!(network.lock().await.iter_all().len(), 1);
+    }
+
+    /// AUD-OB-14 (Firefox): only network.responseCompleted finishes a
+    /// request (responseStarted only brings the headers).
+    #[test]
+    fn response_completed_finishes_the_request() {
+        let mut network = crate::handler::NetworkState::default();
+        let request =
+            json!({"request": "R1", "url": "http://a/sse", "method": "GET", "headers": []});
+        on_network(
+            "network.beforeRequestSent",
+            &json!({"request": request.clone()}),
+            &mut network,
+        );
+        let answer = json!({"request": request, "response": {"status": 200, "headers": []}});
+        on_network("network.responseStarted", &answer, &mut network);
+        assert!(!network.find_request_mut("R1").unwrap().finished);
+        on_network("network.responseCompleted", &answer, &mut network);
+        assert!(network.find_request_mut("R1").unwrap().finished);
     }
 
     /// AUD-OB-17 (Firefox): repeated headers (several Set-Cookie) are kept,
