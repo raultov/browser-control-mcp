@@ -49,7 +49,7 @@ see the note.
 | `navigate` | ✓ | ✓ | |
 | `reload` | ✓ | ✓ | |
 | `scroll` | ✓ | ✓ | reports the window positions before and after |
-| `inspect_dom` | ✓ | ✓ | at most 100 000 characters without `query` (cut in the page) |
+| `inspect_dom` | ✓ | ✓ | includes open shadow roots and same-origin iframes (cross-origin ones are noted); at most 100 000 characters without `query` (cut in the page) |
 | `capture_screenshot` | ✓ | ✓ | `format` `png`, `jpeg` (or `jpg`) or `webp`; `full_page` at most 16 384 px per side (a text note says when cut) |
 | `click_element` | ✓ | ✓ | scrolls the element into view; fails without clicking when it is hidden or covered |
 | `fill_input` | ✓ | ✓ | picks `<select>` options; fails without typing on elements that cannot take the text; types key by key on both (key handlers run; newlines and tabs inserted as text), about 1 ms per character; `change` on leaving the field, or at the end when the window has no focus |

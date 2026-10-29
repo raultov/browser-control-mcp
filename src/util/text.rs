@@ -14,6 +14,15 @@ pub fn capped(text: &str, max: usize) -> String {
     format!("{start}… [cut: the first {max} of {total} characters]")
 }
 
+/// The note for `count` iframes of another origin, which the page cannot
+/// read into the document.
+fn frames_note(count: u64) -> Option<String> {
+    let noun = if count == 1 { "iframe" } else { "iframes" };
+    (count > 0).then(|| {
+        format!("[{count} cross-origin {noun} not included: open their URL in a tab to read them.]")
+    })
+}
+
 /// The `inspect_dom` text from the page's outcome (`util::js::dom_query`):
 /// the document, after a note when it was cut, or the first match with its
 /// context (same output on every browser).
@@ -25,18 +34,25 @@ pub fn dom_report(
 ) -> String {
     let text = |key: &str| outcome[key].as_str().unwrap_or_default();
     let total = outcome["total"].as_u64().unwrap_or_default();
+    let skipped = frames_note(outcome["skipped_frames"].as_u64().unwrap_or_default());
     let Some(query) = query else {
         let html = text("html");
         let shown = html.encode_utf16().count() as u64;
-        if shown >= total {
+        let cut = (shown < total).then(|| format!(
+            "[Truncated: the first {shown} of {total} characters of HTML. Pass 'query' to find a part, or read parts with 'evaluate_js'.]"
+        ));
+        let notes: Vec<String> = skipped.into_iter().chain(cut).collect();
+        if notes.is_empty() {
             return html.to_string();
         }
-        return format!(
-            "[Truncated: the first {shown} of {total} characters of HTML. Pass 'query' to find a part, or read parts with 'evaluate_js'.]\n{html}"
-        );
+        return format!("{}\n{html}", notes.join("\n"));
     };
     if outcome["found"].as_bool() != Some(true) {
-        return format!("Query '{query}' not found in the DOM.");
+        let missing = format!("Query '{query}' not found in the DOM.");
+        return match skipped {
+            Some(note) => format!("{missing}\n{note}"),
+            None => missing,
+        };
     }
     format!(
         "Found '{query}' at position {}. Context (before={before}, after={after}):\n\n[...]\n{}\n[...]",
@@ -61,6 +77,23 @@ mod tests {
 
     /// AUD-IN-27: the page sends at most `DOM_MAX_CHARS` of HTML; a cut
     /// document says so first. Positions are characters (AUD-IN-26).
+    /// AUD-IN-24: iframes that could not be read (another origin) are
+    /// named in every report.
+    #[test]
+    fn unreadable_frames_are_noted() {
+        use serde_json::json;
+        let note = "[2 cross-origin iframes not included: open their URL in a tab to read them.]";
+        let whole = json!({"total": 5, "html": "<html>", "skipped_frames": 2});
+        assert_eq!(dom_report(&whole, None, 1, 1), format!("{note}\n<html>"));
+        let missing = json!({"total": 5, "found": false, "skipped_frames": 2});
+        assert_eq!(
+            dom_report(&missing, Some("x"), 1, 1),
+            format!("Query 'x' not found in the DOM.\n{note}")
+        );
+        let one = json!({"total": 5, "html": "<html>", "skipped_frames": 1});
+        assert!(dom_report(&one, None, 1, 1).starts_with("[1 cross-origin iframe not included"));
+    }
+
     #[test]
     fn dom_reports_from_the_page_outcome() {
         use serde_json::json;

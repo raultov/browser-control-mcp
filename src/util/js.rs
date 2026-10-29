@@ -146,20 +146,60 @@ pub const DOM_MAX_CHARS: usize = 100_000;
 /// Most characters of context on each side of an `inspect_dom` match.
 pub const DOM_MAX_CONTEXT: usize = 10_000;
 
+/// Most iframes `inspect_dom` reads into the document (and how deep).
+const DOM_MAX_FRAMES: usize = 20;
+const DOM_MAX_FRAME_DEPTH: usize = 3;
+
+/// Declares `serialize(doc, depth)` and `state`: the HTML of `doc`'s root
+/// with its open shadow roots (`getHTML` with `shadowRoots`, written as
+/// `<template shadowrootmode>`; `outerHTML` left them out), followed by
+/// each same-origin iframe's document after an `<!-- iframe src: -->`
+/// comment. `state.skipped` counts the iframes another origin keeps out.
+fn serialize_document() -> String {
+    format!(
+        "const state = {{ frames: 0, skipped: 0 }}; \
+         const serialize = (doc, depth) => {{ \
+           const root = doc.documentElement; \
+           const roots = []; \
+           const walk = node => {{ for (const e of node.querySelectorAll('*')) if (e.shadowRoot) {{ roots.push(e.shadowRoot); walk(e.shadowRoot); }} }}; \
+           walk(doc); \
+           let html = root.outerHTML; \
+           if (typeof root.getHTML === 'function') {{ \
+             const shell = root.cloneNode(false).outerHTML, close = shell.lastIndexOf('</'); \
+             html = shell.slice(0, close) + root.getHTML({{ shadowRoots: roots }}) + shell.slice(close); \
+           }} \
+           const frames = [doc, ...roots].flatMap(n => Array.from(n.querySelectorAll('iframe, frame'))); \
+           for (const frame of frames) {{ \
+             let inner = null; \
+             try {{ inner = frame.contentDocument; }} catch (e) {{}} \
+             if (!inner || !inner.documentElement) {{ state.skipped++; continue; }} \
+             if (depth >= {DOM_MAX_FRAME_DEPTH} || state.frames >= {DOM_MAX_FRAMES}) continue; \
+             state.frames++; \
+             html += '\\n<!-- iframe ' + (frame.getAttribute('src') || 'about:blank') + ': -->\\n' + serialize(inner, depth + 1); \
+           }} \
+           return html; \
+         }};"
+    )
+}
+
 /// `inspect_dom`'s search and cut, run in the page so only the result
 /// crosses the connection: `{total, html}` without a query (at most
 /// [`DOM_MAX_CHARS`]), else `{total, found, position, context}` with
-/// positions in characters.
+/// positions in characters, both with `skipped_frames` (iframes of
+/// another origin, which cannot be read). The text searched is the top
+/// document with its open shadow roots, then each same-origin iframe's.
 pub fn dom_query(query: Option<&str>, before: usize, after: usize) -> String {
     let query = query.map_or_else(|| "null".to_string(), string_literal);
     let (before, after) = (before.min(DOM_MAX_CONTEXT), after.min(DOM_MAX_CONTEXT));
+    let serialize = serialize_document();
     format!(
-        "(() => {{ const html = document.documentElement.outerHTML; const query = {query}; \
-         if (query === null) return {{ total: html.length, html: html.slice(0, {DOM_MAX_CHARS}) }}; \
+        "(() => {{ {serialize} const html = serialize(document, 0); const query = {query}; \
+         const skipped_frames = state.skipped; \
+         if (query === null) return {{ total: html.length, html: html.slice(0, {DOM_MAX_CHARS}), skipped_frames }}; \
          const position = html.indexOf(query); \
-         if (position < 0) return {{ total: html.length, found: false }}; \
+         if (position < 0) return {{ total: html.length, found: false, skipped_frames }}; \
          const context = html.slice(Math.max(0, position - {before}), position + query.length + {after}); \
-         return {{ total: html.length, found: true, position, context }}; }})()"
+         return {{ total: html.length, found: true, position, context, skipped_frames }}; }})()"
     )
 }
 
@@ -254,6 +294,21 @@ mod tests {
             "{expression}"
         );
         assert!(dom_query(None, 1, 1).contains("const query = null;"));
+    }
+
+    /// AUD-IN-24: the serialized document includes open shadow roots
+    /// (`getHTML` with `shadowRoots`) and same-origin iframes, and counts
+    /// the iframes it cannot read.
+    #[test]
+    fn dom_query_includes_shadow_roots_and_frames() {
+        let expression = dom_query(None, 1, 1);
+        assert!(
+            expression.contains("getHTML({ shadowRoots: roots })"),
+            "{expression}"
+        );
+        assert!(expression.contains("contentDocument"), "{expression}");
+        assert!(expression.contains("<!-- iframe "), "{expression}");
+        assert!(expression.contains("skipped_frames"), "{expression}");
     }
 
     /// AUD-IN-11: `change` comes from the browser when the field loses

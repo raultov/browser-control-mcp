@@ -12,6 +12,12 @@ from a copy of its code: entries describe the differences from that release.
 
 ### Fixed
 
+- `inspect_dom` includes open shadow roots (as `<template
+  shadowrootmode="open">`) and the documents of same-origin iframes (each
+  after an `<!-- iframe <src>: -->` comment), and notes the cross-origin
+  iframes it cannot read. Text inside a web component or an iframe was
+  reported as not found.
+
 - `get_network_logs` asks for a response body only once the response
   finished loading, and the reply notes the ones still loading (an open
   event stream). On Firefox an open server-sent events stream made every

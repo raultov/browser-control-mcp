@@ -6,7 +6,7 @@ use rust_mcp_sdk::{
 
 #[macros::mcp_tool(
     name = "inspect_dom",
-    description = "Retrieves the HTML document (outerHTML of the top document; shadow roots and iframes are not included) or a contextual snippet around a search query. Side effects: none (read-only). Prerequisites: requires an active tab with loaded DOM. Returns: the HTML, at most 100000 characters (a longer document starts with a [Truncated: ...] note), or the first match with its position (characters) and context markers. Use this to inspect page structure, find elements by text, or verify rendering. Alternatives: 'evaluate_js' for complex DOM queries, 'capture_screenshot' for visual verification."
+    description = "Retrieves the HTML document (the top document with its open shadow roots, as <template shadowrootmode=\"open\">, followed by each same-origin iframe's document after an <!-- iframe src: --> comment; closed shadow roots are not readable, and cross-origin iframes are left out with a note) or a contextual snippet around a search query. Side effects: none (read-only). Prerequisites: requires an active tab with loaded DOM. Returns: the HTML, at most 100000 characters (a longer document starts with a [Truncated: ...] note), or the first match with its position (characters) and context markers. Use this to inspect page structure, find elements by text, or verify rendering. Alternatives: 'evaluate_js' for complex DOM queries, 'capture_screenshot' for visual verification."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct InspectDomTool {
