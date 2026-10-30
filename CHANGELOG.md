@@ -12,6 +12,16 @@ from a copy of its code: entries describe the differences from that release.
 
 ### Added
 
+- Selectors of `click_element`, `fill_input`, `scroll` and `wait_for` reach
+  into open shadow roots and same-origin iframes with `>>>`
+  (`my-widget >>> button`, `#frame >>> #email`, chainable), on both
+  browsers. `inspect_dom` showed those elements but no tool could act on
+  them. A click inside iframes is checked for overlays in each document and
+  lands at the right point of the top window; a part that is neither an
+  open shadow host nor a same-origin iframe fails naming it. `fill_input`
+  also recognises fields of another frame (they failed as "not an input").
+  (#3)
+
 - `wait_for` (Chrome and Firefox): waits until the page's visible text
   contains `text` or no longer contains `text_gone`, the first element
   matching `selector` is `visible`, `hidden`, `attached` or `detached`

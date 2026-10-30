@@ -21,7 +21,7 @@ pub struct ScrollTool {
     pub y: Option<i32>,
     /// Number of viewport heights to scroll vertically. Constraints: float (e.g., 1.5 = 1.5× viewport height; negative scrolls up). Interactions: takes precedence over 'y' parameter if both provided; ignored if 'selector' provided. Defaults to: None.
     pub pages: Option<f64>,
-    /// CSS selector of element to scroll into view. Constraints: valid CSS selector string. Interactions: takes precedence over 'x', 'y', 'pages' if provided; fails if element not found or not visible. Defaults to: None.
+    /// CSS selector of element to scroll into view. Constraints: valid CSS selector string; 'host >>> inner' matches 'inner' inside the open shadow root of 'host' or inside the same-origin iframe 'host' (chainable). Interactions: takes precedence over 'x', 'y', 'pages' if provided; fails if element not found or not visible. Defaults to: None.
     pub selector: Option<String>,
 }
 

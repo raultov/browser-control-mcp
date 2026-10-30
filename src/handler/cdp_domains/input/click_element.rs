@@ -17,7 +17,7 @@ pub struct ClickElementTool {
     pub instance_id: Option<String>,
     /// The Tab ID of the target tab. Omit to use the active tab.
     pub tab_id: Option<String>,
-    /// CSS selector identifying the target element. Constraints: valid CSS selector string; the first matching element is clicked. Interactions: fails when that element is hidden or covered. Defaults to: None (required).
+    /// CSS selector identifying the target element. Constraints: valid CSS selector string; the first matching element is clicked; 'host >>> inner' matches 'inner' inside the open shadow root of 'host' or inside the same-origin iframe 'host' (chainable: '#frame >>> my-widget >>> button'). Interactions: fails when that element is hidden or covered. Defaults to: None (required).
     pub selector: String,
 }
 

@@ -9,7 +9,7 @@ use std::time::Duration;
 
 #[macros::mcp_tool(
     name = "wait_for",
-    description = "Waits until the page shows a text, no longer shows one, has an element in a given state, or is at a URL; every condition given must hold at once. Checks every 100 ms. Side effects: none (read-only). Prerequisites: requires an active tab. Returns: 'Waited N ms for ...' and JSON {elapsed_ms, url} once the conditions hold (at once when they already do); after 'timeout_ms', an error naming what is still missing and the page's URL. Text is the page's visible text (innerText), case-sensitive, including open shadow roots and same-origin iframes; 'selector' is matched in the top document. A JavaScript dialog or a debugger pause during the wait ends it at once (close the dialog with 'handle_dialog'; inspect the pause with 'evaluate_on_call_frame'). Use this after a click, a submit or a navigation whose content arrives later. Alternatives: 'inspect_dom' with 'query' for a one-off look, 'evaluate_js' for other conditions."
+    description = "Waits until the page shows a text, no longer shows one, has an element in a given state, or is at a URL; every condition given must hold at once. Checks every 100 ms. Side effects: none (read-only). Prerequisites: requires an active tab. Returns: 'Waited N ms for ...' and JSON {elapsed_ms, url} once the conditions hold (at once when they already do); after 'timeout_ms', an error naming what is still missing and the page's URL. Text is the page's visible text (innerText), case-sensitive, including open shadow roots and same-origin iframes; 'selector' can pierce with 'host >>> inner'. A JavaScript dialog or a debugger pause during the wait ends it at once (close the dialog with 'handle_dialog'; inspect the pause with 'evaluate_on_call_frame'). Use this after a click, a submit or a navigation whose content arrives later. Alternatives: 'inspect_dom' with 'query' for a one-off look, 'evaluate_js' for other conditions."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct WaitForTool {
@@ -21,7 +21,7 @@ pub struct WaitForTool {
     pub text: Option<String>,
     /// Wait until the page's visible text no longer contains this (case-sensitive), e.g. a 'Loading' message. Defaults to: not checked.
     pub text_gone: Option<String>,
-    /// Wait until the first element matching this CSS selector (top document) is in 'state'. Defaults to: not checked.
+    /// Wait until the first element matching this CSS selector is in 'state'; 'host >>> inner' matches 'inner' inside the open shadow root of 'host' or inside the same-origin iframe 'host' (chainable). Defaults to: not checked.
     pub selector: Option<String>,
     /// The state 'selector' must reach: 'visible' (in the DOM with a visible box), 'hidden' (missing, or without a visible box), 'attached' (in the DOM) or 'detached' (not in it). Only with 'selector'. Defaults to: 'visible'.
     pub state: Option<WaitState>,

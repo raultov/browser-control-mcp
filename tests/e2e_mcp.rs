@@ -21,8 +21,14 @@ mod e2e {
     <button id="go" onclick="window.__clicked=(window.__clicked||0)+1">go</button>
     <button id="hit" onclick="appTarget(3)">hit</button>
     <button id="ask" onclick="window.__answer = confirm('Sure?')">ask</button>
+    <my-widget></my-widget><iframe id="fr" src="/frame.html" width="300" height="80"></iframe>
+    <script>customElements.define('my-widget', class extends HTMLElement { connectedCallback() {
+      const root = this.attachShadow({mode: 'open'}); root.innerHTML = '<button id="sb">shadow</button>';
+      root.getElementById('sb').onclick = () => { window.__pierced = (window.__pierced || '') + 'shadow;'; }; } });</script>
     <input id="q" value="old"><div id="marker">needle-marker</div>
     <script>console.log("hello from e2e");</script><script>throw new Error("boom-e2e");</script><script src="/app.js"></script></body></html>"#;
+    const FRAME: &str = r#"<!doctype html><html><body>
+    <button id="fb" onclick="parent.__pierced = (parent.__pierced || '') + 'frame;'">framed</button><input id="fq"></body></html>"#;
     const APP_JS: &str = "function appTarget(x) {\n  const y = x * 2;\n  return y + 1;\n}\nwindow.appTarget = appTarget;\nfetch('/api');\n";
 
     /// The WebSocket page: sends `hello-ws` to the echo server on `port`.
@@ -64,6 +70,7 @@ mod e2e {
             p if p.starts_with("/app.js") => ("application/javascript", APP_JS.to_string()),
             p if p.starts_with("/api") => ("application/json", "{\"ok\":true}".to_string()),
             p if p.starts_with("/ws.html") => ("text/html", ws.to_string()),
+            p if p.starts_with("/frame.html") => ("text/html", FRAME.to_string()),
             _ => ("text/html", INDEX.to_string()),
         }
     }
@@ -394,6 +401,45 @@ mod e2e {
         ]
     }
 
+    /// ISSUE-3: the input tools reach a shadow root and a same-origin iframe
+    /// through `>>>` selectors.
+    fn pierce_steps(instance: &str) -> Vec<Step> {
+        let i = json!(instance);
+        let effects = "window.__pierced + document.querySelector('#fr').contentDocument.querySelector('#fq').value";
+        vec![
+            (
+                "ISSUE-3 wait_for inside the iframe",
+                "wait_for",
+                json!({"instance_id": i, "selector": "#fr >>> #fb"}),
+                "Waited",
+            ),
+            (
+                "ISSUE-3 click inside a shadow root",
+                "click_element",
+                json!({"instance_id": i, "selector": "my-widget >>> #sb"}),
+                "Successfully clicked",
+            ),
+            (
+                "ISSUE-3 click inside an iframe",
+                "click_element",
+                json!({"instance_id": i, "selector": "#fr >>> #fb"}),
+                "Successfully clicked",
+            ),
+            (
+                "ISSUE-3 fill inside an iframe",
+                "fill_input",
+                json!({"instance_id": i, "selector": "#fr >>> #fq", "text": "in-frame"}),
+                "Successfully",
+            ),
+            (
+                "ISSUE-3 effects",
+                "evaluate_js",
+                json!({"instance_id": i, "expression": effects}),
+                "shadow;frame;in-frame",
+            ),
+        ]
+    }
+
     /// Observation steps: console, network, screenshot, DOM.
     fn observation_steps(instance: &str) -> Vec<Step> {
         let i = json!(instance);
@@ -578,6 +624,7 @@ mod e2e {
             tab_steps("e2e", &base),
             runtime_steps("e2e"),
             dialog_and_wait_steps("e2e"),
+            pierce_steps("e2e"),
             observation_steps("e2e"),
             websocket_steps("e2e", &base),
             debugger_steps("e2e", &base),
@@ -650,6 +697,7 @@ mod e2e {
             tab_steps("default", &base),
             runtime_steps("default"),
             dialog_and_wait_steps("default"),
+            pierce_steps("default"),
             debugger_steps("default", &base),
         ];
         mcp.steps(all.concat()).await;

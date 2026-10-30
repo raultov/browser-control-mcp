@@ -7,11 +7,35 @@ pub fn string_literal(value: &str) -> String {
     serde_json::Value::String(value.to_owned()).to_string()
 }
 
+/// The separator of a selector that descends into an open shadow root or a
+/// same-origin iframe: `host >>> inner`, chainable.
+pub const PIERCE: &str = ">>>";
+
+/// Declares `resolve(target)`: the first element `target` names, or `null`.
+/// Each `>>>`-separated part is a CSS selector matched inside what the
+/// previous part matched (its open shadow root, or its document when it is
+/// a same-origin iframe); anything else there throws, naming the part.
+const RESOLVE: &str = "const resolve = target => { \
+        const parts = target.split('>>>').map(part => part.trim()); \
+        let scope = document, el = null; \
+        for (const [i, part] of parts.entries()) { \
+            if (i > 0) { \
+                if (el.shadowRoot) scope = el.shadowRoot; \
+                else if (el.contentDocument) scope = el.contentDocument; \
+                else throw new Error(`'${parts[i - 1]}' is neither an open shadow host nor a same-origin iframe, so '>>>' cannot descend into it`); \
+            } \
+            el = scope.querySelector(part); \
+            if (!el) return null; \
+        } \
+        return el; \
+    };";
+
 /// `(function() { const el = <selector>; if (!el) return <missing>; <body> })()`:
-/// the one shape every element snippet has.
+/// the one shape every element snippet has (the selector may pierce, see
+/// [`RESOLVE`]).
 fn on_element(selector: &str, missing: &str, body: &str) -> String {
     format!(
-        "(function() {{ const el = document.querySelector({}); if (!el) return {missing}; {body} }})()",
+        "(function() {{ {RESOLVE} const el = resolve({}); if (!el) return {missing}; {body} }})()",
         string_literal(selector)
     )
 }
@@ -26,9 +50,9 @@ pub fn scroll_into_view(selector: &str) -> String {
         "{ status: 'missing' }",
         "const before = { x: scrollX, y: scrollY }; \
          el.scrollIntoView({ behavior: 'instant', block: 'center' }); \
-         const r = el.getBoundingClientRect(); \
+         const r = el.getBoundingClientRect(), win = el.ownerDocument.defaultView; \
          if (r.width === 0 && r.height === 0) return { status: 'hidden' }; \
-         const in_view = r.bottom > 0 && r.top < innerHeight && r.right > 0 && r.left < innerWidth; \
+         const in_view = r.bottom > 0 && r.top < win.innerHeight && r.right > 0 && r.left < win.innerWidth; \
          return { status: 'done', before, after: { x: scrollX, y: scrollY }, in_view };",
     )
 }
@@ -49,22 +73,34 @@ pub fn scroll_by(left: &str, top: &str) -> String {
 /// visible box), `outside` (not in the viewport even after scrolling) or
 /// `covered` (with `by`, the element on top, and `x`, `y`). A pointer click
 /// lands on whatever is at the point, so without the check an overlay, or
-/// the page corner for a hidden element, would get it.
+/// the page corner for a hidden element, would get it. An element inside
+/// iframes is checked in its own document, then each frame in its parent's,
+/// and the point is the top window's.
 pub fn click_point(selector: &str) -> String {
     on_element(selector, "{ status: 'missing' }", CLICK_POINT)
 }
 
 const CLICK_POINT: &str = "el.scrollIntoView({ behavior: 'instant', block: 'center', inline: 'center' }); \
+    let win = el.ownerDocument.defaultView; \
     const box = Array.from(el.getClientRects()).find(r => r.width > 0 && r.height > 0); \
-    if (!box || getComputedStyle(el).visibility !== 'visible') return { status: 'hidden' }; \
-    const left = Math.max(box.left, 0), right = Math.min(box.right, innerWidth); \
-    const top = Math.max(box.top, 0), bottom = Math.min(box.bottom, innerHeight); \
+    if (!box || win.getComputedStyle(el).visibility !== 'visible') return { status: 'hidden' }; \
+    const left = Math.max(box.left, 0), right = Math.min(box.right, win.innerWidth); \
+    const top = Math.max(box.top, 0), bottom = Math.min(box.bottom, win.innerHeight); \
     if (right <= left || bottom <= top) return { status: 'outside' }; \
-    const x = Math.round((left + right) / 2), y = Math.round((top + bottom) / 2); \
-    const hit = document.elementFromPoint(x, y); \
-    if (hit && hit !== el && !el.contains(hit)) { \
+    let x = Math.round((left + right) / 2), y = Math.round((top + bottom) / 2); \
+    const covered = hit => { \
         const kind = typeof hit.className === 'string' && hit.className.trim() ? '.' + hit.className.trim().split(/\\s+/)[0] : ''; \
         return { status: 'covered', by: hit.tagName.toLowerCase() + (hit.id ? '#' + hit.id : '') + kind, x, y }; \
+    }; \
+    const hit = el.getRootNode().elementFromPoint(x, y); \
+    if (hit && hit !== el && !el.contains(hit)) return covered(hit); \
+    while (win.frameElement) { \
+        const frame = win.frameElement, r = frame.getBoundingClientRect(); \
+        x = Math.round(x + r.left + frame.clientLeft); y = Math.round(y + r.top + frame.clientTop); \
+        win = frame.ownerDocument.defaultView; \
+        if (x < 0 || y < 0 || x >= win.innerWidth || y >= win.innerHeight) return { status: 'outside' }; \
+        const over = frame.getRootNode().elementFromPoint(x, y); \
+        if (over && over !== frame) return covered(over); \
     } \
     return { status: 'ok', x, y };";
 
@@ -88,7 +124,8 @@ pub fn prepare_fill(selector: &str, text: &str) -> String {
     )
 }
 
-const PREPARE_FILL: &str = "if (el instanceof HTMLSelectElement) { \
+const PREPARE_FILL: &str = "const W = el.ownerDocument.defaultView; \
+    if (el instanceof W.HTMLSelectElement) { \
         if (el.matches(':disabled')) return { status: 'not_editable', reason: 'disabled' }; \
         const options = Array.from(el.options); \
         const option = options.find(o => o.value === text) || options.find(o => o.label.trim() === text.trim()); \
@@ -98,14 +135,14 @@ const PREPARE_FILL: &str = "if (el instanceof HTMLSelectElement) { \
         el.dispatchEvent(new Event('change', { bubbles: true })); \
         return { status: 'selected' }; \
     } \
-    const field = el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement; \
+    const field = el instanceof W.HTMLInputElement || el instanceof W.HTMLTextAreaElement; \
     const typed = ['text', 'search', 'email', 'url', 'tel', 'password', 'number', 'date', 'datetime-local', 'month', 'week', 'time']; \
-    if (el instanceof HTMLInputElement && !typed.includes(el.type)) return { status: 'not_editable', reason: 'an input of type ' + el.type }; \
+    if (el instanceof W.HTMLInputElement && !typed.includes(el.type)) return { status: 'not_editable', reason: 'an input of type ' + el.type }; \
     if (!field && !el.isContentEditable) return { status: 'not_editable', reason: 'not an input, textarea or contenteditable element' }; \
     if (field && el.matches(':disabled')) return { status: 'not_editable', reason: 'disabled' }; \
     if (field && el.readOnly) return { status: 'not_editable', reason: 'read-only' }; \
     el.focus(); \
-    const active = document.activeElement; \
+    const active = el.getRootNode().activeElement; \
     if (active !== el && !(el.isContentEditable && active && active.contains(el))) return { status: 'not_editable', reason: 'it cannot take focus (hidden or inert)' }; \
     if (field) { \
         el[Symbol.for('browser-control-mcp.fill-before')] = el.value; \
@@ -128,10 +165,11 @@ pub fn fill_result(selector: &str, text: &str) -> String {
         "{ status: 'missing' }",
         &format!(
             "const text = {}; \
-             const field = el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement; \
+             const W = el.ownerDocument.defaultView; \
+             const field = el instanceof W.HTMLInputElement || el instanceof W.HTMLTextAreaElement; \
              const value = field ? el.value : el.textContent; \
              if (field) {{ const before = el[{FILL_BEFORE}]; delete el[{FILL_BEFORE}]; \
-               if (!document.hasFocus() && value !== before) el.dispatchEvent(new Event('change', {{ bubbles: true }})); }} \
+               if (!el.ownerDocument.hasFocus() && value !== before) el.dispatchEvent(new Event('change', {{ bubbles: true }})); }} \
              return {{ status: 'done', matches: value === text, empty: value === '' }};",
             string_literal(text)
         ),
@@ -226,7 +264,7 @@ pub struct WaitConditions<'a> {
 pub fn wait_check(wanted: &WaitConditions) -> String {
     let literal = |value: Option<&str>| value.map_or_else(|| "null".to_string(), string_literal);
     format!(
-        "(() => {{ const text = {}, gone = {}, selector = {}, state = {}, url = {}; {WAIT_CHECK} }})()",
+        "(() => {{ const text = {}, gone = {}, selector = {}, state = {}, url = {}; {RESOLVE} {WAIT_CHECK} }})()",
         literal(wanted.text),
         literal(wanted.text_gone),
         literal(wanted.selector),
@@ -255,9 +293,9 @@ const WAIT_CHECK: &str = "const texts = []; \
     if (text !== null) out.text = all.includes(text); \
     if (gone !== null) out.text_gone = !all.includes(gone); \
     if (selector !== null) { \
-        const el = document.querySelector(selector); \
+        const el = resolve(selector); \
         const shown = !!el && Array.from(el.getClientRects()).some(r => r.width > 0 && r.height > 0) \
-            && getComputedStyle(el).visibility === 'visible'; \
+            && el.ownerDocument.defaultView.getComputedStyle(el).visibility === 'visible'; \
         out.selector = { attached: !!el, detached: !el, visible: shown, hidden: !shown }[state]; \
     } \
     if (url !== null) out.url = location.href.includes(url); \
@@ -314,9 +352,10 @@ pub const PAGE_VITALS: &str = "(() => { \
 mod tests {
     use super::*;
 
-    /// The argument of `document.querySelector(..)` in `expression`, parsed back as JSON.
+    /// The argument of `resolve(..)` in `expression`, parsed back as JSON.
     fn embedded_selector(expression: &str) -> String {
-        let start = expression.find("querySelector(").unwrap() + "querySelector(".len();
+        let call = "const el = resolve(";
+        let start = expression.find(call).unwrap() + call.len();
         let mut values = serde_json::Deserializer::from_str(&expression[start..]).into_iter();
         let selector: String = values.next().unwrap().unwrap();
         // The literal must end right where the call does.
@@ -388,9 +427,65 @@ mod tests {
             "{check}"
         );
         assert!(
-            check.contains("!document.hasFocus() && value !== before"),
+            check.contains("!el.ownerDocument.hasFocus() && value !== before"),
             "{check}"
         );
+    }
+
+    /// ISSUE-3: every element snippet resolves its selector through the
+    /// piercing resolver: `>>>` descends into an open shadow root or a
+    /// same-origin iframe's document, and anything else throws naming it.
+    #[test]
+    fn element_snippets_pierce_shadow_roots_and_frames() {
+        // Given the snippets of every element tool
+        let wanted = WaitConditions {
+            text: None,
+            text_gone: None,
+            selector: Some("#fr >>> #b"),
+            state: "visible",
+            url: None,
+        };
+        for expression in [
+            scroll_into_view("#a"),
+            click_point("#a"),
+            prepare_fill("#a", "x"),
+            fill_result("#a", "x"),
+            wait_check(&wanted),
+        ] {
+            // Then each declares the resolver and none queries the document directly
+            assert!(expression.contains(RESOLVE), "{expression}");
+            assert!(
+                !expression.contains("document.querySelector("),
+                "{expression}"
+            );
+        }
+        // And fields are recognised by their own window's classes (an
+        // iframe's input is not an instance of the top window's)
+        for expression in [prepare_fill("#a", "x"), fill_result("#a", "x")] {
+            assert!(expression.contains("const W = el.ownerDocument.defaultView;"));
+            assert!(!expression.contains("instanceof HTML"), "{expression}");
+        }
+        assert!(RESOLVE.contains("target.split('>>>')"));
+        assert!(RESOLVE.contains("el.shadowRoot") && RESOLVE.contains("el.contentDocument"));
+        assert!(RESOLVE.contains("is neither an open shadow host nor a same-origin iframe"));
+        assert_eq!(PIERCE, ">>>");
+    }
+
+    /// ISSUE-3: a click inside iframes is checked in each document up to
+    /// the top window, whose coordinates it returns.
+    #[test]
+    fn click_point_climbs_out_of_frames() {
+        let expression = click_point("#fr >>> #b");
+        assert!(
+            expression.contains("while (win.frameElement)"),
+            "{expression}"
+        );
+        assert!(expression.contains("frame.clientLeft"), "{expression}");
+        assert!(
+            expression.contains("el.getRootNode().elementFromPoint"),
+            "{expression}"
+        );
+        assert!(expression.contains("over !== frame"), "{expression}");
     }
 
     /// ISSUE-2: wait_for's values reach JavaScript as JSON literals (`null`
@@ -438,7 +533,7 @@ mod tests {
             "{expression}"
         );
         assert!(
-            expression.contains("document.activeElement"),
+            expression.contains("el.getRootNode().activeElement"),
             "{expression}"
         );
         assert_eq!(embedded_text(&expression), text);
