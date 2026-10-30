@@ -66,14 +66,19 @@ fn on_element(selector: &str, missing: &str, body: &str) -> String {
     )
 }
 
+/// An element snippet answering `{ status: 'missing' }` when `selector`
+/// names nothing (the shape of every status snippet).
+fn status_of(selector: &str, body: &str) -> String {
+    on_element(selector, "{ status: 'missing' }", body)
+}
+
 /// Scrolls the first element matching `selector` into view. Returns
 /// `{status: 'missing'}`, `{status: 'hidden'}` (no layout box, nothing to
 /// scroll to) or `{status: 'done', before, after, in_view}` with the window
 /// positions, so the reply can tell what moved.
 pub fn scroll_into_view(selector: &str) -> String {
-    on_element(
+    status_of(
         selector,
-        "{ status: 'missing' }",
         "const before = { x: scrollX, y: scrollY }; \
          el.scrollIntoView({ behavior: 'instant', block: 'center' }); \
          const r = el.getBoundingClientRect(), win = el.ownerDocument.defaultView; \
@@ -103,7 +108,7 @@ pub fn scroll_by(left: &str, top: &str) -> String {
 /// iframes is checked in its own document, then each frame in its parent's,
 /// and the point is the top window's.
 pub fn click_point(selector: &str) -> String {
-    on_element(selector, "{ status: 'missing' }", CLICK_POINT)
+    status_of(selector, CLICK_POINT)
 }
 
 const CLICK_POINT: &str = "el.scrollIntoView({ behavior: 'instant', block: 'center', inline: 'center' }); \
@@ -135,12 +140,39 @@ const CLICK_POINT: &str = "el.scrollIntoView({ behavior: 'instant', block: 'cent
 /// radio (it is clicked when its state differs), or `{status: 'field'}`
 /// (it is filled like `fill_input`).
 pub fn form_field(selector: &str) -> String {
-    on_element(
+    status_of(
         selector,
-        "{ status: 'missing' }",
         "const W = el.ownerDocument.defaultView; \
          const box = el instanceof W.HTMLInputElement && (el.type === 'checkbox' || el.type === 'radio'); \
          return box ? { status: 'box', checked: el.checked } : { status: 'field' };",
+    )
+}
+
+/// Whether the element `selector` names can take files (`upload_file`):
+/// `{status}` `missing`, `not_file` (not an `<input type=file>`), `disabled`
+/// or `ok` (with `multiple`).
+pub fn file_input(selector: &str) -> String {
+    status_of(
+        selector,
+        "const W = el.ownerDocument.defaultView; \
+         if (!(el instanceof W.HTMLInputElement) || el.type !== 'file') return { status: 'not_file' }; \
+         if (el.disabled) return { status: 'disabled' }; \
+         return { status: 'ok', multiple: el.multiple };",
+    )
+}
+
+/// The element `selector` names itself (`null` when none), for commands
+/// that take an element reference rather than a value.
+pub fn element(selector: &str) -> String {
+    on_element(selector, "null", "return el;")
+}
+
+/// The names of the files the `<input type=file>` `selector` names holds.
+pub fn file_names(selector: &str) -> String {
+    on_element(
+        selector,
+        "[]",
+        "return Array.from(el.files || []).map(f => f.name);",
     )
 }
 
@@ -157,9 +189,8 @@ const FILL_BEFORE: &str = "Symbol.for('browser-control-mcp.fill-before')";
 /// or `ready`. Checking focus matters: typing goes to whatever element has
 /// it, so an element that cannot take it would send the text elsewhere.
 pub fn prepare_fill(selector: &str, text: &str) -> String {
-    on_element(
+    status_of(
         selector,
-        "{ status: 'missing' }",
         &format!("const text = {}; {PREPARE_FILL}", string_literal(text)),
     )
 }
@@ -200,9 +231,8 @@ const PREPARE_FILL: &str = "const W = el.ownerDocument.defaultView; \
 /// there an input or textarea whose value differs from the one the
 /// preparation found gets `change` here.
 pub fn fill_result(selector: &str, text: &str) -> String {
-    on_element(
+    status_of(
         selector,
-        "{ status: 'missing' }",
         &format!(
             "const text = {}; \
              const W = el.ownerDocument.defaultView; \

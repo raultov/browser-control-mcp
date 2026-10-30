@@ -277,6 +277,23 @@ fn thrown(reply: &Value) -> Result<(), BackendError> {
     )))
 }
 
+/// `input.setFiles` on the element `selector` names (BiDi takes the
+/// element's shared reference).
+pub(crate) async fn set_files(
+    tab: &Tab,
+    selector: &str,
+    files: Vec<String>,
+) -> Result<(), BackendError> {
+    let element = evaluate_raw(tab, &crate::util::js::element(selector), "none").await?;
+    let shared = element
+        .pointer("/result/sharedId")
+        .cloned()
+        .ok_or_else(|| BackendError::InvalidArgument("The file input disappeared.".into()))?;
+    let params =
+        json!({"context": tab.context_id(), "element": {"sharedId": shared}, "files": files});
+    command(tab, "input.setFiles", params).await.map(|_| ())
+}
+
 /// One check of a wait (a `util::js` snippet): a failed command is retried
 /// (a navigation replaced the realm), the page's exception ends the wait.
 /// No dialog race per check: the caller races the whole wait.

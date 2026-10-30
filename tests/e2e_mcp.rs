@@ -22,6 +22,7 @@ mod e2e {
     <button id="hit" onclick="appTarget(3)">hit</button>
     <button id="ask" onclick="window.__answer = confirm('Sure?')">ask</button>
     <label><input type="checkbox" id="cb"> agree</label>
+    <input type="file" id="up" onchange="window.__up = this.files[0].name + ':' + this.files[0].size">
     <my-widget></my-widget><iframe id="fr" src="/frame.html" width="300" height="80"></iframe>
     <script>customElements.define('my-widget', class extends HTMLElement { connectedCallback() {
       const root = this.attachShadow({mode: 'open'}); root.innerHTML = '<button id="sb">shadow</button>';
@@ -509,6 +510,33 @@ mod e2e {
         ]
     }
 
+    /// ISSUE-6: upload_file hands the file input a file of the repository
+    /// (under the server's working directory, an upload root).
+    fn upload_steps(instance: &str) -> Vec<Step> {
+        let i = json!(instance);
+        let manifest = format!("{}/Cargo.toml", env!("CARGO_MANIFEST_DIR"));
+        vec![
+            (
+                "ISSUE-6 upload_file",
+                "upload_file",
+                json!({"instance_id": i, "selector": "#up", "paths": [manifest]}),
+                "Set 1 file(s) on '#up': Cargo.toml.",
+            ),
+            (
+                "ISSUE-6 the page read the file",
+                "evaluate_js",
+                json!({"instance_id": i, "expression": "window.__up"}),
+                "Cargo.toml:",
+            ),
+            (
+                "ISSUE-6 a file outside the roots is refused",
+                "upload_file",
+                json!({"instance_id": i, "selector": "#up", "paths": ["/etc/hostname"]}),
+                "!",
+            ),
+        ]
+    }
+
     /// Observation steps: console, network, screenshot, DOM.
     fn observation_steps(instance: &str) -> Vec<Step> {
         let i = json!(instance);
@@ -687,7 +715,7 @@ mod e2e {
     async fn smoke(browser: &str) {
         let base = serve().await;
         let mut mcp = Mcp::start(&[]).await;
-        mcp.list_tools(37).await;
+        mcp.list_tools(38).await;
         let all = [
             page_steps(browser, &base),
             tab_steps("e2e", &base),
@@ -696,6 +724,7 @@ mod e2e {
             pierce_steps("e2e"),
             snapshot_steps("e2e"),
             form_steps("e2e"),
+            upload_steps("e2e"),
             observation_steps("e2e"),
             websocket_steps("e2e", &base),
             debugger_steps("e2e", &base),
@@ -771,6 +800,7 @@ mod e2e {
             pierce_steps("default"),
             snapshot_steps("default"),
             form_steps("default"),
+            upload_steps("default"),
             debugger_steps("default", &base),
         ];
         mcp.steps(all.concat()).await;

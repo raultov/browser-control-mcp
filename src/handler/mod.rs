@@ -1046,6 +1046,7 @@ pub struct HandlerParams {
     pub server: crate::cli::ServerFlags,
     pub proxy: crate::cli::ProxyArgs,
     pub firefox: crate::cli::FirefoxArgs,
+    pub upload: crate::cli::UploadArgs,
 }
 
 impl Default for HandlerParams {
@@ -1058,6 +1059,7 @@ impl Default for HandlerParams {
             server: Default::default(),
             proxy: Default::default(),
             firefox: Default::default(),
+            upload: Default::default(),
         }
     }
 }
@@ -1074,6 +1076,8 @@ pub struct McpHandler {
     pub(crate) default_browser: crate::backend::BrowserKind,
     /// How Firefox instances are launched (from the command line).
     pub(crate) firefox_spec: crate::backend::bidi::launch::FirefoxSpec,
+    /// `--upload-root` directories (empty: the defaults of `upload_file`).
+    pub(crate) upload_roots: Vec<std::path::PathBuf>,
 }
 
 impl McpHandler {
@@ -1243,6 +1247,7 @@ impl McpHandler {
             is_test: false,
             default_browser: options.default_browser,
             firefox_spec,
+            upload_roots: options.upload.upload_roots,
         }
     }
 
@@ -1281,6 +1286,7 @@ impl McpHandler {
             is_test: true,
             default_browser: Default::default(),
             firefox_spec: Default::default(),
+            upload_roots: Vec::new(),
         }
     }
 }
@@ -1801,6 +1807,7 @@ mod tests {
                 proxy_password: Some("pass".into()),
             },
             firefox: Default::default(),
+            upload: Default::default(),
         });
         assert!(handler.flags.local);
         assert!(handler.flags.enable_webmcp);
@@ -1824,8 +1831,8 @@ mod tests {
         assert!(result.is_ok());
         let tools = result.unwrap().tools;
 
-        // Without proxy and webmcp, 37 tools are listed
-        assert_eq!(tools.len(), 37);
+        // Without proxy and webmcp, 38 tools are listed
+        assert_eq!(tools.len(), 38);
         let tool_names: Vec<String> = tools.into_iter().map(|t| t.name).collect();
         assert!(tool_names.contains(&"scroll".to_string()));
         assert!(tool_names.contains(&"capture_screenshot".to_string()));
@@ -1855,8 +1862,8 @@ mod tests {
         assert!(result.is_ok());
         let tools = result.unwrap().tools;
 
-        // With proxy configured (and webmcp disabled), 38 tools are listed
-        assert_eq!(tools.len(), 38);
+        // With proxy configured (and webmcp disabled), 39 tools are listed
+        assert_eq!(tools.len(), 39);
         let tool_names: Vec<String> = tools.into_iter().map(|t| t.name).collect();
         assert!(tool_names.contains(&"enable_proxy_auth".to_string()));
     }
@@ -1874,8 +1881,8 @@ mod tests {
         assert!(result.is_ok());
         let tools = result.unwrap().tools;
 
-        // With webmcp configured (37 + 4 = 41 tools)
-        assert_eq!(tools.len(), 41);
+        // With webmcp configured (38 + 4 = 42 tools)
+        assert_eq!(tools.len(), 42);
         let tool_names: Vec<String> = tools.into_iter().map(|t| t.name).collect();
         assert!(tool_names.contains(&"webmcp_list_tools".to_string()));
         assert!(tool_names.contains(&"webmcp_invoke_tool".to_string()));

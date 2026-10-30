@@ -15,6 +15,7 @@ use crate::handler::cdp_domains::input::fill_form::{FillFormTool, FormOps};
 use crate::handler::cdp_domains::input::fill_input::{
     FillInputTool, FillStart, fill_reply, fill_start, selected_reply,
 };
+use crate::handler::cdp_domains::input::upload_file::UploadFileTool;
 use crate::handler::cdp_domains::log::get_console_logs::GetConsoleLogsTool;
 use crate::handler::cdp_domains::network::get_network_logs::{self, GetNetworkLogsTool};
 use crate::handler::cdp_domains::page::capture_screenshot::{self, CaptureScreenshotTool};
@@ -246,6 +247,23 @@ pub(crate) async fn fill_input(params: CallToolRequestParams, handler: &McpHandl
         tab: &tab.tab,
     };
     on.fill(&args.selector, &args.text).await
+}
+
+/// `upload_file`: the same checks and reply as on Chrome; the files go
+/// through `input.setFiles`.
+pub(crate) async fn upload_file(params: CallToolRequestParams, handler: &McpHandler) -> ToolResult {
+    let args: UploadFileTool = parse_args(params)?;
+    let files = args.checked_paths(&handler.upload_roots)?;
+    let (session, id, tab) = target(handler, &ids(&args.instance_id, &args.tab_id)).await?;
+    let selector = &args.selector;
+    let setting = async {
+        let input = crate::util::js::file_input(selector);
+        args.check_input(&page::run_snippet(&tab.tab, &input).await?)?;
+        page::set_files(&tab.tab, selector, files).await?;
+        let names = crate::util::js::file_names(selector);
+        Ok(args.reply(&page::run_snippet(&tab.tab, &names).await?))
+    };
+    unless_paused(&session, &id, "upload_file", setting).await
 }
 
 /// `fill_form`: the shared field loop over this tab's fill and click.

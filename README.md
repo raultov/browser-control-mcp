@@ -57,6 +57,7 @@ see the note.
 | `click_element` | ✓ | ✓ | scrolls the element into view; fails without clicking when it is hidden or covered; `host >>> inner` selectors reach open shadow roots and same-origin iframes (also in `fill_input`, `scroll`, `wait_for`); a dialog or debugger pause the click causes is noted in a successful reply (`{dialog}` or `{paused, location}`) |
 | `fill_input` | ✓ | ✓ | picks `<select>` options; fails without typing on elements that cannot take the text; types key by key on both (key handlers run; newlines and tabs inserted as text), about 1 ms per character; `change` on leaving the field, or at the end when the window has no focus |
 | `fill_form` | ✓ | ✓ | several fields in one call: text and `<select>` as `fill_input`, a checkbox or radio takes `true`/`false` and is clicked only when its state differs; stops at the first failing field naming what was done; never echoes values |
+| `upload_file` | ✓ | ✓ | sets the files of an `<input type=file>` (Chrome `DOM.setFileInputFiles`, Firefox `input.setFiles`); files must be under the upload roots (`--upload-root`, default the working and temp directories) |
 | `handle_dialog` | ✓ | ✓ | accepts or dismisses the open `alert` / `confirm` / `prompt` / `beforeunload` dialog |
 | `evaluate_js` | ✓ | ✓ | `value` at most 100 000 characters (`truncated: true`); Chrome stops a script after 8 s, Firefox cannot (a looping tab is closed with `close_tab`) |
 | `get_console_logs` | ✓ | ✓ | a message keeps at most 10 000 characters; Firefox: page errors, CSS warnings and platform messages need the debugger port |
@@ -354,6 +355,7 @@ claude mcp add browser-control-mcp -- npx -y @raultov/browser-control-mcp
 | `--enable-automation` | off | shows the automation infobar | ignored; `list_instances` shows a warning |
 | `--user-profile` | off | your default profile (no `--user-data-dir`) | only with `--firefox-port` (attach to your running Firefox) |
 | `--allow-cookie-import` | off | exposes `copy_cookies` | capability error |
+| `--upload-root <DIR>` | working + temp dir | directory `upload_file` may read files from (repeatable; replaces the defaults) | same |
 | `--enable-webmcp` | off | WebMCP switches and `webmcp_*` tools | capability error |
 | `--proxy-server <URL>` | none | proxy for every instance; exposes `enable_proxy_auth` | `http://` and `socks5://` proxies |
 | `--proxy-username <USER>` | none | answers proxy (407) challenges | same (untested) |
@@ -525,6 +527,10 @@ incompatible:
 
 - `--allow-cookie-import` copies your real Chrome cookies into an isolated
   profile; the agent must ask you before using `copy_cookies`.
+- `upload_file` hands the page a file's contents: it only reads files under
+  the upload roots (the server's working directory and the system temp
+  directory, or the `--upload-root` directories), resolved so `..` and
+  symlinks cannot leave them. Paths are never logged.
 - The proxy password is never logged and is given only to proxy (407)
   challenges, never to a site's own authentication.
 - The Firefox debugger port needs `devtools.chrome.enabled`: any local

@@ -40,6 +40,19 @@ pub struct Args {
     /// Firefox-only settings.
     #[command(flatten)]
     pub firefox: FirefoxArgs,
+
+    /// Where `upload_file` may read files from.
+    #[command(flatten)]
+    pub upload: UploadArgs,
+}
+
+/// The directories `upload_file` may read files from: a page given a file
+/// gets its contents, so the agent cannot hand it any file of the machine.
+#[derive(clap::Args, Debug, Clone, Default, PartialEq, Eq)]
+pub struct UploadArgs {
+    /// Directory `upload_file` may read files from (repeatable). Default: the server's working directory and the system temp directory.
+    #[arg(long = "upload-root")]
+    pub upload_roots: Vec<std::path::PathBuf>,
 }
 
 /// Firefox-only settings (ignored by Chrome instances).

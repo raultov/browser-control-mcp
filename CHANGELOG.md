@@ -12,6 +12,15 @@ from a copy of its code: entries describe the differences from that release.
 
 ### Added
 
+- `upload_file` (Chrome and Firefox): sets the files of an
+  `<input type=file>` as a user picking them (Chrome
+  `DOM.setFileInputFiles`, Firefox `input.setFiles`); the page gets `input`
+  and `change`. Only files under the upload roots are accepted: the
+  server's working directory and the system temp directory, or the
+  directories of the new repeatable `--upload-root` flag, checked once `..`
+  and symlinks are resolved, so the agent cannot hand a page any file of
+  the machine. Uploads needed three raw CDP commands, on Chrome only. (#6)
+
 - `fill_form` (Chrome and Firefox): fills several fields in one call, in
   order. Text fields, textareas, contenteditable elements and `<select>`s
   go through `fill_input`; a checkbox or radio takes `true` or `false` and
