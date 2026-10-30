@@ -20,6 +20,7 @@ mod e2e {
     const INDEX: &str = r#"<!doctype html><html><body>
     <button id="go" onclick="window.__clicked=(window.__clicked||0)+1">go</button>
     <button id="hit" onclick="appTarget(3)">hit</button>
+    <button id="ask" onclick="window.__answer = confirm('Sure?')">ask</button>
     <input id="q" value="old"><div id="marker">needle-marker</div>
     <script>console.log("hello from e2e");</script><script>throw new Error("boom-e2e");</script><script src="/app.js"></script></body></html>"#;
     const APP_JS: &str = "function appTarget(x) {\n  const y = x * 2;\n  return y + 1;\n}\nwindow.appTarget = appTarget;\nfetch('/api');\n";
@@ -339,6 +340,24 @@ mod e2e {
                 json!({"instance_id": i, "expression": effects}),
                 "typed1",
             ),
+            (
+                "ISSUE-11 click that opens a dialog succeeds, noting it",
+                "click_element",
+                json!({"instance_id": i, "selector": "#ask"}),
+                r#"confirm dialog ("Sure?")"#,
+            ),
+            (
+                "handle_dialog",
+                "handle_dialog",
+                json!({"instance_id": i, "accept": true}),
+                "Dialog accepted",
+            ),
+            (
+                "dialog answer",
+                "evaluate_js",
+                json!({"instance_id": i, "expression": "window.__answer"}),
+                "true",
+            ),
         ]
     }
 
@@ -443,10 +462,10 @@ mod e2e {
             ),
             ("resume", "resume", json!({"instance_id": i}), "resumed"),
             (
-                "ISSUE-1 click into a breakpoint fails at once",
+                "ISSUE-1/11 click into a breakpoint answers at once, noting the pause",
                 "click_element",
                 json!({"instance_id": i, "selector": "#hit"}),
-                "!The page paused in the debugger",
+                "The page paused in the debugger",
             ),
             (
                 "evaluate_on_call_frame after the click",

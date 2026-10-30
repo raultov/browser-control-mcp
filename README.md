@@ -51,7 +51,7 @@ see the note.
 | `scroll` | ✓ | ✓ | reports the window positions before and after |
 | `inspect_dom` | ✓ | ✓ | includes open shadow roots and same-origin iframes (cross-origin ones are noted); at most 100 000 characters without `query` (cut in the page) |
 | `capture_screenshot` | ✓ | ✓ | `format` `png`, `jpeg` (or `jpg`) or `webp`; `full_page` at most 16 384 px per side (a text note says when cut) |
-| `click_element` | ✓ | ✓ | scrolls the element into view; fails without clicking when it is hidden or covered |
+| `click_element` | ✓ | ✓ | scrolls the element into view; fails without clicking when it is hidden or covered; a dialog or debugger pause the click causes is noted in a successful reply (`{dialog}` or `{paused, location}`) |
 | `fill_input` | ✓ | ✓ | picks `<select>` options; fails without typing on elements that cannot take the text; types key by key on both (key handlers run; newlines and tabs inserted as text), about 1 ms per character; `change` on leaving the field, or at the end when the window has no focus |
 | `handle_dialog` | ✓ | ✓ | accepts or dismisses the open `alert` / `confirm` / `prompt` / `beforeunload` dialog |
 | `evaluate_js` | ✓ | ✓ | `value` at most 100 000 characters (`truncated: true`); Chrome stops a script after 8 s, Firefox cannot (a looping tab is closed with `close_tab`) |
@@ -390,11 +390,13 @@ Chrome and Firefox take the same calls:
 2. `search_scripts` with a needle to find the script URL and line.
 3. `set_breakpoint` with `url` and `line_number` (0-based).
 4. Trigger the code (`click_element`, `evaluate_js` with a `setTimeout`, a
-   reload...). The page pauses. A call whose own code hits the breakpoint
-   (a click on a button whose handler has it) fails at once with
-   `The page paused in the debugger at <url> line N, column M (0-based)
-   while running ...` (the URL when the browser gives it): the click
-   happened, the page is paused.
+   reload...). The page pauses. A `click_element` whose handler hits the
+   breakpoint answers at once, as a success: the click happened, and the
+   reply adds `The page paused in the debugger at <url> line N, column M
+   (0-based)` (the URL when the browser gives it) and
+   `{"paused": true, "location": ...}`. Any other call the pause leaves
+   unfinished (`evaluate_js`, `fill_input`, `navigate`...) fails at once
+   with that location.
 5. `evaluate_on_call_frame` reads locals of the paused frame; `step_over`
    moves one statement; `resume` continues.
 6. `remove_breakpoint` with the id `set_breakpoint` returned.

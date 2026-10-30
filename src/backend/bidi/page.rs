@@ -4,6 +4,7 @@ use super::protocol_error;
 use super::remote_value;
 use crate::backend::error::BackendError;
 use crate::handler::evaluation::{self, Evaluation, exception_message};
+use crate::handler::interruption::Interruption;
 use crate::handler::navigation::{LOAD_TIMEOUT, NOT_LOADED_NOTE, NavigationOutcome, load_before};
 use bidi_browser_lite::{BidiError, ReadinessState, Tab};
 use serde_json::{Value, json};
@@ -30,6 +31,17 @@ pub(crate) async fn unless_prompt<T>(
     method: &str,
     command: impl std::future::Future<Output = T>,
 ) -> Result<T, BackendError> {
+    race_prompt(tab, command)
+        .await
+        .map_err(|dialog| BackendError::InvalidArgument(dialog.during(method)))
+}
+
+/// Runs `command` unless the tab opens a JavaScript dialog first: then the
+/// dialog, for input actions whose effect happened anyway.
+async fn race_prompt<T>(
+    tab: &Tab,
+    command: impl std::future::Future<Output = T>,
+) -> Result<T, Interruption> {
     let opened = |event: &bidi_browser_lite::BidiResult<bidi_browser_lite::WsResponse>| match event
     {
         Ok(event) if event.method.as_deref() == Some("browsingContext.userPromptOpened") => event
@@ -40,7 +52,7 @@ pub(crate) async fn unless_prompt<T>(
     };
     crate::handler::dialogs::unless_blocked(command, tab.on_module("browsingContext"), opened)
         .await
-        .map_err(|dialog| BackendError::InvalidArgument(dialog.opened_during(method)))
+        .map_err(Interruption::Dialog)
 }
 
 /// `browsingContext.navigate` waiting for `load` (spike H2). A network
@@ -269,12 +281,16 @@ pub(crate) async fn run_snippet(tab: &Tab, expression: &str) -> Result<Value, Ba
     evaluate(tab, expression).await
 }
 
-/// Clicks the viewport point `(x, y)` with real pointer input (spike H6).
-/// The input state is released even when the actions fail, so a later
-/// action does not start with the button held; after a failure (a dialog
-/// the click opened blocks the page) in the background, so the call does
-/// not wait for the dialog.
-pub(crate) async fn click_at(tab: &Tab, x: f64, y: f64) -> Result<(), BackendError> {
+/// Clicks the viewport point `(x, y)` with real pointer input (spike H6);
+/// the dialog the click opened, if any (the click happened). The input
+/// state is released even when the actions fail or a dialog opened, so a
+/// later action does not start with the button held: then in the
+/// background, so the call does not wait for the dialog.
+pub(crate) async fn click_at(
+    tab: &Tab,
+    x: f64,
+    y: f64,
+) -> Result<Option<Interruption>, BackendError> {
     // The click snippet returns whole CSS pixels; BiDi wants integers.
     let (x, y) = (x.round() as i64, y.round() as i64);
     let pointer = json!({"type": "pointer", "id": "mouse", "parameters": {"pointerType": "mouse"}, "actions": [
@@ -283,23 +299,23 @@ pub(crate) async fn click_at(tab: &Tab, x: f64, y: f64) -> Result<(), BackendErr
         {"type": "pointerUp", "button": 0},
     ]});
     let context = tab.context_id();
-    let clicked = command(
-        tab,
-        "input.performActions",
-        json!({"context": context, "actions": [pointer]}),
-    )
-    .await;
+    let method = "input.performActions";
+    let actions = tab.send_raw_command(method, json!({"context": context, "actions": [pointer]}));
+    let clicked = match race_prompt(tab, actions).await {
+        Ok(reply) => reply.map(|_| None).map_err(|e| protocol_error(method, &e)),
+        Err(dialog) => Ok(Some(dialog)),
+    };
     let release = json!({"context": context});
-    if clicked.is_err() {
+    if !matches!(clicked, Ok(None)) {
         let tab = tab.clone();
         tokio::spawn(async move {
             let _ = tab.send_raw_command("input.releaseActions", release).await;
         });
-        return clicked.map(|_| ());
+        return clicked;
     }
     command(tab, "input.releaseActions", release)
         .await
-        .map(|_| ())
+        .map(|_| None)
 }
 
 /// Characters typed per `input.performActions`: Firefox types about a

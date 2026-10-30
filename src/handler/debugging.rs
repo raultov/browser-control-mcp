@@ -129,10 +129,25 @@ pub(crate) struct PauseLocation {
     pub(crate) column: u32,
 }
 
+impl PauseLocation {
+    /// `{url, line_number, column_number}` for replies.
+    pub(crate) fn to_json(&self) -> Value {
+        json!({"url": self.url, "line_number": self.line, "column_number": self.column})
+    }
+
+    /// ` at <url> line N, column M (0-based)` for messages.
+    fn at(&self) -> String {
+        let (line, column) = (self.line, self.column);
+        match &self.url {
+            Some(url) => format!(" at {url} line {line}, column {column} (0-based)"),
+            None => format!(" at line {line}, column {column} (0-based)"),
+        }
+    }
+}
+
 /// `{paused, location}` after a step or a resume.
 pub(crate) fn pause_json(location: Option<&PauseLocation>) -> Value {
-    let location =
-        location.map(|l| json!({"url": l.url, "line_number": l.line, "column_number": l.column}));
+    let location = location.map(PauseLocation::to_json);
     json!({"paused": location.is_some(), "location": location})
 }
 
@@ -153,19 +168,18 @@ pub(crate) fn resumed(location: Option<&PauseLocation>) -> CallToolResult {
 /// own code hit a breakpoint): the page answers nothing more until it is
 /// resumed, so the call fails at once saying where it stopped.
 pub(crate) fn paused_during(location: Option<&PauseLocation>, call: &str) -> String {
-    let at = match location {
-        Some(PauseLocation {
-            url: Some(url),
-            line,
-            column,
-        }) => format!(" at {url} line {line}, column {column} (0-based)"),
-        Some(PauseLocation { line, column, .. }) => {
-            format!(" at line {line}, column {column} (0-based)")
-        }
-        None => String::new(),
-    };
+    let at = location.map(PauseLocation::at).unwrap_or_default();
     format!(
         "The page paused in the debugger{at} while running {call}: the call did not finish, though its effect (a click, a navigation) may have happened. Inspect the paused frame with evaluate_on_call_frame, then continue with resume or step_over."
+    )
+}
+
+/// The sentence a reply adds after an action whose own code paused the
+/// page in the debugger (the action happened).
+pub(crate) fn paused_note(location: Option<&PauseLocation>) -> String {
+    let at = location.map(PauseLocation::at).unwrap_or_default();
+    format!(
+        "The page paused in the debugger{at}: inspect the paused frame with evaluate_on_call_frame, then continue with resume or step_over."
     )
 }
 

@@ -10,6 +10,16 @@ from a copy of its code: entries describe the differences from that release.
 
 ## [Unreleased]
 
+### Changed
+
+- `click_element` succeeds when the click opens a JavaScript dialog or its
+  handler pauses in the debugger: the click happened, so the reply says so
+  (`... The page opened a JavaScript confirm dialog ("Delete?"), which
+  blocks it: call handle_dialog ...`), followed by `{"dialog": {...}}` or
+  `{"paused": true, "location": ...}`. It was an error, which invited
+  agents to click again. Calls whose answer is missing (`evaluate_js`) or
+  that may have stopped half way (`fill_input`) still fail. (#11)
+
 ### Fixed
 
 - A call whose own code hits a breakpoint (`click_element` on a button whose

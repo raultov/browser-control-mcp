@@ -1,4 +1,6 @@
 use crate::handler::McpHandler;
+use crate::handler::cdp_domains::cdp_target::CdpTarget;
+use crate::handler::interruption::Interruption;
 use rust_mcp_sdk::{
     macros,
     schema::{CallToolError, CallToolRequestParams, CallToolResult},
@@ -7,7 +9,7 @@ use serde_json::{Value, json};
 
 #[macros::mcp_tool(
     name = "click_element",
-    description = "Triggers a native mouse click event on a DOM element identified by CSS selector, executing click handlers and form submissions. Side effects: may trigger page navigation, form submission, or modify DOM state. Prerequisites: element must exist and be visible; it is scrolled into view first, and the call fails without clicking when the element has no visible box or another element (an overlay, a cookie banner) covers the point. Returns: success confirmation with click coordinates (viewport CSS pixels). Use this to interact with buttons, links, checkboxes. Alternatives: 'fill_input' for text input, 'evaluate_js' for complex interactions."
+    description = "Triggers a native mouse click event on a DOM element identified by CSS selector, executing click handlers and form submissions. Side effects: may trigger page navigation, form submission, or modify DOM state. Prerequisites: element must exist and be visible; it is scrolled into view first, and the call fails without clicking when the element has no visible box or another element (an overlay, a cookie banner) covers the point. Returns: success confirmation with click coordinates (viewport CSS pixels). A JavaScript dialog the click opens, or a debugger pause its handlers hit, does not fail it (the click happened): the reply notes it, followed by JSON {dialog: {type, message, default_prompt?}} (close it with 'handle_dialog') or {paused: true, location: {url, line_number, column_number} | null} (inspect with 'evaluate_on_call_frame', continue with 'resume'). Use this to interact with buttons, links, checkboxes. Alternatives: 'fill_input' for text input, 'evaluate_js' for complex interactions."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct ClickElementTool {
@@ -31,26 +33,66 @@ impl ClickElementTool {
         let expression = crate::util::js::click_point(&args.selector);
         let point = crate::handler::snippet_value(&target, &expression).await?;
         let (x, y) = click_point(&point, &args.selector)?;
-        let event = |kind| json!({"type": kind, "button": "left", "x": x, "y": y, "clickCount": 1});
-        let method = "Input.dispatchMouseEvent";
-        let pressed = crate::handler::send_or(&target, method, event("mousePressed"), "CDP Error");
-        if let Err(error) = pressed.await {
-            // A press a pause or a dialog interrupted is still delivered once
-            // the page runs again: so is the release, or the button stays held.
-            let release = event("mouseReleased");
-            tokio::spawn(async move { target.send_raw_command(method, release).await });
-            return Err(error);
-        }
-        crate::handler::send_or(&target, method, event("mouseReleased"), "CDP Error").await?;
-        Ok(clicked_reply(&args.selector, x, y))
+        let interrupted = press_and_release(&target, x, y).await?;
+        Ok(clicked_reply(&args.selector, x, y, interrupted.as_ref()))
     }
 }
 
-/// The reply once the click was sent.
-pub(crate) fn clicked_reply(selector: &str, x: f64, y: f64) -> CallToolResult {
-    CallToolResult::text_content(vec![
-        format!("Successfully clicked on element '{selector}' at coordinates ({x}, {y})").into(),
-    ])
+/// Presses and releases the left button at `(x, y)`; what interrupted the
+/// click (a dialog or a pause its handlers caused), if anything. The click
+/// still happened: the page handles the events once it runs again.
+async fn press_and_release(
+    target: &CdpTarget,
+    x: f64,
+    y: f64,
+) -> Result<Option<Interruption>, CallToolError> {
+    let event = |kind| json!({"type": kind, "button": "left", "x": x, "y": y, "clickCount": 1});
+    let method = "Input.dispatchMouseEvent";
+    let pressed = target
+        .send_interruptible(method, event("mousePressed"))
+        .await;
+    let released = match pressed {
+        Ok(Ok(_)) => {
+            target
+                .send_interruptible(method, event("mouseReleased"))
+                .await
+        }
+        other => {
+            // A press that failed or was interrupted may still be delivered
+            // once the page runs again: so is the release, or the button
+            // stays held.
+            let (target, release) = (target.clone(), event("mouseReleased"));
+            tokio::spawn(async move { target.send_raw_command(method, release).await });
+            other
+        }
+    };
+    match released {
+        Ok(Ok(_)) => Ok(None),
+        Ok(Err(e)) => Err(CallToolError::from_message(crate::handler::cdp_failure(
+            "CDP Error",
+            &e,
+        ))),
+        Err(interruption) => Ok(Some(interruption)),
+    }
+}
+
+/// The reply once the click was sent; a click a dialog or a pause
+/// interrupted says so, with its JSON after the first line.
+pub(crate) fn clicked_reply(
+    selector: &str,
+    x: f64,
+    y: f64,
+    interrupted: Option<&Interruption>,
+) -> CallToolResult {
+    let done = format!("Successfully clicked on element '{selector}' at coordinates ({x}, {y})");
+    let text = match interrupted {
+        None => done,
+        Some(interruption) => {
+            let body = serde_json::to_string_pretty(&interruption.to_json()).unwrap_or_default();
+            format!("{done}. {}\n{body}", interruption.note())
+        }
+    };
+    CallToolResult::text_content(vec![text.into()])
 }
 
 /// The point the click snippet (`util::js::click_point`) checked, or why
@@ -169,6 +211,38 @@ mod tests {
         assert_eq!(
             (events[0].params["x"].clone(), events[0].params["y"].clone()),
             (json!(16.0), json!(497.0))
+        );
+    }
+
+    /// ISSUE-11: a click a dialog or a pause interrupted is a success (the
+    /// click happened) that says so, with its JSON after the first line.
+    #[test]
+    fn interrupted_click_is_a_noted_success() {
+        // Given a click that opened a confirm, and one that paused
+        let dialog = Interruption::Dialog(crate::handler::dialogs::OpenDialog::from_chrome(
+            &json!({"type": "confirm", "message": "Delete?"}),
+        ));
+        let paused = Interruption::Paused(None);
+        // When their replies are built
+        let reply = clicked_reply("#del", 4.0, 9.0, Some(&dialog));
+        let text = crate::handler::cdp_domains::tests::reply_text(&reply);
+        // Then they succeed, noting the dialog or the pause
+        assert_ne!(reply.is_error, Some(true));
+        assert!(
+            text.starts_with("Successfully clicked on element '#del' at coordinates (4, 9). The page opened a JavaScript confirm dialog (\"Delete?\")"),
+            "{text}"
+        );
+        let body: Value = serde_json::from_str(&text[text.find('{').unwrap()..]).unwrap();
+        assert_eq!(body, dialog.to_json());
+        let text = crate::handler::cdp_domains::tests::reply_text(&clicked_reply(
+            "#b",
+            1.0,
+            2.0,
+            Some(&paused),
+        ));
+        assert!(
+            text.contains("(1, 2). The page paused in the debugger:"),
+            "{text}"
         );
     }
 

@@ -17,6 +17,7 @@ use crate::handler::cdp_domains::debugger::search_scripts::{
 use crate::handler::cdp_domains::debugger::set_breakpoint::SetBreakpointTool;
 use crate::handler::cdp_domains::event_pump::ListenerHandles;
 use crate::handler::debugging::{self, BreakpointIds, BreakpointSet, PauseLocation};
+use crate::handler::interruption::Interruption;
 use crate::handler::{McpHandler, TargetArgs, parse_args};
 use bidi_browser_lite::bidi_lite::error::codes;
 use bidi_browser_lite::bidi_lite::rdp::debugger::{
@@ -323,9 +324,22 @@ pub(crate) async fn unless_paused<T, E: From<BackendError>>(
     call: &str,
     operation: impl std::future::Future<Output = Result<T, E>>,
 ) -> Result<T, E> {
+    race_pause(session, id, operation)
+        .await
+        .unwrap_or_else(|paused| Err(BackendError::InvalidArgument(paused.during(call)).into()))
+}
+
+/// Runs `operation` on tab `id` unless the tab's debugger pauses first:
+/// then the pause, for input actions whose effect happened anyway (see
+/// [`unless_paused`]).
+pub(crate) async fn race_pause<T>(
+    session: &FirefoxSession,
+    id: &str,
+    operation: impl std::future::Future<Output = T>,
+) -> Result<T, Interruption> {
     let found = session.debuggers.lock().await.get(id).cloned();
     let Some(shared) = found else {
-        return operation.await;
+        return Ok(operation.await);
     };
     let (debugger, pause) = {
         let entry = shared.lock().await;
@@ -342,15 +356,12 @@ pub(crate) async fn unless_paused<T, E: From<BackendError>>(
     };
     tokio::select! {
         biased;
-        outcome = operation => outcome,
-        location = paused => {
-            let message = debugging::paused_during(location.as_ref(), call);
-            Err(BackendError::InvalidArgument(message).into())
-        }
+        outcome = operation => Ok(outcome),
+        location = paused => Err(Interruption::Paused(location)),
     }
 }
 
-/// How often a call racing a pause ([`unless_paused`]) reads the thread
+/// How often a call racing a pause ([`race_pause`]) reads the thread
 /// state the state task keeps.
 const PAUSE_POLL: Duration = Duration::from_millis(25);
 

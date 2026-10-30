@@ -90,6 +90,16 @@ impl OpenDialog {
         )
     }
 
+    /// The sentence a reply adds after an action that opened this dialog
+    /// (the action happened).
+    pub(crate) fn opened_note(&self) -> String {
+        format!(
+            "The page opened a JavaScript {} dialog ({}), which blocks it: call handle_dialog with accept true or false to close it.",
+            self.kind,
+            self.quoted()
+        )
+    }
+
     /// `{type, message, default_prompt?}` for replies.
     pub(crate) fn to_json(&self) -> Value {
         let mut out = json!({"type": self.kind, "message": self.message});

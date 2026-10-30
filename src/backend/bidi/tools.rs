@@ -2,7 +2,7 @@
 //! arguments as the Chrome tool (one schema per tool) and answers in the same
 //! shape where the protocols allow it.
 
-use super::debugger::unless_paused;
+use super::debugger::{race_pause, unless_paused};
 use super::page;
 use super::session::FirefoxSession;
 use crate::backend::BackendError;
@@ -191,14 +191,17 @@ pub(crate) async fn click_element(
 ) -> ToolResult {
     let args: ClickElementTool = parse_args(params)?;
     let ids = ids(&args.instance_id, &args.tab_id);
-    on_page(handler, &ids, "click_element", async |tab| {
-        let expression = crate::util::js::click_point(&args.selector);
-        let point = page::run_snippet(tab, &expression).await?;
-        let (x, y) = click_point(&point, &args.selector)?;
-        page::click_at(tab, x, y).await?;
-        Ok(clicked_reply(&args.selector, x, y))
-    })
-    .await
+    let (session, id, tab) = target(handler, &ids).await?;
+    let expression = crate::util::js::click_point(&args.selector);
+    let checked = page::run_snippet(&tab.tab, &expression);
+    let point = unless_paused(&session, &id, "click_element", checked).await?;
+    let (x, y) = click_point(&point, &args.selector)?;
+    // The click happened even when a dialog or a pause interrupted it.
+    let interrupted = match race_pause(&session, &id, page::click_at(&tab.tab, x, y)).await {
+        Ok(clicked) => clicked?,
+        Err(paused) => Some(paused),
+    };
+    Ok(clicked_reply(&args.selector, x, y, interrupted.as_ref()))
 }
 
 /// `fill_input`: replaces the element's content by typing, with the same

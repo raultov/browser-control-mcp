@@ -3,6 +3,7 @@ pub mod chrome_instance;
 pub(crate) mod debugging;
 pub(crate) mod dialogs;
 pub(crate) mod evaluation;
+pub(crate) mod interruption;
 pub(crate) mod navigation;
 mod registry;
 mod schema_compat;

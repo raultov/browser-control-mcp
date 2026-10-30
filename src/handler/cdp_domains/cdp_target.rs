@@ -1,5 +1,6 @@
 use crate::handler::debugging::PauseLocation;
 use crate::handler::dialogs::{OpenDialog, unless_blocked};
+use crate::handler::interruption::Interruption;
 use cdp_browser_lite::{CdpClient, CdpResult, EventFilter, Tab, WsResponse};
 use serde::Serialize;
 use std::future::Future;
@@ -31,6 +32,18 @@ impl CdpTarget {
         method: &str,
         params: P,
     ) -> CdpResult<WsResponse> {
+        self.send_interruptible(method, params)
+            .await
+            .unwrap_or_else(|interruption| Err(interrupted_error(&interruption, method)))
+    }
+
+    /// Sends a command, or says what interrupted it (see `send_raw_command`),
+    /// for input actions whose effect happened anyway.
+    pub(crate) async fn send_interruptible<P: Serialize>(
+        &self,
+        method: &str,
+        params: P,
+    ) -> Result<CdpResult<WsResponse>, Interruption> {
         let send = async {
             match self {
                 Self::Client(c) => c.send_raw_command(method, params).await,
@@ -38,7 +51,7 @@ impl CdpTarget {
             }
         };
         if method == "Page.handleJavaScriptDialog" {
-            return send.await;
+            return Ok(send.await);
         }
         let events = self.on_domain("Page").merge(self.on_domain("Debugger"));
         unless_interrupted(send, events, method).await
@@ -86,41 +99,38 @@ fn blocker(event: &CdpResult<WsResponse>, pauses: bool) -> Option<Blocker> {
 
 /// Runs `command` (CDP `method`) unless `events` (the `Page` and `Debugger`
 /// events of its target) announce a dialog, or a debugger pause that is
-/// still there after [`PAUSE_SETTLE`], first.
+/// still there after [`PAUSE_SETTLE`], first: then that is returned.
 async fn unless_interrupted<T>(
     command: impl Future<Output = CdpResult<T>>,
     mut events: impl Stream<Item = CdpResult<WsResponse>> + Unpin,
     method: &str,
-) -> CdpResult<T> {
+) -> Result<CdpResult<T>, Interruption> {
     // Debugger commands answer while paused, and a step pauses on purpose.
     let pauses = !method.starts_with("Debugger.");
-    let dialog = |dialog: OpenDialog| Err(interruption(dialog.opened_during(method)));
     tokio::pin!(command);
     loop {
         let paused = match unless_blocked(&mut command, &mut events, |e| blocker(e, pauses)).await {
-            Ok(reply) => return reply,
-            Err(Blocker::Dialog(opened)) => return dialog(opened),
+            Ok(reply) => return Ok(reply),
+            Err(Blocker::Dialog(opened)) => return Err(Interruption::Dialog(opened)),
             Err(Blocker::Resumed) => continue,
             Err(Blocker::Paused(location)) => location,
         };
         let settle = tokio::time::timeout(PAUSE_SETTLE, &mut command);
-        let location = match unless_blocked(settle, &mut events, |e| blocker(e, true)).await {
-            Ok(Ok(reply)) => return reply,
-            Err(Blocker::Dialog(opened)) => return dialog(opened),
+        return match unless_blocked(settle, &mut events, |e| blocker(e, true)).await {
+            Ok(Ok(reply)) => Ok(reply),
+            Err(Blocker::Dialog(opened)) => Err(Interruption::Dialog(opened)),
             Err(Blocker::Resumed) => continue,
-            Err(Blocker::Paused(next)) => next,
-            Ok(Err(_elapsed)) => paused,
+            Err(Blocker::Paused(next)) => Err(Interruption::Paused(next)),
+            Ok(Err(_elapsed)) => Err(Interruption::Paused(paused)),
         };
-        let message = crate::handler::debugging::paused_during(location.as_ref(), method);
-        return Err(interruption(message));
     }
 }
 
-/// The error of a command a dialog or a pause interrupted.
-fn interruption(message: String) -> cdp_browser_lite::CdpError {
+/// The error of CDP `method`, which `interruption` left unfinished.
+fn interrupted_error(interruption: &Interruption, method: &str) -> cdp_browser_lite::CdpError {
     cdp_browser_lite::CdpError::ProtocolError {
         code: crate::handler::dialogs::INTERRUPTED_ERROR_CODE,
-        message,
+        message: interruption.during(method),
     }
 }
 
@@ -144,15 +154,22 @@ mod tests {
         Ok(make_event("Debugger.resumed", json!({})))
     }
 
-    /// The error text of an interrupted command.
-    fn message(outcome: CdpResult<u32>) -> String {
-        match outcome {
-            Err(cdp_browser_lite::CdpError::ProtocolError { code, message }) => {
-                assert_eq!(code, crate::handler::dialogs::INTERRUPTED_ERROR_CODE);
-                message
-            }
-            other => panic!("expected an interruption, got {other:?}"),
-        }
+    /// The error text `send_raw_command` gives an interrupted command.
+    fn message(outcome: Result<CdpResult<u32>, Interruption>) -> String {
+        let Err(interruption) = outcome else {
+            panic!("expected an interruption, got {outcome:?}");
+        };
+        let error = interrupted_error(&interruption, "Input.dispatchMouseEvent");
+        assert!(crate::handler::dialogs::interrupted(&error));
+        let cdp_browser_lite::CdpError::ProtocolError { message, .. } = error else {
+            unreachable!("an interruption is a protocol error");
+        };
+        message
+    }
+
+    /// The reply of a command nothing interrupted.
+    fn answered(outcome: Result<CdpResult<u32>, Interruption>) -> Option<u32> {
+        outcome.ok().and_then(Result::ok)
     }
 
     /// ISSUE-1: a pause the command's own code hits (a click on a button
@@ -188,7 +205,7 @@ mod tests {
         // When it runs
         let outcome = unless_interrupted(later, events, "Input.dispatchMouseEvent").await;
         // Then its result is kept
-        assert_eq!(outcome.ok(), Some(7));
+        assert_eq!(answered(outcome), Some(7));
     }
 
     /// ISSUE-1: debugger commands are not interrupted by a pause (a step
@@ -201,7 +218,7 @@ mod tests {
             Ok(7)
         };
         let outcome = unless_interrupted(later, events, "Debugger.stepOver").await;
-        assert_eq!(outcome.ok(), Some(7));
+        assert_eq!(answered(outcome), Some(7));
     }
 
     /// AUD-EV-05: a dialog still interrupts a command, quoting it.
