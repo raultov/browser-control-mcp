@@ -19,6 +19,7 @@ mod e2e {
 
     const INDEX: &str = r#"<!doctype html><html><body>
     <button id="go" onclick="window.__clicked=(window.__clicked||0)+1">go</button>
+    <button id="hit" onclick="appTarget(3)">hit</button>
     <input id="q" value="old"><div id="marker">needle-marker</div>
     <script>console.log("hello from e2e");</script><script>throw new Error("boom-e2e");</script><script src="/app.js"></script></body></html>"#;
     const APP_JS: &str = "function appTarget(x) {\n  const y = x * 2;\n  return y + 1;\n}\nwindow.appTarget = appTarget;\nfetch('/api');\n";
@@ -441,6 +442,24 @@ mod e2e {
                 "Stepped",
             ),
             ("resume", "resume", json!({"instance_id": i}), "resumed"),
+            (
+                "ISSUE-1 click into a breakpoint fails at once",
+                "click_element",
+                json!({"instance_id": i, "selector": "#hit"}),
+                "!The page paused in the debugger",
+            ),
+            (
+                "evaluate_on_call_frame after the click",
+                "evaluate_on_call_frame",
+                json!({"instance_id": i, "expression": "x * 7"}),
+                "21",
+            ),
+            (
+                "resume after the click",
+                "resume",
+                json!({"instance_id": i}),
+                "resumed",
+            ),
         ]
     }
 

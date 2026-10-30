@@ -2,6 +2,7 @@
 //! arguments as the Chrome tool (one schema per tool) and answers in the same
 //! shape where the protocols allow it.
 
+use super::debugger::unless_paused;
 use super::page;
 use super::session::FirefoxSession;
 use crate::backend::BackendError;
@@ -25,6 +26,7 @@ use crate::handler::chrome_instance::{close_instance, open_instance, open_tab, s
 use crate::handler::navigation::NavigationOutcome;
 use crate::handler::{McpHandler, NetworkRequest, TargetArgs, parse_args};
 use crate::util::sync::{read, write};
+use bidi_browser_lite::Tab;
 use rust_mcp_sdk::schema::{CallToolError, CallToolRequestParams, CallToolResult};
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -101,8 +103,9 @@ fn check_local(handler: &McpHandler, url: &str) -> Result<(), CallToolError> {
 pub(crate) async fn navigate(params: CallToolRequestParams, handler: &McpHandler) -> ToolResult {
     let args: NavigateTool = parse_args(params)?;
     check_local(handler, &args.url)?;
-    let (_, id, tab) = target(handler, &ids(&args.instance_id, &args.tab_id)).await?;
-    let outcome = page::navigate(&tab.tab, &args.url).await?;
+    let (session, id, tab) = target(handler, &ids(&args.instance_id, &args.tab_id)).await?;
+    let navigation = page::navigate(&tab.tab, &args.url);
+    let outcome = unless_paused(&session, &id, "navigate", navigation).await?;
     let document = navigation_document(&tab, &outcome, &args.url).await;
     if document.as_ref().is_some_and(NetworkRequest::is_attachment) {
         return Err(BackendError::Navigation {
@@ -129,18 +132,33 @@ async fn navigation_document(
 /// `reload`.
 pub(crate) async fn reload(params: CallToolRequestParams, handler: &McpHandler) -> ToolResult {
     let ids: TargetArgs = parse_args(params)?;
-    let (_, id, tab) = target(handler, &ids).await?;
-    let outcome = page::reload(&tab.tab).await?;
+    let (session, id, tab) = target(handler, &ids).await?;
+    let outcome = unless_paused(&session, &id, "reload", page::reload(&tab.tab)).await?;
     let document = navigation_document(&tab, &outcome, &outcome.url).await;
     let outcome = outcome.with_status(document.and_then(|d| d.response_status));
     Ok(outcome.reply("Page reloaded.", Some(&id)))
 }
 
+/// Runs tool `name`, which runs page code on the tab `ids` address, failing
+/// at once if the page pauses in the debugger meanwhile (`unless_paused`).
+async fn on_page(
+    handler: &McpHandler,
+    ids: &TargetArgs,
+    name: &str,
+    call: impl AsyncFnOnce(&Tab) -> ToolResult,
+) -> ToolResult {
+    let (session, id, tab) = target(handler, ids).await?;
+    unless_paused(&session, &id, name, call(&tab.tab)).await
+}
+
 /// `evaluate_js`: the result in the shared shape.
 pub(crate) async fn evaluate_js(params: CallToolRequestParams, handler: &McpHandler) -> ToolResult {
     let args: EvaluateJsTool = parse_args(params)?;
-    let (_, _, tab) = target(handler, &ids(&args.instance_id, &args.tab_id)).await?;
-    Ok(page::evaluate_js(&tab.tab, &args.expression).await?.reply())
+    let ids = ids(&args.instance_id, &args.tab_id);
+    on_page(handler, &ids, "evaluate_js", async |tab| {
+        Ok(page::evaluate_js(tab, &args.expression).await?.reply())
+    })
+    .await
 }
 
 /// `inspect_dom`: same text as on Chrome.
@@ -157,9 +175,12 @@ pub(crate) async fn inspect_dom(params: CallToolRequestParams, handler: &McpHand
 /// `scroll`: the same JavaScript and reply as on Chrome.
 pub(crate) async fn scroll(params: CallToolRequestParams, handler: &McpHandler) -> ToolResult {
     let args: ScrollTool = parse_args(params)?;
-    let (_, _, tab) = target(handler, &ids(&args.instance_id, &args.tab_id)).await?;
-    let outcome = page::run_snippet(&tab.tab, &args.expression()).await?;
-    args.reply(&outcome)
+    let ids = ids(&args.instance_id, &args.tab_id);
+    on_page(handler, &ids, "scroll", async |tab| {
+        let outcome = page::run_snippet(tab, &args.expression()).await?;
+        args.reply(&outcome)
+    })
+    .await
 }
 
 /// `click_element`: real pointer input at the point the shared snippet
@@ -169,27 +190,33 @@ pub(crate) async fn click_element(
     handler: &McpHandler,
 ) -> ToolResult {
     let args: ClickElementTool = parse_args(params)?;
-    let (_, _, tab) = target(handler, &ids(&args.instance_id, &args.tab_id)).await?;
-    let expression = crate::util::js::click_point(&args.selector);
-    let point = page::run_snippet(&tab.tab, &expression).await?;
-    let (x, y) = click_point(&point, &args.selector)?;
-    page::click_at(&tab.tab, x, y).await?;
-    Ok(clicked_reply(&args.selector, x, y))
+    let ids = ids(&args.instance_id, &args.tab_id);
+    on_page(handler, &ids, "click_element", async |tab| {
+        let expression = crate::util::js::click_point(&args.selector);
+        let point = page::run_snippet(tab, &expression).await?;
+        let (x, y) = click_point(&point, &args.selector)?;
+        page::click_at(tab, x, y).await?;
+        Ok(clicked_reply(&args.selector, x, y))
+    })
+    .await
 }
 
 /// `fill_input`: replaces the element's content by typing, with the same
 /// checks and replies as on Chrome.
 pub(crate) async fn fill_input(params: CallToolRequestParams, handler: &McpHandler) -> ToolResult {
     let args: FillInputTool = parse_args(params)?;
-    let (_, _, tab) = target(handler, &ids(&args.instance_id, &args.tab_id)).await?;
-    let prepare = crate::util::js::prepare_fill(&args.selector, &args.text);
-    let prepared = page::run_snippet(&tab.tab, &prepare).await?;
-    if let FillStart::Selected = fill_start(&prepared, &args.selector)? {
-        return Ok(selected_reply(&args.selector));
-    }
-    page::type_text(&tab.tab, &args.text).await?;
-    let check = crate::util::js::fill_result(&args.selector, &args.text);
-    fill_reply(&page::run_snippet(&tab.tab, &check).await?, &args.selector)
+    let ids = ids(&args.instance_id, &args.tab_id);
+    on_page(handler, &ids, "fill_input", async |tab| {
+        let prepare = crate::util::js::prepare_fill(&args.selector, &args.text);
+        let prepared = page::run_snippet(tab, &prepare).await?;
+        if let FillStart::Selected = fill_start(&prepared, &args.selector)? {
+            return Ok(selected_reply(&args.selector));
+        }
+        page::type_text(tab, &args.text).await?;
+        let check = crate::util::js::fill_result(&args.selector, &args.text);
+        fill_reply(&page::run_snippet(tab, &check).await?, &args.selector)
+    })
+    .await
 }
 
 /// `capture_screenshot`: image content.

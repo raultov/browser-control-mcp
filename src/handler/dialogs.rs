@@ -14,13 +14,15 @@ const QUOTED_CHARS: usize = 200;
 /// The error of `handle_dialog` when no dialog is open.
 pub(crate) const NO_DIALOG: &str = "No JavaScript dialog is open on this tab.";
 
-/// The CDP error code under which a command interrupted by a dialog is
-/// reported (outside the codes Chrome uses), so its message is shown as is.
-pub(crate) const DIALOG_ERROR_CODE: i64 = -32_098;
+/// The CDP error code under which a command interrupted by a dialog or a
+/// debugger pause is reported (outside the codes Chrome uses), so its
+/// message is shown as is.
+pub(crate) const INTERRUPTED_ERROR_CODE: i64 = -32_098;
 
-/// Whether a CDP command failed because the page opened a dialog.
+/// Whether a CDP command failed because the page opened a dialog or paused
+/// in the debugger.
 pub(crate) fn interrupted(error: &cdp_browser_lite::CdpError) -> bool {
-    matches!(error, cdp_browser_lite::CdpError::ProtocolError { code, .. } if *code == DIALOG_ERROR_CODE)
+    matches!(error, cdp_browser_lite::CdpError::ProtocolError { code, .. } if *code == INTERRUPTED_ERROR_CODE)
 }
 
 /// An open JavaScript dialog.
@@ -98,14 +100,15 @@ impl OpenDialog {
     }
 }
 
-/// Runs `command` unless `events` announces a dialog first (`opened` reads
-/// one from an event): then the dialog is returned and the command is
-/// abandoned, as the page will not answer it until the dialog is closed.
-pub(crate) async fn unless_dialog<T, I>(
+/// Runs `command` unless `events` announces what blocks the page first
+/// (`blocks` reads it from an event: a dialog, a debugger pause): then that
+/// is returned and the command is abandoned, as the page will not answer it
+/// until the dialog is closed or the pause resumed.
+pub(crate) async fn unless_blocked<T, I, B>(
     command: impl Future<Output = T>,
     mut events: impl Stream<Item = I> + Unpin,
-    opened: impl Fn(&I) -> Option<OpenDialog>,
-) -> Result<T, OpenDialog> {
+    blocks: impl Fn(&I) -> Option<B>,
+) -> Result<T, B> {
     tokio::pin!(command);
     loop {
         tokio::select! {
@@ -113,8 +116,8 @@ pub(crate) async fn unless_dialog<T, I>(
             out = &mut command => return Ok(out),
             event = events.next() => match event {
                 Some(event) => {
-                    if let Some(dialog) = opened(&event) {
-                        return Err(dialog);
+                    if let Some(blocker) = blocks(&event) {
+                        return Err(blocker);
                     }
                 }
                 None => return Ok(command.await),
@@ -155,7 +158,7 @@ mod tests {
     async fn dialog_interrupts_a_blocked_command() {
         let blocked = std::future::pending::<u32>();
         let events = tokio_stream::iter(["other", "dialog"]);
-        let dialog = unless_dialog(blocked, events, alert).await.unwrap_err();
+        let dialog = unless_blocked(blocked, events, alert).await.unwrap_err();
         assert_eq!(dialog.kind, "alert");
         assert!(
             dialog
@@ -171,13 +174,13 @@ mod tests {
     #[tokio::test]
     async fn answered_command_keeps_its_result() {
         let events = tokio_stream::iter(["dialog"]);
-        assert_eq!(unless_dialog(async { 7 }, events, alert).await, Ok(7));
+        assert_eq!(unless_blocked(async { 7 }, events, alert).await, Ok(7));
         let ended = tokio_stream::iter(Vec::<&str>::new());
         let slow = async {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             8
         };
-        assert_eq!(unless_dialog(slow, ended, alert).await, Ok(8));
+        assert_eq!(unless_blocked(slow, ended, alert).await, Ok(8));
     }
 
     /// Long messages are cut; a prompt's default answer is kept.

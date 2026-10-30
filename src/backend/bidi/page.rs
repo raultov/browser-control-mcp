@@ -38,7 +38,7 @@ pub(crate) async fn unless_prompt<T>(
             .map(crate::handler::dialogs::OpenDialog::from_firefox),
         _ => None,
     };
-    crate::handler::dialogs::unless_dialog(command, tab.on_module("browsingContext"), opened)
+    crate::handler::dialogs::unless_blocked(command, tab.on_module("browsingContext"), opened)
         .await
         .map_err(|dialog| BackendError::InvalidArgument(dialog.opened_during(method)))
 }

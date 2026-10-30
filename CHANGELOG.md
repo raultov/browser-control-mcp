@@ -10,6 +10,18 @@ from a copy of its code: entries describe the differences from that release.
 
 ## [Unreleased]
 
+### Fixed
+
+- A call whose own code hits a breakpoint (`click_element` on a button whose
+  handler has one, `fill_input`, `scroll`, `evaluate_js`, `navigate`,
+  `reload`) fails at once on both browsers with where the page paused and
+  how to go on (`evaluate_on_call_frame`, `resume`, `step_over`). It waited
+  for the 10 s command timeout and failed with `Input.dispatchMouseEvent`
+  (Chrome) or `input.performActions` (Firefox) "timed out". On Chrome a
+  pause must last 200 ms to count, so a page's own `debugger;` the server
+  resumes does not fail the call. A Chrome click interrupted on the press
+  still sends the release, so the button is not left held. (#1)
+
 ## [0.3.6-beta.6] - 2026-10-29
 
 Public **BETA**. `fill_input` types the same way on both browsers,

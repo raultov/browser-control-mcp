@@ -390,7 +390,11 @@ Chrome and Firefox take the same calls:
 2. `search_scripts` with a needle to find the script URL and line.
 3. `set_breakpoint` with `url` and `line_number` (0-based).
 4. Trigger the code (`click_element`, `evaluate_js` with a `setTimeout`, a
-   reload...). The page pauses.
+   reload...). The page pauses. A call whose own code hits the breakpoint
+   (a click on a button whose handler has it) fails at once with
+   `The page paused in the debugger at <url> line N, column M (0-based)
+   while running ...` (the URL when the browser gives it): the click
+   happened, the page is paused.
 5. `evaluate_on_call_frame` reads locals of the paused frame; `step_over`
    moves one statement; `resume` continues.
 6. `remove_breakpoint` with the id `set_breakpoint` returned.

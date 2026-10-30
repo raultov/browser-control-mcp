@@ -31,11 +31,17 @@ impl ClickElementTool {
         let expression = crate::util::js::click_point(&args.selector);
         let point = crate::handler::snippet_value(&target, &expression).await?;
         let (x, y) = click_point(&point, &args.selector)?;
-        for kind in ["mousePressed", "mouseReleased"] {
-            let event = json!({"type": kind, "button": "left", "x": x, "y": y, "clickCount": 1});
-            crate::handler::send_or(&target, "Input.dispatchMouseEvent", event, "CDP Error")
-                .await?;
+        let event = |kind| json!({"type": kind, "button": "left", "x": x, "y": y, "clickCount": 1});
+        let method = "Input.dispatchMouseEvent";
+        let pressed = crate::handler::send_or(&target, method, event("mousePressed"), "CDP Error");
+        if let Err(error) = pressed.await {
+            // A press a pause or a dialog interrupted is still delivered once
+            // the page runs again: so is the release, or the button stays held.
+            let release = event("mouseReleased");
+            tokio::spawn(async move { target.send_raw_command(method, release).await });
+            return Err(error);
         }
+        crate::handler::send_or(&target, method, event("mouseReleased"), "CDP Error").await?;
         Ok(clicked_reply(&args.selector, x, y))
     }
 }
@@ -164,5 +170,36 @@ mod tests {
             (events[0].params["x"].clone(), events[0].params["y"].clone()),
             (json!(16.0), json!(497.0))
         );
+    }
+
+    /// ISSUE-1: a click interrupted on the press (a breakpoint in a
+    /// `mousedown` handler) still sends the release, delivered once the page
+    /// runs again, so a later click does not start with the button held.
+    #[tokio::test]
+    async fn interrupted_press_still_releases_the_button() {
+        // Given a press Chrome fails
+        let mock = page_answering(json!({"status": "ok", "x": 16, "y": 497})).await;
+        mock.respond_with("Input.dispatchMouseEvent", |params| {
+            if params["type"] == "mousePressed" {
+                json!({"error": {"code": -32000, "message": "interrupted"}})
+            } else {
+                json!({})
+            }
+        });
+        // When click_element runs
+        assert!(click(mock).await.is_err());
+        // Then the release follows in the background
+        for _ in 0..100 {
+            if mock.commands_named("Input.dispatchMouseEvent").len() == 2 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        let kinds: Vec<Value> = mock
+            .commands_named("Input.dispatchMouseEvent")
+            .iter()
+            .map(|c| c.params["type"].clone())
+            .collect();
+        assert_eq!(kinds, [json!("mousePressed"), json!("mouseReleased")]);
     }
 }

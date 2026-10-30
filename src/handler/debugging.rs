@@ -149,6 +149,26 @@ pub(crate) fn resumed(location: Option<&PauseLocation>) -> CallToolResult {
     text("Debugger execution resumed.", &pause_json(location))
 }
 
+/// The error of a call the page interrupted by pausing in the debugger (its
+/// own code hit a breakpoint): the page answers nothing more until it is
+/// resumed, so the call fails at once saying where it stopped.
+pub(crate) fn paused_during(location: Option<&PauseLocation>, call: &str) -> String {
+    let at = match location {
+        Some(PauseLocation {
+            url: Some(url),
+            line,
+            column,
+        }) => format!(" at {url} line {line}, column {column} (0-based)"),
+        Some(PauseLocation { line, column, .. }) => {
+            format!(" at line {line}, column {column} (0-based)")
+        }
+        None => String::new(),
+    };
+    format!(
+        "The page paused in the debugger{at} while running {call}: the call did not finish, though its effect (a click, a navigation) may have happened. Inspect the paused frame with evaluate_on_call_frame, then continue with resume or step_over."
+    )
+}
+
 /// The error of an expression that threw in a paused frame.
 pub(crate) fn frame_exception(thrown: &str) -> String {
     format!("Evaluation threw: {thrown}")
@@ -204,5 +224,33 @@ mod tests {
             json!({"paused": true, "location": {"url": null, "line_number": 7, "column_number": 0}})
         );
         assert_eq!(pause_json(None), json!({"paused": false, "location": null}));
+    }
+
+    /// ISSUE-1: a call interrupted by a pause says where the page stopped
+    /// (0-based, as every tool reports it) and how to go on.
+    #[test]
+    fn paused_call_names_the_location_and_next_steps() {
+        // Given a pause with and without the script URL
+        let at = |url: Option<&str>| PauseLocation {
+            url: url.map(str::to_string),
+            line: 3,
+            column: 2,
+        };
+        // When the interrupted call's error is worded
+        let named = paused_during(Some(&at(Some("http://a/cart.js"))), "click_element");
+        let unnamed = paused_during(Some(&at(None)), "Input.dispatchMouseEvent");
+        // Then it gives the location, the call and the tools to continue
+        assert_eq!(
+            named,
+            "The page paused in the debugger at http://a/cart.js line 3, column 2 (0-based) while running click_element: the call did not finish, though its effect (a click, a navigation) may have happened. Inspect the paused frame with evaluate_on_call_frame, then continue with resume or step_over."
+        );
+        assert!(
+            unnamed.starts_with("The page paused in the debugger at line 3, column 2 (0-based) while running Input.dispatchMouseEvent:"),
+            "{unnamed}"
+        );
+        assert!(
+            paused_during(None, "x")
+                .starts_with("The page paused in the debugger while running x:")
+        );
     }
 }

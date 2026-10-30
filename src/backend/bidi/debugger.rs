@@ -266,8 +266,11 @@ fn rdp_error(request: &str, error: &bidi_browser_lite::BidiError) -> BackendErro
 }
 
 fn current_pause(entry: &TabDebugger) -> Option<PauseInfo> {
-    entry
-        .pause
+    read_pause(&entry.pause)
+}
+
+fn read_pause(pause: &StdMutex<Option<PauseInfo>>) -> Option<PauseInfo> {
+    pause
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .clone()
@@ -279,10 +282,9 @@ fn not_paused() -> BackendError {
 
 /// Where a pause stopped, 0-based as every tool reports it, with the URL of
 /// its source.
-fn pause_location(entry: &TabDebugger, pause: &PauseInfo) -> Option<PauseLocation> {
+fn pause_location(debugger: &Debugger, pause: &PauseInfo) -> Option<PauseLocation> {
     let (actor, line, column) = pause.location.clone()?;
-    let url = entry
-        .debugger
+    let url = debugger
         .sources()
         .into_iter()
         .find(|s| s.actor == actor)
@@ -302,13 +304,55 @@ async fn next_pause(
 ) -> Option<PauseLocation> {
     let deadline = tokio::time::Instant::now() + limit;
     while tokio::time::Instant::now() < deadline {
-        tokio::time::sleep(Duration::from_millis(25)).await;
+        tokio::time::sleep(PAUSE_POLL).await;
         if let Some(now) = current_pause(entry).filter(|p| Some(p) != before) {
-            return pause_location(entry, &now);
+            return pause_location(&entry.debugger, &now);
         }
     }
     None
 }
+
+/// Runs `operation`, a `call` that runs page code on tab `id` (a click, an
+/// evaluation, a navigation), unless the tab's debugger pauses first: the
+/// page answers nothing until it is resumed, so the call fails at once
+/// saying where it stopped, as on Chrome. A tab without a debugger (no RDP
+/// port, or not attached yet) just runs it.
+pub(crate) async fn unless_paused<T, E: From<BackendError>>(
+    session: &FirefoxSession,
+    id: &str,
+    call: &str,
+    operation: impl std::future::Future<Output = Result<T, E>>,
+) -> Result<T, E> {
+    let found = session.debuggers.lock().await.get(id).cloned();
+    let Some(shared) = found else {
+        return operation.await;
+    };
+    let (debugger, pause) = {
+        let entry = shared.lock().await;
+        (entry.debugger.clone(), entry.pause.clone())
+    };
+    let before = read_pause(&pause);
+    let paused = async {
+        loop {
+            tokio::time::sleep(PAUSE_POLL).await;
+            if let Some(now) = read_pause(&pause).filter(|p| Some(p) != before.as_ref()) {
+                return pause_location(&debugger, &now);
+            }
+        }
+    };
+    tokio::select! {
+        biased;
+        outcome = operation => outcome,
+        location = paused => {
+            let message = debugging::paused_during(location.as_ref(), call);
+            Err(BackendError::InvalidArgument(message).into())
+        }
+    }
+}
+
+/// How often a call racing a pause ([`unless_paused`]) reads the thread
+/// state the state task keeps.
+const PAUSE_POLL: Duration = Duration::from_millis(25);
 
 /// `set_breakpoint`: Firefox breakpoints are set by URL (spike H17).
 /// `line_number` is 0-based as on Chrome.
@@ -1123,6 +1167,45 @@ mod tests {
         assert_eq!(reply["location"]["url"], SCRIPT);
         let step = rdp.wait_for_request("resume", WAIT).await.unwrap();
         assert_eq!(step.params["resumeLimit"]["type"], "next");
+        ts::stop(&handler).await;
+    }
+
+    /// ISSUE-1: a call that runs page code fails as soon as the page pauses
+    /// in the debugger (input.performActions used to time out after 10 s),
+    /// naming the location; a call that answers keeps its result.
+    #[tokio::test]
+    async fn pause_interrupts_a_page_call() {
+        // Given a tab with a breakpoint and a call the page will not answer
+        let mock = ts::firefox_with_debugger().await;
+        let rdp = mock.rdp().unwrap();
+        let handler = ts::handler(&mock);
+        set_breakpoint(breakpoint(0, None), &handler).await.unwrap();
+        let session = handler.firefox(None).await.unwrap();
+        let answers = async { Ok::<_, BackendError>(5) };
+        let answered = unless_paused(&session, "tab-1", "click_element", answers).await;
+        assert_eq!(answered.ok(), Some(5));
+        let blocked = std::future::pending::<Result<(), BackendError>>();
+        let call = unless_paused(&session, "tab-1", "click_element", blocked);
+        // When the page pauses while it runs
+        let pause = async {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            rdp.pause("breakpoint", None);
+            std::future::pending::<()>().await
+        };
+        let outcome = tokio::select! {
+            outcome = tokio::time::timeout(WAIT, call) => outcome,
+            () = pause => unreachable!(),
+        };
+        // Then the call fails at once with where the page stopped
+        let error = outcome
+            .expect("the call waited past the pause")
+            .unwrap_err();
+        let error = error.to_string();
+        assert!(
+            error.contains(&format!("paused in the debugger at {SCRIPT} line"))
+                && error.contains("while running click_element"),
+            "{error}"
+        );
         ts::stop(&handler).await;
     }
 
