@@ -15,6 +15,7 @@ pub(crate) mod pump;
 pub(crate) mod raw;
 pub mod remote_value;
 pub(crate) mod session;
+pub(crate) mod storage;
 #[cfg(test)]
 pub(crate) mod test_support;
 pub(crate) mod tools;

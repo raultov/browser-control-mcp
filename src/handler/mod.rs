@@ -479,6 +479,10 @@ pub(crate) async fn args_and_target<T: serde::de::DeserializeOwned>(
 pub(crate) trait SnippetTool: serde::de::DeserializeOwned {
     /// The instance and tab it addresses.
     fn target_args(&self) -> TargetArgs;
+    /// Why the arguments make no sense, checked before any browser work.
+    fn check(&self) -> std::result::Result<(), CallToolError> {
+        Ok(())
+    }
     /// The snippet.
     fn snippet(&self) -> String;
     /// The reply from the snippet's value.
@@ -494,6 +498,7 @@ pub(crate) async fn handle_snippet_tool<T: SnippetTool>(
     handler: &McpHandler,
 ) -> std::result::Result<CallToolResult, CallToolError> {
     let args: T = parse_args(params)?;
+    args.check()?;
     let ids = args.target_args();
     let target = resolve_target(handler, ids.instance_id, ids.tab_id).await?;
     let outcome = snippet_value(&target, &args.snippet()).await?;
@@ -1831,8 +1836,8 @@ mod tests {
         assert!(result.is_ok());
         let tools = result.unwrap().tools;
 
-        // Without proxy and webmcp, 40 tools are listed
-        assert_eq!(tools.len(), 40);
+        // Without proxy and webmcp, 42 tools are listed
+        assert_eq!(tools.len(), 42);
         let tool_names: Vec<String> = tools.into_iter().map(|t| t.name).collect();
         assert!(tool_names.contains(&"scroll".to_string()));
         assert!(tool_names.contains(&"capture_screenshot".to_string()));
@@ -1862,8 +1867,8 @@ mod tests {
         assert!(result.is_ok());
         let tools = result.unwrap().tools;
 
-        // With proxy configured (and webmcp disabled), 41 tools are listed
-        assert_eq!(tools.len(), 41);
+        // With proxy configured (and webmcp disabled), 43 tools are listed
+        assert_eq!(tools.len(), 43);
         let tool_names: Vec<String> = tools.into_iter().map(|t| t.name).collect();
         assert!(tool_names.contains(&"enable_proxy_auth".to_string()));
     }
@@ -1881,8 +1886,8 @@ mod tests {
         assert!(result.is_ok());
         let tools = result.unwrap().tools;
 
-        // With webmcp configured (40 + 4 = 44 tools)
-        assert_eq!(tools.len(), 44);
+        // With webmcp configured (42 + 4 = 46 tools)
+        assert_eq!(tools.len(), 46);
         let tool_names: Vec<String> = tools.into_iter().map(|t| t.name).collect();
         assert!(tool_names.contains(&"webmcp_list_tools".to_string()));
         assert!(tool_names.contains(&"webmcp_invoke_tool".to_string()));

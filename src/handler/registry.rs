@@ -224,10 +224,12 @@ fn instance_tools() -> Vec<ToolEntry> {
 }
 
 fn observation_tools() -> Vec<ToolEntry> {
+    use crate::backend::bidi::storage as store;
     use crate::backend::bidi::tools as ff;
     use Capability::*;
     use Gate::Always;
     use cdp_domains::performance::get_performance_metrics as metrics;
+    use cdp_domains::storage::{cookies::CookiesTool, web_storage::WebStorageTool};
     use cdp_domains::tracing::profile_page_performance as profile;
     use cdp_domains::{custom, log, network};
     vec![
@@ -237,6 +239,8 @@ fn observation_tools() -> Vec<ToolEntry> {
             &[NetworkLogs],
             ff::network_logs
         ),
+        entry!(CookiesTool, Always, &[Evaluate], store::cookies),
+        entry!(WebStorageTool, Always, &[Evaluate], store::web_storage),
         entry!(
             log::get_console_logs::GetConsoleLogsTool,
             Always,
@@ -541,7 +545,7 @@ mod tests {
         handler.proxy.proxy_server = Some("http://p:1".into());
         handler.flags.enable_webmcp = true;
         let listed = names(listed_tools(&handler));
-        assert_eq!(listed.len(), 45);
+        assert_eq!(listed.len(), 47);
         assert!(listed.contains("restart_browser") && listed.contains("stop_browser"));
         assert!(!listed.contains("restart_chrome") && !listed.contains("stop_chrome"));
     }
@@ -670,19 +674,23 @@ mod tests {
         "disable_cache",
         "duration_ms",
         "full_page",
+        "http_only",
         "include_details",
         "include_sensitive_headers",
         "instance_id",
         "is_default",
         "prewarm_url",
-        "prompt_text",
         "profile_dir",
+        "prompt_text",
         "resource_type",
+        "same_site",
+        "show_values",
         "source_profile",
         "tab_id",
         "target_id",
         "timeout_ms",
         "type_filter",
+        "value_length",
     ];
 
     fn all_tools() -> Vec<Tool> {

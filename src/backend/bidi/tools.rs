@@ -47,7 +47,7 @@ fn text(value: impl Into<String>) -> CallToolResult {
 
 /// The session and tab a call addresses, refused while a JavaScript dialog
 /// is open on the tab (as on Chrome).
-async fn target(
+pub(crate) async fn target(
     handler: &McpHandler,
     ids: &TargetArgs,
 ) -> Result<(Arc<FirefoxSession>, String, super::session::FirefoxTab), CallToolError> {
@@ -89,7 +89,7 @@ pub(crate) async fn handle_dialog(
     }
 }
 
-fn ids(instance_id: &Option<String>, tab_id: &Option<String>) -> TargetArgs {
+pub(crate) fn ids(instance_id: &Option<String>, tab_id: &Option<String>) -> TargetArgs {
     TargetArgs {
         instance_id: instance_id.clone(),
         tab_id: tab_id.clone(),

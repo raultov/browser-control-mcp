@@ -148,6 +148,39 @@ pub fn form_field(selector: &str) -> String {
     )
 }
 
+/// Most items `web_storage` lists.
+pub const STORAGE_MAX_ITEMS: usize = 200;
+
+/// Most characters of a value `web_storage` returns.
+pub const STORAGE_MAX_VALUE: usize = 2000;
+
+/// `web_storage`'s `action` (`get`, `set`, `delete`, `clear`) on the page's
+/// `localStorage` or `sessionStorage` (`kind`), for `key` and `value`:
+/// `{origin, items: [[key, value, length]], total}` for `get` (values cut
+/// to [`STORAGE_MAX_VALUE`]), `{origin, had}` for `delete`,
+/// `{origin, cleared}` for `clear`, `{origin}` for `set`. A page without
+/// storage (an opaque origin) throws.
+pub fn web_storage(action: &str, kind: &str, key: Option<&str>, value: Option<&str>) -> String {
+    let literal = |v: Option<&str>| v.map_or_else(|| "null".to_string(), string_literal);
+    format!(
+        "(() => {{ const action = {}, key = {}, value = {}; \
+         const store = {kind} === 'session' ? sessionStorage : localStorage, origin = location.origin; \
+         const item = k => {{ const v = store.getItem(k); return [k, v.slice(0, {STORAGE_MAX_VALUE}), v.length]; }}; \
+         if (action === 'get') {{ \
+           if (key !== null) return {{ origin, total: store.getItem(key) === null ? 0 : 1, items: store.getItem(key) === null ? [] : [item(key)] }}; \
+           const items = []; for (let i = 0; i < store.length && i < {STORAGE_MAX_ITEMS}; i++) items.push(item(store.key(i))); \
+           return {{ origin, total: store.length, items }}; \
+         }} \
+         if (action === 'set') {{ store.setItem(key, value); return {{ origin }}; }} \
+         if (action === 'delete') {{ const had = store.getItem(key) !== null; store.removeItem(key); return {{ origin, had }}; }} \
+         const cleared = store.length; store.clear(); return {{ origin, cleared }}; }})()",
+        string_literal(action),
+        literal(key),
+        literal(value),
+        kind = string_literal(kind),
+    )
+}
+
 /// Focuses the element `selector` names (`press_key`): `{status}`
 /// `missing`, `focused` (it, or an element inside it, has the focus) or
 /// `unfocusable`.

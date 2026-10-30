@@ -12,6 +12,15 @@ from a copy of its code: entries describe the differences from that release.
 
 ### Added
 
+- `cookies` and `web_storage` (Chrome and Firefox). `cookies` gets, sets
+  and deletes cookies: those the page's URL (or `url`) would be sent, or
+  those of a `domain`, optionally by `name` (Chrome `Network.*Cookie*`,
+  Firefox BiDi `storage.*` in the tab's partition, with the same filters
+  and replies). `web_storage` gets, sets, deletes and clears the page's
+  `localStorage` or `sessionStorage`. Both hide values (often session
+  tokens), giving their length, unless `show_values: true`. Cookies could
+  only be imported from your Chrome before. (#8)
+
 - `press_key` and `hover` (Chrome and Firefox), and `button`,
   `click_count` and `modifiers` for `click_element`. `press_key` presses
   one key (a character, Enter, Tab, Escape, Backspace, Delete, the arrows,

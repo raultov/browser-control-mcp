@@ -584,6 +584,56 @@ mod e2e {
         ]
     }
 
+    /// ISSUE-8: a cookie and a localStorage item set, read by the page,
+    /// listed and removed.
+    fn storage_steps(instance: &str) -> Vec<Step> {
+        let i = json!(instance);
+        vec![
+            (
+                "ISSUE-8 set a cookie",
+                "cookies",
+                json!({"instance_id": i, "action": "set", "name": "e2e", "value": "cookie-v"}),
+                "Set cookie 'e2e'",
+            ),
+            (
+                "ISSUE-8 the page reads it",
+                "evaluate_js",
+                json!({"instance_id": i, "expression": "document.cookie"}),
+                "e2e=cookie-v",
+            ),
+            (
+                "ISSUE-8 get it, value hidden",
+                "cookies",
+                json!({"instance_id": i, "action": "get", "name": "e2e"}),
+                "1 cookie(s) sent to",
+            ),
+            (
+                "ISSUE-8 delete it",
+                "cookies",
+                json!({"instance_id": i, "action": "delete", "name": "e2e"}),
+                "Deleted 1 cookie(s): e2e",
+            ),
+            (
+                "ISSUE-8 set a storage item",
+                "web_storage",
+                json!({"instance_id": i, "action": "set", "key": "k", "value": "stored-v"}),
+                "Set 'k' in the localStorage",
+            ),
+            (
+                "ISSUE-8 get it with its value",
+                "web_storage",
+                json!({"instance_id": i, "action": "get", "key": "k", "show_values": true}),
+                "\"value\": \"stored-v\"",
+            ),
+            (
+                "ISSUE-8 clear the storage",
+                "web_storage",
+                json!({"instance_id": i, "action": "clear"}),
+                "Cleared 1 item(s)",
+            ),
+        ]
+    }
+
     /// Observation steps: console, network, screenshot, DOM.
     fn observation_steps(instance: &str) -> Vec<Step> {
         let i = json!(instance);
@@ -762,7 +812,7 @@ mod e2e {
     async fn smoke(browser: &str) {
         let base = serve().await;
         let mut mcp = Mcp::start(&[]).await;
-        mcp.list_tools(40).await;
+        mcp.list_tools(42).await;
         let all = [
             page_steps(browser, &base),
             tab_steps("e2e", &base),
@@ -773,6 +823,7 @@ mod e2e {
             form_steps("e2e"),
             upload_steps("e2e"),
             key_and_pointer_steps("e2e"),
+            storage_steps("e2e"),
             observation_steps("e2e"),
             websocket_steps("e2e", &base),
             debugger_steps("e2e", &base),
@@ -850,6 +901,7 @@ mod e2e {
             form_steps("default"),
             upload_steps("default"),
             key_and_pointer_steps("default"),
+            storage_steps("default"),
             debugger_steps("default", &base),
         ];
         mcp.steps(all.concat()).await;
