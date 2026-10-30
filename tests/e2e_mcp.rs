@@ -340,6 +340,15 @@ mod e2e {
                 json!({"instance_id": i, "expression": effects}),
                 "typed1",
             ),
+        ]
+    }
+
+    /// ISSUE-11 and ISSUE-2: a click that opens a dialog, then content that
+    /// arrives later, waited for.
+    fn dialog_and_wait_steps(instance: &str) -> Vec<Step> {
+        let i = json!(instance);
+        let late = "setTimeout(() => document.body.insertAdjacentHTML('beforeend', '<p id=\"late\">late-arrival</p>'), 700); 1";
+        vec![
             (
                 "ISSUE-11 click that opens a dialog succeeds, noting it",
                 "click_element",
@@ -357,6 +366,30 @@ mod e2e {
                 "evaluate_js",
                 json!({"instance_id": i, "expression": "window.__answer"}),
                 "true",
+            ),
+            (
+                "ISSUE-2 content arrives later",
+                "evaluate_js",
+                json!({"instance_id": i, "expression": late}),
+                "\"value\": 1",
+            ),
+            (
+                "ISSUE-2 wait_for text",
+                "wait_for",
+                json!({"instance_id": i, "text": "late-arrival"}),
+                "Waited",
+            ),
+            (
+                "ISSUE-2 wait_for selector",
+                "wait_for",
+                json!({"instance_id": i, "selector": "#late"}),
+                "Waited",
+            ),
+            (
+                "ISSUE-2 wait_for times out naming what is missing",
+                "wait_for",
+                json!({"instance_id": i, "text": "never-there", "timeout_ms": 300}),
+                "!waiting for the text \"never-there\" to appear",
             ),
         ]
     }
@@ -539,11 +572,12 @@ mod e2e {
     async fn smoke(browser: &str) {
         let base = serve().await;
         let mut mcp = Mcp::start(&[]).await;
-        mcp.list_tools(33).await;
+        mcp.list_tools(34).await;
         let all = [
             page_steps(browser, &base),
             tab_steps("e2e", &base),
             runtime_steps("e2e"),
+            dialog_and_wait_steps("e2e"),
             observation_steps("e2e"),
             websocket_steps("e2e", &base),
             debugger_steps("e2e", &base),
@@ -612,9 +646,13 @@ mod e2e {
         let args: Vec<&str> = args.split_whitespace().collect();
         let base = serve().await;
         let mut mcp = Mcp::start(&args).await;
-        mcp.steps(tab_steps("default", &base)).await;
-        mcp.steps(runtime_steps("default")).await;
-        mcp.steps(debugger_steps("default", &base)).await;
+        let all = [
+            tab_steps("default", &base),
+            runtime_steps("default"),
+            dialog_and_wait_steps("default"),
+            debugger_steps("default", &base),
+        ];
+        mcp.steps(all.concat()).await;
         let stop = json!({"instance_id": "default"});
         mcp.step(("stop_browser", "stop_browser"), stop, stop_reply(variable))
             .await;

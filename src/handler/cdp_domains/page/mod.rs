@@ -3,6 +3,7 @@ pub mod handle_dialog;
 pub mod navigate;
 pub mod reload;
 pub mod scroll;
+pub mod wait_for;
 
 use crate::handler::NetworkState;
 use crate::handler::cdp_domains::webmcp::{WebmcpAvailability, WebmcpNavSync};

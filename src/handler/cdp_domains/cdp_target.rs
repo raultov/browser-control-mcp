@@ -53,8 +53,19 @@ impl CdpTarget {
         if method == "Page.handleJavaScriptDialog" {
             return Ok(send.await);
         }
+        self.race_interruptions(method, send).await
+    }
+
+    /// Runs `work` (one command, or a `call` made of several such as a
+    /// wait) unless the page opens a dialog or pauses in the debugger
+    /// meanwhile, also between its commands: then what interrupted it.
+    pub(crate) async fn race_interruptions<T>(
+        &self,
+        call: &str,
+        work: impl Future<Output = T>,
+    ) -> Result<T, Interruption> {
         let events = self.on_domain("Page").merge(self.on_domain("Debugger"));
-        unless_interrupted(send, events, method).await
+        unless_interrupted(work, events, call).await
     }
 
     pub(crate) fn on_domain(&self, domain: &'static str) -> EventFilter {
@@ -97,14 +108,15 @@ fn blocker(event: &CdpResult<WsResponse>, pauses: bool) -> Option<Blocker> {
     }
 }
 
-/// Runs `command` (CDP `method`) unless `events` (the `Page` and `Debugger`
-/// events of its target) announce a dialog, or a debugger pause that is
-/// still there after [`PAUSE_SETTLE`], first: then that is returned.
+/// Runs `command` (CDP `method`, or a tool's whole `call`) unless `events`
+/// (the `Page` and `Debugger` events of its target) announce a dialog, or a
+/// debugger pause that is still there after [`PAUSE_SETTLE`], first: then
+/// that is returned.
 async fn unless_interrupted<T>(
-    command: impl Future<Output = CdpResult<T>>,
+    command: impl Future<Output = T>,
     mut events: impl Stream<Item = CdpResult<WsResponse>> + Unpin,
     method: &str,
-) -> Result<CdpResult<T>, Interruption> {
+) -> Result<T, Interruption> {
     // Debugger commands answer while paused, and a step pauses on purpose.
     let pauses = !method.starts_with("Debugger.");
     tokio::pin!(command);

@@ -49,6 +49,7 @@ see the note.
 | `navigate` | ✓ | ✓ | |
 | `reload` | ✓ | ✓ | |
 | `scroll` | ✓ | ✓ | reports the window positions before and after |
+| `wait_for` | ✓ | ✓ | waits (checking every 100 ms, at most 30 s) until a visible text appears or is gone, a selector is `visible` / `hidden` / `attached` / `detached`, or the URL contains a text; a dialog or debugger pause ends the wait at once |
 | `inspect_dom` | ✓ | ✓ | includes open shadow roots and same-origin iframes (cross-origin ones are noted); at most 100 000 characters without `query` (cut in the page) |
 | `capture_screenshot` | ✓ | ✓ | `format` `png`, `jpeg` (or `jpg`) or `webp`; `full_page` at most 16 384 px per side (a text note says when cut) |
 | `click_element` | ✓ | ✓ | scrolls the element into view; fails without clicking when it is hidden or covered; a dialog or debugger pause the click causes is noted in a successful reply (`{dialog}` or `{paused, location}`) |

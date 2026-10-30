@@ -128,6 +128,7 @@ fn page_tools() -> Vec<ToolEntry> {
         click_element::ClickElementTool as Click, fill_input::FillInputTool as Fill,
     };
     use cdp_domains::page::handle_dialog::HandleDialogTool as Dialog;
+    use cdp_domains::page::wait_for::WaitForTool as Wait;
     use cdp_domains::page::{
         capture_screenshot::CaptureScreenshotTool as Shot, navigate::NavigateTool as Nav,
     };
@@ -144,6 +145,7 @@ fn page_tools() -> Vec<ToolEntry> {
         entry!(Dom_, Always, &[Dom], ff::inspect_dom),
         entry!(Reload, Always, &[Navigation], ff::reload),
         entry!(Scroll, Always, &[Dom], ff::scroll),
+        entry!(Wait, Always, &[Dom], ff::wait_for),
         entry!(Dialog, Always, &[Input], ff::handle_dialog),
     ]
 }
@@ -527,7 +529,7 @@ mod tests {
         handler.proxy.proxy_server = Some("http://p:1".into());
         handler.flags.enable_webmcp = true;
         let listed = names(listed_tools(&handler));
-        assert_eq!(listed.len(), 38);
+        assert_eq!(listed.len(), 39);
         assert!(listed.contains("restart_browser") && listed.contains("stop_browser"));
         assert!(!listed.contains("restart_chrome") && !listed.contains("stop_chrome"));
     }
@@ -666,6 +668,7 @@ mod tests {
         "source_profile",
         "tab_id",
         "target_id",
+        "timeout_ms",
         "type_filter",
     ];
 

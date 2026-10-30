@@ -19,6 +19,7 @@ use crate::handler::cdp_domains::network::get_network_logs::{self, GetNetworkLog
 use crate::handler::cdp_domains::page::capture_screenshot::{self, CaptureScreenshotTool};
 use crate::handler::cdp_domains::page::navigate::NavigateTool;
 use crate::handler::cdp_domains::page::scroll::ScrollTool;
+use crate::handler::cdp_domains::page::wait_for::WaitForTool;
 use crate::handler::cdp_domains::runtime::evaluate_js::EvaluateJsTool;
 use crate::handler::cdp_domains::runtime::inspect_dom::InspectDomTool;
 use crate::handler::chrome_instance::registry::InstanceDescriptor;
@@ -181,6 +182,18 @@ pub(crate) async fn scroll(params: CallToolRequestParams, handler: &McpHandler) 
         args.reply(&outcome)
     })
     .await
+}
+
+/// `wait_for`: the shared checks, the whole wait raced against a dialog
+/// or a debugger pause (as on Chrome).
+pub(crate) async fn wait_for(params: CallToolRequestParams, handler: &McpHandler) -> ToolResult {
+    let args: WaitForTool = parse_args(params)?;
+    args.check_arguments()?;
+    let (session, id, tab) = target(handler, &ids(&args.instance_id, &args.tab_id)).await?;
+    let expression = args.expression();
+    let checks = args.poll(|| page::poll_snippet(&tab.tab, &expression));
+    let waiting = page::unless_prompt(&tab.tab, "wait_for", checks);
+    unless_paused(&session, &id, "wait_for", async { waiting.await? }).await
 }
 
 /// `click_element`: real pointer input at the point the shared snippet
@@ -799,6 +812,35 @@ mod tests {
         assert_eq!(
             (&first["origin"], &first["x"], &first["y"]),
             (&json!("viewport"), &json!(5), &json!(7))
+        );
+        ts::stop(&handler).await;
+    }
+
+    /// ISSUE-2 (Firefox): wait_for evaluates the shared check without
+    /// awaiting promises and answers from its outcome, as on Chrome.
+    #[tokio::test]
+    async fn wait_for_answers_from_the_shared_check() {
+        // Given a page where the text shows
+        let mock = MockFirefox::start(false).await.unwrap();
+        page_with_point(&mock, json!({"href": "http://a/", "text": true}));
+        let handler = ts::handler(&mock);
+        // When wait_for runs
+        let args = json!({"text": "Welcome"});
+        let reply = wait_for(call("wait_for", args), &handler).await.unwrap();
+        // Then it answered from one check
+        assert!(
+            ts::text(&reply).starts_with("Waited "),
+            "{}",
+            ts::text(&reply)
+        );
+        assert_eq!(ts::json_of(&reply)["url"], "http://a/");
+        let sent = &mock.bidi().commands_named("script.evaluate")[0].params;
+        assert_eq!(sent["awaitPromise"], false);
+        assert!(
+            sent["expression"]
+                .as_str()
+                .unwrap()
+                .contains("const text = \"Welcome\"")
         );
         ts::stop(&handler).await;
     }

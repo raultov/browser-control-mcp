@@ -121,17 +121,18 @@ pub(crate) async fn unless_blocked<T, I, B>(
 ) -> Result<T, B> {
     tokio::pin!(command);
     loop {
-        tokio::select! {
+        // The command is awaited outside `select!`: its output would be held
+        // across that await, and a tool's error is not `Send`.
+        let event = tokio::select! {
             biased;
             out = &mut command => return Ok(out),
-            event = events.next() => match event {
-                Some(event) => {
-                    if let Some(blocker) = blocks(&event) {
-                        return Err(blocker);
-                    }
-                }
-                None => return Ok(command.await),
-            },
+            event = events.next() => event,
+        };
+        let Some(event) = event else {
+            return Ok(command.await);
+        };
+        if let Some(blocker) = blocks(&event) {
+            return Err(blocker);
         }
     }
 }

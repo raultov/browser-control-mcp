@@ -10,6 +10,19 @@ from a copy of its code: entries describe the differences from that release.
 
 ## [Unreleased]
 
+### Added
+
+- `wait_for` (Chrome and Firefox): waits until the page's visible text
+  contains `text` or no longer contains `text_gone`, the first element
+  matching `selector` is `visible`, `hidden`, `attached` or `detached`
+  (`state`), and/or the tab's URL contains `url`, checking every 100 ms up
+  to `timeout_ms` (default 5000, at most 30000). It answers
+  `Waited N ms for ...` with `{elapsed_ms, url}`, or fails naming what is
+  still missing and where the page is. Text includes open shadow roots and
+  same-origin iframes; a check the page did not answer (a navigation) is
+  retried; a JavaScript dialog or a debugger pause ends the wait at once.
+  Agents no longer have to write polling promises in `evaluate_js`. (#2)
+
 ### Changed
 
 - `click_element` succeeds when the click opens a JavaScript dialog or its

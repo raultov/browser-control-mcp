@@ -3,6 +3,7 @@
 use super::protocol_error;
 use super::remote_value;
 use crate::backend::error::BackendError;
+use crate::handler::cdp_domains::page::wait_for::CheckError;
 use crate::handler::evaluation::{self, Evaluation, exception_message};
 use crate::handler::interruption::Interruption;
 use crate::handler::navigation::{LOAD_TIMEOUT, NOT_LOADED_NOTE, NavigationOutcome, load_before};
@@ -274,6 +275,24 @@ fn thrown(reply: &Value) -> Result<(), BackendError> {
         details["lineNumber"].as_i64().unwrap_or(0),
         details["columnNumber"].as_i64().unwrap_or(0),
     )))
+}
+
+/// One check of a wait (a `util::js` snippet): a failed command is retried
+/// (a navigation replaced the realm), the page's exception ends the wait.
+/// No dialog race per check: the caller races the whole wait.
+pub(crate) async fn poll_snippet(tab: &Tab, expression: &str) -> Result<Value, CheckError> {
+    let params = json!({
+        "expression": expression,
+        "target": tab.script_target(),
+        "awaitPromise": false,
+        "resultOwnership": "none",
+    });
+    let method = "script.evaluate";
+    let reply = tab
+        .send_raw_command(method, params)
+        .await
+        .map_err(|e| CheckError::Retry(protocol_error(method, &e).to_string()))?;
+    outcome(&reply.result.unwrap_or(Value::Null)).map_err(|e| CheckError::Stop(e.into()))
 }
 
 /// `true`/`false`/value of a snippet built by `util::js`.

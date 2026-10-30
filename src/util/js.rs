@@ -203,6 +203,66 @@ pub fn dom_query(query: Option<&str>, before: usize, after: usize) -> String {
     )
 }
 
+/// What `wait_for` checks; a `None` is not checked.
+pub struct WaitConditions<'a> {
+    /// Text the page's visible text must contain.
+    pub text: Option<&'a str>,
+    /// Text the page's visible text must no longer contain.
+    pub text_gone: Option<&'a str>,
+    /// CSS selector whose first match must be in `state`.
+    pub selector: Option<&'a str>,
+    /// `visible`, `hidden`, `attached` or `detached`.
+    pub state: &'a str,
+    /// Text the tab's URL must contain.
+    pub url: Option<&'a str>,
+}
+
+/// One check of `wait_for`'s conditions, so only booleans cross the
+/// connection: `{href, text?, text_gone?, selector?, url?}`, each key
+/// present when checked and `true` when its condition holds. The text is
+/// the visible text (`innerText`) of the top document, its open shadow
+/// roots and its same-origin iframes, as `inspect_dom` reads them; the
+/// selector is matched in the top document, as the input tools do.
+pub fn wait_check(wanted: &WaitConditions) -> String {
+    let literal = |value: Option<&str>| value.map_or_else(|| "null".to_string(), string_literal);
+    format!(
+        "(() => {{ const text = {}, gone = {}, selector = {}, state = {}, url = {}; {WAIT_CHECK} }})()",
+        literal(wanted.text),
+        literal(wanted.text_gone),
+        literal(wanted.selector),
+        string_literal(wanted.state),
+        literal(wanted.url),
+    )
+}
+
+const WAIT_CHECK: &str = "const texts = []; \
+    const read = (doc, depth) => { \
+        const roots = []; \
+        const walk = node => { for (const e of node.querySelectorAll('*')) if (e.shadowRoot) { roots.push(e.shadowRoot); walk(e.shadowRoot); } }; \
+        walk(doc); \
+        if (doc.body) texts.push(doc.body.innerText); \
+        for (const root of roots) for (const child of root.children) \
+            if (!['STYLE', 'SCRIPT', 'TEMPLATE'].includes(child.tagName)) texts.push(child.innerText); \
+        if (depth >= 3) return; \
+        for (const frame of [doc, ...roots].flatMap(n => Array.from(n.querySelectorAll('iframe, frame')))) { \
+            let inner = null; try { inner = frame.contentDocument; } catch (e) {} \
+            if (inner && inner.documentElement) read(inner, depth + 1); \
+        } \
+    }; \
+    if (text !== null || gone !== null) read(document, 0); \
+    const all = texts.join('\\n'); \
+    const out = { href: location.href }; \
+    if (text !== null) out.text = all.includes(text); \
+    if (gone !== null) out.text_gone = !all.includes(gone); \
+    if (selector !== null) { \
+        const el = document.querySelector(selector); \
+        const shown = !!el && Array.from(el.getClientRects()).some(r => r.width > 0 && r.height > 0) \
+            && getComputedStyle(el).visibility === 'visible'; \
+        out.selector = { attached: !!el, detached: !el, visible: shown, hidden: !shown }[state]; \
+    } \
+    if (url !== null) out.url = location.href.includes(url); \
+    return out;";
+
 /// The document's scrolling size in CSS pixels, `{width, height}` (what a
 /// full-page capture covers).
 pub const DOCUMENT_SIZE: &str = "(() => { const root = document.documentElement, body = document.body; \
@@ -331,6 +391,32 @@ mod tests {
             check.contains("!document.hasFocus() && value !== before"),
             "{check}"
         );
+    }
+
+    /// ISSUE-2: wait_for's values reach JavaScript as JSON literals (`null`
+    /// when not checked), and its text covers shadow roots and iframes.
+    #[test]
+    fn wait_check_embeds_values_as_literals() {
+        // Given a text crafted to close the string, and no selector
+        let text = r#"x", gone = 1; window.__pwned = 1; ""#;
+        let wanted = WaitConditions {
+            text: Some(text),
+            text_gone: None,
+            selector: None,
+            state: "visible",
+            url: Some("/home"),
+        };
+        // When the check is built
+        let expression = wait_check(&wanted);
+        // Then the text parses back whole and the rest are literals
+        assert_eq!(embedded_text(&expression), text);
+        assert!(
+            expression
+                .contains(", gone = null, selector = null, state = \"visible\", url = \"/home\";"),
+            "{expression}"
+        );
+        assert!(expression.contains("e.shadowRoot"), "{expression}");
+        assert!(expression.contains("contentDocument"), "{expression}");
     }
 
     /// The `const text = <literal>;` of a fill snippet, parsed back as JSON.
