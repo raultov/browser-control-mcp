@@ -148,6 +148,17 @@ pub fn form_field(selector: &str) -> String {
     )
 }
 
+/// Focuses the element `selector` names (`press_key`): `{status}`
+/// `missing`, `focused` (it, or an element inside it, has the focus) or
+/// `unfocusable`.
+pub fn focus(selector: &str) -> String {
+    status_of(
+        selector,
+        "el.focus(); const active = el.getRootNode().activeElement; \
+         return { status: active && (active === el || el.contains(active)) ? 'focused' : 'unfocusable' };",
+    )
+}
+
 /// Whether the element `selector` names can take files (`upload_file`):
 /// `{status}` `missing`, `not_file` (not an `<input type=file>`), `disabled`
 /// or `ok` (with `multiple`).

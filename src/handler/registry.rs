@@ -129,6 +129,7 @@ fn page_tools() -> Vec<ToolEntry> {
     use cdp_domains::input::{
         click_element::ClickElementTool as Click, fill_input::FillInputTool as Fill,
     };
+    use cdp_domains::input::{hover::HoverTool as Hover, press_key::PressKeyTool as Key};
     use cdp_domains::page::handle_dialog::HandleDialogTool as Dialog;
     use cdp_domains::page::wait_for::WaitForTool as Wait;
     use cdp_domains::page::{
@@ -147,6 +148,8 @@ fn page_tools() -> Vec<ToolEntry> {
         entry!(Fill, Always, &[Input], ff::fill_input),
         entry!(Form, Always, &[Input], ff::fill_form),
         entry!(Upload, Always, &[Input], ff::upload_file),
+        entry!(Key, Always, &[Input], ff::press_key),
+        entry!(Hover, Always, &[Input], ff::hover),
         entry!(Eval, Always, &[Evaluate], ff::evaluate_js),
         entry!(Nav, Always, &[Navigation], ff::navigate),
         entry!(Dom_, Always, &[Dom], ff::inspect_dom),
@@ -538,7 +541,7 @@ mod tests {
         handler.proxy.proxy_server = Some("http://p:1".into());
         handler.flags.enable_webmcp = true;
         let listed = names(listed_tools(&handler));
-        assert_eq!(listed.len(), 43);
+        assert_eq!(listed.len(), 45);
         assert!(listed.contains("restart_browser") && listed.contains("stop_browser"));
         assert!(!listed.contains("restart_chrome") && !listed.contains("stop_chrome"));
     }
@@ -660,6 +663,7 @@ mod tests {
     /// Argument and result field names that descriptions quote.
     const ARGUMENT_NAMES: &[&str] = &[
         "active_tab_id",
+        "click_count",
         "confirm_restart",
         "copy_cookies",
         "current_navigation_only",

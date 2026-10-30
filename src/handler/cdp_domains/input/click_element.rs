@@ -1,3 +1,4 @@
+use super::keys::{Modifier, MouseButton};
 use crate::handler::McpHandler;
 use crate::handler::cdp_domains::cdp_target::CdpTarget;
 use crate::handler::interruption::Interruption;
@@ -9,7 +10,7 @@ use serde_json::{Value, json};
 
 #[macros::mcp_tool(
     name = "click_element",
-    description = "Triggers a native mouse click event on a DOM element identified by CSS selector, executing click handlers and form submissions. Side effects: may trigger page navigation, form submission, or modify DOM state. Prerequisites: element must exist and be visible; it is scrolled into view first, and the call fails without clicking when the element has no visible box or another element (an overlay, a cookie banner) covers the point. Returns: success confirmation with click coordinates (viewport CSS pixels). A JavaScript dialog the click opens, or a debugger pause its handlers hit, does not fail it (the click happened): the reply notes it, followed by JSON {dialog: {type, message, default_prompt?}} (close it with 'handle_dialog') or {paused: true, location: {url, line_number, column_number} | null} (inspect with 'evaluate_on_call_frame', continue with 'resume'). Use this to interact with buttons, links, checkboxes. Alternatives: 'fill_input' for text input, 'evaluate_js' for complex interactions."
+    description = "Triggers a native mouse click event on a DOM element identified by CSS selector, executing click handlers and form submissions. Side effects: may trigger page navigation, form submission, or modify DOM state. Prerequisites: element must exist and be visible; it is scrolled into view first, and the call fails without clicking when the element has no visible box or another element (an overlay, a cookie banner) covers the point. Returns: success confirmation with click coordinates (viewport CSS pixels). A JavaScript dialog the click opens, or a debugger pause its handlers hit, does not fail it (the click happened): the reply notes it, followed by JSON {dialog: {type, message, default_prompt?}} (close it with 'handle_dialog') or {paused: true, location: {url, line_number, column_number} | null} (inspect with 'evaluate_on_call_frame', continue with 'resume'). 'button' ('right' opens context menus), 'click_count' (2 = double click) and 'modifiers' (Control, Shift, Alt, Meta held) change how it clicks. Use this to interact with buttons, links, checkboxes. Alternatives: 'fill_input' for text input, 'evaluate_js' for complex interactions."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct ClickElementTool {
@@ -19,16 +20,79 @@ pub struct ClickElementTool {
     pub tab_id: Option<String>,
     /// CSS selector identifying the target element. Constraints: valid CSS selector string; the first matching element is clicked; 'host >>> inner' matches 'inner' inside the open shadow root of 'host' or inside the same-origin iframe 'host' (chainable: '#frame >>> my-widget >>> button'); a ref from 'snapshot' (e.g. 'e12') names its element. Interactions: fails when that element is hidden or covered. Defaults to: None (required).
     pub selector: String,
+    /// The mouse button. Defaults to: 'left'.
+    pub button: Option<MouseButton>,
+    /// Clicks in a row: 1, 2 (double click) or 3. Defaults to: 1.
+    pub click_count: Option<u8>,
+    /// Modifier keys held during the click. Defaults to: none.
+    pub modifiers: Option<Vec<Modifier>>,
+}
+
+/// How a click is made: button, clicks in a row, held modifiers.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ClickOptions {
+    pub(crate) button: MouseButton,
+    pub(crate) count: u8,
+    pub(crate) modifiers: Vec<Modifier>,
+}
+
+impl Default for ClickOptions {
+    /// One left click.
+    fn default() -> Self {
+        Self {
+            button: MouseButton::Left,
+            count: 1,
+            modifiers: Vec::new(),
+        }
+    }
+}
+
+impl ClickOptions {
+    /// ` (right button, 2 clicks, Control+)`-like words for a reply; empty
+    /// for one plain left click.
+    fn described(&self) -> String {
+        let mut parts = Vec::new();
+        if self.button != MouseButton::Left {
+            parts.push(format!("{} button", self.button.cdp()));
+        }
+        if self.count > 1 {
+            parts.push(format!("{} clicks", self.count));
+        }
+        if !self.modifiers.is_empty() {
+            let chord = super::keys::chord(&self.modifiers);
+            parts.push(format!("with {}", chord.trim_end_matches('+')));
+        }
+        if parts.is_empty() {
+            return String::new();
+        }
+        format!(" ({})", parts.join(", "))
+    }
 }
 
 impl ClickElementTool {
+    /// The click asked for, or why it makes no sense.
+    pub(crate) fn options(&self) -> Result<ClickOptions, CallToolError> {
+        let count = self.click_count.unwrap_or(1);
+        if !(1..=3).contains(&count) {
+            return Err(CallToolError::from_message(format!(
+                "click_count must be 1, 2 or 3, got {count}"
+            )));
+        }
+        Ok(ClickOptions {
+            button: self.button.unwrap_or_default(),
+            count,
+            modifiers: self.modifiers.clone().unwrap_or_default(),
+        })
+    }
+
     pub async fn handle(
         params: CallToolRequestParams,
         handler: &McpHandler,
     ) -> Result<CallToolResult, CallToolError> {
         let ids = |a: &Self| (a.instance_id.clone(), a.tab_id.clone());
         let (args, target) = crate::handler::args_and_target(params, handler, ids).await?;
-        click(&target, &args.selector).await
+        let options = args.options()?;
+        click(&target, &args.selector, &options).await
     }
 }
 
@@ -37,74 +101,87 @@ impl ClickElementTool {
 pub(crate) async fn click(
     target: &CdpTarget,
     selector: &str,
+    options: &ClickOptions,
 ) -> Result<CallToolResult, CallToolError> {
     let expression = crate::util::js::click_point(selector);
     let point = crate::handler::snippet_value(target, &expression).await?;
-    let (x, y) = click_point(&point, selector)?;
-    let interrupted = press_and_release(target, x, y).await?;
-    Ok(clicked_reply(selector, x, y, interrupted.as_ref()))
+    let point = click_point(&point, selector, "clicked")?;
+    let clicking = press_and_release(target, point, options);
+    let interrupted = super::keys::holding(target, &options.modifiers, clicking).await?;
+    Ok(clicked_reply(
+        selector,
+        point,
+        options,
+        interrupted.as_ref(),
+    ))
 }
 
-/// Presses and releases the left button at `(x, y)`; what interrupted the
-/// click (a dialog or a pause its handlers caused), if anything. The click
-/// still happened: the page handles the events once it runs again.
+/// Presses and releases the button at `point`, `options.count` times; what
+/// interrupted the click (a dialog or a pause its handlers caused), if
+/// anything. The click still happened: the page handles the events once it
+/// runs again.
 async fn press_and_release(
     target: &CdpTarget,
-    x: f64,
-    y: f64,
+    (x, y): (f64, f64),
+    options: &ClickOptions,
 ) -> Result<Option<Interruption>, CallToolError> {
-    let event = |kind| json!({"type": kind, "button": "left", "x": x, "y": y, "clickCount": 1});
+    let modifiers = super::keys::cdp_modifiers(&options.modifiers);
+    let button = options.button.cdp();
+    let event = |kind, count| json!({"type": kind, "button": button, "x": x, "y": y, "clickCount": count, "modifiers": modifiers});
     let method = "Input.dispatchMouseEvent";
-    let pressed = target
-        .send_interruptible(method, event("mousePressed"))
-        .await;
-    let released = match pressed {
-        Ok(Ok(_)) => {
-            target
-                .send_interruptible(method, event("mouseReleased"))
-                .await
+    for count in 1..=options.count {
+        let pressed = target
+            .send_interruptible(method, event("mousePressed", count))
+            .await;
+        let released = match pressed {
+            Ok(Ok(_)) => {
+                target
+                    .send_interruptible(method, event("mouseReleased", count))
+                    .await
+            }
+            other => {
+                // A press that failed or was interrupted may still be
+                // delivered once the page runs again: so is the release, or
+                // the button stays held.
+                let (target, release) = (target.clone(), event("mouseReleased", count));
+                tokio::spawn(async move { target.send_raw_command(method, release).await });
+                other
+            }
+        };
+        match released {
+            Ok(Ok(_)) => {}
+            Ok(Err(e)) => {
+                let failure = crate::handler::cdp_failure("CDP Error", &e);
+                return Err(CallToolError::from_message(failure));
+            }
+            Err(interruption) => return Ok(Some(interruption)),
         }
-        other => {
-            // A press that failed or was interrupted may still be delivered
-            // once the page runs again: so is the release, or the button
-            // stays held.
-            let (target, release) = (target.clone(), event("mouseReleased"));
-            tokio::spawn(async move { target.send_raw_command(method, release).await });
-            other
-        }
-    };
-    match released {
-        Ok(Ok(_)) => Ok(None),
-        Ok(Err(e)) => Err(CallToolError::from_message(crate::handler::cdp_failure(
-            "CDP Error",
-            &e,
-        ))),
-        Err(interruption) => Ok(Some(interruption)),
     }
+    Ok(None)
 }
 
 /// The reply once the click was sent; a click a dialog or a pause
 /// interrupted says so, with its JSON after the first line.
 pub(crate) fn clicked_reply(
     selector: &str,
-    x: f64,
-    y: f64,
+    (x, y): (f64, f64),
+    options: &ClickOptions,
     interrupted: Option<&Interruption>,
 ) -> CallToolResult {
-    let done = format!("Successfully clicked on element '{selector}' at coordinates ({x}, {y})");
-    let text = match interrupted {
-        None => done,
-        Some(interruption) => {
-            let body = serde_json::to_string_pretty(&interruption.to_json()).unwrap_or_default();
-            format!("{done}. {}\n{body}", interruption.note())
-        }
-    };
+    let how = options.described();
+    let done =
+        format!("Successfully clicked{how} on element '{selector}' at coordinates ({x}, {y})");
+    let text = interrupted.map_or_else(|| done.clone(), |stopped| stopped.after(&done));
     CallToolResult::text_content(vec![text.into()])
 }
 
 /// The point the click snippet (`util::js::click_point`) checked, or why
-/// the element must not be clicked.
-pub(crate) fn click_point(value: &Value, selector: &str) -> Result<(f64, f64), CallToolError> {
+/// the element must not be `action` (clicked, hovered).
+pub(crate) fn click_point(
+    value: &Value,
+    selector: &str,
+    action: &str,
+) -> Result<(f64, f64), CallToolError> {
     let fail = |message: String| Err(CallToolError::from_message(message));
     let point = (value["x"].as_f64(), value["y"].as_f64());
     match (value["status"].as_str(), point) {
@@ -114,13 +191,13 @@ pub(crate) fn click_point(value: &Value, selector: &str) -> Result<(f64, f64), C
             crate::util::js::ref_hint(selector)
         )),
         (Some("hidden"), _) => fail(format!(
-            "Element '{selector}' is not visible (display:none, visibility:hidden or zero size); nothing was clicked. Click a visible element instead, such as its label."
+            "Element '{selector}' is not visible (display:none, visibility:hidden or zero size); nothing was {action}. Click a visible element instead, such as its label."
         )),
         (Some("outside"), _) => fail(format!(
-            "Element '{selector}' is outside the viewport even after scrolling it into view; nothing was clicked."
+            "Element '{selector}' is outside the viewport even after scrolling it into view; nothing was {action}."
         )),
         (Some("covered"), (Some(x), Some(y))) => fail(format!(
-            "Element '{selector}' is covered by '{}' at ({x}, {y}); nothing was clicked. Close or remove the covering element first, or click it if that is the intent.",
+            "Element '{selector}' is covered by '{}' at ({x}, {y}); nothing was {action}. Close or remove the covering element first, or click it if that is the intent.",
             value["by"].as_str().unwrap_or("another element")
         )),
         _ => fail("Could not determine coordinates for the element.".to_string()),
@@ -224,6 +301,52 @@ mod tests {
         );
     }
 
+    /// ISSUE-7 (Chrome): a double right click with Control sends two
+    /// press/release pairs counting 1 then 2, with the button and the
+    /// modifier bits; the reply says how it clicked.
+    #[tokio::test]
+    async fn click_options_reach_the_mouse_events() {
+        let mock = page_answering(json!({"status": "ok", "x": 16, "y": 497})).await;
+        let handler = crate::handler::cdp_domains::tests::mock_handler(mock.http_port);
+        let args = json!({"selector": "#b", "button": "right", "click_count": 2, "modifiers": ["Control"]});
+        let params = crate::handler::cdp_domains::tests::call("click_element", args);
+        let reply = ClickElementTool::handle(params, &handler).await.unwrap();
+        let text = crate::handler::cdp_domains::tests::reply_text(&reply);
+        assert_eq!(
+            text,
+            "Successfully clicked (right button, 2 clicks, with Control) on element '#b' at coordinates (16, 497)"
+        );
+        let events: Vec<(String, u64)> = mock
+            .commands_named("Input.dispatchMouseEvent")
+            .iter()
+            .map(|e| {
+                (
+                    e.params["type"].as_str().unwrap().to_string(),
+                    e.params["clickCount"].as_u64().unwrap(),
+                )
+            })
+            .collect();
+        let expected = [
+            ("mousePressed", 1),
+            ("mouseReleased", 1),
+            ("mousePressed", 2),
+            ("mouseReleased", 2),
+        ];
+        assert_eq!(events, expected.map(|(k, n)| (k.to_string(), n)));
+        let first = &mock.commands_named("Input.dispatchMouseEvent")[0].params;
+        assert_eq!(
+            (first["button"].clone(), first["modifiers"].clone()),
+            (json!("right"), json!(2))
+        );
+        let error =
+            serde_json::from_value::<ClickElementTool>(json!({"selector": "#b", "click_count": 4}))
+                .unwrap()
+                .options()
+                .unwrap_err()
+                .to_string();
+        assert_eq!(error, "click_count must be 1, 2 or 3, got 4");
+    }
+
     /// ISSUE-11: a click a dialog or a pause interrupted is a success (the
     /// click happened) that says so, with its JSON after the first line.
     #[test]
@@ -234,7 +357,8 @@ mod tests {
         ));
         let paused = Interruption::Paused(None);
         // When their replies are built
-        let reply = clicked_reply("#del", 4.0, 9.0, Some(&dialog));
+        let once = ClickOptions::default();
+        let reply = clicked_reply("#del", (4.0, 9.0), &once, Some(&dialog));
         let text = crate::handler::cdp_domains::tests::reply_text(&reply);
         // Then they succeed, noting the dialog or the pause
         assert_ne!(reply.is_error, Some(true));
@@ -244,12 +368,8 @@ mod tests {
         );
         let body: Value = serde_json::from_str(&text[text.find('{').unwrap()..]).unwrap();
         assert_eq!(body, dialog.to_json());
-        let text = crate::handler::cdp_domains::tests::reply_text(&clicked_reply(
-            "#b",
-            1.0,
-            2.0,
-            Some(&paused),
-        ));
+        let reply = clicked_reply("#b", (1.0, 2.0), &once, Some(&paused));
+        let text = crate::handler::cdp_domains::tests::reply_text(&reply);
         assert!(
             text.contains("(1, 2). The page paused in the debugger:"),
             "{text}"

@@ -34,6 +34,13 @@ impl Interruption {
         }
     }
 
+    /// The reply text of an action (`done`, its first words) it interrupted:
+    /// `<done>. <note>` and the JSON on the next line.
+    pub(crate) fn after(&self, done: &str) -> String {
+        let body = serde_json::to_string_pretty(&self.to_json()).unwrap_or_default();
+        format!("{done}. {}\n{body}", self.note())
+    }
+
     /// `{dialog}` or `{paused, location}` (the `step_over` shape) for replies.
     pub(crate) fn to_json(&self) -> Value {
         match self {

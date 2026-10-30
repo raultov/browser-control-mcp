@@ -52,7 +52,8 @@ impl FormOps for CdpTarget {
     }
 
     async fn click(&self, selector: &str) -> Result<CallToolResult, CallToolError> {
-        super::click_element::click(self, selector).await
+        let once = super::click_element::ClickOptions::default();
+        super::click_element::click(self, selector, &once).await
     }
 }
 

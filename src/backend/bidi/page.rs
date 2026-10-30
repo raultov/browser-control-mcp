@@ -3,6 +3,8 @@
 use super::protocol_error;
 use super::remote_value;
 use crate::backend::error::BackendError;
+use crate::handler::cdp_domains::input::click_element::ClickOptions;
+use crate::handler::cdp_domains::input::keys;
 use crate::handler::cdp_domains::page::wait_for::CheckError;
 use crate::handler::evaluation::{self, Evaluation, exception_message};
 use crate::handler::interruption::Interruption;
@@ -317,37 +319,77 @@ pub(crate) async fn run_snippet(tab: &Tab, expression: &str) -> Result<Value, Ba
     evaluate(tab, expression).await
 }
 
-/// Clicks the viewport point `(x, y)` with real pointer input (spike H6);
-/// the dialog the click opened, if any (the click happened). The input
-/// state is released even when the actions fail or a dialog opened, so a
-/// later action does not start with the button held: then in the
-/// background, so the call does not wait for the dialog.
+/// The viewport point `(x, y)` as BiDi wants it (whole CSS pixels: the
+/// click snippet returns those).
+fn viewport_move((x, y): (f64, f64)) -> Value {
+    json!({"type": "pointerMove", "x": x.round() as i64, "y": y.round() as i64, "origin": "viewport"})
+}
+
+/// A pointer source with `actions`, after `pauses` (while held keys go down).
+fn mouse(pauses: usize, actions: Vec<Value>) -> Value {
+    let mut all: Vec<Value> = std::iter::repeat_n(json!({"type": "pause"}), pauses).collect();
+    all.extend(actions);
+    json!({"type": "pointer", "id": "mouse", "parameters": {"pointerType": "mouse"}, "actions": all})
+}
+
+/// Clicks the viewport point `point` with real pointer input (spike H6),
+/// as `options` say (button, clicks in a row, held modifiers); the dialog
+/// the click opened, if any (the click happened).
 pub(crate) async fn click_at(
     tab: &Tab,
-    x: f64,
-    y: f64,
+    point: (f64, f64),
+    options: &ClickOptions,
 ) -> Result<Option<Interruption>, BackendError> {
-    // The click snippet returns whole CSS pixels; BiDi wants integers.
-    let (x, y) = (x.round() as i64, y.round() as i64);
-    let pointer = json!({"type": "pointer", "id": "mouse", "parameters": {"pointerType": "mouse"}, "actions": [
-        {"type": "pointerMove", "x": x, "y": y, "origin": "viewport"},
-        {"type": "pointerDown", "button": 0},
-        {"type": "pointerUp", "button": 0},
-    ]});
+    let button = options.button.webdriver();
+    let mut pointer = vec![viewport_move(point)];
+    for _ in 0..options.count {
+        pointer.push(json!({"type": "pointerDown", "button": button}));
+        pointer.push(json!({"type": "pointerUp", "button": button}));
+    }
+    let held = &options.modifiers;
+    let keys = keys::held_keys(held, pointer.len());
+    let mut sources = vec![mouse(held.len(), pointer)];
+    if !held.is_empty() {
+        sources.push(json!({"type": "key", "id": "keyboard", "actions": keys}));
+    }
+    perform(tab, Value::Array(sources)).await
+}
+
+/// Moves the mouse to the viewport point `point` (hover).
+pub(crate) async fn hover_at(tab: &Tab, point: (f64, f64)) -> Result<(), BackendError> {
+    let actions = json!([mouse(0, vec![viewport_move(point)])]);
+    perform(tab, actions).await.map(|_| ())
+}
+
+/// Presses `key` with `held` down in the focused element; the dialog it
+/// opened, if any (the key was pressed).
+pub(crate) async fn press_key(
+    tab: &Tab,
+    key: &keys::Key,
+    held: &[keys::Modifier],
+) -> Result<Option<Interruption>, BackendError> {
+    perform(tab, key.bidi_actions(held)).await
+}
+
+/// `input.performActions` with `actions`; the dialog they opened, if any
+/// (they happened). The input state is released even when they fail or a
+/// dialog opened, so a later action does not start with a button or a key
+/// held: then in the background, so the call does not wait for the dialog.
+async fn perform(tab: &Tab, actions: Value) -> Result<Option<Interruption>, BackendError> {
     let context = tab.context_id();
     let method = "input.performActions";
-    let actions = tab.send_raw_command(method, json!({"context": context, "actions": [pointer]}));
-    let clicked = match race_prompt(tab, actions).await {
+    let sent = tab.send_raw_command(method, json!({"context": context, "actions": actions}));
+    let performed = match race_prompt(tab, sent).await {
         Ok(reply) => reply.map(|_| None).map_err(|e| protocol_error(method, &e)),
         Err(dialog) => Ok(Some(dialog)),
     };
     let release = json!({"context": context});
-    if !matches!(clicked, Ok(None)) {
+    if !matches!(performed, Ok(None)) {
         let tab = tab.clone();
         tokio::spawn(async move {
             let _ = tab.send_raw_command("input.releaseActions", release).await;
         });
-        return clicked;
+        return performed;
     }
     command(tab, "input.releaseActions", release)
         .await

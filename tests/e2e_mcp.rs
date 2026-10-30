@@ -22,6 +22,9 @@ mod e2e {
     <button id="hit" onclick="appTarget(3)">hit</button>
     <button id="ask" onclick="window.__answer = confirm('Sure?')">ask</button>
     <label><input type="checkbox" id="cb"> agree</label>
+    <div id="hov" onmouseover="window.__hovered = true">hover me</div>
+    <input id="pk" onkeydown="window.__keys = (window.__keys || '') + event.key + (event.ctrlKey ? '^' : '') + ';'">
+    <button id="dbl" ondblclick="window.__dbl = (window.__dbl || 0) + 1" oncontextmenu="window.__ctx = true; return false">dbl</button>
     <input type="file" id="up" onchange="window.__up = this.files[0].name + ':' + this.files[0].size">
     <my-widget></my-widget><iframe id="fr" src="/frame.html" width="300" height="80"></iframe>
     <script>customElements.define('my-widget', class extends HTMLElement { connectedCallback() {
@@ -537,6 +540,50 @@ mod e2e {
         ]
     }
 
+    /// ISSUE-7: hover, keys with modifiers, double and right clicks.
+    fn key_and_pointer_steps(instance: &str) -> Vec<Step> {
+        let i = json!(instance);
+        let effects = "window.__hovered + '|' + window.__keys + '|' + document.querySelector('#pk').value + '|' + window.__dbl + ':' + window.__ctx";
+        vec![
+            (
+                "ISSUE-7 hover",
+                "hover",
+                json!({"instance_id": i, "selector": "#hov"}),
+                "Hovering over '#hov'",
+            ),
+            (
+                "ISSUE-7 press a character",
+                "press_key",
+                json!({"instance_id": i, "selector": "#pk", "key": "a"}),
+                "Pressed a in '#pk'.",
+            ),
+            (
+                "ISSUE-7 press a shortcut",
+                "press_key",
+                json!({"instance_id": i, "key": "Enter", "modifiers": ["Control"]}),
+                "Pressed Control+Enter in the focused element.",
+            ),
+            (
+                "ISSUE-7 double click",
+                "click_element",
+                json!({"instance_id": i, "selector": "#dbl", "click_count": 2}),
+                "2 clicks",
+            ),
+            (
+                "ISSUE-7 right click",
+                "click_element",
+                json!({"instance_id": i, "selector": "#dbl", "button": "right"}),
+                "right button",
+            ),
+            (
+                "ISSUE-7 effects",
+                "evaluate_js",
+                json!({"instance_id": i, "expression": effects}),
+                "true|a;Control^;Enter^;|a|1:true",
+            ),
+        ]
+    }
+
     /// Observation steps: console, network, screenshot, DOM.
     fn observation_steps(instance: &str) -> Vec<Step> {
         let i = json!(instance);
@@ -715,7 +762,7 @@ mod e2e {
     async fn smoke(browser: &str) {
         let base = serve().await;
         let mut mcp = Mcp::start(&[]).await;
-        mcp.list_tools(38).await;
+        mcp.list_tools(40).await;
         let all = [
             page_steps(browser, &base),
             tab_steps("e2e", &base),
@@ -725,6 +772,7 @@ mod e2e {
             snapshot_steps("e2e"),
             form_steps("e2e"),
             upload_steps("e2e"),
+            key_and_pointer_steps("e2e"),
             observation_steps("e2e"),
             websocket_steps("e2e", &base),
             debugger_steps("e2e", &base),
@@ -801,6 +849,7 @@ mod e2e {
             snapshot_steps("default"),
             form_steps("default"),
             upload_steps("default"),
+            key_and_pointer_steps("default"),
             debugger_steps("default", &base),
         ];
         mcp.steps(all.concat()).await;

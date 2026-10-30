@@ -9,12 +9,15 @@ use crate::backend::BackendError;
 use crate::backend::BrowserKind;
 use crate::handler::cdp_domains::custom::get_custom_events::GetCustomEventsTool;
 use crate::handler::cdp_domains::input::click_element::{
-    ClickElementTool, click_point, clicked_reply,
+    ClickElementTool, ClickOptions, click_point, clicked_reply,
 };
 use crate::handler::cdp_domains::input::fill_form::{FillFormTool, FormOps};
 use crate::handler::cdp_domains::input::fill_input::{
     FillInputTool, FillStart, fill_reply, fill_start, selected_reply,
 };
+use crate::handler::cdp_domains::input::hover::{HoverTool, hovered_reply};
+use crate::handler::cdp_domains::input::keys::{Key, Modifier};
+use crate::handler::cdp_domains::input::press_key::{PressKeyTool, focused, pressed_reply};
 use crate::handler::cdp_domains::input::upload_file::UploadFileTool;
 use crate::handler::cdp_domains::log::get_console_logs::GetConsoleLogsTool;
 use crate::handler::cdp_domains::network::get_network_logs::{self, GetNetworkLogsTool};
@@ -233,7 +236,33 @@ pub(crate) async fn click_element(
         id: &id,
         tab: &tab.tab,
     };
-    on.click(&args.selector).await
+    let options = args.options()?;
+    on.click(&args.selector, &options).await
+}
+
+/// `hover`: the mouse moves to the point the shared snippet checked.
+pub(crate) async fn hover(params: CallToolRequestParams, handler: &McpHandler) -> ToolResult {
+    let args: HoverTool = parse_args(params)?;
+    let (session, id, tab) = target(handler, &ids(&args.instance_id, &args.tab_id)).await?;
+    let on = OnTab {
+        session: &session,
+        id: &id,
+        tab: &tab.tab,
+    };
+    on.hover(&args.selector).await
+}
+
+/// `press_key`: BiDi key actions, the modifiers wrapping the key.
+pub(crate) async fn press_key(params: CallToolRequestParams, handler: &McpHandler) -> ToolResult {
+    let args: PressKeyTool = parse_args(params)?;
+    let key = args.key()?;
+    let (session, id, tab) = target(handler, &ids(&args.instance_id, &args.tab_id)).await?;
+    let on = OnTab {
+        session: &session,
+        id: &id,
+        tab: &tab.tab,
+    };
+    on.press(args.selector.as_deref(), &key, &args.held()).await
 }
 
 /// `fill_input`: replaces the element's content by typing, with the same
@@ -289,7 +318,7 @@ impl FormOps for OnTab<'_> {
     }
 
     async fn click(&self, selector: &str) -> ToolResult {
-        OnTab::click(self, selector).await
+        OnTab::click(self, selector, &ClickOptions::default()).await
     }
 }
 
@@ -301,20 +330,63 @@ pub(crate) struct OnTab<'a> {
 }
 
 impl OnTab<'_> {
-    /// Clicks the element `selector` names at the point the shared snippet
-    /// checked (`click_element`, the checkboxes of `fill_form`).
-    pub(crate) async fn click(&self, selector: &str) -> ToolResult {
+    /// The viewport point where `selector`'s element can be `action`
+    /// (clicked, hovered), checked by the shared snippet.
+    async fn point(&self, selector: &str, action: &str) -> Result<(f64, f64), CallToolError> {
         let expression = crate::util::js::click_point(selector);
         let checked = page::run_snippet(self.tab, &expression);
-        let point = unless_paused(self.session, self.id, "click_element", checked).await?;
-        let (x, y) = click_point(&point, selector)?;
+        let point = unless_paused(self.session, self.id, action, checked).await?;
+        click_point(&point, selector, action)
+    }
+
+    /// Clicks the element `selector` names as `options` say, at the point
+    /// the shared snippet checked (`click_element`, `fill_form`).
+    pub(crate) async fn click(&self, selector: &str, options: &ClickOptions) -> ToolResult {
+        let point = self.point(selector, "clicked").await?;
         // The click happened even when a dialog or a pause interrupted it.
-        let clicking = page::click_at(self.tab, x, y);
+        let clicking = page::click_at(self.tab, point, options);
         let interrupted = match race_pause(self.session, self.id, clicking).await {
             Ok(clicked) => clicked?,
             Err(paused) => Some(paused),
         };
-        Ok(clicked_reply(selector, x, y, interrupted.as_ref()))
+        Ok(clicked_reply(
+            selector,
+            point,
+            options,
+            interrupted.as_ref(),
+        ))
+    }
+
+    /// Moves the mouse over the element `selector` names (`hover`).
+    pub(crate) async fn hover(&self, selector: &str) -> ToolResult {
+        let point = self.point(selector, "hovered").await?;
+        let moving = page::hover_at(self.tab, point);
+        unless_paused(self.session, self.id, "hover", moving).await?;
+        Ok(hovered_reply(selector, point))
+    }
+
+    /// Presses `key` with `held` down, in the element `selector` names
+    /// (focused first) or the focused one (`press_key`).
+    pub(crate) async fn press(
+        &self,
+        selector: Option<&str>,
+        key: &Key,
+        held: &[Modifier],
+    ) -> ToolResult {
+        if let Some(selector) = selector {
+            let expression = crate::util::js::focus(selector);
+            let focus = page::run_snippet(self.tab, &expression);
+            focused(
+                &unless_paused(self.session, self.id, "press_key", focus).await?,
+                selector,
+            )?;
+        }
+        let pressing = page::press_key(self.tab, key, held);
+        let interrupted = match race_pause(self.session, self.id, pressing).await {
+            Ok(pressed) => pressed?,
+            Err(paused) => Some(paused),
+        };
+        Ok(pressed_reply(selector, key, held, interrupted.as_ref()))
     }
 
     /// Fills the element `selector` names with `text` by typing
@@ -941,6 +1013,64 @@ mod tests {
                 .unwrap()
                 .contains("const text = \"Welcome\"")
         );
+        ts::stop(&handler).await;
+    }
+
+    /// ISSUE-7 (Firefox): a double click with Shift holds the key while the
+    /// pointer presses twice; press_key wraps the key in its modifiers.
+    #[tokio::test]
+    async fn click_options_and_keys_become_actions() {
+        // Given a page where "#go" is visible at (5, 7) and focusable
+        let mock = MockFirefox::start(false).await.unwrap();
+        mock.bidi().respond_with("script.evaluate", |params| {
+            let focus = params["expression"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("el.focus()");
+            let value = if focus {
+                json!({"status": "focused"})
+            } else {
+                json!({"status": "ok", "x": 5, "y": 7})
+            };
+            evaluate_success(ts::remote(&value))
+        });
+        let handler = ts::handler(&mock);
+        // When it is double-clicked with Shift, then gets Control+Enter
+        let args = json!({"selector": "#go", "click_count": 2, "modifiers": ["Shift"]});
+        click_element(call("click_element", args), &handler)
+            .await
+            .unwrap();
+        let args = json!({"selector": "#go", "key": "Enter", "modifiers": ["Control"]});
+        let reply = press_key(call("press_key", args), &handler).await.unwrap();
+        // Then the click's pointer and key sources, and the key's actions
+        let sent = mock.bidi().commands_named("input.performActions");
+        let pointer: Vec<&str> = sent[0].params["actions"][0]["actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| a["type"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            pointer,
+            [
+                "pause",
+                "pointerMove",
+                "pointerDown",
+                "pointerUp",
+                "pointerDown",
+                "pointerUp"
+            ]
+        );
+        assert_eq!(
+            sent[0].params["actions"][1]["actions"][0]["value"],
+            "\u{E008}"
+        );
+        let keys = &sent[1].params["actions"][0]["actions"];
+        assert_eq!(
+            (keys[0]["value"].clone(), keys[1]["value"].clone()),
+            (json!("\u{E009}"), json!("\u{E007}"))
+        );
+        assert_eq!(ts::text(&reply), "Pressed Control+Enter in '#go'.");
         ts::stop(&handler).await;
     }
 

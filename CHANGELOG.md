@@ -12,6 +12,19 @@ from a copy of its code: entries describe the differences from that release.
 
 ### Added
 
+- `press_key` and `hover` (Chrome and Firefox), and `button`,
+  `click_count` and `modifiers` for `click_element`. `press_key` presses
+  one key (a character, Enter, Tab, Escape, Backspace, Delete, the arrows,
+  Home, End, PageUp, PageDown, Insert, Space, F1 to F12) with Control,
+  Shift, Alt or Meta held, in `selector` (focused first) or the focused
+  element, as a user (Chrome `Input.dispatchKeyEvent`, Firefox key
+  actions); a shortcut types nothing, and a dialog or debugger pause the key
+  causes is noted like for a click. `hover` moves the mouse over an element
+  after the same visibility checks as `click_element`. A right click opens
+  context menus and `click_count: 2` double-clicks. These needed raw
+  protocol commands or synthetic JavaScript events, which many pages
+  ignore. (#7)
+
 - `upload_file` (Chrome and Firefox): sets the files of an
   `<input type=file>` as a user picking them (Chrome
   `DOM.setFileInputFiles`, Firefox `input.setFiles`); the page gets `input`
