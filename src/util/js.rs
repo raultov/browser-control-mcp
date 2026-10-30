@@ -11,11 +11,37 @@ pub fn string_literal(value: &str) -> String {
 /// same-origin iframe: `host >>> inner`, chainable.
 pub const PIERCE: &str = ">>>";
 
+/// Whether `selector` is a ref from `snapshot` (`e12`) rather than CSS (no
+/// HTML element is named like that, and custom elements need a hyphen).
+pub fn is_ref(selector: &str) -> bool {
+    let selector = selector.trim();
+    selector.len() > 1
+        && selector.starts_with('e')
+        && selector[1..].bytes().all(|b| b.is_ascii_digit())
+}
+
+/// The hint an error about a missing element adds for a ref.
+pub fn ref_hint(selector: &str) -> &'static str {
+    if is_ref(selector) {
+        " (a ref from 'snapshot' lasts until the page navigates or its element is removed: take a new snapshot)"
+    } else {
+        ""
+    }
+}
+
 /// Declares `resolve(target)`: the first element `target` names, or `null`.
-/// Each `>>>`-separated part is a CSS selector matched inside what the
-/// previous part matched (its open shadow root, or its document when it is
-/// a same-origin iframe); anything else there throws, naming the part.
-const RESOLVE: &str = "const resolve = target => { \
+/// A ref from `snapshot` (`e12`) names its element while it is in the page
+/// (the map `util::outline` fills, in the top window: refs die with its
+/// document).
+/// Otherwise each `>>>`-separated part is a CSS selector matched inside
+/// what the previous part matched (its open shadow root, or its document
+/// when it is a same-origin iframe); anything else there throws, naming it.
+pub(crate) const RESOLVE: &str = "const resolve = target => { \
+        if (/^\\s*e\\d+\\s*$/.test(target)) { \
+            const refs = window[Symbol.for('browser-control-mcp.refs')]; \
+            const weak = refs && refs.get(target.trim()), found = weak && weak.deref(); \
+            return found && found.isConnected ? found : null; \
+        } \
         const parts = target.split('>>>').map(part => part.trim()); \
         let scope = document, el = null; \
         for (const [i, part] of parts.entries()) { \
@@ -469,6 +495,21 @@ mod tests {
         assert!(RESOLVE.contains("el.shadowRoot") && RESOLVE.contains("el.contentDocument"));
         assert!(RESOLVE.contains("is neither an open shadow host nor a same-origin iframe"));
         assert_eq!(PIERCE, ">>>");
+    }
+
+    /// ISSUE-4: a ref from `snapshot` is told from CSS and resolves through
+    /// the page's ref map, the one `snapshot` fills.
+    #[test]
+    fn refs_resolve_through_the_snapshot_map() {
+        for selector in ["e1", "e12", " e305 "] {
+            assert!(is_ref(selector), "{selector}");
+        }
+        for selector in ["e", "em", "#e12", "e12 > a", "e1-2", "button"] {
+            assert!(!is_ref(selector), "{selector}");
+        }
+        assert!(RESOLVE.contains("found.isConnected"));
+        assert!(ref_hint("e3").contains("take a new snapshot"));
+        assert_eq!(ref_hint("#e3"), "");
     }
 
     /// ISSUE-3: a click inside iframes is checked in each document up to

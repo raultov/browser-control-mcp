@@ -21,7 +21,9 @@ use crate::handler::cdp_domains::page::navigate::NavigateTool;
 use crate::handler::cdp_domains::page::scroll::ScrollTool;
 use crate::handler::cdp_domains::page::wait_for::WaitForTool;
 use crate::handler::cdp_domains::runtime::evaluate_js::EvaluateJsTool;
+use crate::handler::cdp_domains::runtime::find_in_snapshot::FindInSnapshotTool;
 use crate::handler::cdp_domains::runtime::inspect_dom::InspectDomTool;
+use crate::handler::cdp_domains::runtime::snapshot::SnapshotTool;
 use crate::handler::chrome_instance::registry::InstanceDescriptor;
 use crate::handler::chrome_instance::{close_instance, open_instance, open_tab, switch_tab};
 use crate::handler::navigation::NavigationOutcome;
@@ -171,6 +173,26 @@ pub(crate) async fn inspect_dom(params: CallToolRequestParams, handler: &McpHand
     let outcome = page::run_snippet(&tab.tab, &expression).await?;
     let report = crate::util::text::dom_report(&outcome, args.query.as_deref(), before, after);
     Ok(text(report))
+}
+
+/// `snapshot`: the same outline and reply as on Chrome.
+pub(crate) async fn snapshot(params: CallToolRequestParams, handler: &McpHandler) -> ToolResult {
+    let args: SnapshotTool = parse_args(params)?;
+    let (_, _, tab) = target(handler, &ids(&args.instance_id, &args.tab_id)).await?;
+    let outcome = page::run_snippet(&tab.tab, &args.expression()).await?;
+    args.reply(&outcome)
+}
+
+/// `find_in_snapshot`: the same search and reply as on Chrome.
+pub(crate) async fn find_in_snapshot(
+    params: CallToolRequestParams,
+    handler: &McpHandler,
+) -> ToolResult {
+    let args: FindInSnapshotTool = parse_args(params)?;
+    args.check_arguments()?;
+    let (_, _, tab) = target(handler, &ids(&args.instance_id, &args.tab_id)).await?;
+    let outcome = page::run_snippet(&tab.tab, &args.expression()).await?;
+    args.reply(&outcome)
 }
 
 /// `scroll`: the same JavaScript and reply as on Chrome.

@@ -12,6 +12,20 @@ from a copy of its code: entries describe the differences from that release.
 
 ### Added
 
+- `snapshot` and `find_in_snapshot` (Chrome and Firefox): an outline of the
+  page with one line per element with a role (`button "Sign in" [ref=e7]`,
+  `textbox "Username" [ref=e3]`, `heading "Cart" [level=2] [ref=e1]`...),
+  its name, states and value, indented under its parent, through open
+  shadow roots and same-origin iframes, hidden elements left out; and a
+  search over that outline that returns only the matching lines under their
+  ancestors (a 1500-row page: 143 characters to find a button instead of a
+  50 000-character snapshot). The `selector` of `click_element`,
+  `fill_input`, `scroll` and `wait_for` accepts the refs, so agents no
+  longer write CSS from raw HTML. Computed in the page with the same
+  JavaScript on both browsers (one outline, refs that resolve the same
+  way); refs are kept per element while it is in the page and end when the
+  page navigates; password values are never shown. (#4)
+
 - Selectors of `click_element`, `fill_input`, `scroll` and `wait_for` reach
   into open shadow roots and same-origin iframes with `>>>`
   (`my-widget >>> button`, `#frame >>> #email`, chainable), on both

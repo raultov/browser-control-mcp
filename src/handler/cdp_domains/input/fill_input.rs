@@ -15,7 +15,7 @@ pub struct FillInputTool {
     pub instance_id: Option<String>,
     /// The Tab ID of the target tab. Omit to use the active tab.
     pub tab_id: Option<String>,
-    /// CSS selector identifying the input element. Constraints: valid CSS selector matching an input/textarea/contenteditable element or a select; 'host >>> inner' matches 'inner' inside the open shadow root of 'host' or inside the same-origin iframe 'host' (chainable). Interactions: element must be focusable and writable. Defaults to: None (required).
+    /// CSS selector identifying the input element. Constraints: valid CSS selector matching an input/textarea/contenteditable element or a select; 'host >>> inner' matches 'inner' inside the open shadow root of 'host' or inside the same-origin iframe 'host' (chainable); a ref from 'snapshot' (e.g. 'e12') names its element. Interactions: element must be focusable and writable. Defaults to: None (required).
     pub selector: String,
     /// Text content to insert, or the value or label of the option to pick in a select. Constraints: any string (special chars escaped automatically). Interactions: replaces any existing text after focus; fires input events. Defaults to: None (required).
     pub text: String,
@@ -50,7 +50,8 @@ pub(crate) fn fill_start(value: &Value, selector: &str) -> Result<FillStart, Cal
             )))
         }
         _ => Err(CallToolError::from_message(format!(
-            "Element not found for selector: {selector}"
+            "Element not found for selector: {selector}{}",
+            crate::util::js::ref_hint(selector)
         ))),
     }
 }

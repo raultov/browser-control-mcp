@@ -17,7 +17,7 @@ pub struct ClickElementTool {
     pub instance_id: Option<String>,
     /// The Tab ID of the target tab. Omit to use the active tab.
     pub tab_id: Option<String>,
-    /// CSS selector identifying the target element. Constraints: valid CSS selector string; the first matching element is clicked; 'host >>> inner' matches 'inner' inside the open shadow root of 'host' or inside the same-origin iframe 'host' (chainable: '#frame >>> my-widget >>> button'). Interactions: fails when that element is hidden or covered. Defaults to: None (required).
+    /// CSS selector identifying the target element. Constraints: valid CSS selector string; the first matching element is clicked; 'host >>> inner' matches 'inner' inside the open shadow root of 'host' or inside the same-origin iframe 'host' (chainable: '#frame >>> my-widget >>> button'); a ref from 'snapshot' (e.g. 'e12') names its element. Interactions: fails when that element is hidden or covered. Defaults to: None (required).
     pub selector: String,
 }
 
@@ -102,7 +102,10 @@ pub(crate) fn click_point(value: &Value, selector: &str) -> Result<(f64, f64), C
     let point = (value["x"].as_f64(), value["y"].as_f64());
     match (value["status"].as_str(), point) {
         (Some("ok"), (Some(x), Some(y))) => Ok((x, y)),
-        (None | Some("missing"), _) => fail(format!("Element not found for selector: {selector}")),
+        (None | Some("missing"), _) => fail(format!(
+            "Element not found for selector: {selector}{}",
+            crate::util::js::ref_hint(selector)
+        )),
         (Some("hidden"), _) => fail(format!(
             "Element '{selector}' is not visible (display:none, visibility:hidden or zero size); nothing was clicked. Click a visible element instead, such as its label."
         )),

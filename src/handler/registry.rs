@@ -136,6 +136,9 @@ fn page_tools() -> Vec<ToolEntry> {
     use cdp_domains::runtime::{
         evaluate_js::EvaluateJsTool as Eval, inspect_dom::InspectDomTool as Dom_,
     };
+    use cdp_domains::runtime::{
+        find_in_snapshot::FindInSnapshotTool as Find, snapshot::SnapshotTool as Snap,
+    };
     vec![
         entry!(Shot, Always, &[Screenshot], ff::capture_screenshot),
         entry!(Click, Always, &[Input], ff::click_element),
@@ -143,6 +146,8 @@ fn page_tools() -> Vec<ToolEntry> {
         entry!(Eval, Always, &[Evaluate], ff::evaluate_js),
         entry!(Nav, Always, &[Navigation], ff::navigate),
         entry!(Dom_, Always, &[Dom], ff::inspect_dom),
+        entry!(Snap, Always, &[Dom], ff::snapshot),
+        entry!(Find, Always, &[Dom], ff::find_in_snapshot),
         entry!(Reload, Always, &[Navigation], ff::reload),
         entry!(Scroll, Always, &[Dom], ff::scroll),
         entry!(Wait, Always, &[Dom], ff::wait_for),
@@ -529,7 +534,7 @@ mod tests {
         handler.proxy.proxy_server = Some("http://p:1".into());
         handler.flags.enable_webmcp = true;
         let listed = names(listed_tools(&handler));
-        assert_eq!(listed.len(), 39);
+        assert_eq!(listed.len(), 41);
         assert!(listed.contains("restart_browser") && listed.contains("stop_browser"));
         assert!(!listed.contains("restart_chrome") && !listed.contains("stop_chrome"));
     }

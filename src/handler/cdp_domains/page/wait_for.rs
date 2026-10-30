@@ -21,7 +21,7 @@ pub struct WaitForTool {
     pub text: Option<String>,
     /// Wait until the page's visible text no longer contains this (case-sensitive), e.g. a 'Loading' message. Defaults to: not checked.
     pub text_gone: Option<String>,
-    /// Wait until the first element matching this CSS selector is in 'state'; 'host >>> inner' matches 'inner' inside the open shadow root of 'host' or inside the same-origin iframe 'host' (chainable). Defaults to: not checked.
+    /// Wait until the first element matching this CSS selector is in 'state'; 'host >>> inner' matches 'inner' inside the open shadow root of 'host' or inside the same-origin iframe 'host' (chainable); a ref from 'snapshot' (e.g. 'e12') names its element. Defaults to: not checked.
     pub selector: Option<String>,
     /// The state 'selector' must reach: 'visible' (in the DOM with a visible box), 'hidden' (missing, or without a visible box), 'attached' (in the DOM) or 'detached' (not in it). Only with 'selector'. Defaults to: 'visible'.
     pub state: Option<WaitState>,

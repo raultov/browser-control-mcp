@@ -105,7 +105,8 @@ mod e2e {
 
     /// `(label, tool, arguments, expected text)`. A tool named `sleep`
     /// waits; an expected text starting with `!` expects a tool error that
-    /// contains the rest; `$TAB` in the arguments is the last opened tab.
+    /// contains the rest; `$TAB` in the arguments is the last opened tab,
+    /// `$REF` the last ref a reply showed.
     type Step = (&'static str, &'static str, Value, &'static str);
 
     /// One MCP client session over the child's stdio.
@@ -116,6 +117,7 @@ mod e2e {
         next_id: u64,
         failures: Vec<String>,
         last_tab: String,
+        last_ref: String,
     }
 
     impl Mcp {
@@ -140,6 +142,7 @@ mod e2e {
                 next_id: 0,
                 failures: Vec::new(),
                 last_tab: String::new(),
+                last_ref: String::new(),
             };
             let init = json!({"protocolVersion": "2025-11-25", "capabilities": {}, "clientInfo": {"name": "e2e", "version": "0"}});
             mcp.request("initialize", init).await;
@@ -208,7 +211,10 @@ mod e2e {
 
         /// One step: PASS when the outcome and the text match `expected`.
         async fn step(&mut self, (label, name): (&str, &str), args: Value, expected: &str) {
-            let args = args.to_string().replace("$TAB", &self.last_tab);
+            let args = args
+                .to_string()
+                .replace("$TAB", &self.last_tab)
+                .replace("$REF", &self.last_ref);
             let expected = expected.replace("$TAB", &self.last_tab);
             let (ok, text) = self.call(name, serde_json::from_str(&args).unwrap()).await;
             let passed = match expected.strip_prefix('!') {
@@ -219,6 +225,10 @@ mod e2e {
                 && let Ok(reply) = serde_json::from_str::<Value>(&text)
             {
                 self.last_tab = reply["tab_id"].as_str().unwrap_or_default().to_string();
+            }
+            if let Some(start) = text.rfind("[ref=") {
+                let rest = &text[start + "[ref=".len()..];
+                self.last_ref = rest[..rest.find(']').unwrap_or(0)].to_string();
             }
             self.report(label, passed, &text);
         }
@@ -440,6 +450,38 @@ mod e2e {
         ]
     }
 
+    /// ISSUE-4: the snapshot outlines the page with refs (into the iframe),
+    /// and a ref found in it works as a selector.
+    fn snapshot_steps(instance: &str) -> Vec<Step> {
+        let i = json!(instance);
+        vec![
+            (
+                "ISSUE-4 snapshot",
+                "snapshot",
+                json!({"instance_id": i}),
+                "button \"go\" [ref=",
+            ),
+            (
+                "ISSUE-4 find_in_snapshot",
+                "find_in_snapshot",
+                json!({"instance_id": i, "text": "framed"}),
+                "button \"framed\" [ref=",
+            ),
+            (
+                "ISSUE-4 click by ref",
+                "click_element",
+                json!({"instance_id": i, "selector": "$REF"}),
+                "Successfully clicked",
+            ),
+            (
+                "ISSUE-4 effect of the click by ref",
+                "evaluate_js",
+                json!({"instance_id": i, "expression": "window.__pierced"}),
+                "frame;frame;",
+            ),
+        ]
+    }
+
     /// Observation steps: console, network, screenshot, DOM.
     fn observation_steps(instance: &str) -> Vec<Step> {
         let i = json!(instance);
@@ -618,13 +660,14 @@ mod e2e {
     async fn smoke(browser: &str) {
         let base = serve().await;
         let mut mcp = Mcp::start(&[]).await;
-        mcp.list_tools(34).await;
+        mcp.list_tools(36).await;
         let all = [
             page_steps(browser, &base),
             tab_steps("e2e", &base),
             runtime_steps("e2e"),
             dialog_and_wait_steps("e2e"),
             pierce_steps("e2e"),
+            snapshot_steps("e2e"),
             observation_steps("e2e"),
             websocket_steps("e2e", &base),
             debugger_steps("e2e", &base),
@@ -698,6 +741,7 @@ mod e2e {
             runtime_steps("default"),
             dialog_and_wait_steps("default"),
             pierce_steps("default"),
+            snapshot_steps("default"),
             debugger_steps("default", &base),
         ];
         mcp.steps(all.concat()).await;

@@ -51,6 +51,8 @@ see the note.
 | `scroll` | ✓ | ✓ | reports the window positions before and after |
 | `wait_for` | ✓ | ✓ | waits (checking every 100 ms, at most 30 s) until a visible text appears or is gone, a selector is `visible` / `hidden` / `attached` / `detached`, or the URL contains a text; a dialog or debugger pause ends the wait at once |
 | `inspect_dom` | ✓ | ✓ | includes open shadow roots and same-origin iframes (cross-origin ones are noted); at most 100 000 characters without `query` (cut in the page) |
+| `snapshot` | ✓ | ✓ | outline of the page: role, name, states, value and a ref (`e12`) per element, through open shadow roots and same-origin iframes; at most 50 000 characters (`selector` and `depth` narrow it); the same JavaScript on both browsers |
+| `find_in_snapshot` | ✓ | ✓ | `text` (case-insensitive) or `regex` over the whole outline; matching lines under their ancestors, at most 20 |
 | `capture_screenshot` | ✓ | ✓ | `format` `png`, `jpeg` (or `jpg`) or `webp`; `full_page` at most 16 384 px per side (a text note says when cut) |
 | `click_element` | ✓ | ✓ | scrolls the element into view; fails without clicking when it is hidden or covered; `host >>> inner` selectors reach open shadow roots and same-origin iframes (also in `fill_input`, `scroll`, `wait_for`); a dialog or debugger pause the click causes is noted in a successful reply (`{dialog}` or `{paused, location}`) |
 | `fill_input` | ✓ | ✓ | picks `<select>` options; fails without typing on elements that cannot take the text; types key by key on both (key handlers run; newlines and tabs inserted as text), about 1 ms per character; `change` on leaving the field, or at the end when the window has no focus |
@@ -306,6 +308,18 @@ claude mcp add browser-control-mcp -- npx -y @raultov/browser-control-mcp
   A `value` over 100 000 characters is not returned whole: a string keeps
   its first 100 000, an object or array is measured in the page and only
   described; the reply then carries `"truncated": true`.
+- **Acting on elements.** `snapshot` outlines the page, one line per
+  element with a role, e.g. `textbox "Username" [ref=e3]`,
+  `button "Sign in" [ref=e7]`, `iframe [ref=e9]` with the frame's elements
+  under it; `find_in_snapshot` returns only the lines that match, under
+  their ancestors. The `selector` of `click_element`, `fill_input`,
+  `scroll` and `wait_for` takes such a ref, a CSS selector, or
+  `host >>> inner` to reach into an open shadow root or a same-origin
+  iframe (`#checkout >>> #card-number`, chainable). An element keeps its ref
+  in later snapshots while it is in the page; refs end when the page
+  navigates (a stale ref fails saying so). Roles and names are computed in
+  the page, an approximation of the browser's accessibility tree that is
+  the same on both browsers; password values never appear.
 - **Per-tab state.** Console logs, network traffic, breakpoints and custom
   events are kept per tab, in bounded buffers. A tab's console buffer (last
   1000 messages) is cleared when the tab moves to another site (registrable

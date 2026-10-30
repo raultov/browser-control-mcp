@@ -21,7 +21,7 @@ pub struct ScrollTool {
     pub y: Option<i32>,
     /// Number of viewport heights to scroll vertically. Constraints: float (e.g., 1.5 = 1.5× viewport height; negative scrolls up). Interactions: takes precedence over 'y' parameter if both provided; ignored if 'selector' provided. Defaults to: None.
     pub pages: Option<f64>,
-    /// CSS selector of element to scroll into view. Constraints: valid CSS selector string; 'host >>> inner' matches 'inner' inside the open shadow root of 'host' or inside the same-origin iframe 'host' (chainable). Interactions: takes precedence over 'x', 'y', 'pages' if provided; fails if element not found or not visible. Defaults to: None.
+    /// CSS selector of element to scroll into view. Constraints: valid CSS selector string; 'host >>> inner' matches 'inner' inside the open shadow root of 'host' or inside the same-origin iframe 'host' (chainable); a ref from 'snapshot' (e.g. 'e12') names its element. Interactions: takes precedence over 'x', 'y', 'pages' if provided; fails if element not found or not visible. Defaults to: None.
     pub selector: Option<String>,
 }
 
@@ -52,7 +52,8 @@ impl ScrollTool {
             }
             _ if self.selector.is_some() => {
                 return Err(CallToolError::from_message(format!(
-                    "Element not found for scrolling: {selector}"
+                    "Element not found for scrolling: {selector}{}",
+                    crate::util::js::ref_hint(selector)
                 )));
             }
             _ => {
@@ -86,12 +87,24 @@ impl ScrollTool {
         params: CallToolRequestParams,
         handler: &McpHandler,
     ) -> Result<CallToolResult, CallToolError> {
-        let args: ScrollTool = crate::handler::parse_args(params)?;
-        let target =
-            crate::handler::resolve_target(handler, args.instance_id.clone(), args.tab_id.clone())
-                .await?;
-        let outcome = crate::handler::snippet_value(&target, &args.expression()).await?;
-        args.reply(&outcome)
+        crate::handler::handle_snippet_tool::<Self>(params, handler).await
+    }
+}
+
+impl crate::handler::SnippetTool for ScrollTool {
+    fn target_args(&self) -> crate::handler::TargetArgs {
+        crate::handler::TargetArgs {
+            instance_id: self.instance_id.clone(),
+            tab_id: self.tab_id.clone(),
+        }
+    }
+
+    fn snippet(&self) -> String {
+        self.expression()
+    }
+
+    fn answer(&self, outcome: &Value) -> Result<CallToolResult, CallToolError> {
+        self.reply(outcome)
     }
 }
 

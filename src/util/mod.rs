@@ -6,6 +6,7 @@ pub mod js;
 pub mod json;
 #[cfg(test)]
 pub(crate) mod log_capture;
+pub mod outline;
 pub mod sync;
 pub mod text;
 pub mod url;
