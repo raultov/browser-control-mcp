@@ -11,6 +11,7 @@ use crate::handler::cdp_domains::custom::get_custom_events::GetCustomEventsTool;
 use crate::handler::cdp_domains::input::click_element::{
     ClickElementTool, click_point, clicked_reply,
 };
+use crate::handler::cdp_domains::input::fill_form::{FillFormTool, FormOps};
 use crate::handler::cdp_domains::input::fill_input::{
     FillInputTool, FillStart, fill_reply, fill_start, selected_reply,
 };
@@ -225,36 +226,94 @@ pub(crate) async fn click_element(
     handler: &McpHandler,
 ) -> ToolResult {
     let args: ClickElementTool = parse_args(params)?;
-    let ids = ids(&args.instance_id, &args.tab_id);
-    let (session, id, tab) = target(handler, &ids).await?;
-    let expression = crate::util::js::click_point(&args.selector);
-    let checked = page::run_snippet(&tab.tab, &expression);
-    let point = unless_paused(&session, &id, "click_element", checked).await?;
-    let (x, y) = click_point(&point, &args.selector)?;
-    // The click happened even when a dialog or a pause interrupted it.
-    let interrupted = match race_pause(&session, &id, page::click_at(&tab.tab, x, y)).await {
-        Ok(clicked) => clicked?,
-        Err(paused) => Some(paused),
+    let (session, id, tab) = target(handler, &ids(&args.instance_id, &args.tab_id)).await?;
+    let on = OnTab {
+        session: &session,
+        id: &id,
+        tab: &tab.tab,
     };
-    Ok(clicked_reply(&args.selector, x, y, interrupted.as_ref()))
+    on.click(&args.selector).await
 }
 
 /// `fill_input`: replaces the element's content by typing, with the same
 /// checks and replies as on Chrome.
 pub(crate) async fn fill_input(params: CallToolRequestParams, handler: &McpHandler) -> ToolResult {
     let args: FillInputTool = parse_args(params)?;
-    let ids = ids(&args.instance_id, &args.tab_id);
-    on_page(handler, &ids, "fill_input", async |tab| {
-        let prepare = crate::util::js::prepare_fill(&args.selector, &args.text);
-        let prepared = page::run_snippet(tab, &prepare).await?;
-        if let FillStart::Selected = fill_start(&prepared, &args.selector)? {
-            return Ok(selected_reply(&args.selector));
-        }
-        page::type_text(tab, &args.text).await?;
-        let check = crate::util::js::fill_result(&args.selector, &args.text);
-        fill_reply(&page::run_snippet(tab, &check).await?, &args.selector)
-    })
-    .await
+    let (session, id, tab) = target(handler, &ids(&args.instance_id, &args.tab_id)).await?;
+    let on = OnTab {
+        session: &session,
+        id: &id,
+        tab: &tab.tab,
+    };
+    on.fill(&args.selector, &args.text).await
+}
+
+/// `fill_form`: the shared field loop over this tab's fill and click.
+pub(crate) async fn fill_form(params: CallToolRequestParams, handler: &McpHandler) -> ToolResult {
+    let args: FillFormTool = parse_args(params)?;
+    args.check_arguments()?;
+    let (session, id, tab) = target(handler, &ids(&args.instance_id, &args.tab_id)).await?;
+    let on = OnTab {
+        session: &session,
+        id: &id,
+        tab: &tab.tab,
+    };
+    args.fill_all(&on).await
+}
+
+impl FormOps for OnTab<'_> {
+    async fn snippet(&self, expression: &str) -> Result<Value, CallToolError> {
+        Ok(page::run_snippet(self.tab, expression).await?)
+    }
+
+    async fn fill(&self, selector: &str, text: &str) -> ToolResult {
+        OnTab::fill(self, selector, text).await
+    }
+
+    async fn click(&self, selector: &str) -> ToolResult {
+        OnTab::click(self, selector).await
+    }
+}
+
+/// A Firefox tab the input tools act on, with what the pause race needs.
+pub(crate) struct OnTab<'a> {
+    pub(crate) session: &'a FirefoxSession,
+    pub(crate) id: &'a str,
+    pub(crate) tab: &'a Tab,
+}
+
+impl OnTab<'_> {
+    /// Clicks the element `selector` names at the point the shared snippet
+    /// checked (`click_element`, the checkboxes of `fill_form`).
+    pub(crate) async fn click(&self, selector: &str) -> ToolResult {
+        let expression = crate::util::js::click_point(selector);
+        let checked = page::run_snippet(self.tab, &expression);
+        let point = unless_paused(self.session, self.id, "click_element", checked).await?;
+        let (x, y) = click_point(&point, selector)?;
+        // The click happened even when a dialog or a pause interrupted it.
+        let clicking = page::click_at(self.tab, x, y);
+        let interrupted = match race_pause(self.session, self.id, clicking).await {
+            Ok(clicked) => clicked?,
+            Err(paused) => Some(paused),
+        };
+        Ok(clicked_reply(selector, x, y, interrupted.as_ref()))
+    }
+
+    /// Fills the element `selector` names with `text` by typing
+    /// (`fill_input`, each field of `fill_form`).
+    pub(crate) async fn fill(&self, selector: &str, text: &str) -> ToolResult {
+        let filling = async {
+            let prepare = crate::util::js::prepare_fill(selector, text);
+            let prepared = page::run_snippet(self.tab, &prepare).await?;
+            if let FillStart::Selected = fill_start(&prepared, selector)? {
+                return Ok(selected_reply(selector));
+            }
+            page::type_text(self.tab, text).await?;
+            let check = crate::util::js::fill_result(selector, text);
+            fill_reply(&page::run_snippet(self.tab, &check).await?, selector)
+        };
+        unless_paused(self.session, self.id, "fill_input", filling).await
+    }
 }
 
 /// `capture_screenshot`: image content.

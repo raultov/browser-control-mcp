@@ -12,6 +12,15 @@ from a copy of its code: entries describe the differences from that release.
 
 ### Added
 
+- `fill_form` (Chrome and Firefox): fills several fields in one call, in
+  order. Text fields, textareas, contenteditable elements and `<select>`s
+  go through `fill_input`; a checkbox or radio takes `true` or `false` and
+  is clicked only when its state differs. It answers
+  `Filled N fields.` with each field's outcome (`filled`, `selected`,
+  `checked`, `unchecked`, `unchanged`), never the values, and stops at the
+  first field that fails, naming it and what was done before. A login form
+  took one call per field. (#5)
+
 - `snapshot` and `find_in_snapshot` (Chrome and Firefox): an outline of the
   page with one line per element with a role (`button "Sign in" [ref=e7]`,
   `textbox "Username" [ref=e3]`, `heading "Cart" [level=2] [ref=e1]`...),

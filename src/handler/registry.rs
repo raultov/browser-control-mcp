@@ -124,6 +124,7 @@ fn page_tools() -> Vec<ToolEntry> {
     use crate::backend::bidi::tools as ff;
     use Capability::*;
     use Gate::Always;
+    use cdp_domains::input::fill_form::FillFormTool as Form;
     use cdp_domains::input::{
         click_element::ClickElementTool as Click, fill_input::FillInputTool as Fill,
     };
@@ -143,6 +144,7 @@ fn page_tools() -> Vec<ToolEntry> {
         entry!(Shot, Always, &[Screenshot], ff::capture_screenshot),
         entry!(Click, Always, &[Input], ff::click_element),
         entry!(Fill, Always, &[Input], ff::fill_input),
+        entry!(Form, Always, &[Input], ff::fill_form),
         entry!(Eval, Always, &[Evaluate], ff::evaluate_js),
         entry!(Nav, Always, &[Navigation], ff::navigate),
         entry!(Dom_, Always, &[Dom], ff::inspect_dom),
@@ -534,7 +536,7 @@ mod tests {
         handler.proxy.proxy_server = Some("http://p:1".into());
         handler.flags.enable_webmcp = true;
         let listed = names(listed_tools(&handler));
-        assert_eq!(listed.len(), 41);
+        assert_eq!(listed.len(), 42);
         assert!(listed.contains("restart_browser") && listed.contains("stop_browser"));
         assert!(!listed.contains("restart_chrome") && !listed.contains("stop_chrome"));
     }

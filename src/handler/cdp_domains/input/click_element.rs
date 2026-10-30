@@ -26,16 +26,23 @@ impl ClickElementTool {
         params: CallToolRequestParams,
         handler: &McpHandler,
     ) -> Result<CallToolResult, CallToolError> {
-        let args: ClickElementTool = crate::handler::parse_args(params)?;
-        let target =
-            crate::handler::resolve_target(handler, args.instance_id.clone(), args.tab_id.clone())
-                .await?;
-        let expression = crate::util::js::click_point(&args.selector);
-        let point = crate::handler::snippet_value(&target, &expression).await?;
-        let (x, y) = click_point(&point, &args.selector)?;
-        let interrupted = press_and_release(&target, x, y).await?;
-        Ok(clicked_reply(&args.selector, x, y, interrupted.as_ref()))
+        let ids = |a: &Self| (a.instance_id.clone(), a.tab_id.clone());
+        let (args, target) = crate::handler::args_and_target(params, handler, ids).await?;
+        click(&target, &args.selector).await
     }
+}
+
+/// Clicks the element `selector` names on Chrome (`click_element`, and the
+/// checkboxes of `fill_form`).
+pub(crate) async fn click(
+    target: &CdpTarget,
+    selector: &str,
+) -> Result<CallToolResult, CallToolError> {
+    let expression = crate::util::js::click_point(selector);
+    let point = crate::handler::snippet_value(target, &expression).await?;
+    let (x, y) = click_point(&point, selector)?;
+    let interrupted = press_and_release(target, x, y).await?;
+    Ok(clicked_reply(selector, x, y, interrupted.as_ref()))
 }
 
 /// Presses and releases the left button at `(x, y)`; what interrupted the

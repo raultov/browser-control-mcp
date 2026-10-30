@@ -130,6 +130,20 @@ const CLICK_POINT: &str = "el.scrollIntoView({ behavior: 'instant', block: 'cent
     } \
     return { status: 'ok', x, y };";
 
+/// What `fill_form` does with the element `selector` names:
+/// `{status: 'missing'}`, `{status: 'box', checked}` for a checkbox or
+/// radio (it is clicked when its state differs), or `{status: 'field'}`
+/// (it is filled like `fill_input`).
+pub fn form_field(selector: &str) -> String {
+    on_element(
+        selector,
+        "{ status: 'missing' }",
+        "const W = el.ownerDocument.defaultView; \
+         const box = el instanceof W.HTMLInputElement && (el.type === 'checkbox' || el.type === 'radio'); \
+         return box ? { status: 'box', checked: el.checked } : { status: 'field' };",
+    )
+}
+
 /// The property where the preparation keeps the value it found, for the
 /// check to fire `change` (a symbol: it never collides with the page's).
 const FILL_BEFORE: &str = "Symbol.for('browser-control-mcp.fill-before')";

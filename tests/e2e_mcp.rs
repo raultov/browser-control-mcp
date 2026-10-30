@@ -21,6 +21,7 @@ mod e2e {
     <button id="go" onclick="window.__clicked=(window.__clicked||0)+1">go</button>
     <button id="hit" onclick="appTarget(3)">hit</button>
     <button id="ask" onclick="window.__answer = confirm('Sure?')">ask</button>
+    <label><input type="checkbox" id="cb"> agree</label>
     <my-widget></my-widget><iframe id="fr" src="/frame.html" width="300" height="80"></iframe>
     <script>customElements.define('my-widget', class extends HTMLElement { connectedCallback() {
       const root = this.attachShadow({mode: 'open'}); root.innerHTML = '<button id="sb">shadow</button>';
@@ -482,6 +483,32 @@ mod e2e {
         ]
     }
 
+    /// ISSUE-5: one fill_form call fills a text field, checks a box and
+    /// fills a field inside the iframe.
+    fn form_steps(instance: &str) -> Vec<Step> {
+        let i = json!(instance);
+        let fields = json!([
+            {"selector": "#q", "value": "formed"},
+            {"selector": "#cb", "value": "true"},
+            {"selector": "#fr >>> #fq", "value": "framed-form"},
+        ]);
+        let effects = "document.querySelector('#q').value + document.querySelector('#cb').checked + document.querySelector('#fr').contentDocument.querySelector('#fq').value";
+        vec![
+            (
+                "ISSUE-5 fill_form",
+                "fill_form",
+                json!({"instance_id": i, "fields": fields}),
+                "Filled 3 fields.",
+            ),
+            (
+                "ISSUE-5 fill_form effects",
+                "evaluate_js",
+                json!({"instance_id": i, "expression": effects}),
+                "formedtrueframed-form",
+            ),
+        ]
+    }
+
     /// Observation steps: console, network, screenshot, DOM.
     fn observation_steps(instance: &str) -> Vec<Step> {
         let i = json!(instance);
@@ -660,7 +687,7 @@ mod e2e {
     async fn smoke(browser: &str) {
         let base = serve().await;
         let mut mcp = Mcp::start(&[]).await;
-        mcp.list_tools(36).await;
+        mcp.list_tools(37).await;
         let all = [
             page_steps(browser, &base),
             tab_steps("e2e", &base),
@@ -668,6 +695,7 @@ mod e2e {
             dialog_and_wait_steps("e2e"),
             pierce_steps("e2e"),
             snapshot_steps("e2e"),
+            form_steps("e2e"),
             observation_steps("e2e"),
             websocket_steps("e2e", &base),
             debugger_steps("e2e", &base),
@@ -742,6 +770,7 @@ mod e2e {
             dialog_and_wait_steps("default"),
             pierce_steps("default"),
             snapshot_steps("default"),
+            form_steps("default"),
             debugger_steps("default", &base),
         ];
         mcp.steps(all.concat()).await;

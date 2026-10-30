@@ -1,4 +1,5 @@
 use crate::handler::McpHandler;
+use crate::handler::cdp_domains::cdp_target::CdpTarget;
 use rust_mcp_sdk::{
     macros,
     schema::{CallToolError, CallToolRequestParams, CallToolResult},
@@ -114,26 +115,34 @@ impl FillInputTool {
         params: CallToolRequestParams,
         handler: &McpHandler,
     ) -> Result<CallToolResult, CallToolError> {
-        let args: FillInputTool = crate::handler::parse_args(params)?;
-        let target =
-            crate::handler::resolve_target(handler, args.instance_id.clone(), args.tab_id.clone())
-                .await?;
-        let prepare = crate::util::js::prepare_fill(&args.selector, &args.text);
-        let prepared = crate::handler::snippet_value(&target, &prepare).await?;
-        if let FillStart::Selected = fill_start(&prepared, &args.selector)? {
-            return Ok(selected_reply(&args.selector));
-        }
-        for c in args.text.chars() {
-            for (method, params) in typing(c) {
-                crate::handler::send_or(&target, method, params, "CDP Error").await?;
-            }
-        }
-        let check = crate::util::js::fill_result(&args.selector, &args.text);
-        fill_reply(
-            &crate::handler::snippet_value(&target, &check).await?,
-            &args.selector,
-        )
+        let ids = |a: &Self| (a.instance_id.clone(), a.tab_id.clone());
+        let (args, target) = crate::handler::args_and_target(params, handler, ids).await?;
+        fill(&target, &args.selector, &args.text).await
     }
+}
+
+/// Fills the element `selector` names with `text` on Chrome (`fill_input`,
+/// and each field of `fill_form`).
+pub(crate) async fn fill(
+    target: &CdpTarget,
+    selector: &str,
+    text: &str,
+) -> Result<CallToolResult, CallToolError> {
+    let prepare = crate::util::js::prepare_fill(selector, text);
+    let prepared = crate::handler::snippet_value(target, &prepare).await?;
+    if let FillStart::Selected = fill_start(&prepared, selector)? {
+        return Ok(selected_reply(selector));
+    }
+    for c in text.chars() {
+        for (method, params) in typing(c) {
+            crate::handler::send_or(target, method, params, "CDP Error").await?;
+        }
+    }
+    let check = crate::util::js::fill_result(selector, text);
+    fill_reply(
+        &crate::handler::snippet_value(target, &check).await?,
+        selector,
+    )
 }
 
 #[cfg(test)]
