@@ -12,6 +12,15 @@ from a copy of its code: entries describe the differences from that release.
 
 ### Added
 
+- `emulate`: the tab's viewport (`width`, `height`, `device_scale_factor`,
+  and on Chrome `mobile` with touch) and, on Chrome, CSS media features
+  (`color_scheme`, `reduced_motion`, `forced_colors`, `media: print`);
+  `reset` removes them. It answers what the page now sees, measured in it
+  (size, pixel ratio, media queries). Firefox emulates the viewport and
+  pixel ratio through `browsingContext.setViewport`; its WebDriver BiDi has
+  no media or touch emulation yet, so those options fail there naming
+  them. Responsive and dark-mode checks needed raw protocol commands. (#9)
+
 - `cookies` and `web_storage` (Chrome and Firefox). `cookies` gets, sets
   and deletes cookies: those the page's URL (or `url`) would be sent, or
   those of a `domain`, optionally by `name` (Chrome `Network.*Cookie*`,

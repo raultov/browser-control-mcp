@@ -49,6 +49,7 @@ see the note.
 | `navigate` | ✓ | ✓ | |
 | `reload` | ✓ | ✓ | |
 | `scroll` | ✓ | ✓ | reports the window positions before and after |
+| `emulate` | ✓ | partial | `width`/`height`, `device_scale_factor`, `mobile` (touch), `color_scheme`, `reduced_motion`, `forced_colors`, `media` (`print`), `reset`; answers what the page now sees; Firefox: viewport and device pixel ratio only (BiDi has no media or touch emulation yet; those options fail naming them) |
 | `wait_for` | ✓ | ✓ | waits (checking every 100 ms, at most 30 s) until a visible text appears or is gone, a selector is `visible` / `hidden` / `attached` / `detached`, or the URL contains a text; a dialog or debugger pause ends the wait at once |
 | `inspect_dom` | ✓ | ✓ | includes open shadow roots and same-origin iframes (cross-origin ones are noted); at most 100 000 characters without `query` (cut in the page) |
 | `snapshot` | ✓ | ✓ | outline of the page: role, name, states, value and a ref (`e12`) per element, through open shadow roots and same-origin iframes; at most 50 000 characters (`selector` and `depth` narrow it); the same JavaScript on both browsers |

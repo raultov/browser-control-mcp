@@ -130,6 +130,7 @@ fn page_tools() -> Vec<ToolEntry> {
         click_element::ClickElementTool as Click, fill_input::FillInputTool as Fill,
     };
     use cdp_domains::input::{hover::HoverTool as Hover, press_key::PressKeyTool as Key};
+    use cdp_domains::page::emulate::EmulateTool as Emulate;
     use cdp_domains::page::handle_dialog::HandleDialogTool as Dialog;
     use cdp_domains::page::wait_for::WaitForTool as Wait;
     use cdp_domains::page::{
@@ -158,6 +159,7 @@ fn page_tools() -> Vec<ToolEntry> {
         entry!(Reload, Always, &[Navigation], ff::reload),
         entry!(Scroll, Always, &[Dom], ff::scroll),
         entry!(Wait, Always, &[Dom], ff::wait_for),
+        entry!(Emulate, Always, &[Dom], ff::emulate),
         entry!(Dialog, Always, &[Input], ff::handle_dialog),
     ]
 }
@@ -545,7 +547,7 @@ mod tests {
         handler.proxy.proxy_server = Some("http://p:1".into());
         handler.flags.enable_webmcp = true;
         let listed = names(listed_tools(&handler));
-        assert_eq!(listed.len(), 47);
+        assert_eq!(listed.len(), 48);
         assert!(listed.contains("restart_browser") && listed.contains("stop_browser"));
         assert!(!listed.contains("restart_chrome") && !listed.contains("stop_chrome"));
     }
@@ -668,11 +670,14 @@ mod tests {
     const ARGUMENT_NAMES: &[&str] = &[
         "active_tab_id",
         "click_count",
+        "color_scheme",
         "confirm_restart",
         "copy_cookies",
         "current_navigation_only",
+        "device_scale_factor",
         "disable_cache",
         "duration_ms",
+        "forced_colors",
         "full_page",
         "http_only",
         "include_details",
@@ -682,6 +687,7 @@ mod tests {
         "prewarm_url",
         "profile_dir",
         "prompt_text",
+        "reduced_motion",
         "resource_type",
         "same_site",
         "show_values",

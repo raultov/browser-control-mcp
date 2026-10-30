@@ -22,6 +22,7 @@ use crate::handler::cdp_domains::input::upload_file::UploadFileTool;
 use crate::handler::cdp_domains::log::get_console_logs::GetConsoleLogsTool;
 use crate::handler::cdp_domains::network::get_network_logs::{self, GetNetworkLogsTool};
 use crate::handler::cdp_domains::page::capture_screenshot::{self, CaptureScreenshotTool};
+use crate::handler::cdp_domains::page::emulate::EmulateTool;
 use crate::handler::cdp_domains::page::navigate::NavigateTool;
 use crate::handler::cdp_domains::page::scroll::ScrollTool;
 use crate::handler::cdp_domains::page::wait_for::WaitForTool;
@@ -209,6 +210,36 @@ pub(crate) async fn scroll(params: CallToolRequestParams, handler: &McpHandler) 
         args.reply(&outcome)
     })
     .await
+}
+
+/// `emulate`: the viewport and device pixel ratio through
+/// `browsingContext.setViewport` (Firefox 157 has no BiDi media or touch
+/// emulation: those options fail naming them).
+pub(crate) async fn emulate(params: CallToolRequestParams, handler: &McpHandler) -> ToolResult {
+    let args: EmulateTool = parse_args(params)?;
+    args.check_arguments()?;
+    let unsupported = args.chrome_only();
+    if !unsupported.is_empty() {
+        return Err(CallToolError::from_message(format!(
+            "{} not available on Firefox: WebDriver BiDi has no media or touch emulation yet (Firefox emulates width, height and device_scale_factor)",
+            unsupported.join(", ")
+        )));
+    }
+    let (_, _, tab) = target(handler, &ids(&args.instance_id, &args.tab_id)).await?;
+    let mut viewport = json!({"context": tab.tab.context_id()});
+    if args.resets() {
+        viewport["viewport"] = Value::Null;
+        viewport["devicePixelRatio"] = Value::Null;
+    }
+    if let (Some(width), Some(height)) = (args.width, args.height) {
+        viewport["viewport"] = json!({"width": width, "height": height});
+    }
+    if let Some(ratio) = args.device_scale_factor {
+        viewport["devicePixelRatio"] = json!(ratio);
+    }
+    page::command(&tab.tab, "browsingContext.setViewport", viewport).await?;
+    let seen = page::run_snippet(&tab.tab, EmulateTool::measure()).await?;
+    Ok(args.reply(&seen))
 }
 
 /// `wait_for`: the shared checks, the whole wait raced against a dialog

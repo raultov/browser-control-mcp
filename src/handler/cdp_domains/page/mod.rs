@@ -1,4 +1,5 @@
 pub mod capture_screenshot;
+pub mod emulate;
 pub mod handle_dialog;
 pub mod navigate;
 pub mod reload;

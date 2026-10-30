@@ -634,6 +634,37 @@ mod e2e {
         ]
     }
 
+    /// ISSUE-9: a phone-sized viewport at 2x, dark mode where the browser
+    /// can emulate it, then a reset.
+    fn emulate_steps(instance: &str, chrome: bool) -> Vec<Step> {
+        let i = json!(instance);
+        let dark = if chrome {
+            "\"color_scheme\": \"dark\""
+        } else {
+            "!color_scheme not available on Firefox"
+        };
+        vec![
+            (
+                "ISSUE-9 emulate a viewport",
+                "emulate",
+                json!({"instance_id": i, "width": 500, "height": 600, "device_scale_factor": 2.0}),
+                "\"width\": 500",
+            ),
+            (
+                "ISSUE-9 emulate dark mode",
+                "emulate",
+                json!({"instance_id": i, "color_scheme": "dark"}),
+                dark,
+            ),
+            (
+                "ISSUE-9 reset",
+                "emulate",
+                json!({"instance_id": i, "reset": true}),
+                "Emulation reset",
+            ),
+        ]
+    }
+
     /// Observation steps: console, network, screenshot, DOM.
     fn observation_steps(instance: &str) -> Vec<Step> {
         let i = json!(instance);
@@ -812,7 +843,7 @@ mod e2e {
     async fn smoke(browser: &str) {
         let base = serve().await;
         let mut mcp = Mcp::start(&[]).await;
-        mcp.list_tools(42).await;
+        mcp.list_tools(43).await;
         let all = [
             page_steps(browser, &base),
             tab_steps("e2e", &base),
@@ -824,6 +855,7 @@ mod e2e {
             upload_steps("e2e"),
             key_and_pointer_steps("e2e"),
             storage_steps("e2e"),
+            emulate_steps("e2e", browser == "chrome"),
             observation_steps("e2e"),
             websocket_steps("e2e", &base),
             debugger_steps("e2e", &base),
@@ -902,6 +934,7 @@ mod e2e {
             upload_steps("default"),
             key_and_pointer_steps("default"),
             storage_steps("default"),
+            emulate_steps("default", variable.contains("CHROME")),
             debugger_steps("default", &base),
         ];
         mcp.steps(all.concat()).await;
