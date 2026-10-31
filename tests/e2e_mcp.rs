@@ -31,6 +31,17 @@ mod e2e {
       const root = this.attachShadow({mode: 'open'}); root.innerHTML = '<button id="sb">shadow</button>';
       root.getElementById('sb').onclick = () => { window.__pierced = (window.__pierced || '') + 'shadow;'; }; } });</script>
     <input id="q" value="old"><div id="marker">needle-marker</div>
+    <div id="rich" contenteditable="true">old-rich</div>
+    <script>(() => { const ed = document.getElementById('rich'); let model = 'old-rich'; window.__rich = model;
+      const at = (node, off) => node === ed ? (off === 0 ? 0 : model.length) : off;
+      const render = caret => { ed.textContent = model; window.__rich = model; const r = document.createRange();
+        r.setStart(ed.firstChild || ed, ed.firstChild ? caret : 0); r.collapse(true); getSelection().removeAllRanges(); getSelection().addRange(r); };
+      ed.addEventListener('beforeinput', e => { e.preventDefault(); const r = getSelection().rangeCount ? getSelection().getRangeAt(0) : null;
+        let start = model.length, end = model.length;
+        if (r && ed.contains(r.startContainer)) { start = at(r.startContainer, r.startOffset); end = at(r.endContainer, r.endOffset); }
+        if (e.inputType.startsWith('delete') && start === end) start = Math.max(0, start - 1);
+        const data = e.inputType === 'insertText' ? (e.data || '') : '';
+        model = model.slice(0, start) + data + model.slice(end); render(start + data.length); }); })();</script>
     <button id="late" onclick="fetch('/api?late').then(r => r.text()).then(t => { document.getElementById('lateout').textContent = 'late:' + t; })">late</button><div id="lateout"></div>
     <table id="lay"><tr><td><a href="/lay">lay-link</a></td><td>lay-text</td></tr></table>
     <table id="dat"><tr><th>Name</th></tr><tr><td><a href="/dat">dat-link</a></td></tr><tr><td>dat-text <b>bold</b></td></tr></table>
@@ -514,6 +525,26 @@ mod e2e {
                 "snapshot",
                 scoped("#dat"),
                 "- cell \"dat-text bold\" [ref=",
+            ),
+        ]
+    }
+
+    /// ISSUE-23: fill_input replaces the content of a model-driven rich
+    /// text editor (its model, not only its DOM).
+    fn rich_editor_steps(instance: &str) -> Vec<Step> {
+        let i = json!(instance);
+        vec![
+            (
+                "ISSUE-23 fill_input in a rich text editor",
+                "fill_input",
+                json!({"instance_id": i, "selector": "#rich", "text": "rich-typed"}),
+                "Successfully",
+            ),
+            (
+                "ISSUE-23 the editor's model holds the text",
+                "evaluate_js",
+                json!({"instance_id": i, "expression": "window.__rich"}),
+                "\"value\": \"rich-typed\"",
             ),
         ]
     }
@@ -1081,6 +1112,7 @@ mod e2e {
             snapshot_steps("e2e"),
             table_steps("e2e"),
             settle_steps("e2e"),
+            rich_editor_steps("e2e"),
             form_steps("e2e"),
             secret_steps("e2e"),
             upload_steps("e2e"),
@@ -1166,6 +1198,7 @@ mod e2e {
             snapshot_steps("default"),
             table_steps("default"),
             settle_steps("default"),
+            rich_editor_steps("default"),
             form_steps("default"),
             upload_steps("default"),
             pdf_steps("default"),

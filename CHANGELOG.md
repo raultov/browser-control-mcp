@@ -10,6 +10,17 @@ from a copy of its code: entries describe the differences from that release.
 
 ## [Unreleased]
 
+### Fixed
+
+- `fill_input` and `fill_form` work in rich text editors (Slate, Lexical,
+  ProseMirror, Draft.js): a contenteditable element was emptied with
+  `textContent = ''`, which removed the nodes the editor renders from its
+  own model, so the typed text showed in the page but the editor did not
+  record it (Discord's channel topic was never saved), and the tool
+  reported success. The content is now selected and the first typed key
+  replaces it, as when a user selects all and types; an empty text deletes
+  it through the editing commands. (#23)
+
 ## [0.6.0-beta.9] - 2026-10-31
 
 Public **BETA**. Spends fewer tokens and answers what the agent needs, after

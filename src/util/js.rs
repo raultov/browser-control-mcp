@@ -225,9 +225,12 @@ pub fn file_names(selector: &str) -> String {
 const FILL_BEFORE: &str = "Symbol.for('browser-control-mcp.fill-before')";
 
 /// Readies the first element matching `selector` for `text` (`fill_input`).
-/// A text field or contenteditable element is focused and emptied (through
-/// the native `value` setter, which frameworks such as React observe), so
-/// the text typed next replaces its content; a `<select>` gets the option
+/// A text field is focused and emptied (through the native `value` setter,
+/// which frameworks such as React observe); a contenteditable element is
+/// focused and its contents selected, so the first typed key replaces them
+/// through `beforeinput` (rich text editors keep their own model, which
+/// removing their DOM nodes would leave behind), and an empty `text`
+/// deletes them through the editing commands; a `<select>` gets the option
 /// whose value or label is `text`. Returns `{status}`: `missing`,
 /// `not_editable` (with `reason`), `no_option` (with `options`), `selected`
 /// or `ready`. Checking focus matters: typing goes to whatever element has
@@ -263,8 +266,12 @@ const PREPARE_FILL: &str = "const W = el.ownerDocument.defaultView; \
         el[Symbol.for('browser-control-mcp.fill-before')] = el.value; \
         const value = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), 'value'); \
         if (value && value.set) { value.set.call(el, ''); } else { el.value = ''; } \
-    } else { el.textContent = ''; } \
-    el.dispatchEvent(new Event('input', { bubbles: true })); \
+        el.dispatchEvent(new Event('input', { bubbles: true })); \
+    } else { \
+        const doc = el.ownerDocument, range = doc.createRange(), selection = doc.getSelection(); \
+        range.selectNodeContents(el); selection.removeAllRanges(); selection.addRange(range); \
+        if (text === '' && el.textContent !== '') doc.execCommand('delete'); \
+    } \
     return { status: 'ready' };";
 
 /// What the element matching `selector` holds after `text` was typed:
@@ -281,7 +288,7 @@ pub fn fill_result(selector: &str, text: &str) -> String {
             "const text = {}; \
              const W = el.ownerDocument.defaultView; \
              const field = el instanceof W.HTMLInputElement || el instanceof W.HTMLTextAreaElement; \
-             const value = field ? el.value : el.textContent; \
+             const value = field ? el.value : el.textContent.replace(/\\uFEFF/g, '').replace(/\\u00A0/g, ' '); \
              if (field) {{ const before = el[{FILL_BEFORE}]; delete el[{FILL_BEFORE}]; \
                if (!el.ownerDocument.hasFocus() && value !== before) el.dispatchEvent(new Event('change', {{ bubbles: true }})); }} \
              return {{ status: 'done', matches: value === text, empty: value === '' }};",
@@ -652,6 +659,21 @@ mod tests {
 
     /// FIX-07 / AUD-IN-08: fill_input empties the field it focused, and
     /// the text reaches JavaScript as one string literal.
+    /// ISSUE-23: a contenteditable element is not emptied through its DOM
+    /// (rich text editors keep their own model of it): its contents are
+    /// selected so the first typed key replaces them, and an empty text
+    /// deletes them through the editing commands; the result is read
+    /// without the editors' zero-width placeholders.
+    #[test]
+    fn rich_text_editors_keep_their_model() {
+        let prepare = prepare_fill("#rich", "x");
+        assert!(!prepare.contains("el.textContent = ''"), "{prepare}");
+        assert!(prepare.contains("range.selectNodeContents(el)"), "{prepare}");
+        assert!(prepare.contains("execCommand('delete')"), "{prepare}");
+        let result = fill_result("#rich", "x");
+        assert!(result.contains("\\uFEFF"), "{result}");
+    }
+
     #[test]
     fn fill_input_replaces_value() {
         let text = r#"x"; window.__pwned = 1; ""#;
