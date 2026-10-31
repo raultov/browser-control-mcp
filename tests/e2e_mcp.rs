@@ -33,6 +33,8 @@ mod e2e {
     <input id="q" value="old"><div id="marker">needle-marker</div>
     <label style="position:relative;display:inline-block;width:60px;height:24px"><input type="checkbox" id="sw" style="position:absolute;left:0;top:0;width:60px;height:24px;margin:0"><span style="position:absolute;inset:0;background:#ccc"></span></label>
     <div style="position:relative;display:inline-block"><button id="covered">covered</button><div style="position:absolute;inset:0;background:#fff"></div></div>
+    <div id="card" style="cursor:pointer" onclick="window.__card = true"><a href="/card">card-link</a> <button id="card-btn">card-button</button></div>
+    <div id="plaincard" style="cursor:pointer" onclick="window.__plain = true">plain card text</div>
     <div id="rich" contenteditable="true">old-rich</div>
     <script>(() => { const ed = document.getElementById('rich'); let model = 'old-rich'; window.__rich = model;
       const at = (node, off) => node === ed ? (off === 0 ? 0 : model.length) : off;
@@ -527,6 +529,27 @@ mod e2e {
                 "snapshot",
                 scoped("#dat"),
                 "- cell \"dat-text bold\" [ref=",
+            ),
+        ]
+    }
+
+    /// ISSUE-25: a clickable container lists its links and buttons; a
+    /// clickable with text only stays one named line.
+    fn clickable_steps(instance: &str) -> Vec<Step> {
+        let i = json!(instance);
+        let scoped = |selector: &str| json!({"instance_id": i, "selector": selector});
+        vec![
+            (
+                "ISSUE-25 a clickable container lists its contents",
+                "snapshot",
+                scoped("#card"),
+                "\n  - link \"card-link\" [href=/card]",
+            ),
+            (
+                "ISSUE-25 a plain clickable stays one named line",
+                "snapshot",
+                scoped("#plaincard"),
+                "- clickable \"plain card text\" [ref=",
             ),
         ]
     }
@@ -1142,6 +1165,7 @@ mod e2e {
             settle_steps("e2e"),
             rich_editor_steps("e2e"),
             label_steps("e2e"),
+            clickable_steps("e2e"),
             form_steps("e2e"),
             secret_steps("e2e"),
             upload_steps("e2e"),
@@ -1229,6 +1253,7 @@ mod e2e {
             settle_steps("default"),
             rich_editor_steps("default"),
             label_steps("default"),
+            clickable_steps("default"),
             form_steps("default"),
             upload_steps("default"),
             pdf_steps("default"),

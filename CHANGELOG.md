@@ -12,6 +12,12 @@ from a copy of its code: entries describe the differences from that release.
 
 ### Fixed
 
+- `snapshot` and `find_in_snapshot` list what a clickable container holds:
+  an element without a role that has a click handler or a pointer cursor
+  was a leaf named from its whole text, so a container that sets
+  `cursor: pointer` hid every link and button inside it (Discord's whole
+  channel list was one line). A clickable that holds interactive elements
+  now lists them; one with text only is still one named line. (#25)
 - `click_element`, `hover` and `fill_form` click a control covered by its
   own label (or the element its `aria-labelledby` names), as styled
   checkboxes and switches are: they failed with "covered by 'span…'". An

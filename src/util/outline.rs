@@ -11,7 +11,9 @@
 //! a role are transparent; their text becomes `text:` lines. Layout tables
 //! (no headers, no role) are transparent too, and a cell is named by its
 //! content only when that content is plain text, folded into the name, so
-//! no text is printed twice.
+//! no text is printed twice. A `clickable` (a handler or a pointer cursor,
+//! no role) that holds interactive elements lists them instead of being a
+//! leaf named from its whole text.
 
 use super::js::{RESOLVE, string_literal};
 
@@ -110,6 +112,7 @@ const OUTLINE: &str = r#"const outline = (root, maxDepth, maxChars) => {
         size += line.length - lines[at].length - own.reduce((n, l) => n + l.length + 1, 0);
         lines.splice(at, lines.length - at, line);
     };
+    const INTERACTIVE = 'a[href], button, input, select, textarea, summary, [role], [onclick], [tabindex], [contenteditable]';
     const textOf = el => clean(el.innerText !== undefined ? el.innerText : el.textContent);
     const nameOf = (el, role) => {
         const root = el.getRootNode();
@@ -171,7 +174,8 @@ const OUTLINE: &str = r#"const outline = (root, maxDepth, maxChars) => {
             return;
         }
         flush();
-        const name = nameOf(el, role), value = valueOf(el, role), at = lines.length;
+        const holder = role === 'clickable' && !!el.querySelector(INTERACTIVE);
+        const name = nameOf(el, holder ? 'group' : role), value = valueOf(el, role), at = lines.length;
         const parts = [role];
         if (name) parts.push(JSON.stringify(cut(name, 100)));
         parts.push(...details(el, role), '[ref=' + refOf(el) + ']');
@@ -182,7 +186,7 @@ const OUTLINE: &str = r#"const outline = (root, maxDepth, maxChars) => {
             else if (depth < maxDepth) { walk(doc.body, depth + 1); flush(); }
             return;
         }
-        if (LEAF.has(role) || depth >= maxDepth) return;
+        if ((LEAF.has(role) && !holder) || depth >= maxDepth) return;
         walk(el, depth + 1);
         flush();
         if (NAMED_BY_TEXT.has(role) && !name) foldText(at, depth, role);
@@ -299,6 +303,18 @@ mod tests {
             OUTLINE.contains("const foldText"),
             "cells of plain text fold it into their name"
         );
+    }
+
+    /// ISSUE-25: a clickable that holds interactive elements is not a
+    /// leaf named from its whole text: its contents are listed.
+    #[test]
+    fn clickable_containers_list_their_contents() {
+        assert!(OUTLINE.contains("const INTERACTIVE = "), "{OUTLINE}");
+        assert!(
+            OUTLINE.contains("const holder = role === 'clickable' && "),
+            "{OUTLINE}"
+        );
+        assert!(OUTLINE.contains("(LEAF.has(role) && !holder)"), "{OUTLINE}");
     }
 
     /// ISSUE-4: the scope and the search reach JavaScript as one literal.
