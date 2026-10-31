@@ -8,17 +8,17 @@ use serde_json::Value;
 
 #[macros::mcp_tool(
     name = "snapshot",
-    description = "Outlines the page as the agent acts on it: one line per element with a role (button, link, textbox, combobox, checkbox, heading, list, iframe...), its accessible name, states ([checked], [disabled], [expanded=true], [level=2], [href=...]), its value and a ref ([ref=e12]), indented under its parent; other text appears as 'text:' lines. Follows open shadow roots and same-origin iframes and leaves hidden elements out. Roles and names are computed in the page (an approximation of the browser's accessibility tree, the same on Chrome and Firefox); password values are never shown. Side effects: none (read-only). Prerequisites: requires an active tab with loaded DOM. Returns: a first line with the URL and title, then the outline, at most 50000 characters (a longer one ends with a note). Pass a ref as the 'selector' of click_element, fill_input, scroll or wait_for instead of writing a CSS selector; an element keeps its ref in later snapshots while it is in the page, and refs end when the page navigates. Use this to see what a page offers and act on it. Alternatives: 'find_in_snapshot' to search a large page's outline cheaply, 'inspect_dom' for the HTML."
+    description = "Outlines the page for acting on it: one line per element with a role (button, link, textbox, heading...), its name, states, value and a ref ([ref=e12]), indented under its parent; through open shadow roots and same-origin iframes, hidden elements left out, password values never shown; at most 50000 characters. Pass a ref as the selector of the input tools; refs last until the page navigates. Computed in the page, the same on Chrome and Firefox."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct SnapshotTool {
-    /// Chrome instance id from open_instance/list_instances. Omit for the default instance.
+    /// Instance id; omit for the default instance.
     pub instance_id: Option<String>,
-    /// The Tab ID of the target tab. Omit to use the active tab.
+    /// Tab id; omit for the active tab.
     pub tab_id: Option<String>,
-    /// Outline only this element and its subtree: a CSS selector ('host >>> inner' pierces shadow roots and iframes) or a ref from an earlier snapshot. Defaults to: the whole page.
+    /// Outline only this element (CSS, 'host >>> inner' or a ref). Default: the whole page.
     pub selector: Option<String>,
-    /// Most levels of nesting to outline (0 = only the top level). Defaults to: no limit.
+    /// Most nesting levels (0 = the top level only). Default: no limit.
     pub depth: Option<u32>,
 }
 

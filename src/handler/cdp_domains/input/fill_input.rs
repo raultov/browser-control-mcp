@@ -8,17 +8,17 @@ use serde_json::{Value, json};
 
 #[macros::mcp_tool(
     name = "fill_input",
-    description = "Focuses an input field via CSS selector, clears it and inserts text using native input simulation, so the text replaces the previous content; types it key by key (the page's keydown/keyup handlers run and may cancel a key, as for a user; newlines and tabs are inserted as text) and fires input events; 'change' fires when the field loses focus, as for a user, or at the end of the fill when the browser window has no focus (it would never come then). Typing takes about 1 ms per character: for very long text set the value with 'evaluate_js'. For a <select>, picks the option whose value or label equals the text. Side effects: replaces the DOM input value; triggers input event handlers. Prerequisites: element must exist, be visible, and be an input/textarea or contenteditable element; a disabled, read-only, non-text or unfocusable element fails without typing anything, and so does a field left empty after typing (it rejected the text). Returns: success confirmation, with a note when the field holds something other than the text (a mask or maxlength reformatted it). Use this to populate form fields, search boxes, text areas, selects. Alternatives: 'evaluate_js' for direct value assignment without events, 'click_element' to focus manually."
+    description = "Replaces the content of a text field, textarea or contenteditable element by typing key by key (the page's key handlers run; about 1 ms per character), or picks the <select> option whose value or label is the text. Fails without typing on disabled, read-only, non-text or unfocusable elements, and when the field rejects the text; notes when the page reformatted it."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct FillInputTool {
-    /// Chrome instance id from open_instance/list_instances. Omit for the default instance.
+    /// Instance id; omit for the default instance.
     pub instance_id: Option<String>,
-    /// The Tab ID of the target tab. Omit to use the active tab.
+    /// Tab id; omit for the active tab.
     pub tab_id: Option<String>,
-    /// CSS selector identifying the input element. Constraints: valid CSS selector matching an input/textarea/contenteditable element or a select; 'host >>> inner' matches 'inner' inside the open shadow root of 'host' or inside the same-origin iframe 'host' (chainable); a ref from 'snapshot' (e.g. 'e12') names its element. Interactions: element must be focusable and writable. Defaults to: None (required).
+    /// Element: CSS selector, 'host >>> inner' (inside an open shadow root or same-origin iframe), or a snapshot ref (e12).
     pub selector: String,
-    /// Text content to insert, or the value or label of the option to pick in a select. Constraints: any string (special chars escaped automatically). Interactions: replaces any existing text after focus; fires input events. Defaults to: None (required).
+    /// Text to type, or the value or label of the option of a `<select>`.
     pub text: String,
 }
 

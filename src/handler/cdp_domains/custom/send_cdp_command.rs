@@ -38,17 +38,17 @@ const NOTED: &[(&str, &str)] = &[(
 
 #[macros::mcp_tool(
     name = "send_cdp_command",
-    description = "EXPERIMENTAL: Sends raw Chrome DevTools Protocol (CDP) commands to the browser for advanced use cases not covered by specialized tools. Side effects: depends on command; may modify page state, DOM, or trigger navigation. Auth requirements: subject to local-only restrictions if enabled (Page.navigate and Target.createTarget checked). Refuses commands that would silently stop what the server captures or close the browser: Network.disable, Page.disable, Runtime.disable, Log.disable, Debugger.disable, Browser.close. Fetch.enable comes with a note: requests then pause until answered. Prerequisites: requires knowledge of CDP protocol; active Chrome connection. Returns: raw CDP command response as JSON. Use this only when specialized tools inadequate. Alternatives: use domain-specific tools (navigate, click_element, evaluate_js). Chrome only (not available on Firefox)."
+    description = "Sends a raw Chrome DevTools Protocol command and returns Chrome's reply. Refuses Network/Page/Runtime/Log/Debugger.disable and Browser.close (they would break what the server captures); Fetch.enable comes with a note (requests then wait for an answer). With --local, Page.navigate and Target.createTarget URLs are checked. Chrome only (not available on Firefox)."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct SendCdpCommandTool {
-    /// Chrome instance id from open_instance/list_instances. Omit for the default instance.
+    /// Instance id; omit for the default instance.
     pub instance_id: Option<String>,
-    /// The Tab ID of the target tab. Omit to use the active tab.
+    /// Tab id; omit for the active tab.
     pub tab_id: Option<String>,
-    /// CDP protocol method name (e.g., 'DOM.getDocument', 'Runtime.evaluate'). Constraints: valid CDP domain.method format. Interactions: method must be recognized by Chrome protocol version.
+    /// e.g. 'DOM.getDocument'.
     pub method: String,
-    /// JSON-formatted parameters for the CDP command. Constraints: valid JSON object string. Interactions: Page.navigate and Target.createTarget URLs subject to local-only restrictions; empty string or '{}' for no parameters. Defaults to: None.
+    /// JSON object as a string. Default: '{}'.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub params: Option<String>,
 }

@@ -6,11 +6,11 @@ use rust_mcp_sdk::{
 
 #[macros::mcp_tool(
     name = "close_instance",
-    description = "Closes and stops the specified Chrome instance by id. Side effects: destructive - for secondary instances the Chrome process is terminated and the instance is fully removed from the registry; for 'default' the process is stopped but the registry entry is kept and the instance is re-created lazily on the next tool call. Returns: structured JSON with the instance_id and whether it was removed from the registry. Use this to free resources used by sessions created with 'open_instance'. Alternatives: 'stop_browser' to stop an instance, 'close_tab' to close a single tab."
+    description = "Stops an instance: other instances are removed; 'default' is stopped and relaunched on its next use."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct CloseInstanceTool {
-    /// The instance id to close. The 'default' instance cannot be removed: it is stopped and kept (re-created lazily on next use); all other instances are fully removed.
+    /// Instance id; omit for the default instance.
     pub instance_id: String,
 }
 

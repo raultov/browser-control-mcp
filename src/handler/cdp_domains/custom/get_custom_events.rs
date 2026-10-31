@@ -6,21 +6,21 @@ use rust_mcp_sdk::{
 
 #[macros::mcp_tool(
     name = "get_custom_events",
-    description = "EXPERIMENTAL: Retrieves unhandled CDP events from domains not covered by specialized listeners (network, console, etc.). Side effects: with 'clear' true the returned events are removed from the buffer. Prerequisites: requires active Chrome connection with send_cdp_command or custom domain listeners active. Returns: JSON {events: [{method, params, timestamp}] (the newest 'limit' matching events, oldest first), total (matching events), truncated (more matched than 'limit')}. Use this to see Target, Debugger, or other domain events. Alternatives: domain-specific listeners (get_network_logs, get_console_logs)."
+    description = "Returns events of the protocol domains or modules the agent enabled (with 'send_cdp_command' or 'send_bidi_command') that no other tool captures: {events, total, truncated}, newest last."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct GetCustomEventsTool {
-    /// Chrome instance id from open_instance/list_instances. Omit for the default instance.
+    /// Instance id; omit for the default instance.
     pub instance_id: Option<String>,
-    /// The Tab ID of the target tab. Omit to use the active tab.
+    /// Tab id; omit for the active tab.
     pub tab_id: Option<String>,
-    /// Filter events by CDP method name (case-sensitive). Constraints: string matching format 'Domain.eventName'. Interactions: when omitted, returns all events. Defaults to: None (no filtering).
+    /// Event method, e.g. 'Target.targetCreated'.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub filter_method: Option<String>,
-    /// Maximum number of events to return, the newest ones. Constraints: positive integer (0 = unlimited, clamped to cache size). Interactions: limits result set size. Defaults to: 100.
+    /// Newest events to return (0 = all). Default: 100.
     #[serde(default = "default_limit")]
     pub limit: u32,
-    /// Remove the returned events from the buffer, so the next call only sees new ones. Defaults to: false.
+    /// Remove the returned events. Default: false.
     #[serde(default)]
     pub clear: Option<bool>,
 }

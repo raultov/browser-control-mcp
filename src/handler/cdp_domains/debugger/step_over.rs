@@ -7,13 +7,13 @@ use rust_mcp_sdk::{
 
 #[macros::mcp_tool(
     name = "step_over",
-    description = "Executes the current line of code without entering function calls, pausing at the next line. Side effects: advances debugger execution state. Prerequisites: requires an active, paused debugger session. Returns: JSON {paused, location: {url, line_number, column_number} (0-based) | null} where the thread stopped next (waits up to 2 s). Use this to skip function internals during debugging. Alternatives: use 'resume' to continue full execution, or 'evaluate_on_call_frame' to inspect state without stepping."
+    description = "Runs the paused line, stepping over calls. Returns {paused, location: {url, line_number, column_number} | null} (0-based), waiting up to 2 s for the next pause."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct StepOverTool {
-    /// Chrome instance id from open_instance/list_instances. Omit for the default instance.
+    /// Instance id; omit for the default instance.
     pub instance_id: Option<String>,
-    /// The Tab ID of the target tab. Omit to use the active tab.
+    /// Tab id; omit for the active tab.
     pub tab_id: Option<String>,
 }
 

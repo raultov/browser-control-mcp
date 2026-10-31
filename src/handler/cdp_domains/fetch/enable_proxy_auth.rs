@@ -12,24 +12,24 @@ use tokio_stream::StreamExt;
 
 #[macros::mcp_tool(
     name = "enable_proxy_auth",
-    description = "Activates proxy authentication interception via Fetch domain, supplying credentials for authenticated proxies. Side effects: starts background event listener that auto-terminates after 30s inactivity; initiates pre-warming navigation. Auth requirements: username and password credentials required. Prerequisites: Chrome must be started with proxy-server flag. Rate limits: 30-second timeout per inactivity period. A request whose proxy rejects the credentials twice is cancelled (it fails) instead of retried forever; call again with the right credentials. Returns: confirmation of proxy auth activation. Use this after 'restart_browser' with proxy settings. Alternatives: manual proxy configuration in system settings."
+    description = "Answers proxy (407) authentication challenges with the given credentials (default: the server's --proxy-username/--proxy-password), then loads prewarm_url to trigger them. A request whose proxy rejects the credentials twice fails. Stops after 30 s without challenges."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct EnableProxyAuthTool {
-    /// Chrome instance id from open_instance/list_instances. Omit for the default instance.
+    /// Instance id; omit for the default instance.
     pub instance_id: Option<String>,
-    /// The Tab ID of the target tab. Omit to use the active tab.
+    /// Tab id; omit for the active tab.
     pub tab_id: Option<String>,
-    /// Proxy authentication username. Constraints: non-empty string. If omitted, uses the --proxy-username set at startup.
+    /// Default: --proxy-username.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub username: Option<String>,
-    /// Proxy authentication password. Constraints: non-empty string. If omitted, uses the --proxy-password set at startup.
+    /// Default: --proxy-password.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub password: Option<String>,
-    /// Resource type to intercept. Constraints: 'Document', 'Image', 'Script', 'XHR', etc. (Chrome CDP resource types). Interactions: filters which request types trigger auth handling. Defaults to: "Document".
+    /// CDP resource type to intercept. Default: 'Document'.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resource_type: Option<String>,
-    /// URL to navigate for proxy pre-warming. Constraints: valid URL (http/https). Interactions: navigated after auth setup to trigger proxy auth flow. Defaults to: `"http://api.ipify.org?format=json"`.
+    /// URL loaded to trigger the challenge. Default: `http://api.ipify.org?format=json`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prewarm_url: Option<String>,
 }

@@ -109,6 +109,7 @@ fn build_handler(args: Args) -> McpHandler {
         proxy: args.proxy,
         firefox: args.firefox,
         upload: args.upload,
+        tools: args.tools,
     });
     handler
         .registry

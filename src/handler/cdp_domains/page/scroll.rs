@@ -7,21 +7,21 @@ use serde_json::{Value, json};
 
 #[macros::mcp_tool(
     name = "scroll",
-    description = "Scrolls the page by pixel offset, viewport pages, or to a specific element using CSS selector. Side effects: modifies DOM scroll position (observable but reversible). Prerequisites: requires an active tab with content. Returns: a first line ('Successfully scrolled.', or why the window did not move) and JSON {before: {x, y}, after: {x, y}, element_in_view (selector only)} with the window scroll positions in CSS pixels; pixel and page scrolls move the window, so on pages that scroll an inner element pass a 'selector' inside it. Use this to navigate within long pages or bring elements into view. Alternatives: 'click_element' to trigger scroll by clicking, 'evaluate_js' for custom scroll logic."
+    description = "Scrolls the window by x/y pixels or by viewport heights ('pages'), or brings 'selector' into view. Returns the window positions {before, after, element_in_view?} and says when nothing moved (on a page that scrolls an inner element, pass a 'selector' inside it)."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct ScrollTool {
-    /// Chrome instance id from open_instance/list_instances. Omit for the default instance.
+    /// Instance id; omit for the default instance.
     pub instance_id: Option<String>,
-    /// The Tab ID of the target tab. Omit to use the active tab.
+    /// Tab id; omit for the active tab.
     pub tab_id: Option<String>,
-    /// Horizontal scroll distance in pixels. Constraints: integer (positive=right, negative=left). Interactions: ignored if 'selector' is provided; combined with 'y' or 'pages' for diagonal scrolling. Defaults to: 0 (no horizontal scroll).
+    /// Horizontal pixels (negative = left).
     pub x: Option<i32>,
-    /// Vertical scroll distance in pixels. Constraints: integer (positive=down, negative=up). Interactions: ignored if 'selector' or 'pages' is provided; overridden by 'pages'. Defaults to: 0 (no vertical scroll).
+    /// Vertical pixels (negative = up); ignored with 'pages'.
     pub y: Option<i32>,
-    /// Number of viewport heights to scroll vertically. Constraints: float (e.g., 1.5 = 1.5× viewport height; negative scrolls up). Interactions: takes precedence over 'y' parameter if both provided; ignored if 'selector' provided. Defaults to: None.
+    /// Viewport heights to scroll (e.g. 1.5; negative = up).
     pub pages: Option<f64>,
-    /// CSS selector of element to scroll into view. Constraints: valid CSS selector string; 'host >>> inner' matches 'inner' inside the open shadow root of 'host' or inside the same-origin iframe 'host' (chainable); a ref from 'snapshot' (e.g. 'e12') names its element. Interactions: takes precedence over 'x', 'y', 'pages' if provided; fails if element not found or not visible. Defaults to: None.
+    /// Element to bring into view (CSS, 'host >>> inner' or a snapshot ref); overrides x, y and pages.
     pub selector: Option<String>,
 }
 

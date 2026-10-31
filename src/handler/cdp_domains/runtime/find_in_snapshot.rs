@@ -8,17 +8,17 @@ use serde_json::Value;
 
 #[macros::mcp_tool(
     name = "find_in_snapshot",
-    description = "Searches the page's 'snapshot' outline (the whole page, never cut) and returns only the matching lines, each under its ancestors, with their refs: cheaper than a full snapshot on a large page when you need one element. Give 'text' (case-insensitive) or 'regex' (JavaScript syntax, case-sensitive), matched against each line ('button \"Buy now\" [ref=e12]'). Side effects: none (read-only); the elements get the same refs as in 'snapshot'. Prerequisites: requires an active tab with loaded DOM. Returns: a first line with the number of matches (at most 20 shown) and the URL, then the lines ('- …' marks skipped ones); no match is not an error. Pass a ref as the 'selector' of click_element, fill_input, scroll or wait_for. Alternatives: 'snapshot' for the whole outline, 'inspect_dom' with 'query' to search the HTML."
+    description = "Searches the whole 'snapshot' outline (never cut) and returns only the matching lines under their ancestors, with their refs (at most 20 matches). Cheaper than 'snapshot' on a large page."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct FindInSnapshotTool {
-    /// Chrome instance id from open_instance/list_instances. Omit for the default instance.
+    /// Instance id; omit for the default instance.
     pub instance_id: Option<String>,
-    /// The Tab ID of the target tab. Omit to use the active tab.
+    /// Tab id; omit for the active tab.
     pub tab_id: Option<String>,
-    /// Text to find in the outline's lines, case-insensitive. Give this or 'regex'.
+    /// Text to find in the lines, case-insensitive. Give this or 'regex'.
     pub text: Option<String>,
-    /// JavaScript regular expression to match the outline's lines with, case-sensitive (for a case-insensitive search use 'text'). Give this or 'text'.
+    /// JavaScript regular expression, case-sensitive. Give this or 'text'.
     pub regex: Option<String>,
 }
 

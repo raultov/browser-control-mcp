@@ -6,15 +6,15 @@ use rust_mcp_sdk::{
 
 #[macros::mcp_tool(
     name = "open_tab",
-    description = "Opens a new tab in the specified Chrome instance. Side effects: creates a browser tab and registers it under a generated Tab ID; the tab stays open until closed with 'close_tab'. Prerequisites: none - the instance is launched lazily if not running yet. Returns: structured JSON with 'tab_id' (use it as the 'tab_id' argument of other tools), 'target_id' (raw CDP target id), 'url' (final URL once the page fired `load`, at most 30 s) and 'label'. A network error fails the call and names the tab, which stays open. Use this to work with several pages in parallel while keeping their CDP state isolated per tab. Alternatives: 'navigate' to load content in the active tab, 'list_tabs' to enumerate already open tabs."
+    description = "Opens a tab (launching the instance if needed) and waits for 'url' to load. Returns {tab_id, target_id, url, label}; a network error fails naming the tab, which stays open."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct OpenTabTool {
-    /// Chrome instance id from open_instance/list_instances. Omit for the default instance.
+    /// Instance id; omit for the default instance.
     pub instance_id: Option<String>,
-    /// Target URL to navigate to in the new tab. Defaults to 'about:blank'.
+    /// URL to load. Default: about:blank.
     pub url: Option<String>,
-    /// Optional unique label to identify the tab. Rejected if another tab in this instance already uses it.
+    /// Unique label for the tab.
     pub label: Option<String>,
 }
 

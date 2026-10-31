@@ -6,11 +6,11 @@ use rust_mcp_sdk::{
 
 #[macros::mcp_tool(
     name = "list_tabs",
-    description = "Lists all tabs currently open and registered in the specified Chrome instance. Side effects: none (read-only registry snapshot). Returns: structured JSON with 'active_tab_id', the current tab targeted by tools that omit 'tab_id', and a 'tabs' array of tab_id, label, target_id and url. When no tabs are registered, tools fall back to the instance's default single-tab connection and a 'note' explains it. Use this to discover Tab IDs before passing 'tab_id' to other tools. Alternatives: 'list_instances' to enumerate Chrome instances."
+    description = "Lists the instance's tabs: {active_tab_id, tabs: [{tab_id, label, target_id, url}]}."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct ListTabsTool {
-    /// Chrome instance id from open_instance/list_instances. Omit for the default instance.
+    /// Instance id; omit for the default instance.
     pub instance_id: Option<String>,
 }
 

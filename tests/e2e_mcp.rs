@@ -842,7 +842,8 @@ mod e2e {
     /// Steps 1–15 in launched mode.
     async fn smoke(browser: &str) {
         let base = serve().await;
-        let mut mcp = Mcp::start(&[]).await;
+        // Every opt-in tool group: the suite drives them all.
+        let mut mcp = Mcp::start(&["--tool-groups", "all"]).await;
         mcp.list_tools(43).await;
         let all = [
             page_steps(browser, &base),
@@ -921,7 +922,8 @@ mod e2e {
             println!("SKIP attach suite ({variable} not set)");
             return;
         };
-        let args: Vec<&str> = args.split_whitespace().collect();
+        let mut args: Vec<&str> = args.split_whitespace().collect();
+        args.extend(["--tool-groups", "all"]);
         let base = serve().await;
         let mut mcp = Mcp::start(&args).await;
         let all = [

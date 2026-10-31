@@ -7,25 +7,25 @@ use rust_mcp_sdk::{
 
 #[macros::mcp_tool(
     name = "restart_browser",
-    description = "Stops and restarts the Chrome instance selected by 'instance_id' (the default instance when omitted) with remote debugging enabled, optionally configuring proxy and opt-in capability presets. Side effects: destructive - terminates that instance's Chrome process and all its open tabs; closes its debugging connection; other instances keep running. Prerequisites: requires CHROME_PATH environment variable or chrome in PATH. Returns: restart success confirmation listing the presets applied. An instance attached to a Chrome that was already running on its port (not launched by this server) is not restarted: the call fails saying so. Use this to reset browser state, apply proxy settings, enable experimental browser capabilities, recover from crashes. Alternatives: 'reload' to refresh page without restart, 'navigate' to load new content. Parameters: 'features' accepts a closed set - 'WEBGL_SOFTWARE' (forces SwiftShader software WebGL for GPU-less environments); arbitrary Chrome flags are not accepted."
+    description = "Restarts an instance's browser (closing its tabs), optionally with another proxy or presets ('features': WEBGL_SOFTWARE = software WebGL for GPU-less hosts). A browser the server attached to (not launched) is not restarted: the call fails saying so."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct RestartChromeTool {
-    /// Chrome instance id from open_instance/list_instances. Omit for the default instance.
+    /// Instance id; omit for the default instance.
     pub instance_id: Option<String>,
-    /// Proxy server URL (e.g., `http://proxy.example.com:8080`). Constraints: valid proxy URL with protocol and port. Interactions: applied to new Chrome instance without any credentials written in it; requires 'enable_proxy_auth' for authenticated proxies. Defaults to: the instance's current proxy (from open_instance or the previous restart), else the server's --proxy-server.
+    /// Proxy URL; credentials go to enable_proxy_auth. Default: the instance's current proxy.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub proxy_server: Option<String>,
 
-    /// Chrome capability presets to enable on the new instance. Constraints: closed set - 'WEBGL_SOFTWARE' forces SwiftShader software WebGL for GPU-less environments. Arbitrary Chrome flags are not accepted. Interactions: presets apply only to the instance started by this call and are cleared by a later restart that omits them. Defaults to: [] (no presets).
+    /// Presets for the new process: WEBGL_SOFTWARE (software WebGL). Default: none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub features: Option<Vec<ChromeFeature>>,
 
-    /// Optional flag to copy cookies from the user's real Chrome installation into this instance's isolated profile. Requires server running with --allow-cookie-import.
+    /// Import cookies from the user's Chrome profile (needs --allow-cookie-import; Chrome only).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub copy_cookies: Option<bool>,
 
-    /// Optional source profile name to copy cookies from (e.g. 'Default', 'Profile 1'). Defaults to the last used profile.
+    /// Chrome profile to import cookies from (e.g. 'Profile 1'). Default: the last used.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_profile: Option<String>,
 }

@@ -29,6 +29,25 @@ life: start the server with `--browser firefox`, or pass
 `"browser": "firefox"` to `open_instance`. If Chrome is not installed but Firefox
 is, the launch error says so and tells the agent to ask you before switching.
 
+## Tool groups
+
+Every tool listed costs the agent context on every turn, so niche and risky
+tools are off by default and listed only with `--tool-groups`:
+
+| Group | Tools | Why it is opt-in |
+| --- | --- | --- |
+| `storage` | `cookies`, `web_storage` | reads and changes session tokens |
+| `files` | `upload_file` | hands a page files of the machine |
+| `raw` | `send_cdp_command`, `send_bidi_command`, `send_rdp_request`, `get_custom_events` | anything the protocol allows |
+| `perf` | `get_performance_metrics`, `profile_page_performance` | niche |
+| `emulation` | `emulate` | niche |
+
+`--tool-groups all` lists every group. The page, input, observation and
+debugger tools are always listed (33 tools), plus `enable_proxy_auth` with
+`--proxy-server` and the WebMCP tools with `--enable-webmcp`. A tool of a
+group that is off fails naming the flag. The list is fixed for the server's
+life: it never changes during a session, so clients can cache it.
+
 ## Feature matrix
 
 ✓ supported, ✗ not available (the tool answers a capability error naming the
@@ -49,7 +68,7 @@ see the note.
 | `navigate` | ✓ | ✓ | |
 | `reload` | ✓ | ✓ | |
 | `scroll` | ✓ | ✓ | reports the window positions before and after |
-| `emulate` | ✓ | partial | `width`/`height`, `device_scale_factor`, `mobile` (touch), `color_scheme`, `reduced_motion`, `forced_colors`, `media` (`print`), `reset`; answers what the page now sees; Firefox: viewport and device pixel ratio only (BiDi has no media or touch emulation yet; those options fail naming them) |
+| `emulate` | ✓ | partial | `emulation` group; `width`/`height`, `device_scale_factor`, `mobile` (touch), `color_scheme`, `reduced_motion`, `forced_colors`, `media` (`print`), `reset`; answers what the page now sees; Firefox: viewport and device pixel ratio only (BiDi has no media or touch emulation yet; those options fail naming them) |
 | `wait_for` | ✓ | ✓ | waits (checking every 100 ms, at most 30 s) until a visible text appears or is gone, a selector is `visible` / `hidden` / `attached` / `detached`, or the URL contains a text; a dialog or debugger pause ends the wait at once |
 | `inspect_dom` | ✓ | ✓ | includes open shadow roots and same-origin iframes (cross-origin ones are noted); at most 100 000 characters without `query` (cut in the page) |
 | `snapshot` | ✓ | ✓ | outline of the page: role, name, states, value and a ref (`e12`) per element, through open shadow roots and same-origin iframes; at most 50 000 characters (`selector` and `depth` narrow it); the same JavaScript on both browsers |
@@ -60,16 +79,16 @@ see the note.
 | `press_key` | ✓ | ✓ | one key (a character, Enter, Tab, Escape, arrows, F1–F12...) with Control / Shift / Alt / Meta held, in `selector` (focused first) or the focused element; a shortcut types nothing |
 | `hover` | ✓ | ✓ | moves the mouse over the element (scrolled into view; fails when hidden or covered) |
 | `fill_form` | ✓ | ✓ | several fields in one call: text and `<select>` as `fill_input`, a checkbox or radio takes `true`/`false` and is clicked only when its state differs; stops at the first failing field naming what was done; never echoes values |
-| `upload_file` | ✓ | ✓ | sets the files of an `<input type=file>` (Chrome `DOM.setFileInputFiles`, Firefox `input.setFiles`); files must be under the upload roots (`--upload-root`, default the working and temp directories) |
+| `upload_file` | ✓ | ✓ | `files` group; sets the files of an `<input type=file>` (Chrome `DOM.setFileInputFiles`, Firefox `input.setFiles`); files must be under the upload roots (`--upload-root`, default the working and temp directories) |
 | `handle_dialog` | ✓ | ✓ | accepts or dismisses the open `alert` / `confirm` / `prompt` / `beforeunload` dialog |
 | `evaluate_js` | ✓ | ✓ | `value` at most 100 000 characters (`truncated: true`); Chrome stops a script after 8 s, Firefox cannot (a looping tab is closed with `close_tab`) |
-| `cookies` | ✓ | ✓ | `get` / `set` / `delete`: the cookies sent to the page (or `url`) or of a `domain`; values hidden unless `show_values: true` (Chrome `Network.*Cookie*`, Firefox BiDi `storage.*` in the tab's partition) |
-| `web_storage` | ✓ | ✓ | `get` / `set` / `delete` / `clear` on the page's `localStorage` or `sessionStorage`; values hidden unless `show_values: true` |
+| `cookies` | ✓ | ✓ | `storage` group; `get` / `set` / `delete`: the cookies sent to the page (or `url`) or of a `domain`; values hidden unless `show_values: true` (Chrome `Network.*Cookie*`, Firefox BiDi `storage.*` in the tab's partition) |
+| `web_storage` | ✓ | ✓ | `storage` group; `get` / `set` / `delete` / `clear` on the page's `localStorage` or `sessionStorage`; values hidden unless `show_values: true` |
 | `get_console_logs` | ✓ | ✓ | a message keeps at most 10 000 characters; Firefox: page errors, CSS warnings and platform messages need the debugger port |
 | `get_network_logs` | ✓ | ✓ | a failed request has `error`, a binary body `response_body_encoding: "base64"`; bodies at most 64 000 characters, none over 2 MB; a WebSocket payload keeps 64 000 (`payload_len` is the whole); Firefox: WebSocket frames need the debugger port |
-| `get_custom_events` | ✓ | partial | `{events, total, truncated}`, the newest `limit` events; `clear` removes the returned ones; params over 64 000 characters of JSON are replaced by `{truncated, characters}`; Firefox: events of the modules subscribed with `send_bidi_command` |
-| `get_performance_metrics` | ✓ | partial | Firefox: `Nodes`, `Frames`, `Resources`, `TransferSize` from the Web Performance APIs (no Performance domain), plus a note |
-| `profile_page_performance` | ✓ | partial | Firefox: FCP, LCP, DCL and Load from the Web Performance APIs; no trace, so `total_blocking_time_ms` and `top_long_tasks` are `null` |
+| `get_custom_events` | ✓ | partial | `raw` group; `{events, total, truncated}`, the newest `limit` events; `clear` removes the returned ones; params over 64 000 characters of JSON are replaced by `{truncated, characters}`; Firefox: events of the modules subscribed with `send_bidi_command` |
+| `get_performance_metrics` | ✓ | partial | `perf` group; Firefox: `Nodes`, `Frames`, `Resources`, `TransferSize` from the Web Performance APIs (no Performance domain), plus a note |
+| `profile_page_performance` | ✓ | partial | `perf` group; Firefox: FCP, LCP, DCL and Load from the Web Performance APIs; no trace, so `total_blocking_time_ms` and `top_long_tasks` are `null` |
 | `set_breakpoint` | ✓ | partial | Firefox: by URL only (no `script_id` / `script_hash`) |
 | `remove_breakpoint` | ✓ | ✓ | |
 | `resume` | ✓ | ✓ | |
@@ -78,9 +97,9 @@ see the note.
 | `search_scripts` | ✓ | ✓ | a long line's preview is 100 characters on each side of the match |
 | `pause_on_load` | ✓ | ✗ | TODO on Firefox, see [Limitations and TODO](#limitations-and-todo) |
 | `enable_proxy_auth` | ✓ | partial | needs `--proxy-server`; a request the proxy rejects twice is cancelled; untested on Firefox against a real proxy |
-| `send_cdp_command` | ✓ | ✗ | raw Chrome DevTools Protocol; refuses `Network`/`Page`/`Runtime`/`Log`/`Debugger.disable` and `Browser.close`; `Fetch.enable` comes with a note |
-| `send_bidi_command` | ✗ | ✓ | raw WebDriver BiDi; refuses `session.new`, `session.end`, `browser.close` |
-| `send_rdp_request` | ✗ | ✓ | raw Firefox RDP request to an actor (`thread`, `console`, `root` shortcuts) |
+| `send_cdp_command` | ✓ | ✗ | `raw` group; raw Chrome DevTools Protocol; refuses `Network`/`Page`/`Runtime`/`Log`/`Debugger.disable` and `Browser.close`; `Fetch.enable` comes with a note |
+| `send_bidi_command` | ✗ | ✓ | `raw` group; raw WebDriver BiDi; refuses `session.new`, `session.end`, `browser.close` |
+| `send_rdp_request` | ✗ | ✓ | `raw` group; raw Firefox RDP request to an actor (`thread`, `console`, `root` shortcuts) |
 | `webmcp_list_tools` | ✓ | ✗ | needs `--enable-webmcp`; WebMCP is a Chrome testing feature; every annotation Chrome reports is listed (`readOnly`, `consequential`, `untrustedContent`, `debugging`, `autosubmit`, newer ones as they are) |
 | `webmcp_invoke_tool` | ✓ | ✗ | needs `--enable-webmcp`; the output of an `untrustedContent` tool comes with a note to treat it as data |
 | `webmcp_get_invocation` | ✓ | ✗ | needs `--enable-webmcp` |
@@ -360,6 +379,7 @@ claude mcp add browser-control-mcp -- npx -y @raultov/browser-control-mcp
 | `--enable-automation` | off | shows the automation infobar | ignored; `list_instances` shows a warning |
 | `--user-profile` | off | your default profile (no `--user-data-dir`) | only with `--firefox-port` (attach to your running Firefox) |
 | `--allow-cookie-import` | off | exposes `copy_cookies` | capability error |
+| `--tool-groups <GROUPS>` | none | lists the opt-in tool groups, comma separated: `storage`, `files`, `raw`, `perf`, `emulation` or `all` (see [Tool groups](#tool-groups)) | same |
 | `--upload-root <DIR>` | working + temp dir | directory `upload_file` may read files from (repeatable; replaces the defaults) | same |
 | `--enable-webmcp` | off | WebMCP switches and `webmcp_*` tools | capability error |
 | `--proxy-server <URL>` | none | proxy for every instance; exposes `enable_proxy_auth` | `http://` and `socks5://` proxies |

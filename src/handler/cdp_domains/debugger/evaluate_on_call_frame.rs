@@ -8,15 +8,15 @@ use serde_json::json;
 
 #[macros::mcp_tool(
     name = "evaluate_on_call_frame",
-    description = "Evaluates JavaScript expressions within the scope of a paused call frame, accessing local variables and call stack. Side effects: read-only by default; can modify state if expression includes mutations. Prerequisites: requires debugger to be paused at a breakpoint with active call frame. Returns: JSON {value, type, subtype?, description?} like evaluate_js; an exception fails the call with 'Evaluation threw: <what was thrown>'. Use this to inspect variables and call stack during debugging. Alternatives: 'evaluate_js' for global scope evaluation, 'step_over' to advance without evaluation."
+    description = "Evaluates JavaScript in the paused top frame, with its locals and closures in scope. Returns the 'evaluate_js' shape; an exception fails with 'Evaluation threw: <what>'."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct EvaluateOnCallFrameTool {
-    /// Chrome instance id from open_instance/list_instances. Omit for the default instance.
+    /// Instance id; omit for the default instance.
     pub instance_id: Option<String>,
-    /// The Tab ID of the target tab. Omit to use the active tab.
+    /// Tab id; omit for the active tab.
     pub tab_id: Option<String>,
-    /// JavaScript expression to evaluate in call frame scope. Constraints: valid JavaScript accessing local/closure variables. Interactions: requires active paused debugger session; has access to function parameters and local variables. Defaults to: None (required).
+    /// A JavaScript expression.
     pub expression: String,
 }
 

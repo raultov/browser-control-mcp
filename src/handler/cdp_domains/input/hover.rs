@@ -7,15 +7,15 @@ use serde_json::json;
 
 #[macros::mcp_tool(
     name = "hover",
-    description = "Moves the mouse over an element, scrolled into view first, so hover menus, tooltips and :hover styles appear (the page gets mouseover, mouseenter and mousemove, as from a user). Side effects: whatever the page does on hover. Prerequisites: the element must be visible and not covered; otherwise the call fails without moving, as 'click_element' does. Returns: 'Hovering over <element> at (x, y).' (viewport CSS pixels); the mouse stays there until another input action. Use this to open a hover menu before clicking one of its items, or to show a tooltip. Alternatives: 'click_element'."
+    description = "Moves the mouse over an element (scrolled into view; fails when hidden or covered) so hover menus, tooltips and :hover styles appear."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct HoverTool {
-    /// Chrome instance id from open_instance/list_instances. Omit for the default instance.
+    /// Instance id; omit for the default instance.
     pub instance_id: Option<String>,
-    /// The Tab ID of the target tab. Omit to use the active tab.
+    /// Tab id; omit for the active tab.
     pub tab_id: Option<String>,
-    /// The element: a CSS selector ('host >>> inner' pierces shadow roots and same-origin iframes) or a ref from 'snapshot' (e.g. 'e12').
+    /// Element: CSS selector, 'host >>> inner' (inside an open shadow root or same-origin iframe), or a snapshot ref (e12).
     pub selector: String,
 }
 

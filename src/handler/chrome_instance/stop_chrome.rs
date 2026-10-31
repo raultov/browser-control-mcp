@@ -6,11 +6,11 @@ use rust_mcp_sdk::{
 
 #[macros::mcp_tool(
     name = "stop_browser",
-    description = "Gracefully terminates the Chrome instance selected by 'instance_id' (the default instance when omitted) and closes all its debugging connections. Side effects: destructive - kills the Chrome process of that instance only; its open tabs are closed; unsaved data lost; other instances keep running. Prerequisites: the instance must be running. Returns: termination success confirmation; for a Chrome that was already running on the port (attached, not launched by this server) it only disconnects, and the reply says the browser keeps running. Use this to clean up resources, prevent zombie processes, or end a debugging session. Alternatives: 'restart_browser' to restart instead of stop, 'close_instance' to also remove a secondary instance from the registry."
+    description = "Stops an instance's browser and closes its tabs; other instances keep running. A browser the server attached to (not launched) is only disconnected."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct StopChromeTool {
-    /// Chrome instance id from open_instance/list_instances. Omit for the default instance.
+    /// Instance id; omit for the default instance.
     pub instance_id: Option<String>,
 }
 

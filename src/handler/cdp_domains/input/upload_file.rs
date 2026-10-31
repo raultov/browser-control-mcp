@@ -9,17 +9,17 @@ use std::path::{Path, PathBuf};
 
 #[macros::mcp_tool(
     name = "upload_file",
-    description = "Sets the files of an <input type=file>, as a user picking them in the file chooser; the page gets 'input' and 'change' events and can read the files' contents. Files must be under the server's upload roots: its working directory and the system temp directory, or the --upload-root directories it was started with. Side effects: the page can read and send the files. Prerequisites: the element must be an enabled <input type=file> ('multiple' for several files); each path must be absolute and name an existing file. Returns: 'Set N files on ...' and JSON {files: [names]} as the input now holds them. Use this to test uploads (avatars, attachments, imports). Alternatives: none (pages cannot be given files otherwise)."
+    description = "Sets the files of an <input type=file> as if picked in the file chooser (the page gets input and change). Paths must be absolute files under the upload roots: the server's working and temp directories, or its --upload-root directories."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct UploadFileTool {
-    /// Chrome instance id from open_instance/list_instances. Omit for the default instance.
+    /// Instance id; omit for the default instance.
     pub instance_id: Option<String>,
-    /// The Tab ID of the target tab. Omit to use the active tab.
+    /// Tab id; omit for the active tab.
     pub tab_id: Option<String>,
-    /// The <input type=file>: a CSS selector ('host >>> inner' pierces shadow roots and same-origin iframes) or a ref from 'snapshot' (e.g. 'e12').
+    /// Element: CSS selector, 'host >>> inner' (inside an open shadow root or same-origin iframe), or a snapshot ref (e12).
     pub selector: String,
-    /// Absolute paths of the files to set, replacing any the input held. Constraints: 1 to 20 existing files under the upload roots.
+    /// 1 to 20 absolute paths of existing files (several need a 'multiple' input).
     pub paths: Vec<String>,
 }
 

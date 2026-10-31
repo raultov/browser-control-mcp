@@ -8,24 +8,24 @@ use serde_json::{Value, json};
 
 #[macros::mcp_tool(
     name = "fill_form",
-    description = "Fills several form fields in one call, in order: text fields, textareas and contenteditable elements are typed into and <select>s get the option whose value or label is the value, exactly as 'fill_input' does; a checkbox or radio takes 'true' or 'false' and is clicked (as 'click_element' does) only when its state differs. Side effects: as 'fill_input' and 'click_element' for each field. Prerequisites: every field must exist and be usable as its tool requires. Returns: 'Filled N fields.' and JSON {fields: [{selector, outcome}]} (filled, selected, checked, unchecked, unchanged; 'reformatted' when the page changed the text), never the values (they may be passwords). Stops at the first field that fails: the error names it and says which fields were already done. Use this to fill a login or checkout form in one call. Alternatives: 'fill_input' and 'click_element' for one field."
+    description = "Fills several fields in one call, in order: text fields and <select>s as 'fill_input' does; a checkbox or radio takes 'true' or 'false' and is clicked only when its state differs. Returns each field's outcome (filled, selected, checked, unchecked, unchanged), never the values. Stops at the first failing field, naming it and what was done."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct FillFormTool {
-    /// Chrome instance id from open_instance/list_instances. Omit for the default instance.
+    /// Instance id; omit for the default instance.
     pub instance_id: Option<String>,
-    /// The Tab ID of the target tab. Omit to use the active tab.
+    /// Tab id; omit for the active tab.
     pub tab_id: Option<String>,
-    /// The fields, filled in this order. Constraints: 1 to 50 fields.
+    /// 1 to 50 fields, filled in order.
     pub fields: Vec<FormField>,
 }
 
 /// One field of `fill_form`.
 #[derive(Debug, Clone, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct FormField {
-    /// The field: a CSS selector ('host >>> inner' pierces shadow roots and same-origin iframes) or a ref from 'snapshot' (e.g. 'e12').
+    /// Element: CSS selector, 'host >>> inner' (inside an open shadow root or same-origin iframe), or a snapshot ref (e12).
     pub selector: String,
-    /// The text to type, the value or label of the option to pick, or 'true' / 'false' for a checkbox or radio.
+    /// Text, option value or label, or 'true' / 'false' for a checkbox or radio.
     pub value: String,
 }
 

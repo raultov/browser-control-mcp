@@ -10,19 +10,19 @@ use serde_json::Value;
 
 #[macros::mcp_tool(
     name = "press_key",
-    description = "Presses one key, with modifiers held, as a user: in 'selector' (focused first) or in the element that has the focus. The page sees keydown, keypress and input for a key that types, and keyup, and the browser does the default action (Enter submits a form or activates a button, Tab moves the focus, Escape closes, the arrows move a caret or a selection). Keys: one character, Enter, Tab, Escape, Backspace, Delete, ArrowLeft, ArrowUp, ArrowRight, ArrowDown, Home, End, PageUp, PageDown, Insert, Space, F1 to F12. With Control, Alt or Meta held the key types nothing (a shortcut the page handles). Side effects: whatever the key does in the page. Returns: 'Pressed <key> in <element>.'; a JavaScript dialog or a debugger pause the key causes is noted, not an error (the key was pressed), as for 'click_element'. Use this to submit with Enter, close with Escape, move through menus and lists, or send a shortcut. Alternatives: 'fill_input' to type text."
+    description = "Presses one key with optional modifiers, as a user, in the element 'selector' names (focused first) or the focused one; the browser's default action runs (Enter submits, Tab moves the focus). With Control, Alt or Meta held the key types nothing. A dialog or breakpoint it causes is noted, as for 'click_element'."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct PressKeyTool {
-    /// Chrome instance id from open_instance/list_instances. Omit for the default instance.
+    /// Instance id; omit for the default instance.
     pub instance_id: Option<String>,
-    /// The Tab ID of the target tab. Omit to use the active tab.
+    /// Tab id; omit for the active tab.
     pub tab_id: Option<String>,
-    /// The key: one character, or a name (Enter, Tab, Escape, Backspace, Delete, ArrowLeft, ArrowUp, ArrowRight, ArrowDown, Home, End, PageUp, PageDown, Insert, Space, F1 to F12; case-insensitive).
+    /// One character, or Enter, Tab, Escape, Backspace, Delete, ArrowLeft, ArrowUp, ArrowRight, ArrowDown, Home, End, PageUp, PageDown, Insert, Space, F1 to F12.
     pub key: String,
-    /// Modifier keys held while it is pressed. Defaults to: none.
+    /// Keys held while it is pressed.
     pub modifiers: Option<Vec<Modifier>>,
-    /// Element to focus first: a CSS selector ('host >>> inner' pierces shadow roots and same-origin iframes) or a ref from 'snapshot' (e.g. 'e12'). Defaults to: the element that has the focus.
+    /// Element to focus first (CSS, 'host >>> inner' or a snapshot ref). Default: the focused element.
     pub selector: Option<String>,
 }
 

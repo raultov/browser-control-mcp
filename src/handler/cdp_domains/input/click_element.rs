@@ -10,21 +10,21 @@ use serde_json::{Value, json};
 
 #[macros::mcp_tool(
     name = "click_element",
-    description = "Triggers a native mouse click event on a DOM element identified by CSS selector, executing click handlers and form submissions. Side effects: may trigger page navigation, form submission, or modify DOM state. Prerequisites: element must exist and be visible; it is scrolled into view first, and the call fails without clicking when the element has no visible box or another element (an overlay, a cookie banner) covers the point. Returns: success confirmation with click coordinates (viewport CSS pixels). A JavaScript dialog the click opens, or a debugger pause its handlers hit, does not fail it (the click happened): the reply notes it, followed by JSON {dialog: {type, message, default_prompt?}} (close it with 'handle_dialog') or {paused: true, location: {url, line_number, column_number} | null} (inspect with 'evaluate_on_call_frame', continue with 'resume'). 'button' ('right' opens context menus), 'click_count' (2 = double click) and 'modifiers' (Control, Shift, Alt, Meta held) change how it clicks. Use this to interact with buttons, links, checkboxes. Alternatives: 'fill_input' for text input, 'evaluate_js' for complex interactions."
+    description = "Clicks an element with real mouse input after scrolling it into view; fails without clicking when it is hidden or covered (naming the overlay). A dialog the click opens or a breakpoint its handler hits does not fail it: the reply notes it with {dialog} or {paused, location} (see 'handle_dialog', 'evaluate_on_call_frame', 'resume')."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct ClickElementTool {
-    /// Chrome instance id from open_instance/list_instances. Omit for the default instance.
+    /// Instance id; omit for the default instance.
     pub instance_id: Option<String>,
-    /// The Tab ID of the target tab. Omit to use the active tab.
+    /// Tab id; omit for the active tab.
     pub tab_id: Option<String>,
-    /// CSS selector identifying the target element. Constraints: valid CSS selector string; the first matching element is clicked; 'host >>> inner' matches 'inner' inside the open shadow root of 'host' or inside the same-origin iframe 'host' (chainable: '#frame >>> my-widget >>> button'); a ref from 'snapshot' (e.g. 'e12') names its element. Interactions: fails when that element is hidden or covered. Defaults to: None (required).
+    /// Element: CSS selector, 'host >>> inner' (inside an open shadow root or same-origin iframe), or a snapshot ref (e12).
     pub selector: String,
-    /// The mouse button. Defaults to: 'left'.
+    /// Mouse button ('right' opens context menus). Default: 'left'.
     pub button: Option<MouseButton>,
-    /// Clicks in a row: 1, 2 (double click) or 3. Defaults to: 1.
+    /// 1, 2 (double click) or 3. Default: 1.
     pub click_count: Option<u8>,
-    /// Modifier keys held during the click. Defaults to: none.
+    /// Keys held during the click.
     pub modifiers: Option<Vec<Modifier>>,
 }
 

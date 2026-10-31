@@ -13,24 +13,24 @@ use tokio::sync::Mutex;
 
 #[macros::mcp_tool(
     name = "open_instance",
-    description = "Opens a new independent browser instance (Chrome or Firefox, see 'browser'). Side effects: launches a separate browser process with its own profile directory and remote-debugging port. Prerequisites: rejected when the server runs in --user-profile mode (Chrome's singleton profile lock). Returns: structured JSON with 'instance_id' (pass it as the 'instance_id' argument of other tools), 'host', 'port' and 'profile_dir'. Use this to isolate browsing sessions, cookies, proxies or WebMCP contexts from one another. Alternatives: 'open_tab' for additional tabs within an existing instance. Parameters: 'features' accepts a closed set - 'WEBGL_SOFTWARE' (forces SwiftShader software WebGL for GPU-less environments); 'headless' defaults to the server's --headless flag (off unless the server was started with it)."
+    description = "Starts a new browser instance with its own profile, Chrome or Firefox ('browser'); its 'label' becomes the instance_id other tools take. 'features' presets: WEBGL_SOFTWARE (software WebGL for GPU-less hosts). Fails in --user-profile mode."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct OpenInstanceTool {
-    /// Browser of the new instance: "chrome" (CDP) or "firefox" (WebDriver BiDi + RDP debugger). Defaults to the server's --browser (Chrome unless configured). Choose Firefox only when the user asks for it or Chrome is unavailable. The instance keeps this browser for its whole life.
+    /// 'chrome' (CDP) or 'firefox' (BiDi and RDP). Default: the server's --browser. Prefer Chrome unless the user asks for Firefox.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub browser: Option<BrowserArg>,
-    /// Optional label to identify the instance. The label becomes the instance_id returned by this tool and accepted by the 'instance_id' argument of other tools. If omitted, a dynamic label is generated.
+    /// Becomes the instance_id. Default: generated.
     pub label: Option<String>,
-    /// Optional headless mode. Defaults to the server's --headless flag (false unless the server was started with it, e.g. in Docker where there is no display).
+    /// Default: the server's --headless.
     pub headless: Option<bool>,
-    /// Optional proxy server URL (e.g. `http://proxy.example.com:8080`). Credentials written in the URL are not passed to the browser (its command line is readable by other local users): give them to 'enable_proxy_auth'.
+    /// Proxy URL; credentials go to enable_proxy_auth.
     pub proxy: Option<String>,
-    /// Optional feature presets (e.g. WEBGL_SOFTWARE).
+    /// Presets: WEBGL_SOFTWARE (software WebGL).
     pub features: Option<Vec<ChromeFeature>>,
-    /// Optional flag to copy cookies from the user's real Chrome installation into this instance's isolated profile. Requires server running with --allow-cookie-import.
+    /// Import cookies from the user's Chrome profile (needs --allow-cookie-import; Chrome only).
     pub copy_cookies: Option<bool>,
-    /// Optional source profile name to copy cookies from (e.g. 'Default', 'Profile 1'). Defaults to the last used profile.
+    /// Chrome profile to import cookies from (e.g. 'Profile 1'). Default: the last used.
     pub source_profile: Option<String>,
 }
 

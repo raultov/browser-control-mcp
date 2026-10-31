@@ -8,17 +8,17 @@ use serde_json::json;
 
 #[macros::mcp_tool(
     name = "handle_dialog",
-    description = "Closes the JavaScript dialog (alert, confirm, prompt or beforeunload) open on a tab, accepting or dismissing it. An open dialog blocks its page: while one is open, the tools that run page code fail naming it (its type and message) and telling to call this tool. Side effects: the page continues; accepting a beforeunload dialog lets the page navigate away, a confirm returns true (accept) or false, a prompt returns 'prompt_text' (accept) or null. Returns: a first line ('Dialog accepted.' or 'Dialog dismissed.') and JSON {accepted, dialog: {type, message, default_prompt?} | null}; fails when no dialog is open. Alternatives: 'evaluate_js' to change the page so it does not open dialogs (e.g. replace window.alert)."
+    description = "Accepts or dismisses the JavaScript dialog (alert, confirm, prompt, beforeunload) open on the tab. While one is open, tools that run page code fail naming it. Returns {accepted, dialog}; fails when none is open."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct HandleDialogTool {
-    /// Instance id from open_instance/list_instances. Omit for the default instance.
+    /// Instance id; omit for the default instance.
     pub instance_id: Option<String>,
-    /// The Tab ID of the target tab. Omit to use the active tab.
+    /// Tab id; omit for the active tab.
     pub tab_id: Option<String>,
-    /// true to accept the dialog (OK, Leave), false to dismiss it (Cancel, Stay). Required.
+    /// true = OK / Leave, false = Cancel / Stay.
     pub accept: bool,
-    /// The answer to a prompt dialog when accepting it. Ignored by other dialogs. Defaults to: the prompt's default answer.
+    /// Answer to a prompt when accepting it. Default: its default answer.
     pub prompt_text: Option<String>,
 }
 

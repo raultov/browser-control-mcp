@@ -7,13 +7,13 @@ use serde_json::json;
 
 #[macros::mcp_tool(
     name = "reload",
-    description = "Reloads the current page, discarding all unsaved changes and re-fetching resources from the server. Side effects: destructive of unsaved state; clears dynamic DOM state. Prerequisites: requires an active Chrome tab. Returns: JSON {url, tab_id, browser, status?, notes?} once the page fired `load` (at most 30 s), the same shape as 'navigate'. Use this to refresh page content or reset to initial load state. Alternatives: 'navigate' to load a different URL, 'pause_on_load' to debug reload execution."
+    description = "Reloads the tab and waits for load (at most 30 s). Returns the same shape as 'navigate'."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct ReloadTool {
-    /// Chrome instance id from open_instance/list_instances. Omit for the default instance.
+    /// Instance id; omit for the default instance.
     pub instance_id: Option<String>,
-    /// The Tab ID of the target tab. Omit to use the active tab.
+    /// Tab id; omit for the active tab.
     pub tab_id: Option<String>,
 }
 

@@ -9,25 +9,25 @@ use std::time::Duration;
 
 #[macros::mcp_tool(
     name = "wait_for",
-    description = "Waits until the page shows a text, no longer shows one, has an element in a given state, or is at a URL; every condition given must hold at once. Checks every 100 ms. Side effects: none (read-only). Prerequisites: requires an active tab. Returns: 'Waited N ms for ...' and JSON {elapsed_ms, url} once the conditions hold (at once when they already do); after 'timeout_ms', an error naming what is still missing and the page's URL. Text is the page's visible text (innerText), case-sensitive, including open shadow roots and same-origin iframes; 'selector' can pierce with 'host >>> inner'. A JavaScript dialog or a debugger pause during the wait ends it at once (close the dialog with 'handle_dialog'; inspect the pause with 'evaluate_on_call_frame'). Use this after a click, a submit or a navigation whose content arrives later. Alternatives: 'inspect_dom' with 'query' for a one-off look, 'evaluate_js' for other conditions."
+    description = "Waits, checking every 100 ms, until every condition given holds: visible text appears ('text') or is gone (text_gone), 'selector' reaches 'state', or the URL contains 'url'. Returns the time waited; after timeout_ms it fails naming what is missing. Text includes open shadow roots and same-origin iframes. A dialog or a debugger pause ends the wait at once."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct WaitForTool {
-    /// Chrome instance id from open_instance/list_instances. Omit for the default instance.
+    /// Instance id; omit for the default instance.
     pub instance_id: Option<String>,
-    /// The Tab ID of the target tab. Omit to use the active tab.
+    /// Tab id; omit for the active tab.
     pub tab_id: Option<String>,
-    /// Wait until the page's visible text contains this (case-sensitive). Defaults to: not checked.
+    /// Visible text to wait for (case-sensitive).
     pub text: Option<String>,
-    /// Wait until the page's visible text no longer contains this (case-sensitive), e.g. a 'Loading' message. Defaults to: not checked.
+    /// Visible text to wait to disappear, e.g. 'Loading'.
     pub text_gone: Option<String>,
-    /// Wait until the first element matching this CSS selector is in 'state'; 'host >>> inner' matches 'inner' inside the open shadow root of 'host' or inside the same-origin iframe 'host' (chainable); a ref from 'snapshot' (e.g. 'e12') names its element. Defaults to: not checked.
+    /// Element: CSS selector, 'host >>> inner' (inside an open shadow root or same-origin iframe), or a snapshot ref (e12).
     pub selector: Option<String>,
-    /// The state 'selector' must reach: 'visible' (in the DOM with a visible box), 'hidden' (missing, or without a visible box), 'attached' (in the DOM) or 'detached' (not in it). Only with 'selector'. Defaults to: 'visible'.
+    /// State 'selector' must reach ('hidden' = missing or without a visible box). Default: 'visible'.
     pub state: Option<WaitState>,
-    /// Wait until the tab's URL contains this (e.g. a path after a submit). Defaults to: not checked.
+    /// Text the tab's URL must contain.
     pub url: Option<String>,
-    /// How long to wait, in milliseconds. Constraints: 1 to 30000. Defaults to: 5000.
+    /// 1 to 30000. Default: 5000.
     pub timeout_ms: Option<u64>,
 }
 

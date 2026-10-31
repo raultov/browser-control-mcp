@@ -6,11 +6,11 @@ use rust_mcp_sdk::{
 
 #[macros::mcp_tool(
     name = "close_tab",
-    description = "Closes a specific tab by its registered Tab ID. Side effects: destructive - removes the tab from the registry and closes it in Chrome; if it was the active tab, another registered tab becomes active. Prerequisites: the tab must exist (see 'list_tabs'). Returns: structured JSON with the closed 'tab_id' and the new 'active_tab_id' (null when no tabs remain). Use this to clean up tabs you no longer need. Alternatives: 'close_instance' to stop a whole Chrome instance."
+    description = "Closes a tab; another tab becomes active. Returns {tab_id, active_tab_id}."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct CloseTabTool {
-    /// Chrome instance id from open_instance/list_instances. Omit for the default instance.
+    /// Instance id; omit for the default instance.
     pub instance_id: Option<String>,
     /// The Tab ID of the tab to close (e.g. 'tab-1').
     pub tab_id: String,

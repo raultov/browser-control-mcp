@@ -8,35 +8,35 @@ use serde_json::{Value, json};
 
 #[macros::mcp_tool(
     name = "cookies",
-    description = "Reads, sets or deletes the browser's cookies ('action'). 'get' lists the cookies the page's URL (or 'url') would be sent, or all those of 'domain', optionally only 'name': name, domain, path, expires (Unix seconds; null for a session cookie), http_only, secure, same_site and size; values are hidden ('value_length' instead) unless 'show_values' is true, as they often hold session tokens. 'set' sets 'name' = 'value' for 'url' or 'domain' (default: the page's URL), with optional 'path', 'expires', 'http_only', 'secure', 'same_site'. 'delete' deletes the cookies 'get' would list with the same filters ('name' to delete one). Side effects: 'set' and 'delete' change what the browser sends from now on (reload to see the effect). Returns: JSON {cookies: [...]} for 'get' (at most 200), or what was set or deleted. Use this to inspect or change a session, log out, or test cookie handling. Alternatives: 'web_storage' for localStorage and sessionStorage; 'navigate' with copy_cookies to import cookies from your Chrome."
+    description = "Gets, sets or deletes cookies ('action'). get and delete select the cookies sent to the page's URL (or 'url'), or all those of a 'domain', optionally by 'name'; values are hidden (value_length) unless show_values. set needs 'name' and 'value'."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct CookiesTool {
-    /// Chrome instance id from open_instance/list_instances. Omit for the default instance.
+    /// Instance id; omit for the default instance.
     pub instance_id: Option<String>,
-    /// The Tab ID of the target tab. Omit to use the active tab.
+    /// Tab id; omit for the active tab.
     pub tab_id: Option<String>,
-    /// What to do: 'get', 'set' or 'delete'.
+    /// get, set or delete.
     pub action: CookieAction,
-    /// The cookie's name: required for 'set'; a filter for 'get' and 'delete'.
+    /// Cookie name: required for set, a filter otherwise.
     pub name: Option<String>,
-    /// The cookie's value ('set' only).
+    /// Value (set).
     pub value: Option<String>,
-    /// The URL the cookies are for. Defaults to: the page's URL (unless 'domain' is given).
+    /// URL the cookies are for. Default: the page's.
     pub url: Option<String>,
-    /// A domain instead of a URL: 'get' and 'delete' take every cookie of it and its subdomains; 'set' sets a domain cookie.
+    /// A domain instead of a URL, with its subdomains.
     pub domain: Option<String>,
-    /// The cookie's path ('set'). Defaults to: '/'.
+    /// Path (set). Default: '/'.
     pub path: Option<String>,
-    /// When the cookie expires, in Unix seconds ('set'). Defaults to: a session cookie.
+    /// Unix seconds (set). Default: a session cookie.
     pub expires: Option<f64>,
-    /// Hide the cookie from JavaScript ('set'). Defaults to: false.
+    /// Hidden from JavaScript (set). Default: false.
     pub http_only: Option<bool>,
-    /// Send the cookie over HTTPS only ('set'). Defaults to: false.
+    /// HTTPS only (set). Default: false.
     pub secure: Option<bool>,
-    /// The cookie's SameSite ('set'). Defaults to: the browser's.
+    /// SameSite (set). Default: the browser's.
     pub same_site: Option<SameSite>,
-    /// Return the values ('get'). Defaults to: false (values hidden, they are often session tokens).
+    /// Return the values (get). Default: false.
     pub show_values: Option<bool>,
 }
 

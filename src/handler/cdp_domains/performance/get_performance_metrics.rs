@@ -8,13 +8,13 @@ use std::collections::HashMap;
 
 #[macros::mcp_tool(
     name = "get_performance_metrics",
-    description = "Captures runtime performance metrics including JS heap size, DOM node count, and layout timing. Side effects: none (read-only snapshot). Prerequisites: requires an active Chrome tab. Returns: JSON object mapping metric names to numeric values (e.g., JSHeapUsedSize, LayoutCount); an error, never an empty object, when Chrome reports no metrics. Use this to monitor memory usage, detect memory leaks, or profile performance. Alternatives: 'profile_page_performance' for detailed tracing, browser DevTools Performance tab. On Firefox: partial, only Nodes, Frames, Resources and TransferSize read from the page with the Web Performance APIs (a second block says what is missing)."
+    description = "Returns runtime metrics (JSHeapUsedSize, Nodes, LayoutCount...). On Firefox: partial, only Nodes, Frames, Resources and TransferSize from the Web Performance APIs (a second block says what is missing)."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct GetPerformanceMetricsTool {
-    /// Chrome instance id from open_instance/list_instances. Omit for the default instance.
+    /// Instance id; omit for the default instance.
     pub instance_id: Option<String>,
-    /// The Tab ID of the target tab. Omit to use the active tab.
+    /// Tab id; omit for the active tab.
     pub tab_id: Option<String>,
 }
 

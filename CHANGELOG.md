@@ -12,6 +12,15 @@ from a copy of its code: entries describe the differences from that release.
 
 ### Added
 
+- `--tool-groups` lists opt-in tool groups, comma separated: `storage`
+  (`cookies`, `web_storage`), `files` (`upload_file`), `raw`
+  (`send_cdp_command`, `send_bidi_command`, `send_rdp_request`,
+  `get_custom_events`), `perf` (`get_performance_metrics`,
+  `profile_page_performance`), `emulation` (`emulate`), or `all`. A tool of
+  a group that is off fails naming the flag. The tool list stays fixed for
+  the server's life (MCP 2026-07-28 forbids it to change as a side effect of
+  a call), so there is no tool to switch groups on during a session.
+
 - `emulate`: the tab's viewport (`width`, `height`, `device_scale_factor`,
   and on Chrome `mobile` with touch) and, on Chrome, CSS media features
   (`color_scheme`, `reduced_motion`, `forced_colors`, `media: print`);
@@ -97,6 +106,15 @@ from a copy of its code: entries describe the differences from that release.
   Agents no longer have to write polling promises in `evaluate_js`. (#2)
 
 ### Changed
+
+- The `raw`, `perf`, `storage`, `files` and `emulation` tools are no longer
+  listed by default: 33 tools are (plus `enable_proxy_auth` and the WebMCP
+  tools behind their flags). Start the server with `--tool-groups raw,perf`
+  (or `all`) to keep `send_cdp_command`, `get_custom_events` and the
+  performance tools.
+- Tool and argument descriptions are about half as long (the tool list of
+  every tool went from 72 986 to 35 568 characters, about 18 000 to 9 000
+  tokens; the 33 default tools take 23 555), and `instance_id` / `tab_id` no longer say "Chrome".
 
 - `click_element` succeeds when the click opens a JavaScript dialog or its
   handler pauses in the debugger: the click happened, so the reply says so

@@ -8,6 +8,7 @@ use super::chrome_instance;
 use crate::backend::{BrowserKind, Capability};
 #[cfg(test)]
 use crate::backend::{Capabilities, capabilities::CapabilityFlags};
+use crate::cli::ToolGroup;
 use rust_mcp_sdk::schema::{CallToolError, CallToolRequestParams, CallToolResult, Tool};
 use std::future::Future;
 use std::pin::Pin;
@@ -25,6 +26,8 @@ pub(crate) enum Gate {
     ProxyServer,
     /// Needs `--enable-webmcp`.
     Webmcp,
+    /// Needs `--tool-groups` naming the group (or `all`).
+    Group(ToolGroup),
 }
 
 impl Gate {
@@ -33,20 +36,35 @@ impl Gate {
             Self::Always => true,
             Self::ProxyServer => handler.proxy.proxy_server.is_some(),
             Self::Webmcp => handler.flags.enable_webmcp,
+            Self::Group(group) => handler
+                .tool_groups
+                .iter()
+                .any(|on| *on == group || *on == ToolGroup::All),
         }
     }
 
     fn disabled_message(self, name: &str) -> String {
         let (flag, what) = match self {
-            Self::Always => ("", ""),
-            Self::ProxyServer => ("--proxy-server", "proxy support"),
-            Self::Webmcp => ("--enable-webmcp", "WebMCP support"),
+            Self::Always => (String::new(), String::new()),
+            Self::ProxyServer => ("--proxy-server".into(), "proxy support".into()),
+            Self::Webmcp => ("--enable-webmcp".into(), "WebMCP support".into()),
+            Self::Group(group) => (
+                format!("--tool-groups {}", group.name()),
+                format!("the '{}' tool group", group.name()),
+            ),
         };
         format!(
             "Tool '{name}' is disabled. Start browser-control-mcp with {flag} to enable {what}."
         )
     }
 }
+
+/// The opt-in groups' gates.
+const STORAGE: Gate = Gate::Group(ToolGroup::Storage);
+const FILES: Gate = Gate::Group(ToolGroup::Files);
+const RAW: Gate = Gate::Group(ToolGroup::Raw);
+const PERF: Gate = Gate::Group(ToolGroup::Perf);
+const EMULATION: Gate = Gate::Group(ToolGroup::Emulation);
 
 /// A tool implementation for one browser.
 pub(crate) type ToolHandler = for<'a> fn(CallToolRequestParams, &'a McpHandler) -> ToolFuture<'a>;
@@ -85,10 +103,10 @@ macro_rules! entry {
 
 /// A Firefox-only tool: on Chrome the capability check refuses it first.
 macro_rules! firefox_only {
-    ($tool:ty, $needs:expr, $firefox:path) => {
+    ($tool:ty, $gate:expr, $needs:expr, $firefox:path) => {
         ToolEntry {
             tool: <$tool>::tool,
-            gate: Gate::Always,
+            gate: $gate,
             needs: $needs,
             chrome: |params, _| {
                 Box::pin(async move {
@@ -148,7 +166,7 @@ fn page_tools() -> Vec<ToolEntry> {
         entry!(Click, Always, &[Input], ff::click_element),
         entry!(Fill, Always, &[Input], ff::fill_input),
         entry!(Form, Always, &[Input], ff::fill_form),
-        entry!(Upload, Always, &[Input], ff::upload_file),
+        entry!(Upload, FILES, &[Input], ff::upload_file),
         entry!(Key, Always, &[Input], ff::press_key),
         entry!(Hover, Always, &[Input], ff::hover),
         entry!(Eval, Always, &[Evaluate], ff::evaluate_js),
@@ -159,7 +177,7 @@ fn page_tools() -> Vec<ToolEntry> {
         entry!(Reload, Always, &[Navigation], ff::reload),
         entry!(Scroll, Always, &[Dom], ff::scroll),
         entry!(Wait, Always, &[Dom], ff::wait_for),
-        entry!(Emulate, Always, &[Dom], ff::emulate),
+        entry!(Emulate, EMULATION, &[Dom], ff::emulate),
         entry!(Dialog, Always, &[Input], ff::handle_dialog),
     ]
 }
@@ -241,8 +259,8 @@ fn observation_tools() -> Vec<ToolEntry> {
             &[NetworkLogs],
             ff::network_logs
         ),
-        entry!(CookiesTool, Always, &[Evaluate], store::cookies),
-        entry!(WebStorageTool, Always, &[Evaluate], store::web_storage),
+        entry!(CookiesTool, STORAGE, &[Evaluate], store::cookies),
+        entry!(WebStorageTool, STORAGE, &[Evaluate], store::web_storage),
         entry!(
             log::get_console_logs::GetConsoleLogsTool,
             Always,
@@ -251,24 +269,20 @@ fn observation_tools() -> Vec<ToolEntry> {
         ),
         entry!(
             metrics::GetPerformanceMetricsTool,
-            Always,
+            PERF,
             &[PerformanceMetrics],
             crate::backend::bidi::performance::metrics
         ),
         entry!(
             profile::ProfilePagePerformanceTool,
-            Always,
+            PERF,
             &[Tracing],
             crate::backend::bidi::performance::profile
         ),
-        entry!(
-            custom::send_cdp_command::SendCdpCommandTool,
-            Always,
-            &[RawCdp]
-        ),
+        entry!(custom::send_cdp_command::SendCdpCommandTool, RAW, &[RawCdp]),
         entry!(
             custom::get_custom_events::GetCustomEventsTool,
-            Always,
+            RAW,
             &[CustomEvents],
             ff::custom_events
         ),
@@ -280,11 +294,13 @@ fn firefox_tools() -> Vec<ToolEntry> {
     vec![
         firefox_only!(
             SendBidiCommandTool,
+            RAW,
             &[Capability::RawBidi],
             raw::send_bidi_command
         ),
         firefox_only!(
             SendRdpRequestTool,
+            RAW,
             &[Capability::RawRdp],
             raw::send_rdp_request
         ),
@@ -458,6 +474,47 @@ mod tests {
         assert!(message.contains("--proxy-server"), "{message}");
     }
 
+    /// TOOLS-01: opt-in groups are neither listed nor callable until
+    /// `--tool-groups` names them (or `all`); the error names the flag.
+    #[tokio::test]
+    async fn tool_groups_are_opt_in() {
+        // Given a handler without tool groups
+        let mut handler = McpHandler::new_test();
+        let listed = names(listed_tools(&handler));
+        // Then no group's tool is listed, and calling one names its group
+        for name in [
+            "cookies",
+            "web_storage",
+            "upload_file",
+            "send_cdp_command",
+            "get_custom_events",
+            "get_performance_metrics",
+            "profile_page_performance",
+            "emulate",
+            "send_bidi_command",
+            "send_rdp_request",
+        ] {
+            assert!(!listed.contains(name), "{name} listed by default");
+        }
+        assert!(listed.contains("set_breakpoint") && listed.contains("snapshot"));
+        let message = format!(
+            "{:?}",
+            call(
+                &handler,
+                params("cookies", serde_json::json!({"action": "get"}))
+            )
+            .await
+            .err()
+            .unwrap()
+        );
+        assert!(message.contains("--tool-groups storage"), "{message}");
+        // When one group is enabled, only its tools are added
+        handler.tool_groups = vec![ToolGroup::Storage];
+        let with_storage = names(listed_tools(&handler));
+        assert_eq!(with_storage.len(), listed.len() + 2);
+        assert!(with_storage.contains("cookies") && !with_storage.contains("emulate"));
+    }
+
     /// RFC-04: Every listed tool is callable and every callable tool is listed.
     #[test]
     fn listed_and_callable_tools_match() {
@@ -465,6 +522,7 @@ mod tests {
         let mut handler = McpHandler::new_test();
         handler.proxy.proxy_server = Some("http://p:1".into());
         handler.flags.enable_webmcp = true;
+        handler.tool_groups = vec![crate::cli::ToolGroup::All];
         // Then the listed names equal the table's names, without duplicates
         let listed = listed_tools(&handler);
         let table_names: Vec<String> = table().iter().map(|e| (e.tool)().name).collect();
@@ -479,7 +537,8 @@ mod tests {
     /// A handler with a registered Firefox instance "ff" (no session behind it:
     /// any dispatch to an implementation would fail with "not found").
     fn handler_with_firefox() -> McpHandler {
-        let handler = McpHandler::new_test();
+        let mut handler = McpHandler::new_test();
+        handler.tool_groups = vec![ToolGroup::All];
         let mut desc =
             crate::handler::chrome_instance::registry::InstanceDescriptor::default_instance(
                 0,
@@ -546,6 +605,7 @@ mod tests {
         let mut handler = McpHandler::new_test();
         handler.proxy.proxy_server = Some("http://p:1".into());
         handler.flags.enable_webmcp = true;
+        handler.tool_groups = vec![crate::cli::ToolGroup::All];
         let listed = names(listed_tools(&handler));
         assert_eq!(listed.len(), 48);
         assert!(listed.contains("restart_browser") && listed.contains("stop_browser"));
@@ -782,7 +842,8 @@ mod tests {
             serde_json::json!({"instance_id": "ff", "to": "root", "request_type": "listTabs"});
         let message = error_of(&handler, "send_rdp_request", args).await;
         assert!(message.contains("--no-firefox-debugger"), "{message}");
-        let chrome = McpHandler::new_test();
+        let mut chrome = McpHandler::new_test();
+        chrome.tool_groups = vec![ToolGroup::All];
         let message = error_of(
             &chrome,
             "send_bidi_command",

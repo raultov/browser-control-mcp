@@ -9,23 +9,23 @@ use tokio::sync::mpsc;
 
 #[macros::mcp_tool(
     name = "profile_page_performance",
-    description = "Records a performance trace of page execution, calculating Core Web Vitals (FCP, LCP, DCL, Load) and identifying Long Tasks (>50ms blocking). Side effects: may temporarily disable cache ('disable_cache' defaults to false); impacts page memory/CPU. Prerequisites: requires an active Chrome tab; trace recording uses background bandwidth. Returns: JSON with vitals, blocking time, and top 5 long tasks. Use this to optimize performance, identify bottlenecks, measure cold starts. Alternatives: browser DevTools Performance tab, real user monitoring (RUM). On Firefox: partial, no trace; it reloads if asked, waits duration_ms and reads FCP, LCP, DCL and Load from the Web Performance APIs; total_blocking_time_ms and top_long_tasks are null, with notes saying why."
+    description = "Traces the page for duration_ms and returns FCP, LCP, DCL, Load, total blocking time and the top 5 long tasks; 'action': reload with disable_cache measures a cold load. On Firefox: partial, no trace (vitals from the Web Performance APIs; blocking time and long tasks are null, with notes)."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct ProfilePagePerformanceTool {
-    /// Chrome instance id from open_instance/list_instances. Omit for the default instance.
+    /// Instance id; omit for the default instance.
     pub instance_id: Option<String>,
-    /// The Tab ID of the target tab. Omit to use the active tab.
+    /// Tab id; omit for the active tab.
     pub tab_id: Option<String>,
-    /// Recording duration in milliseconds. Constraints: integer between 500 and 15000. Interactions: longer duration captures more data; use 3000-5000 for typical pages. Defaults to: 3000.
+    /// 500 to 15000. Default: 3000.
     #[serde(default)]
     pub duration_ms: Option<u64>,
 
-    /// Action to trigger during tracing. Constraints: 'none' or 'reload'. Interactions: 'reload' restarts page recording from initial load (useful with disable_cache=true). Defaults to: "none".
+    /// 'none' (default) or 'reload'.
     #[serde(default)]
     pub action: Option<String>,
 
-    /// Disable network cache during trace. Constraints: boolean. Interactions: when true with action='reload', simulates cold start; cache restored after profiling. Defaults to: false.
+    /// Bypass the cache while tracing. Default: false.
     #[serde(default)]
     pub disable_cache: Option<bool>,
 }

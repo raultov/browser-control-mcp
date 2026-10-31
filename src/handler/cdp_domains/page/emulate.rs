@@ -8,31 +8,31 @@ use serde_json::{Value, json};
 
 #[macros::mcp_tool(
     name = "emulate",
-    description = "Emulates a screen and CSS media features for the tab, to test responsive layouts, dark mode or print styles. Viewport: 'width' and 'height' (CSS pixels), 'device_scale_factor' (devicePixelRatio) and 'mobile' (mobile viewport and touch, Chrome only). Media (Chrome only): 'color_scheme' (prefers-color-scheme), 'reduced_motion' (prefers-reduced-motion: reduce), 'forced_colors' (forced-colors: active) and 'media' ('print' or 'screen'); each call with media options replaces the previous media emulation. 'reset': true removes every emulation. Firefox emulates the viewport and device pixel ratio (WebDriver BiDi has no media or touch emulation yet): the other options fail there, naming them. Side effects: the page re-lays out (resize and media query listeners run); the emulation lasts until 'reset' or the tab closes. Returns: what the page now sees, measured in it: JSON {width, height, device_pixel_ratio, color_scheme, reduced_motion, forced_colors, print, touch}. Use this before a screenshot or a check of a layout. Alternatives: --window-size at launch for the window itself."
+    description = "Emulates the tab's viewport ('width' and 'height', device_scale_factor, 'mobile' with touch) and CSS media (color_scheme, reduced_motion, forced_colors, 'media'); 'reset' removes every emulation. Returns what the page now sees. Firefox emulates the viewport and device_scale_factor only (WebDriver BiDi has no media or touch emulation): other options fail there."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct EmulateTool {
-    /// Chrome instance id from open_instance/list_instances. Omit for the default instance.
+    /// Instance id; omit for the default instance.
     pub instance_id: Option<String>,
-    /// The Tab ID of the target tab. Omit to use the active tab.
+    /// Tab id; omit for the active tab.
     pub tab_id: Option<String>,
-    /// Viewport width in CSS pixels (with 'height'). Constraints: 1 to 10000.
+    /// Viewport width in CSS pixels (with 'height'), 1 to 10000.
     pub width: Option<u32>,
-    /// Viewport height in CSS pixels (with 'width'). Constraints: 1 to 10000.
+    /// Viewport height in CSS pixels (with 'width'), 1 to 10000.
     pub height: Option<u32>,
-    /// devicePixelRatio. Constraints: 0.5 to 5.
+    /// devicePixelRatio, 0.5 to 5.
     pub device_scale_factor: Option<f64>,
-    /// Mobile viewport (meta viewport, overlay scrollbars) and touch events (Chrome only).
+    /// Mobile viewport and touch events (Chrome only).
     pub mobile: Option<bool>,
     /// prefers-color-scheme (Chrome only).
     pub color_scheme: Option<ColorScheme>,
-    /// prefers-reduced-motion: true = reduce, false = no-preference (Chrome only).
+    /// true = prefers-reduced-motion: reduce (Chrome only).
     pub reduced_motion: Option<bool>,
-    /// forced-colors: true = active, false = none (Chrome only).
+    /// true = forced-colors: active (Chrome only).
     pub forced_colors: Option<bool>,
-    /// The CSS media type (Chrome only).
+    /// CSS media type (Chrome only).
     pub media: Option<MediaType>,
-    /// Remove every emulation of the tab. Not with other options.
+    /// Remove every emulation; takes no other option.
     pub reset: Option<bool>,
 }
 

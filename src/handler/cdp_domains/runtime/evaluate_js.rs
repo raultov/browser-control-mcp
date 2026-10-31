@@ -9,15 +9,15 @@ use serde_json::{Value, json};
 
 #[macros::mcp_tool(
     name = "evaluate_js",
-    description = "Executes arbitrary JavaScript code in the page context, returning evaluated results as JSON-serializable values. Side effects: may modify DOM, state, or trigger network requests. Prerequisites: requires an active Chrome tab; script context must allow execution. Returns: JSON {value, type, subtype?, description?}: `type` is JavaScript's typeof, `value` the JSON form (null when there is none: functions, DOM nodes, symbols, NaN, bigints, maps...; then `description` says what it was). An object or array's `value` is what JSON.stringify gives (toJSON counts, functions drop out), and an object that is not a plain one (navigator, a URL, a class instance) has its class in `description`. A value over 100000 characters is cut (strings) or only described (objects, measured in the page), with `truncated: true`. A thrown exception or rejected promise fails the call with what was thrown and its line and column. A script running over 8 s (an endless loop) is stopped on Chrome; Firefox cannot stop it, and a frozen tab is closed with close_tab. Use this for dynamic inspection, DOM manipulation, complex interactions. Alternatives: 'inspect_dom' for read-only DOM queries, 'click_element' for UI interactions."
+    description = "Evaluates JavaScript in the page (promises awaited). Returns {value, type, subtype?, description?}: value is the JSON.stringify form, null when there is none (functions, nodes; description says what it was), cut over 100000 characters with truncated: true. An exception fails with its message, line and column. Chrome stops a script after 8 s; Firefox cannot (close a frozen tab with 'close_tab')."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct EvaluateJsTool {
-    /// Chrome instance id from open_instance/list_instances. Omit for the default instance.
+    /// Instance id; omit for the default instance.
     pub instance_id: Option<String>,
-    /// The Tab ID of the target tab. Omit to use the active tab.
+    /// Tab id; omit for the active tab.
     pub tab_id: Option<String>,
-    /// JavaScript code expression to execute. Constraints: valid JavaScript (single expression or IIFE). Interactions: automatically awaits promises. Defaults to: None (required).
+    /// A JavaScript expression or IIFE.
     pub expression: String,
 }
 

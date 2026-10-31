@@ -7,19 +7,19 @@ use serde_json::json;
 
 #[macros::mcp_tool(
     name = "capture_screenshot",
-    description = "Captures a visual representation of the current page viewport or entire page as a base64 encoded image ('full_page' defaults to false, capturing only the visible viewport; set true to capture the entire page, at most 16384 CSS pixels per side from the top left; a larger page adds a text note with its size). Side effects: none (read-only). Prerequisites: requires an active Chrome tab. Returns: base64 encoded image in specified format. Use this to visually verify UI state, layout, or rendering. Alternatives: 'inspect_dom' for raw HTML structure, 'get_performance_metrics' for rendering metrics."
+    description = "Screenshot of the tab's viewport, or of the whole page with full_page (at most 16384 CSS pixels per side; a larger page gets a note). To find elements to act on, prefer 'snapshot'."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct CaptureScreenshotTool {
-    /// Chrome instance id from open_instance/list_instances. Omit for the default instance.
+    /// Instance id; omit for the default instance.
     pub instance_id: Option<String>,
-    /// The Tab ID of the target tab. Omit to use the active tab.
+    /// Tab id; omit for the active tab.
     pub tab_id: Option<String>,
-    /// Output image format. Constraints: 'png', 'jpeg' (or 'jpg') or 'webp', any case; anything else fails before capturing. Interactions: 'quality' applies only to 'jpeg' and 'webp' formats. Defaults to: "png".
+    /// 'png' (default), 'jpeg' (or 'jpg') or 'webp'.
     pub format: Option<String>,
-    /// Compression quality (0-100, higher=better quality). Constraints: integer between 0 and 100. Interactions: only applies when 'format' is 'jpeg' or 'webp'; ignored for 'png'. Defaults to: 100.
+    /// 0 to 100, for jpeg and webp. Default: 100.
     pub quality: Option<u32>,
-    /// Capture the entire page beyond visible viewport. Constraints: boolean value. Interactions: if true, captures full page height; if false, captures only visible area. Defaults to: false.
+    /// Capture the whole scrollable page. Default: false.
     pub full_page: Option<bool>,
 }
 

@@ -19,36 +19,36 @@ const REFUSED: &[(&str, &str)] = &[
 
 #[macros::mcp_tool(
     name = "send_bidi_command",
-    description = "Sends a raw WebDriver BiDi command to a Firefox instance and returns its JSON result (params are sent untouched: put the browsing context where the command expects it, e.g. {\"context\": \"<target_id from list_tabs>\"}). Events of modules subscribed here with session.subscribe are captured per tab for get_custom_events. Refuses session.new, session.end and browser.close (use close_instance/stop_browser) and, with --local, non-local browsingContext.navigate URLs. Firefox only (not available on Chrome)."
+    description = "Sends a raw WebDriver BiDi command and returns its result; params go untouched (give the context, e.g. {\"context\": \"<target_id from list_tabs>\"}). Modules subscribed with session.subscribe feed 'get_custom_events'. Refuses session.new, session.end and browser.close, and with --local non-local navigations. Firefox only (not available on Chrome)."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct SendBidiCommandTool {
-    /// Instance id from open_instance/list_instances. Omit for the default instance.
+    /// Instance id; omit for the default instance.
     pub instance_id: Option<String>,
-    /// The Tab ID of the target tab. Omit to use the active tab.
+    /// Tab id; omit for the active tab.
     pub tab_id: Option<String>,
-    /// BiDi method name, e.g. 'browsingContext.getTree' or 'script.callFunction'.
+    /// e.g. 'browsingContext.getTree'.
     pub method: String,
-    /// Parameters as a JSON object string. Defaults to {}.
+    /// JSON object as a string. Default: '{}'.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub params: Option<String>,
 }
 
 #[macros::mcp_tool(
     name = "send_rdp_request",
-    description = "Sends a raw Firefox Remote Debugging Protocol request (to an actor) and returns the reply packet as JSON. 'to' may be an actor id or one of the shortcuts 'thread', 'console' (resolved for the tab's debugger, attaching it if needed) and 'root'. With --local, non-local navigateTo URLs are refused. Needs the Firefox debugger port. Firefox only (not available on Chrome)."
+    description = "Sends a raw Firefox Remote Debugging Protocol request and returns the reply packet. 'to' is an actor id or 'thread', 'console' (the tab's debugger) or 'root'. With --local, non-local navigateTo URLs are refused. Needs the Firefox debugger port. Firefox only (not available on Chrome)."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct SendRdpRequestTool {
-    /// Instance id from open_instance/list_instances. Omit for the default instance.
+    /// Instance id; omit for the default instance.
     pub instance_id: Option<String>,
-    /// The Tab ID of the target tab. Omit to use the active tab.
+    /// Tab id; omit for the active tab.
     pub tab_id: Option<String>,
     /// Actor id, or 'thread', 'console' or 'root'.
     pub to: String,
-    /// The RDP request `type`, e.g. 'frames' or 'sources'.
+    /// RDP request type, e.g. 'frames' or 'sources'.
     pub request_type: String,
-    /// Parameters as a JSON object string. Defaults to {}.
+    /// JSON object as a string. Default: '{}'.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub params: Option<String>,
 }

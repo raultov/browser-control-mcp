@@ -6,15 +6,15 @@ use rust_mcp_sdk::{
 
 #[macros::mcp_tool(
     name = "switch_tab",
-    description = "Switches the active default tab to the specified Tab ID. Side effects: the switched tab becomes the default target of all subsequent tool calls in this instance that omit 'tab_id'; when 'activate' is true it is also brought to the foreground in the Chrome window ('activate' defaults to true). Prerequisites: the tab must exist (see 'list_tabs'). Returns: structured JSON with the new 'active_tab_id' and whether the tab was brought to the foreground. Use this before interacting with a different page without repeating 'tab_id' on every call. Alternatives: pass 'tab_id' directly on an individual tool call to address a tab without switching."
+    description = "Makes a tab the target of the tools that omit tab_id, and brings it to the foreground unless 'activate' is false."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct SwitchTabTool {
-    /// Chrome instance id from open_instance/list_instances. Omit for the default instance.
+    /// Instance id; omit for the default instance.
     pub instance_id: Option<String>,
     /// The Tab ID to switch to (e.g. 'tab-1').
     pub tab_id: String,
-    /// If true, brings the tab to the foreground in the browser. Defaults to true.
+    /// Bring it to the foreground. Default: true.
     pub activate: Option<bool>,
 }
 

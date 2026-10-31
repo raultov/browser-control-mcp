@@ -8,23 +8,23 @@ use serde_json::{Value, json};
 
 #[macros::mcp_tool(
     name = "set_breakpoint",
-    description = "Sets a debugger breakpoint at a specific location, pausing execution when reached. Side effects: modifies debugger state (breakpoint added until removed). Prerequisites: requires an active Chrome tab; target script must be loaded. Returns: JSON {breakpoint_id ('bp-N', for remove_breakpoint), url, line_number, column_number (0-based, where the browser bound it), resolved (false until a script with that URL loads)}. A line with no code at or after it in a loaded script with that URL fails (nothing is set). While a tab has no breakpoint (and no pause_on_load), the page's own `debugger;` statements do not pause it; the first breakpoint turns them on. Use this to debug specific code paths. Alternatives: 'pause_on_load' for early script execution, 'search_scripts' to find scripts by pattern."
+    description = "Sets a breakpoint at a 0-based line of a script (by url; on Chrome also by script id or hash from 'search_scripts'). Returns {breakpoint_id, url, line_number, column_number, resolved} where the browser bound it; resolved is false until a script with that URL loads. A line without code fails. The page's own debugger statements pause only while the tab has a breakpoint. Firefox: by url only."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct SetBreakpointTool {
-    /// Chrome instance id from open_instance/list_instances. Omit for the default instance.
+    /// Instance id; omit for the default instance.
     pub instance_id: Option<String>,
-    /// The Tab ID of the target tab. Omit to use the active tab.
+    /// Tab id; omit for the active tab.
     pub tab_id: Option<String>,
-    /// Script hash to identify the target script. Constraints: one of 'script_hash', 'script_id', or 'url' must be provided. Defaults to: None.
+    /// Script hash from search_scripts (Chrome).
     pub script_hash: Option<String>,
-    /// Script ID (from Debugger.scriptParsed event). Constraints: one of 'script_hash', 'script_id', or 'url' must be provided. Interactions: mutually exclusive with 'script_hash' and 'url' (first match wins). Defaults to: None.
+    /// Script id from search_scripts (Chrome).
     pub script_id: Option<String>,
-    /// Script URL to match. Constraints: one of 'script_hash', 'script_id', or 'url' must be provided. Interactions: mutually exclusive with 'script_hash' and 'script_id'. Defaults to: None.
+    /// Script URL.
     pub url: Option<String>,
-    /// Line number where breakpoint is set (0-indexed). Constraints: non-negative integer, must be within script bounds. Interactions: required parameter; combined with 'column_number' to pinpoint exact location.
+    /// 0-based line.
     pub line_number: u32,
-    /// Column number within the line. Constraints: non-negative integer. Interactions: optional; narrower precision if provided. Defaults to: start of line (0).
+    /// 0-based column. Default: the first breakable one of the line.
     pub column_number: Option<u32>,
 }
 

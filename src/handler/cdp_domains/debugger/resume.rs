@@ -7,13 +7,13 @@ use rust_mcp_sdk::{
 
 #[macros::mcp_tool(
     name = "resume",
-    description = "Continues full execution of the debugger from current breakpoint. Side effects: advances code execution until next breakpoint or completion. Prerequisites: requires an active, paused debugger session. Returns: JSON {paused, location} like step_over: paused is true only if the page stopped again right away (within 250 ms, e.g. another breakpoint). Use this to continue program flow after inspection. Alternatives: 'step_over' for single-step execution."
+    description = "Resumes a paused page. Returns {paused, location} like 'step_over': paused only if it stopped again within 250 ms (another breakpoint)."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct ResumeTool {
-    /// Chrome instance id from open_instance/list_instances. Omit for the default instance.
+    /// Instance id; omit for the default instance.
     pub instance_id: Option<String>,
-    /// The Tab ID of the target tab. Omit to use the active tab.
+    /// Tab id; omit for the active tab.
     pub tab_id: Option<String>,
 }
 

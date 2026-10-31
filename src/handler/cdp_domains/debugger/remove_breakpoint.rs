@@ -7,15 +7,15 @@ use serde_json::json;
 
 #[macros::mcp_tool(
     name = "remove_breakpoint",
-    description = "Removes a previously set debugger breakpoint by its ID, allowing execution to pass that location uninterrupted. Side effects: modifies debugger state (breakpoint deleted). Prerequisites: the breakpoint ID returned by 'set_breakpoint' (works whether or not execution is stopped). Returns: JSON {removed: breakpoint_id}; an unknown id fails listing the tab's breakpoint ids. Use this to clean up breakpoints or disable debugging at specific locations. Alternatives: 'set_breakpoint' to add new breakpoints, 'resume' to continue execution."
+    description = "Removes a breakpoint by the id 'set_breakpoint' returned; an unknown id fails listing the tab's breakpoint ids."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct RemoveBreakpointTool {
-    /// Chrome instance id from open_instance/list_instances. Omit for the default instance.
+    /// Instance id; omit for the default instance.
     pub instance_id: Option<String>,
-    /// The Tab ID of the target tab. Omit to use the active tab.
+    /// Tab id; omit for the active tab.
     pub tab_id: Option<String>,
-    /// Unique identifier of the breakpoint (returned from set_breakpoint). Constraints: non-empty string matching format from set_breakpoint response. Interactions: must correspond to an active breakpoint or operation will fail.
+    /// Id from set_breakpoint (bp-N).
     pub breakpoint_id: String,
 }
 

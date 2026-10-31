@@ -6,23 +6,23 @@ use rust_mcp_sdk::{
 
 #[macros::mcp_tool(
     name = "get_console_logs",
-    description = "Retrieves the tab's console messages (log, warning, error, info levels and uncaught exceptions), oldest first. The buffer is per tab, holds the last 1000 messages (each at most 10000 characters, '… [cut: ...]' where cut), and is cleared when the tab moves to another site (kept across subdomains of one site, reloads and same-page navigations). Side effects: with 'clear' true the returned messages are removed from the buffer. Returns: JSON {messages: [{source, level, text, timestamp, url, line_number}], total (matching messages), truncated (more matched than 'limit'), notes?}. Use this to debug script errors, monitor page health, inspect exception traces. Alternatives: browser DevTools Console, error logging services."
+    description = "Returns the tab's console messages and uncaught exceptions, oldest first: {messages, total, truncated, notes?}. Keeps the last 1000 (10000 characters each), cleared when the tab moves to another site."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct GetConsoleLogsTool {
-    /// Chrome instance id from open_instance/list_instances. Omit for the default instance.
+    /// Instance id; omit for the default instance.
     pub instance_id: Option<String>,
-    /// The Tab ID of the target tab. Omit to use the active tab.
+    /// Tab id; omit for the active tab.
     pub tab_id: Option<String>,
-    /// Remove the returned messages from the buffer. Constraints: boolean. Interactions: only the returned messages (after level_filter and limit) are removed; later calls return the rest plus new messages. Defaults to: false.
+    /// Remove the returned messages. Default: false.
     #[serde(default)]
     pub clear: Option<bool>,
 
-    /// Filter logs by severity level (case-insensitive). Constraints: 'error', 'warning' (or 'warn'), 'info', 'log', 'debug', or another level the browser reports. Interactions: when provided, returns only matching level; empty returns all. Defaults to: None (no filtering).
+    /// 'error', 'warning', 'info', 'log', 'debug'... Default: every level.
     #[serde(default)]
     pub level_filter: Option<String>,
 
-    /// Most messages to return: the most recent ones that match. Constraints: integer between 1 and 1000. Defaults to: 200.
+    /// Most recent messages to return, 1 to 1000. Default: 200.
     #[serde(default)]
     pub limit: Option<u32>,
 }

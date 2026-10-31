@@ -14,23 +14,23 @@ use tokio::sync::Mutex;
 
 #[macros::mcp_tool(
     name = "navigate",
-    description = "Navigates the current Chrome tab to a specified URL, loading new page content. Side effects: destructive of current page state; discards unsaved work. Prerequisites: requires an active Chrome tab; URL must be valid and accessible (subject to local-only restrictions if enabled). Returns: JSON {url (final, after redirects), tab_id, browser (protocol ids), status? (the document's HTTP status; 400 and up also adds a note), notes?} once the page fired `load` (at most 30 s); a network error (unknown host, refused connection...) or a URL the browser downloads fails the call with 'Navigation failed: <reason> (<url>)'. Auth requirements: subject to same-origin policy; may require credentials for restricted URLs. Rate limits: none. Use this to change the current page. Alternatives: 'reload' to refresh current page. Note: copy_cookies imports the user's real Chrome cookies, giving this browser access to their authenticated sessions — always ask the user before setting it to true. If the target instance is already running, setting copy_cookies is destructive: the instance is relaunched and all its open tabs are closed. In that case the call fails first with the list of tabs to be closed, so you can warn the user and re-issue with confirm_restart: true."
+    description = "Loads a URL in the tab and waits for load (at most 30 s). Returns {url (after redirects), tab_id, browser, status?, notes?}; a network error or a download fails with 'Navigation failed: <reason> (<url>)'. With --local only local addresses are allowed. Note: copy_cookies imports the user's real Chrome cookies: ask the user first. On a running instance it relaunches it, closing its tabs: the call first fails listing them, then re-issue it with confirm_restart: true."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct NavigateTool {
-    /// Chrome instance id from open_instance/list_instances. Omit for the default instance.
+    /// Instance id; omit for the default instance.
     pub instance_id: Option<String>,
-    /// The Tab ID of the target tab. Omit to use the active tab.
+    /// Tab id; omit for the active tab.
     pub tab_id: Option<String>,
-    /// Target URL to navigate to. Constraints: valid absolute URL (http/https/file). Interactions: navigation is blocked if MCP server started with 'local' flag and URL is not localhost/127.0.0.1/192.168.x.x/*.local. Defaults to: None (required).
+    /// Absolute URL (http, https or file).
     pub url: String,
-    /// Optional flag to copy cookies from the user's real Chrome installation into this instance's isolated profile. Requires server running with --allow-cookie-import.
+    /// Import cookies from the user's Chrome profile (needs --allow-cookie-import; Chrome only).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub copy_cookies: Option<bool>,
-    /// Optional source profile name to copy cookies from (e.g. 'Default', 'Profile 1'). Defaults to the last used profile.
+    /// Chrome profile to import cookies from (e.g. 'Profile 1'). Default: the last used.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_profile: Option<String>,
-    /// Acknowledges that importing cookies into an already-running instance requires relaunching it, closing all of its tabs. Only meaningful together with copy_cookies. Defaults to: false.
+    /// Allow relaunching a running instance to import cookies (closes its tabs). Default: false.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub confirm_restart: Option<bool>,
 }

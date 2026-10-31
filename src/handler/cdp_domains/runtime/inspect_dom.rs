@@ -6,19 +6,19 @@ use rust_mcp_sdk::{
 
 #[macros::mcp_tool(
     name = "inspect_dom",
-    description = "Retrieves the HTML document (the top document with its open shadow roots, as <template shadowrootmode=\"open\">, followed by each same-origin iframe's document after an <!-- iframe src: --> comment; closed shadow roots are not readable, and cross-origin iframes are left out with a note) or a contextual snippet around a search query. Side effects: none (read-only). Prerequisites: requires an active tab with loaded DOM. Returns: the HTML, at most 100000 characters (a longer document starts with a [Truncated: ...] note), or the first match with its position (characters) and context markers. Use this to inspect page structure, find elements by text, or verify rendering; act on elements inside a shadow root or an iframe with 'host >>> inner' selectors. Alternatives: 'evaluate_js' for complex DOM queries, 'capture_screenshot' for visual verification."
+    description = "Returns the page's HTML (open shadow roots as <template shadowrootmode>, same-origin iframes appended after <!-- iframe src: -->; at most 100000 characters), or with 'query' the first match and its context. To find elements to act on, prefer 'snapshot'."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct InspectDomTool {
-    /// Chrome instance id from open_instance/list_instances. Omit for the default instance.
+    /// Instance id; omit for the default instance.
     pub instance_id: Option<String>,
-    /// The Tab ID of the target tab. Omit to use the active tab.
+    /// Tab id; omit for the active tab.
     pub tab_id: Option<String>,
-    /// Text pattern to search for in the DOM (case-sensitive). Constraints: any string. Interactions: when provided, returns context snippet instead of full HTML. Defaults to: None (returns full HTML if omitted).
+    /// Case-sensitive text to find: returns its context instead of the whole HTML.
     pub query: Option<String>,
-    /// Characters to include before the match. Constraints: non-negative integer, at most 10000. Interactions: only applies if 'query' provided. Defaults to: 200.
+    /// Characters of context before the match, at most 10000. Default: 200.
     pub before: Option<u32>,
-    /// Characters to include after the match. Constraints: non-negative integer, at most 10000. Interactions: only applies if 'query' provided. Defaults to: 200.
+    /// Characters of context after the match, at most 10000. Default: 200.
     pub after: Option<u32>,
 }
 

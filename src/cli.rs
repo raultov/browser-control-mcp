@@ -44,6 +44,50 @@ pub struct Args {
     /// Where `upload_file` may read files from.
     #[command(flatten)]
     pub upload: UploadArgs,
+
+    /// Opt-in tool groups.
+    #[command(flatten)]
+    pub tools: ToolArgs,
+}
+
+/// The tool groups listed on top of the default tools: each listed tool
+/// costs the agent context on every turn, and these are niche or risky.
+#[derive(clap::Args, Debug, Clone, Default, PartialEq, Eq)]
+pub struct ToolArgs {
+    /// Opt-in tool groups, comma separated: storage, files, raw, perf, emulation, or all.
+    #[arg(long = "tool-groups", value_enum, value_delimiter = ',')]
+    pub tool_groups: Vec<ToolGroup>,
+}
+
+/// A group of tools listed only when `--tool-groups` names it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum ToolGroup {
+    /// `cookies` and `web_storage`: they read and change session tokens.
+    Storage,
+    /// `upload_file`: it hands a page files of the machine.
+    Files,
+    /// The raw protocol tools and `get_custom_events`: anything goes.
+    Raw,
+    /// `get_performance_metrics` and `profile_page_performance`.
+    Perf,
+    /// `emulate`.
+    Emulation,
+    /// Every group.
+    All,
+}
+
+impl ToolGroup {
+    /// The name `--tool-groups` takes.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Storage => "storage",
+            Self::Files => "files",
+            Self::Raw => "raw",
+            Self::Perf => "perf",
+            Self::Emulation => "emulation",
+            Self::All => "all",
+        }
+    }
 }
 
 /// The directories `upload_file` may read files from: a page given a file

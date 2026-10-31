@@ -9,43 +9,43 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 #[macros::mcp_tool(
     name = "get_network_logs",
-    description = "Retrieves intercepted HTTP/REST requests and WebSocket frames from network activity cache with filtering. Side effects: when 'clear' is true the returned requests and WebSocket frames (those the filters selected) are removed from the cache; the rest stays. Prerequisites: requires active Chrome tab with network monitoring enabled. Returns: JSON array of requests/WebSocket frames with optional full details ('include_details' defaults to true; set false for summary only). Bodies and WebSocket payloads show at most 64000 characters ('… [cut: ...]' where cut; payload_len is the whole length); response bodies over 2 MB are not kept, and a response still loading (an open event stream) has none yet (a note says how many). Parameters: 'current_navigation_only' limits results to current navigation only (defaults to false, retaining up to 3 navigations). Rate limits: none. Use this to audit API calls, debug network issues, inspect WebSocket traffic. Alternatives: browser DevTools Network tab, HAR file export."
+    description = "Returns the tab's HTTP requests and WebSocket frames (up to 3 navigations), filtered, with headers and bodies by default (cut at 64000 characters; bodies over 2 MB not kept). Credential headers and request bodies are redacted unless include_sensitive_headers. 'clear' removes what was returned."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct GetNetworkLogsTool {
-    /// Chrome instance id from open_instance/list_instances. Omit for the default instance.
+    /// Instance id; omit for the default instance.
     pub instance_id: Option<String>,
-    /// The Tab ID of the target tab. Omit to use the active tab.
+    /// Tab id; omit for the active tab.
     pub tab_id: Option<String>,
-    /// Remove the returned requests and frames from the cache. Constraints: boolean. Interactions: only what the filters selected is removed, so later calls return the rest plus new traffic. Defaults to: false.
+    /// Remove the returned entries. Default: false.
     #[serde(default)]
     pub clear: Option<bool>,
 
-    /// Traffic type to include. Constraints: 'rest', 'websocket', or 'both' (case-insensitive). Interactions: limits results to specified type. Defaults to: "both".
+    /// 'rest', 'websocket' or 'both' (default).
     #[serde(default)]
     pub type_filter: Option<String>,
 
-    /// Partial URL match (case-insensitive). Constraints: non-empty string. Interactions: filters both REST and WebSocket URLs; empty string disables filtering. Defaults to: None (no URL filtering).
+    /// Case-insensitive URL substring.
     #[serde(default)]
     pub url_filter: Option<String>,
 
-    /// WebSocket frame direction filter. Constraints: 'sent', 'received', or 'both'. Interactions: applies only when type_filter includes 'websocket'. Defaults to: "both".
+    /// 'sent', 'received' or 'both' (default).
     #[serde(default)]
     pub ws_direction_filter: Option<String>,
 
-    /// WebSocket payload substring match (case-insensitive). Constraints: non-empty string. Interactions: applies only when type_filter includes 'websocket'; filters by payload content. Defaults to: None (no content filtering).
+    /// Case-insensitive WebSocket payload substring.
     #[serde(default)]
     pub ws_content_filter: Option<String>,
 
-    /// Include full request/response details. Constraints: boolean. Interactions: when false, returns summary only (URL, method, status); when true, includes headers, bodies. Defaults to: true.
+    /// Headers and bodies. Default: true; false gives URL, method and status.
     #[serde(default)]
     pub include_details: Option<bool>,
 
-    /// Return request bodies and the values of sensitive headers (Authorization, Proxy-Authorization, Cookie, Set-Cookie, and any header whose name contains token, secret, api-key, apikey, password, session, csrf or xsrf) instead of `"<redacted>"`. Constraints: boolean. Interactions: only meaningful with include_details. Defaults to: false.
+    /// Show credential headers (Authorization, Cookie, token...) and request bodies. Default: false.
     #[serde(default)]
     pub include_sensitive_headers: Option<bool>,
 
-    /// Limit results to current navigation only. Constraints: boolean. Interactions: when false, includes up to 3 retained navigations. Defaults to: false.
+    /// Only the current navigation. Default: false.
     #[serde(default)]
     pub current_navigation_only: Option<bool>,
 }

@@ -7,15 +7,15 @@ use serde_json::json;
 
 #[macros::mcp_tool(
     name = "search_scripts",
-    description = "Searches all cached script sources for a text pattern and returns matching locations (line and column numbers). Side effects: none (read-only query). Prerequisites: scripts must have been parsed and cached by the debugger. Returns: JSON array of matches with script ID, line/column numbers, and line preview (a line over 400 characters, e.g. minified code, only around the match, `…` where cut). Use this to locate code before setting breakpoints. Alternatives: 'set_breakpoint' for direct breakpoint placement, 'evaluate_js' for runtime code discovery."
+    description = "Searches the tab's loaded scripts for a text and returns each match's script id, hash, 0-based line and column and a preview, to find where to set a breakpoint."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct SearchScriptsTool {
-    /// Chrome instance id from open_instance/list_instances. Omit for the default instance.
+    /// Instance id; omit for the default instance.
     pub instance_id: Option<String>,
-    /// The Tab ID of the target tab. Omit to use the active tab.
+    /// Tab id; omit for the active tab.
     pub tab_id: Option<String>,
-    /// Text pattern or special command to search for. Constraints: non-empty string (empty string returns cached script count). Interactions: '@source' returns first 1000 chars of each script; 'debug' returns script lengths and errors. Defaults to: None (required).
+    /// Text to find. '' returns the script count, '@source' the first 1000 characters of each script, 'debug' their lengths and errors.
     pub query: String,
 }
 

@@ -8,23 +8,23 @@ use serde_json::{Value, json};
 
 #[macros::mcp_tool(
     name = "web_storage",
-    description = "Reads or changes the page's localStorage or sessionStorage ('kind'), for the page's origin ('action'): 'get' lists the items (or 'key' only), with values hidden ('value_length' instead) unless 'show_values' is true, as they often hold tokens; 'set' sets 'key' = 'value'; 'delete' removes 'key'; 'clear' removes every item. Side effects: 'set', 'delete' and 'clear' change what the page reads from now on (reload to see the effect). Prerequisites: a page with an origin (not about:blank or a data: URL). Returns: JSON {items: [{key, value | value_length}]} for 'get' (at most 200 items, values cut at 2000 characters), or what changed. Use this to inspect or reset a session or the page's saved state. Alternatives: 'cookies' for cookies; 'evaluate_js' for other storage (IndexedDB)."
+    description = "Gets, sets, deletes or clears the localStorage or sessionStorage ('kind') of the page's origin. get hides values (value_length) unless show_values; at most 200 items, values cut at 2000 characters."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct WebStorageTool {
-    /// Chrome instance id from open_instance/list_instances. Omit for the default instance.
+    /// Instance id; omit for the default instance.
     pub instance_id: Option<String>,
-    /// The Tab ID of the target tab. Omit to use the active tab.
+    /// Tab id; omit for the active tab.
     pub tab_id: Option<String>,
-    /// What to do: 'get', 'set', 'delete' or 'clear'.
+    /// get, set, delete or clear.
     pub action: StorageAction,
-    /// Which storage: 'local' or 'session'. Defaults to: 'local'.
+    /// 'local' (default) or 'session'.
     pub kind: Option<StorageKind>,
-    /// The item's key: required for 'set' and 'delete'; for 'get', only this item.
+    /// Item key: required for set and delete; for get, only this item.
     pub key: Option<String>,
-    /// The value ('set' only).
+    /// Value (set).
     pub value: Option<String>,
-    /// Return the values ('get'). Defaults to: false (values hidden, they often hold tokens).
+    /// Return the values (get). Default: false.
     pub show_values: Option<bool>,
 }
 
