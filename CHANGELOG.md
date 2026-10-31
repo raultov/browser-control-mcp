@@ -10,6 +10,19 @@ from a copy of its code: entries describe the differences from that release.
 
 ## [Unreleased]
 
+## [0.7.0-beta.11] - 2026-10-31
+
+Public **BETA**. Closes gaps with Playwright MCP and chrome-devtools-mcp and
+fixes editors found in real pages: a new `drag` tool (sortable lists,
+boards, sliders, HTML5 drag and drop), `navigate` back and forward in the
+tab's history, `fill_input` with `append`, and `capture_screenshot` of one
+element; `fill_input` now types into Monaco, CodeMirror 6 on Firefox and
+TinyMCE on Firefox, and `snapshot` shows the value of ARIA comboboxes,
+spinbuttons and sliders. Behaviour changes: the default tool list has one
+more tool (about 390 more tokens), `navigate`'s `url` is optional (pass it
+or `history`), and `fill_input` on an editor whose content the page does
+not expose answers that the text was not checked.
+
 ### Added
 
 - `drag` tool: drags an element onto another with the mouse. It waits for
