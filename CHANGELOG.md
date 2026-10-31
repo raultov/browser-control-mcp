@@ -10,6 +10,16 @@ from a copy of its code: entries describe the differences from that release.
 
 ## [Unreleased]
 
+## [0.6.0-beta.10] - 2026-10-31
+
+Public **BETA**. Fixes four input and snapshot bugs found while driving a
+real web app (Discord): `fill_input` now types into rich text editors
+(Slate, Lexical, ProseMirror) so the editor records the edit, styled
+checkboxes covered by their own label are clicked, controls shown only on
+hover are revealed and clicked, and `snapshot` lists the links and buttons
+inside a clickable container. Behaviour change: a covered element now gets
+a mouse move before the click is refused.
+
 ### Fixed
 
 - `click_element`, `hover` and `fill_form` reach controls shown only while
