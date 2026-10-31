@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 #[macros::mcp_tool(
     name = "get_network_logs",
-    description = "Returns the tab's HTTP requests and WebSocket frames (up to 3 navigations), filtered, with headers and bodies by default (cut at 64000 characters; bodies over 2 MB not kept). Credential headers and request bodies are redacted unless include_sensitive_headers. 'clear' removes what was returned."
+    description = "Returns the tab's HTTP requests (one line each: id, method, URL, status, type; the last 3 navigations, oldest first) and WebSocket frames, filtered. 'request_id' gives one request's headers and body; include_details: true gives them for every request (bodies cut at 64000 characters; none over 2 MB). Credential headers and request bodies are redacted unless include_sensitive_headers. 'clear' removes what was returned."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct GetNetworkLogsTool {
@@ -37,7 +37,7 @@ pub struct GetNetworkLogsTool {
     #[serde(default)]
     pub ws_content_filter: Option<String>,
 
-    /// Headers and bodies. Default: true; false gives URL, method and status.
+    /// Headers and bodies of every request, as JSON. Default: false (one line per request).
     #[serde(default)]
     pub include_details: Option<bool>,
 
@@ -48,6 +48,10 @@ pub struct GetNetworkLogsTool {
     /// Only the current navigation. Default: false.
     #[serde(default)]
     pub current_navigation_only: Option<bool>,
+
+    /// One request's headers and body (an id from the summary).
+    #[serde(default)]
+    pub request_id: Option<String>,
 }
 
 type Requests = HashMap<String, NetworkRequest>;
@@ -65,6 +69,7 @@ struct Filters {
     ws_direction: String,
     ws_content: String,
     include_details: bool,
+    request_id: Option<String>,
 }
 
 impl Filters {
@@ -78,7 +83,8 @@ impl Filters {
             url: lower(&args.url_filter, ""),
             ws_direction: lower(&args.ws_direction_filter, "both"),
             ws_content: lower(&args.ws_content_filter, ""),
-            include_details: args.include_details.unwrap_or(true),
+            include_details: args.include_details.unwrap_or(false),
+            request_id: args.request_id.clone(),
         }
     }
 
@@ -105,6 +111,8 @@ pub(crate) struct NetworkSnapshot {
     pub(crate) frames: Frames,
     /// Ids of the current navigation's requests.
     pub(crate) current_ids: HashSet<String>,
+    /// Ids of `requests`, oldest first.
+    pub(crate) order: Vec<String>,
 }
 
 impl GetNetworkLogsTool {
@@ -132,13 +140,14 @@ impl GetNetworkLogsTool {
                 fetch_bodies(&target, &mut snapshot.requests, &snapshot.current_ids).await;
             notes.extend(still_loading_note(loading));
         }
-        Ok(args.finish(snapshot, notes))
+        args.finish(snapshot, notes)
     }
 
-    /// Whether response bodies should be fetched (REST requests with details).
+    /// Whether response bodies should be fetched (REST requests with
+    /// details, or the one `request_id` names).
     pub(crate) fn wants_bodies(&self) -> bool {
         let filters = Filters::new(self);
-        filters.want_rest && filters.include_details
+        filters.want_rest && (filters.include_details || filters.request_id.is_some())
     }
 
     /// Copies the tab's buffers and applies the type, URL, direction and
@@ -150,7 +159,8 @@ impl GetNetworkLogsTool {
     ) -> NetworkSnapshot {
         let filters = Filters::new(self);
         let mut st = network_state.lock().await;
-        let requests = if self.current_navigation_only.unwrap_or(false) {
+        let current_only = self.current_navigation_only.unwrap_or(false);
+        let requests = if current_only {
             st.iter_current()
         } else {
             st.iter_all()
@@ -159,6 +169,7 @@ impl GetNetworkLogsTool {
             requests,
             frames: st.ws_frames.clone().into_iter().collect(),
             current_ids: st.current_ids(),
+            order: st.ordered_ids(current_only),
         };
         filters.apply(&mut snapshot);
         if self.clear.unwrap_or(false) {
@@ -178,13 +189,16 @@ impl Filters {
     fn apply(&self, snapshot: &mut NetworkSnapshot) {
         let filters = self;
         if filters.want_rest {
+            let one = filters.request_id.as_deref();
             snapshot
                 .requests
-                .retain(|_, req| filters.url_matches(&req.url));
+                .retain(|id, req| filters.url_matches(&req.url) && one.is_none_or(|one| one == id));
         } else {
             snapshot.requests.clear();
         }
-        if filters.want_ws {
+        let kept = &snapshot.requests;
+        snapshot.order.retain(|id| kept.contains_key(id));
+        if filters.want_ws && filters.request_id.is_none() {
             snapshot.frames.retain(|_, frames| {
                 frames.retain(|f| filters.frame_matches(f));
                 !frames.is_empty()
@@ -196,35 +210,149 @@ impl Filters {
 }
 
 impl GetNetworkLogsTool {
-    /// The tool's output: redacted unless asked otherwise; `notes` (browser
-    /// limits, lost events) are listed under `notes`.
+    /// The tool's output: one line per request and frame by default, the
+    /// one request `request_id` names, or every detail as JSON; redacted
+    /// unless asked otherwise; `notes` (browser limits, lost events) last.
     pub(crate) fn finish(
         &self,
         mut snapshot: NetworkSnapshot,
         notes: Vec<String>,
-    ) -> CallToolResult {
+    ) -> Result<CallToolResult, CallToolError> {
         let filters = Filters::new(self);
-        if filters.include_details && !self.include_sensitive_headers.unwrap_or(false) {
+        let detailed = filters.include_details || filters.request_id.is_some();
+        if detailed && !self.include_sensitive_headers.unwrap_or(false) {
             redact_requests(&mut snapshot.requests);
+        }
+        if let Some(id) = &filters.request_id {
+            return one_request(id, snapshot.requests, notes);
+        }
+        if !filters.include_details {
+            let text = summary(&filters, &snapshot, &notes);
+            return Ok(CallToolResult::text_content(vec![text.into()]));
         }
         let mut output = serde_json::Map::new();
         if filters.want_rest {
-            let requests = requests_json(snapshot.requests, filters.include_details);
+            let requests = requests_json(snapshot.requests);
             output.insert("requests".into(), requests);
         }
         if filters.want_ws {
-            let frames = frames_json(snapshot.frames, filters.include_details);
+            let frames = serde_json::to_value(&snapshot.frames).unwrap_or_default();
             output.insert("websocket_frames".into(), frames);
         }
         if !notes.is_empty() {
             output.insert("notes".into(), json!(notes));
         }
-        CallToolResult::text_content(vec![
+        Ok(CallToolResult::text_content(vec![
             serde_json::to_string_pretty(&output)
                 .unwrap_or_default()
                 .into(),
-        ])
+        ]))
     }
+}
+
+/// Longest URL in a summary line (characters).
+const URL_MAX_CHARS: usize = 200;
+
+/// Longest WebSocket payload preview in a summary line (characters).
+const PAYLOAD_PREVIEW_CHARS: usize = 100;
+
+/// `text` on one line, cut at `max` characters with an ellipsis.
+fn one_line(text: &str, max: usize) -> String {
+    let flat: String = text
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    match flat.char_indices().nth(max) {
+        Some((cut, _)) => format!("{}…", &flat[..cut]),
+        None => flat,
+    }
+}
+
+/// The default reply: a line per request, oldest first, then a line per
+/// WebSocket frame by connection, then the notes.
+fn summary(filters: &Filters, snapshot: &NetworkSnapshot, notes: &[String]) -> String {
+    let mut lines = Vec::new();
+    if filters.want_rest {
+        lines.push(format!(
+            "{} request(s), oldest first (request_id shows one's headers and body):",
+            snapshot.order.len()
+        ));
+        let requests = &snapshot.order;
+        let rows = requests
+            .iter()
+            .filter_map(|id| Some(summary_line(id, snapshot.requests.get(id)?)));
+        lines.extend(rows);
+    }
+    let count: usize = snapshot.frames.values().map(VecDeque::len).sum();
+    // No frames: said only when frames were asked for alone.
+    if filters.want_ws && (count > 0 || !filters.want_rest) {
+        lines.push(format!("{count} WebSocket frame(s), by connection:"));
+        let mut connections: Vec<&String> = snapshot.frames.keys().collect();
+        connections.sort();
+        for id in connections {
+            lines.extend(
+                snapshot.frames[id]
+                    .iter()
+                    .map(|frame| frame_line(id, frame)),
+            );
+        }
+    }
+    lines.extend(notes.iter().map(|note| format!("Note: {note}")));
+    lines.join("\n")
+}
+
+/// One summary line: `id METHOD url => status text [type]`.
+fn summary_line(id: &str, request: &NetworkRequest) -> String {
+    let outcome = match (&request.error, request.response_status) {
+        (Some(error), _) => format!("failed: {error}"),
+        (None, Some(status)) => match request.response_status_text.as_deref() {
+            Some(text) if !text.is_empty() => format!("{status} {text}"),
+            _ => status.to_string(),
+        },
+        (None, None) => "pending".to_string(),
+    };
+    let kind = request
+        .resource_type
+        .as_deref()
+        .map(|kind| format!(" [{kind}]"))
+        .unwrap_or_default();
+    let url = one_line(&request.url, URL_MAX_CHARS);
+    format!("{id} {} {url} => {outcome}{kind}", request.method)
+}
+
+/// One WebSocket frame: `id sent|received url (bytes): payload preview`.
+fn frame_line(id: &str, frame: &WebSocketFrame) -> String {
+    let direction = if frame.is_sent { "sent" } else { "received" };
+    let payload = one_line(&frame.payload_data, PAYLOAD_PREVIEW_CHARS);
+    format!(
+        "{id} {direction} {} ({} bytes): {payload}",
+        frame.url, frame.payload_len
+    )
+}
+
+/// The request `id` with its headers and body, or an error when the tab
+/// did not log it (or the filters left it out).
+fn one_request(
+    id: &str,
+    mut requests: Requests,
+    notes: Vec<String>,
+) -> Result<CallToolResult, CallToolError> {
+    let Some(request) = requests.remove(id) else {
+        return Err(CallToolError::from_message(format!(
+            "no request '{id}' in the tab's log: take an id from the get_network_logs summary (the last 3 navigations are kept)"
+        )));
+    };
+    let detailed = requests_json(HashMap::from([(id.to_string(), request)]));
+    let mut output = serde_json::Map::new();
+    output.insert("request_id".into(), json!(id));
+    if let Some(fields) = detailed.get(id).and_then(serde_json::Value::as_object) {
+        output.extend(fields.clone());
+    }
+    if !notes.is_empty() {
+        output.insert("notes".into(), json!(notes));
+    }
+    let text = serde_json::to_string_pretty(&output).unwrap_or_default();
+    Ok(CallToolResult::text_content(vec![text.into()]))
 }
 
 /// Largest response body fetched for `get_network_logs` (bytes): Firefox
@@ -304,47 +432,18 @@ fn content_length(request: &NetworkRequest) -> Option<u64> {
         .ok()
 }
 
-fn requests_json(mut requests: Requests, include_details: bool) -> serde_json::Value {
-    if include_details {
-        let cap = |body: &mut Option<String>| {
-            if let Some(text) = body {
-                *text = crate::util::text::capped(text, BODY_MAX_CHARS);
-            }
-        };
-        for request in requests.values_mut() {
-            cap(&mut request.response_body);
-            cap(&mut request.request_post_data);
+/// The requests with their details, bodies cut at [`BODY_MAX_CHARS`].
+fn requests_json(mut requests: Requests) -> serde_json::Value {
+    let cap = |body: &mut Option<String>| {
+        if let Some(text) = body {
+            *text = crate::util::text::capped(text, BODY_MAX_CHARS);
         }
-        return serde_json::to_value(&requests).unwrap_or_default();
+    };
+    for request in requests.values_mut() {
+        cap(&mut request.response_body);
+        cap(&mut request.request_post_data);
     }
-    let summary = requests.into_iter().map(|(id, req)| {
-        let mut row = json!({
-            "url": req.url,
-            "method": req.method,
-            "status": req.response_status,
-            "statusText": req.response_status_text,
-            "resourceType": req.resource_type
-        });
-        if let Some(error) = req.error {
-            row["error"] = json!(error);
-        }
-        (id, row)
-    });
-    serde_json::Value::Object(summary.collect())
-}
-
-fn frames_json(frames: Frames, include_details: bool) -> serde_json::Value {
-    if include_details {
-        return serde_json::to_value(&frames).unwrap_or_default();
-    }
-    let summary = frames.into_iter().map(|(id, frames)| {
-        let rows: Vec<_> = frames
-            .into_iter()
-            .map(|f| json!({"url": f.url, "is_sent": f.is_sent, "payload_len": f.payload_len}))
-            .collect();
-        (id, serde_json::Value::Array(rows))
-    });
-    serde_json::Value::Object(summary.collect())
+    serde_json::to_value(&requests).unwrap_or_default()
 }
 
 /// Hides the values of credential-carrying headers and the request bodies
@@ -482,15 +581,18 @@ mod tests {
     /// AUD-OB-13: bodies are cut in the reply, on every browser.
     #[test]
     fn large_bodies_are_capped_in_the_reply() {
-        let args: GetNetworkLogsTool =
-            serde_json::from_value(json!({"include_sensitive_headers": true})).unwrap();
+        let args: GetNetworkLogsTool = serde_json::from_value(
+            json!({"include_sensitive_headers": true, "include_details": true}),
+        )
+        .unwrap();
         let body = Some("b".repeat(1_000_000));
         let snapshot = NetworkSnapshot {
             requests: HashMap::from([("r1".to_string(), answered(json!({}), body))]),
             frames: HashMap::new(),
             current_ids: HashSet::new(),
+            order: vec!["r1".to_string()],
         };
-        let reply = args.finish(snapshot, Vec::new());
+        let reply = args.finish(snapshot, Vec::new()).unwrap();
         let text = crate::handler::cdp_domains::tests::reply_text(&reply);
         let output: serde_json::Value = serde_json::from_str(&text).unwrap();
         let request = &output["requests"]["r1"];
@@ -526,20 +628,115 @@ mod tests {
         assert_eq!(row["response_body_encoding"], "base64");
     }
 
-    /// AUD-OB-07: the summary (include_details false) shows a failure.
+    /// ISSUE-18: by default the reply is one line per request, oldest
+    /// first, without headers or bodies, then one line per WebSocket frame;
+    /// without frames, no WebSocket line unless only frames were asked for.
+    #[tokio::test]
+    async fn default_reply_is_one_line_per_request() {
+        // Given a tab that logged two requests and two frames
+        let handler = McpHandler::new_test_with_port(spawn_mock_chrome_server().await);
+        setup_mock_data(&handler).await;
+        let read = |args: serde_json::Value| {
+            let params = crate::handler::cdp_domains::tests::call("get_network_logs", args);
+            GetNetworkLogsTool::handle(params, &handler)
+        };
+        // When get_network_logs runs without options
+        let reply = read(json!({})).await.unwrap();
+        // Then each request and frame is one line, in order
+        let text = reply.content[0].as_text().unwrap().to_string();
+        let lines: Vec<&str> = text.lines().collect();
+        assert!(lines[0].starts_with("2 request(s), oldest first"), "{text}");
+        assert_eq!(
+            lines[1],
+            "req-1 GET https://example.com/api/v1 => 200 OK [XHR]"
+        );
+        assert_eq!(
+            lines[2],
+            "req-2 GET https://google.com/search => 200 OK [Document]"
+        );
+        assert_eq!(lines[3], "2 WebSocket frame(s), by connection:");
+        assert_eq!(
+            lines[4],
+            "ws-1 sent wss://socket.com/feed (12 bytes): hello server"
+        );
+        assert_eq!(
+            lines[5],
+            "ws-1 received wss://socket.com/feed (14 bytes): welcome client"
+        );
+        assert!(!text.contains("request_headers"), "{text}");
+        // And without frames there is no WebSocket line, unless only frames were asked for
+        handler
+            .default_session
+            .network_state
+            .lock()
+            .await
+            .ws_frames
+            .clear();
+        let reply = read(json!({})).await.unwrap();
+        assert!(!reply.content[0].as_text().unwrap().contains("WebSocket"));
+        let reply = read(json!({"type_filter": "websocket"})).await.unwrap();
+        assert_eq!(
+            reply.content[0].as_text().unwrap(),
+            "0 WebSocket frame(s), by connection:"
+        );
+    }
+
+    /// ISSUE-18: a failed or unanswered request says so; a long URL is cut.
     #[test]
-    fn summary_shows_the_error() {
+    fn summary_lines_show_failures() {
         let failed = NetworkRequest {
             url: "http://nope.invalid/".into(),
             method: "GET".into(),
             error: Some("net::ERR_NAME_NOT_RESOLVED".into()),
             ..Default::default()
         };
-        let rows = requests_json(HashMap::from([("r1".to_string(), failed)]), false);
-        assert_eq!(rows["r1"]["error"], "net::ERR_NAME_NOT_RESOLVED");
-        let ok = NetworkRequest::default();
-        let rows = requests_json(HashMap::from([("r2".to_string(), ok)]), false);
-        assert!(rows["r2"].get("error").is_none());
+        assert_eq!(
+            summary_line("r1", &failed),
+            "r1 GET http://nope.invalid/ => failed: net::ERR_NAME_NOT_RESOLVED"
+        );
+        let pending = NetworkRequest {
+            url: "http://a/x".into(),
+            method: "POST".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            summary_line("r2", &pending),
+            "r2 POST http://a/x => pending"
+        );
+        let long = NetworkRequest {
+            url: format!("http://a/{}", "q".repeat(500)),
+            method: "GET".into(),
+            response_status: Some(204),
+            ..Default::default()
+        };
+        let line = summary_line("r3", &long);
+        assert!(line.len() < 260 && line.contains("… => 204"), "{line}");
+    }
+
+    /// ISSUE-18: request_id expands one request (headers, body); an id the
+    /// tab did not log fails saying where ids come from.
+    #[tokio::test]
+    async fn request_id_expands_one_request() {
+        let handler = McpHandler::new_test_with_port(spawn_mock_chrome_server().await);
+        setup_mock_data(&handler).await;
+        let read = |args: serde_json::Value| {
+            let params = crate::handler::cdp_domains::tests::call("get_network_logs", args);
+            GetNetworkLogsTool::handle(params, &handler)
+        };
+        let reply = read(json!({"request_id": "req-1"})).await.unwrap();
+        let one: serde_json::Value =
+            serde_json::from_str(reply.content[0].as_text().unwrap()).unwrap();
+        assert_eq!(one["request_id"], "req-1");
+        assert_eq!(one["url"], "https://example.com/api/v1");
+        assert!(one.get("request_headers").is_some(), "{one}");
+        let error = read(json!({"request_id": "nope"}))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("'nope'") && error.contains("summary"),
+            "{error}"
+        );
     }
 
     /// AUD-OB-13: Chrome does not fetch a body over BODY_LIMIT (Firefox
@@ -582,6 +779,7 @@ mod tests {
         let params: CallToolRequestParams = serde_json::from_value(json!({
             "name": "get_network_logs",
             "arguments": {
+                "include_details": true,
                 "type_filter": "rest"
             }
         }))
@@ -604,6 +802,7 @@ mod tests {
         let params: CallToolRequestParams = serde_json::from_value(json!({
             "name": "get_network_logs",
             "arguments": {
+                "include_details": true,
                 "type_filter": "websocket"
             }
         }))
@@ -626,6 +825,7 @@ mod tests {
         let params: CallToolRequestParams = serde_json::from_value(json!({
             "name": "get_network_logs",
             "arguments": {
+                "include_details": true,
                 "url_filter": "example.com"
             }
         }))
@@ -648,6 +848,7 @@ mod tests {
         let params: CallToolRequestParams = serde_json::from_value(json!({
             "name": "get_network_logs",
             "arguments": {
+                "include_details": true,
                 "type_filter": "websocket",
                 "ws_direction_filter": "sent"
             }
@@ -671,6 +872,7 @@ mod tests {
         let params: CallToolRequestParams = serde_json::from_value(json!({
             "name": "get_network_logs",
             "arguments": {
+                "include_details": true,
                 "ws_content_filter": "welcome"
             }
         }))
@@ -691,35 +893,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_get_network_logs_include_details_false() {
-        let handler = McpHandler::new_test_with_port(spawn_mock_chrome_server().await);
-        setup_mock_data(&handler).await;
-
-        let params: CallToolRequestParams = serde_json::from_value(json!({
-            "name": "get_network_logs",
-            "arguments": {
-                "include_details": false
-            }
-        }))
-        .unwrap();
-
-        let result = GetNetworkLogsTool::handle(params, &handler).await.unwrap();
-        let json: serde_json::Value =
-            serde_json::from_str(result.content[0].as_text().unwrap()).unwrap();
-
-        // Check REST summary
-        let req = &json["requests"]["req-1"];
-        assert!(req.get("url").is_some());
-        assert!(req.get("request_headers").is_none());
-        assert!(req.get("statusText").is_some());
-
-        // Check WS summary
-        let frames = &json["websocket_frames"]["ws-1"];
-        assert!(frames[0].get("payload_len").is_some());
-        assert!(frames[0].get("payload_data").is_none());
-    }
-
-    #[tokio::test]
     async fn test_get_network_logs_clear() {
         let handler = McpHandler::new_test_with_port(spawn_mock_chrome_server().await);
         setup_mock_data(&handler).await;
@@ -727,6 +900,7 @@ mod tests {
         let params: CallToolRequestParams = serde_json::from_value(json!({
             "name": "get_network_logs",
             "arguments": {
+                "include_details": true,
                 "clear": true
             }
         }))
@@ -772,10 +946,10 @@ mod tests {
         };
         // When the example.com request is read with clear
         let cleared =
-            read(json!({"url_filter": "example.com", "type_filter": "rest", "clear": true})).await;
+            read(json!({"url_filter": "example.com", "type_filter": "rest", "clear": true, "include_details": true})).await;
         assert_eq!(cleared["requests"].as_object().unwrap().len(), 1);
         // Then the other request and every frame are still there
-        let rest = read(json!({"include_details": false})).await;
+        let rest = read(json!({"include_details": true})).await;
         let ids: Vec<&String> = rest["requests"].as_object().unwrap().keys().collect();
         assert_eq!(ids, ["req-2"]);
         assert!(
@@ -785,7 +959,7 @@ mod tests {
                 .is_empty()
         );
         // And clearing the frames keeps the connection's URL for later ones
-        read(json!({"type_filter": "websocket", "clear": true})).await;
+        read(json!({"type_filter": "websocket", "clear": true, "include_details": true})).await;
         let mut st = handler.default_session.network_state.lock().await;
         assert!(st.ws_frames.get_mut("ws-1").is_none_or(|f| f.is_empty()));
         assert_eq!(

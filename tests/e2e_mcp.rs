@@ -772,10 +772,16 @@ mod e2e {
                 "boom-e2e",
             ),
             (
-                "network",
+                "ISSUE-18 network: one line per request",
                 "get_network_logs",
                 json!({"instance_id": i, "url_filter": "/api"}),
-                "200",
+                "/api => 200",
+            ),
+            (
+                "ISSUE-18 network details on demand",
+                "get_network_logs",
+                json!({"instance_id": i, "url_filter": "/api", "include_details": true}),
+                "\"response_headers\"",
             ),
             (
                 "metrics",

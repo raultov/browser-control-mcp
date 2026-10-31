@@ -10,6 +10,22 @@ from a copy of its code: entries describe the differences from that release.
 
 ## [Unreleased]
 
+### Changed
+
+- `get_network_logs` answers one line per request by default (`id METHOD
+  url => status [type]`, oldest first), then one per WebSocket frame with a
+  payload preview: ~100 tokens for a page of four requests instead of ~2 250.
+  The new `request_id` shows one request's headers and body;
+  `include_details: true` (now off by default) keeps the previous JSON with
+  every request's details. (#18)
+
+### Fixed
+
+- `get_network_logs` no longer lists the browser's own requests: a freshly
+  launched Chrome logged its new-tab page (`chrome://resources/...`, `data:`
+  images) before the first navigation. `chrome://`, `devtools://`, `data:`,
+  `about:` and extension URLs are not logged. (#18)
+
 ## [0.5.0-beta.8] - 2026-10-31
 
 Public **BETA**. Closes the rest of the Playwright MCP comparison: the new

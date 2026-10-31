@@ -158,6 +158,30 @@ pub(crate) struct NetworkState {
     pub extra_headers: crate::util::bounded::BoundedMap<String, ExtraHeaders, MAX_EXTRA_HEADERS>,
 }
 
+/// URL schemes of the browser's own requests (the new-tab page, DevTools,
+/// extensions) and of inline data: never the page traffic an agent asks
+/// about, and the bulk of a fresh browser's log.
+const INTERNAL_SCHEMES: &[&str] = &[
+    "chrome:",
+    "chrome-extension:",
+    "chrome-untrusted:",
+    "chrome-search:",
+    "devtools:",
+    "data:",
+    "about:",
+    "moz-extension:",
+    "resource:",
+];
+
+/// Whether `url` is one of the browser's own requests ([`INTERNAL_SCHEMES`]).
+fn is_internal_url(url: &str) -> bool {
+    INTERNAL_SCHEMES.iter().any(|scheme| {
+        url.as_bytes()
+            .get(..scheme.len())
+            .is_some_and(|start| start.eq_ignore_ascii_case(scheme.as_bytes()))
+    })
+}
+
 /// Requests whose ExtraInfo headers are kept.
 pub(crate) const MAX_EXTRA_HEADERS: usize = 256;
 
@@ -206,6 +230,9 @@ impl NetworkState {
             let previous = std::mem::replace(existing, req);
             existing.redirects = previous.redirects;
             existing.redirects.push(previous.url);
+            return;
+        }
+        if is_internal_url(&req.url) {
             return;
         }
         if self.navigations.is_empty() {
@@ -329,6 +356,22 @@ impl NetworkState {
             }
         }
         all
+    }
+
+    /// The ids of the logged requests, oldest first (`current_only`: of
+    /// the current navigation).
+    pub(crate) fn ordered_ids(&self, current_only: bool) -> Vec<String> {
+        // The front bucket is the current navigation.
+        let buckets = self.navigations.iter().rev();
+        let skip = if current_only {
+            self.navigations.len().saturating_sub(1)
+        } else {
+            0
+        };
+        buckets
+            .skip(skip)
+            .flat_map(|bucket| bucket.order.iter().cloned())
+            .collect()
     }
 
     pub(crate) fn iter_current(&self) -> std::collections::HashMap<String, NetworkRequest> {
@@ -1654,6 +1697,28 @@ mod tests {
         session.target(None).await.unwrap();
         // Then the session-level debugger was disabled once
         assert_eq!(fallback("Debugger.disable"), 1);
+    }
+
+    /// ISSUE-18: the browser's own requests (the new-tab page's chrome://
+    /// resources, data: URLs, DevTools) are not logged; the page's are.
+    #[test]
+    fn internal_requests_are_not_logged() {
+        let mut network = NetworkState::default();
+        for (id, url) in [
+            ("a", "chrome://resources/js/x.js"),
+            ("b", "data:image/gif;base64,R0lGOD"),
+            ("c", "devtools://devtools/bundled/x.js"),
+            ("d", "http://a/page"),
+            ("e", "about:blank"),
+        ] {
+            let request = NetworkRequest {
+                url: url.into(),
+                ..Default::default()
+            };
+            network.insert_request(id.into(), request);
+        }
+        let logged: Vec<String> = network.ordered_ids(false);
+        assert_eq!(logged, ["d"]);
     }
 
     /// AUD-EV-11: a navigation's document request is found by the

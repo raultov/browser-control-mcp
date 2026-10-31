@@ -87,7 +87,7 @@ see the note.
 | `cookies` | ✓ | ✓ | `storage` group; `get` / `set` / `delete`: the cookies sent to the page (or `url`) or of a `domain`; values hidden unless `show_values: true` (Chrome `Network.*Cookie*`, Firefox BiDi `storage.*` in the tab's partition) |
 | `web_storage` | ✓ | ✓ | `storage` group; `get` / `set` / `delete` / `clear` on the page's `localStorage` or `sessionStorage`; values hidden unless `show_values: true` |
 | `get_console_logs` | ✓ | ✓ | a message keeps at most 10 000 characters; Firefox: page errors, CSS warnings and platform messages need the debugger port |
-| `get_network_logs` | ✓ | ✓ | a failed request has `error`, a binary body `response_body_encoding: "base64"`; bodies at most 64 000 characters, none over 2 MB; a WebSocket payload keeps 64 000 (`payload_len` is the whole); Firefox: WebSocket frames need the debugger port |
+| `get_network_logs` | ✓ | ✓ | one line per request, oldest first (`id METHOD url => status [type]`, or `failed: <reason>` / `pending`), then one per WebSocket frame (payload preview); `request_id` shows one request's headers and body, `include_details: true` every request's as JSON (a binary body has `response_body_encoding: "base64"`; bodies at most 64 000 characters, none over 2 MB; a WebSocket payload keeps 64 000, `payload_len` is the whole); the browser's own requests (`chrome://`, `devtools://`, `data:`, `about:`, extensions) are not logged; Firefox: WebSocket frames need the debugger port |
 | `mock_route` | ✓ | ✓ | `network` group; requests whose URL matches a glob (`*`, `?`, `\` escapes) get a mocked `status`, `body` (text, at most 1 MB), `content_type` and `headers` without reaching the network; the latest matching route wins; at most 50 routes per tab, kept until `remove_route` or the tab closes (Chrome `Fetch`, not while `enable_proxy_auth` is active; Firefox a `network` intercept) |
 | `list_routes` | ✓ | ✓ | `network` group; the tab's routes with the `hits` each answered |
 | `remove_route` | ✓ | ✓ | `network` group; one route by id, or all |
@@ -547,7 +547,7 @@ incompatible:
 - Firefox debugger: tabs are mapped to the debugger through Firefox's Remote
   Agent (verified on Firefox 157 only); a Firefox without it answers the
   debugger tools with an error instead of guessing a tab.
-- `get_network_logs` with response bodies has no total size limit (each
+- `get_network_logs` with `include_details: true` has no total size limit (each
   Firefox body is capped at 2 MB): use `url_filter` on busy pages.
 - The Docker image is amd64 only.
 

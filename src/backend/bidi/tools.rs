@@ -519,7 +519,7 @@ pub(crate) async fn network_logs(
         notes.push(frames_note(session.spec.lock().await.has_debugger()).to_string());
     }
     notes.extend(session.lag_note());
-    Ok(args.finish(snapshot, notes))
+    args.finish(snapshot, notes)
 }
 
 /// Why a Firefox tab has no WebSocket frames: they come from its debugger.
@@ -1690,8 +1690,7 @@ mod tests {
         // When the page exchanges frames
         rdp.emit_resources("websocket", fixture_resources(RDP_RESOURCES_WEBSOCKET));
         // Then get_network_logs filters them like on Chrome
-        let args =
-            json!({"type_filter": "websocket", "ws_content_filter": "echo", "url_filter": "8808"});
+        let args = json!({"type_filter": "websocket", "ws_content_filter": "echo", "url_filter": "8808", "include_details": true});
         let reply = until_contains(&handler, "get_network_logs", args, "echo:").await;
         let body: Value = serde_json::from_str(&reply).unwrap();
         let frames = body["websocket_frames"]["38"].as_array().unwrap();
@@ -1704,8 +1703,8 @@ mod tests {
         later[1]["httpChannelId"] = json!(41);
         rdp.emit_resources("websocket", later[..2].to_vec());
         let args = json!({"type_filter": "websocket"});
-        let reply = until_contains(&handler, "get_network_logs", args, "\"41\"").await;
-        assert!(reply.contains("\"41\""), "{reply}");
+        let reply = until_contains(&handler, "get_network_logs", args, "\n41 sent").await;
+        assert!(reply.contains("\n41 sent ws://127.0.0.1:8808/"), "{reply}");
         ts::stop(&handler).await;
     }
 
