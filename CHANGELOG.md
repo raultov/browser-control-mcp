@@ -10,6 +10,17 @@ from a copy of its code: entries describe the differences from that release.
 
 ## [Unreleased]
 
+## [0.8.0-beta.12] - 2026-10-31
+
+Public **BETA**. Reaches into frames of another origin (payment forms,
+embedded editors, playgrounds, widgets), which Playwright MCP already did:
+`snapshot` reads them in place with frame refs (`f2e5`), and the input tools
+act in them through those refs, on Chrome and Firefox. Behaviour changes:
+`snapshot` and `find_in_snapshot` now show the content of such frames
+instead of a "not readable" line, iframes read get a `[frame=f2]` mark, and
+selectors starting with `f` and a number (`f2e5`, `f2 >>> css`) name
+elements of those frames.
+
 ### Added
 
 - Frames of another origin (payment forms, embedded editors and playgrounds,
