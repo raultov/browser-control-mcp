@@ -8,7 +8,10 @@
 //! One line per element with a role, indented under its nearest such
 //! ancestor, following the rendered tree: open shadow roots, slots and
 //! same-origin iframes included, hidden elements left out. Elements without
-//! a role are transparent; their text becomes `text:` lines.
+//! a role are transparent; their text becomes `text:` lines. Layout tables
+//! (no headers, no role) are transparent too, and a cell is named by its
+//! content only when that content is plain text, folded into the name, so
+//! no text is printed twice.
 
 use super::js::{RESOLVE, string_literal};
 
@@ -67,11 +70,24 @@ const OUTLINE: &str = r#"const outline = (root, maxDepth, maxChars) => {
         FORM: 'form', DIALOG: 'dialog', UL: 'list', OL: 'list', LI: 'listitem', TABLE: 'table', TR: 'row',
         TD: 'cell', TH: 'columnheader', OPTION: 'option', IFRAME: 'iframe', FRAME: 'iframe',
         HEADER: 'banner', FOOTER: 'contentinfo', ASIDE: 'complementary' };
+    const firstRole = el => (el.getAttribute('role') || '').trim().split(/\s+/)[0];
+    const layoutTables = new Map();
+    const layoutTable = table => {
+        if (!table) return false;
+        if (!layoutTables.has(table)) {
+            const role = firstRole(table);
+            const headed = table.caption || table.tHead || table.hasAttribute('summary')
+                || Array.from(table.rows).some(row => Array.from(row.cells).some(cell => cell.tagName === 'TH'));
+            layoutTables.set(table, role === 'presentation' || role === 'none' || (!role && !headed));
+        }
+        return layoutTables.get(table);
+    };
     const roleOf = el => {
-        const explicit = (el.getAttribute('role') || '').trim().split(/\s+/)[0];
+        const explicit = firstRole(el);
         if (explicit === 'presentation' || explicit === 'none') return null;
         if (explicit) return explicit;
         const tag = el.tagName;
+        if ((tag === 'TABLE' || tag === 'TR' || tag === 'TD') && layoutTable(tag === 'TABLE' ? el : el.closest('table'))) return null;
         if (tag === 'A' || tag === 'AREA') return el.hasAttribute('href') ? 'link' : null;
         if (tag === 'INPUT') return el.type === 'hidden' ? null : INPUTS[el.type] || 'textbox';
         if (tag === 'SELECT') return el.multiple || el.size > 1 ? 'listbox' : 'combobox';
@@ -83,7 +99,17 @@ const OUTLINE: &str = r#"const outline = (root, maxDepth, maxChars) => {
     const LEAF = new Set(['button', 'link', 'heading', 'textbox', 'searchbox', 'combobox', 'checkbox', 'radio',
         'img', 'slider', 'spinbutton', 'option', 'switch', 'tab', 'menuitem', 'menuitemcheckbox', 'menuitemradio', 'clickable']);
     const FROM_CONTENT = new Set(['button', 'link', 'heading', 'tab', 'menuitem', 'menuitemcheckbox', 'menuitemradio',
-        'option', 'cell', 'columnheader', 'switch', 'clickable', 'checkbox', 'radio']);
+        'option', 'switch', 'clickable', 'checkbox', 'radio']);
+    const NAMED_BY_TEXT = new Set(['cell', 'columnheader', 'rowheader', 'gridcell']);
+    const foldText = (at, depth, role) => {
+        const own = lines.slice(at + 1), marker = '  '.repeat(depth + 1) + '- text: ';
+        if (truncated || !own.length || !own.every(line => line.startsWith(marker))) return;
+        const folded = own.map(line => line.slice(marker.length)).join(' ');
+        if (folded.length > 100) return;
+        const head = '  '.repeat(depth) + '- ' + role, line = head + ' ' + JSON.stringify(folded) + lines[at].slice(head.length);
+        size += line.length - lines[at].length - own.reduce((n, l) => n + l.length + 1, 0);
+        lines.splice(at, lines.length - at, line);
+    };
     const textOf = el => clean(el.innerText !== undefined ? el.innerText : el.textContent);
     const nameOf = (el, role) => {
         const root = el.getRootNode();
@@ -145,7 +171,7 @@ const OUTLINE: &str = r#"const outline = (root, maxDepth, maxChars) => {
             return;
         }
         flush();
-        const name = nameOf(el, role), value = valueOf(el, role);
+        const name = nameOf(el, role), value = valueOf(el, role), at = lines.length;
         const parts = [role];
         if (name) parts.push(JSON.stringify(cut(name, 100)));
         parts.push(...details(el, role), '[ref=' + refOf(el) + ']');
@@ -159,6 +185,7 @@ const OUTLINE: &str = r#"const outline = (root, maxDepth, maxChars) => {
         if (LEAF.has(role) || depth >= maxDepth) return;
         walk(el, depth + 1);
         flush();
+        if (NAMED_BY_TEXT.has(role) && !name) foldText(at, depth, role);
     };
     if (root.nodeType === 9) walk(root.body || root.documentElement, 0); else visit(root, 0);
     flush();
@@ -246,6 +273,32 @@ mod tests {
         assert!(RESOLVE.contains(key) && OUTLINE.contains(key));
         assert!(expression.contains(&format!(", {SNAPSHOT_MAX_CHARS});")));
         assert!(expression.contains("const target = null;"));
+    }
+
+    /// ISSUE-20: tables without headers are layout (their table, rows and
+    /// cells leave only their content), and a cell is named by its content
+    /// only when that content is plain text (folded into the name), so its
+    /// children never repeat it.
+    #[test]
+    fn tables_do_not_repeat_their_text() {
+        for needle in [
+            "const layoutTable",
+            "table.tHead",
+            "table.caption",
+            "cell.tagName === 'TH'",
+        ] {
+            assert!(OUTLINE.contains(needle), "{needle}");
+        }
+        let from_content = OUTLINE
+            .split("const FROM_CONTENT = new Set([")
+            .nth(1)
+            .and_then(|rest| rest.split("]);").next())
+            .unwrap();
+        assert!(!from_content.contains("'cell'") && !from_content.contains("'columnheader'"));
+        assert!(
+            OUTLINE.contains("const foldText"),
+            "cells of plain text fold it into their name"
+        );
     }
 
     /// ISSUE-4: the scope and the search reach JavaScript as one literal.

@@ -31,6 +31,8 @@ mod e2e {
       const root = this.attachShadow({mode: 'open'}); root.innerHTML = '<button id="sb">shadow</button>';
       root.getElementById('sb').onclick = () => { window.__pierced = (window.__pierced || '') + 'shadow;'; }; } });</script>
     <input id="q" value="old"><div id="marker">needle-marker</div>
+    <table id="lay"><tr><td><a href="/lay">lay-link</a></td><td>lay-text</td></tr></table>
+    <table id="dat"><tr><th>Name</th></tr><tr><td><a href="/dat">dat-link</a></td></tr><tr><td>dat-text <b>bold</b></td></tr></table>
     <script>console.log("hello from e2e", {n: 1});</script><script>throw new Error("boom-e2e");</script><script src="/app.js"></script></body></html>"#;
     const FRAME: &str = r#"<!doctype html><html><body>
     <button id="fb" onclick="parent.__pierced = (parent.__pierced || '') + 'frame;'">framed</button><input id="fq"></body></html>"#;
@@ -483,6 +485,34 @@ mod e2e {
                 "evaluate_js",
                 json!({"instance_id": i, "expression": "window.__pierced"}),
                 "frame;frame;",
+            ),
+        ]
+    }
+
+    /// ISSUE-20: a layout table (no headers) leaves only its content; a
+    /// data table's cell with a link is not named after it, and a cell of
+    /// plain text is named by it.
+    fn table_steps(instance: &str) -> Vec<Step> {
+        let i = json!(instance);
+        let scoped = |selector: &str| json!({"instance_id": i, "selector": selector});
+        vec![
+            (
+                "ISSUE-20 a layout table leaves its content",
+                "snapshot",
+                scoped("#lay"),
+                "\n- link \"lay-link\" [href=/lay]",
+            ),
+            (
+                "ISSUE-20 a cell with a link is not named after it",
+                "snapshot",
+                scoped("#dat"),
+                "- cell [ref=",
+            ),
+            (
+                "ISSUE-20 a cell of plain text is named by it",
+                "snapshot",
+                scoped("#dat"),
+                "- cell \"dat-text bold\" [ref=",
             ),
         ]
     }
@@ -1008,6 +1038,7 @@ mod e2e {
             dialog_and_wait_steps("e2e"),
             pierce_steps("e2e"),
             snapshot_steps("e2e"),
+            table_steps("e2e"),
             form_steps("e2e"),
             secret_steps("e2e"),
             upload_steps("e2e"),
@@ -1091,6 +1122,7 @@ mod e2e {
             dialog_and_wait_steps("default"),
             pierce_steps("default"),
             snapshot_steps("default"),
+            table_steps("default"),
             form_steps("default"),
             upload_steps("default"),
             pdf_steps("default"),

@@ -12,6 +12,14 @@ from a copy of its code: entries describe the differences from that release.
 
 ### Changed
 
+- `snapshot` and `find_in_snapshot` no longer print a table's text two or
+  three times. A table without headers (`th`, `thead`, `caption`,
+  `summary`) and without a role is layout: its `table`, `row` and `cell`
+  lines are left out and only their content stays, as in Chrome's
+  accessibility tree. A cell is named by its content only when that content
+  is plain text (folded into the name, up to 100 characters); a cell with
+  links or controls keeps them as children, unnamed. Hacker News went from
+  ~8 500 to ~4 500 tokens. (#20)
 - `get_console_logs` answers one line per message by default: `[level]
   text @ url:line` (lines from 1), repeats in a row folded (`[x3]`),
   uncaught errors marked (`Uncaught ...`) with up to 5 stack lines
