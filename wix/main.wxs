@@ -69,7 +69,7 @@
 
         <Package Id='*'
             Keywords='Installer'
-            Description='MCP server to control and debug Chrome and Firefox at runtime: breakpoints, call frames and stepping over CDP and WebDriver BiDi/RDP, plus navigation, DOM, input, screenshots, console and network capture.'
+            Description='MCP server to control and debug Chrome and Firefox, with JavaScript breakpoints'
             Manufacturer='raultov'
             InstallerVersion='450'
             Languages='1033'
