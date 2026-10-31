@@ -104,7 +104,10 @@ pub fn scroll_by(left: &str, top: &str) -> String {
 /// visible box), `outside` (not in the viewport even after scrolling) or
 /// `covered` (with `by`, the element on top, and `x`, `y`). A pointer click
 /// lands on whatever is at the point, so without the check an overlay, or
-/// the page corner for a hidden element, would get it. An element inside
+/// the page corner for a hidden element, would get it. The control's own
+/// label (or the element its `aria-labelledby` names) does not count as
+/// covering it: styled checkboxes and switches hide the input under their
+/// label's decoration, and clicking a label clicks its control. An element inside
 /// iframes is checked in its own document, then each frame in its parent's,
 /// and the point is the top window's.
 pub fn click_point(selector: &str) -> String {
@@ -123,8 +126,11 @@ const CLICK_POINT: &str = "el.scrollIntoView({ behavior: 'instant', block: 'cent
         const kind = typeof hit.className === 'string' && hit.className.trim() ? '.' + hit.className.trim().split(/\\s+/)[0] : ''; \
         return { status: 'covered', by: hit.tagName.toLowerCase() + (hit.id ? '#' + hit.id : '') + kind, x, y }; \
     }; \
-    const hit = el.getRootNode().elementFromPoint(x, y); \
-    if (hit && hit !== el && !el.contains(hit)) return covered(hit); \
+    const root = el.getRootNode(); \
+    const named = (el.getAttribute('aria-labelledby') || '').split(/\\s+/).filter(Boolean).map(id => root.getElementById ? root.getElementById(id) : null); \
+    const labelOf = hit => Array.from(el.labels || []).concat(named).some(label => label && (label === hit || label.contains(hit))); \
+    const hit = root.elementFromPoint(x, y); \
+    if (hit && hit !== el && !el.contains(hit) && !labelOf(hit)) return covered(hit); \
     while (win.frameElement) { \
         const frame = win.frameElement, r = frame.getBoundingClientRect(); \
         x = Math.round(x + r.left + frame.clientLeft); y = Math.round(y + r.top + frame.clientTop); \
@@ -618,7 +624,8 @@ mod tests {
         );
         assert!(expression.contains("frame.clientLeft"), "{expression}");
         assert!(
-            expression.contains("el.getRootNode().elementFromPoint"),
+            expression.contains("const root = el.getRootNode();")
+                && expression.contains("root.elementFromPoint(x, y)"),
             "{expression}"
         );
         assert!(expression.contains("over !== frame"), "{expression}");
@@ -659,6 +666,17 @@ mod tests {
 
     /// FIX-07 / AUD-IN-08: fill_input empties the field it focused, and
     /// the text reaches JavaScript as one string literal.
+    /// ISSUE-24: the click check accepts the control's own label (or the
+    /// element its aria-labelledby names) at the click point: clicking a
+    /// label clicks its control.
+    #[test]
+    fn a_control_may_be_clicked_through_its_label() {
+        let expression = click_point("#sw");
+        assert!(expression.contains("el.labels"), "{expression}");
+        assert!(expression.contains("aria-labelledby"), "{expression}");
+        assert!(expression.contains("!labelOf(hit)"), "{expression}");
+    }
+
     /// ISSUE-23: a contenteditable element is not emptied through its DOM
     /// (rich text editors keep their own model of it): its contents are
     /// selected so the first typed key replaces them, and an empty text

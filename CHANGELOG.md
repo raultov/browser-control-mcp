@@ -12,6 +12,10 @@ from a copy of its code: entries describe the differences from that release.
 
 ### Fixed
 
+- `click_element`, `hover` and `fill_form` click a control covered by its
+  own label (or the element its `aria-labelledby` names), as styled
+  checkboxes and switches are: they failed with "covered by 'span…'". An
+  element under anything else still fails, naming it. (#24)
 - `fill_input` and `fill_form` work in rich text editors (Slate, Lexical,
   ProseMirror, Draft.js): a contenteditable element was emptied with
   `textContent = ''`, which removed the nodes the editor renders from its

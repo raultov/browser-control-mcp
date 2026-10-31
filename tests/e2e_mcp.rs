@@ -31,6 +31,8 @@ mod e2e {
       const root = this.attachShadow({mode: 'open'}); root.innerHTML = '<button id="sb">shadow</button>';
       root.getElementById('sb').onclick = () => { window.__pierced = (window.__pierced || '') + 'shadow;'; }; } });</script>
     <input id="q" value="old"><div id="marker">needle-marker</div>
+    <label style="position:relative;display:inline-block;width:60px;height:24px"><input type="checkbox" id="sw" style="position:absolute;left:0;top:0;width:60px;height:24px;margin:0"><span style="position:absolute;inset:0;background:#ccc"></span></label>
+    <div style="position:relative;display:inline-block"><button id="covered">covered</button><div style="position:absolute;inset:0;background:#fff"></div></div>
     <div id="rich" contenteditable="true">old-rich</div>
     <script>(() => { const ed = document.getElementById('rich'); let model = 'old-rich'; window.__rich = model;
       const at = (node, off) => node === ed ? (off === 0 ? 0 : model.length) : off;
@@ -525,6 +527,32 @@ mod e2e {
                 "snapshot",
                 scoped("#dat"),
                 "- cell \"dat-text bold\" [ref=",
+            ),
+        ]
+    }
+
+    /// ISSUE-24: a styled checkbox under its own label's decoration is
+    /// clicked; an element under something else is still refused.
+    fn label_steps(instance: &str) -> Vec<Step> {
+        let i = json!(instance);
+        vec![
+            (
+                "ISSUE-24 click a checkbox covered by its label",
+                "click_element",
+                json!({"instance_id": i, "selector": "#sw"}),
+                "Successfully clicked",
+            ),
+            (
+                "ISSUE-24 the checkbox is checked",
+                "evaluate_js",
+                json!({"instance_id": i, "expression": "document.getElementById('sw').checked"}),
+                "true",
+            ),
+            (
+                "ISSUE-24 an element under another one is refused",
+                "click_element",
+                json!({"instance_id": i, "selector": "#covered"}),
+                "!is covered by 'div'",
             ),
         ]
     }
@@ -1113,6 +1141,7 @@ mod e2e {
             table_steps("e2e"),
             settle_steps("e2e"),
             rich_editor_steps("e2e"),
+            label_steps("e2e"),
             form_steps("e2e"),
             secret_steps("e2e"),
             upload_steps("e2e"),
@@ -1199,6 +1228,7 @@ mod e2e {
             table_steps("default"),
             settle_steps("default"),
             rich_editor_steps("default"),
+            label_steps("default"),
             form_steps("default"),
             upload_steps("default"),
             pdf_steps("default"),
