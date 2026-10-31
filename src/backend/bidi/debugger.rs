@@ -16,7 +16,7 @@ use crate::handler::cdp_domains::debugger::search_scripts::{
 };
 use crate::handler::cdp_domains::debugger::set_breakpoint::SetBreakpointTool;
 use crate::handler::cdp_domains::event_pump::ListenerHandles;
-use crate::handler::debugging::{self, BreakpointIds, BreakpointSet, PauseLocation};
+use crate::handler::debugging::{self, BreakpointIds, BreakpointSet, PauseLocation, Paused};
 use crate::handler::interruption::Interruption;
 use crate::handler::{McpHandler, TargetArgs, parse_args};
 use bidi_browser_lite::bidi_lite::error::codes;
@@ -296,6 +296,16 @@ fn pause_location(debugger: &Debugger, pause: &PauseInfo) -> Option<PauseLocatio
         line: line.saturating_sub(1),
         column,
     })
+}
+
+/// Where tab `tab_id` of `session` is stopped in the debugger, if it is (a
+/// tab without a debugger never is).
+pub(crate) async fn paused(session: &FirefoxSession, tab_id: Option<&str>) -> Option<Paused> {
+    let (id, _) = session.tab(tab_id).await.ok()?;
+    let shared = session.debuggers.lock().await.get(&id).cloned()?;
+    let entry = shared.lock().await;
+    let pause = current_pause(&entry)?;
+    Some(Paused(pause_location(&entry.debugger, &pause)))
 }
 
 /// Waits up to `limit` for a pause other than `before`.
@@ -1218,6 +1228,28 @@ mod tests {
                 && error.contains("while running click_element"),
             "{error}"
         );
+        ts::stop(&handler).await;
+    }
+
+    /// ISSUE-17: the tab's current pause is known with its location, so
+    /// input tools can refuse to run while the page is paused.
+    #[tokio::test]
+    async fn current_pause_is_known() {
+        // Given a tab with a breakpoint, running
+        let mock = ts::firefox_with_debugger().await;
+        let rdp = mock.rdp().unwrap();
+        let handler = ts::handler(&mock);
+        set_breakpoint(breakpoint(0, None), &handler).await.unwrap();
+        let session = handler.firefox(None).await.unwrap();
+        assert_eq!(paused(&session, None).await, None);
+        // When the page pauses
+        rdp.pause("breakpoint", None);
+        wait_paused(&session, "tab-1").await;
+        // Then the pause is known, with where it stopped
+        let Some(Paused(Some(at))) = paused(&session, Some("tab-1")).await else {
+            panic!("no pause location");
+        };
+        assert_eq!(at.url.as_deref(), Some(SCRIPT));
         ts::stop(&handler).await;
     }
 

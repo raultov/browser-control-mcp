@@ -155,6 +155,10 @@ impl PauseLocation {
     }
 }
 
+/// A tab whose thread is stopped in the debugger now, where (when known).
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Paused(pub(crate) Option<PauseLocation>);
+
 /// `{paused, location}` after a step or a resume.
 pub(crate) fn pause_json(location: Option<&PauseLocation>) -> Value {
     let location = location.map(PauseLocation::to_json);
@@ -190,6 +194,16 @@ pub(crate) fn paused_note(location: Option<&PauseLocation>) -> String {
     let at = location.map(PauseLocation::at).unwrap_or_default();
     format!(
         "The page paused in the debugger{at}: inspect the paused frame with evaluate_on_call_frame, then continue with resume or step_over."
+    )
+}
+
+/// Why input `tool` refused to run on a page paused in the debugger: the
+/// page handles input events only once it resumes, so a click or a text
+/// would be reported done while nothing happened.
+pub(crate) fn paused_input(tool: &str, paused: &Paused) -> String {
+    let at = paused.0.as_ref().map(PauseLocation::at).unwrap_or_default();
+    format!(
+        "The page is paused in the debugger{at}: it handles input events only once it resumes, so {tool} did nothing. Continue with resume or step_over first; evaluate_js and evaluate_on_call_frame still work while paused."
     )
 }
 

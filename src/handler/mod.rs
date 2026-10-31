@@ -37,6 +37,8 @@ pub(crate) const MAX_WS_CONNECTIONS: usize = 100;
 pub(crate) struct DebuggerState {
     pub scripts: crate::util::bounded::BoundedMap<String, ScriptInfo, MAX_SCRIPTS>,
     pub paused_call_frame_id: Option<String>,
+    /// Where the kept pause stopped (`Debugger.paused`'s top frame).
+    pub paused_at: Option<debugging::PauseLocation>,
     /// Identifier of the `debugger;` script `pause_on_load` installed, removed
     /// on the next `resume` so later navigations do not pause again.
     pub pause_on_load_script: Option<String>,

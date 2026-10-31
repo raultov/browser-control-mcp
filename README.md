@@ -441,7 +441,10 @@ Chrome and Firefox take the same calls:
    unfinished (`evaluate_js`, `fill_input`, `navigate`...) fails at once
    with that location.
 5. `evaluate_on_call_frame` reads locals of the paused frame; `step_over`
-   moves one statement; `resume` continues. `evaluate_js` still answers
+   moves one statement; `resume` continues. While paused, the input tools
+   (`click_element`, `hover`, `fill_input`, `fill_form`, `press_key`) fail
+   at once naming the pause and do nothing: the page would handle their
+   events only after `resume`. `evaluate_js` still answers
    while paused, in the page's global scope. A promise it returns cannot
    always settle meanwhile: Chrome reads a settled one and fails at once on
    a pending one; Firefox settles it when its microtasks can run.

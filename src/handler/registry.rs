@@ -3,8 +3,10 @@
 //! flag-gated tool can never be listed without being callable or vice versa.
 
 use super::McpHandler;
+use super::TargetArgs;
 use super::cdp_domains;
 use super::chrome_instance;
+use super::debugging::{self, Paused};
 use crate::backend::{BrowserKind, Capability};
 #[cfg(test)]
 use crate::backend::{Capabilities, capabilities::CapabilityFlags};
@@ -120,6 +122,17 @@ macro_rules! firefox_only {
         }
     };
 }
+
+/// Tools that act through input events. A page paused in the debugger
+/// handles those only once it resumes, so these refuse to run then rather
+/// than report a click or a text that has not happened.
+const INPUT_TOOLS: &[&str] = &[
+    "click_element",
+    "hover",
+    "fill_input",
+    "fill_form",
+    "press_key",
+];
 
 /// Tools renamed from chrome-debug-mcp, with their new names.
 const RENAMED: &[(&str, &str)] = &[
@@ -364,6 +377,14 @@ pub(crate) async fn call(
     handler
         .capabilities(browser)
         .require(&params.name, &needs.collect::<Vec<_>>())?;
+    if INPUT_TOOLS.contains(&params.name.as_str())
+        && let Some(paused) = paused_target(handler, browser, &params).await
+    {
+        return Err(CallToolError::from_message(debugging::paused_input(
+            &params.name,
+            &paused,
+        )));
+    }
     match (browser, entry.firefox) {
         (BrowserKind::Chrome, _) => (entry.chrome)(params, handler).await,
         (BrowserKind::Firefox, Some(firefox)) => firefox(params, handler).await,
@@ -371,6 +392,27 @@ pub(crate) async fn call(
             "`{}` is not implemented for Firefox yet (see the README's TODO list)",
             params.name
         ))),
+    }
+}
+
+/// Where the tab a call addresses is stopped in the debugger, if it is. A
+/// target that cannot be resolved is left to the tool, which reports why.
+async fn paused_target(
+    handler: &McpHandler,
+    browser: BrowserKind,
+    params: &CallToolRequestParams,
+) -> Option<Paused> {
+    let arguments = params.arguments.clone().unwrap_or_default();
+    let ids: TargetArgs = serde_json::from_value(arguments.into()).unwrap_or_default();
+    match browser {
+        BrowserKind::Chrome => {
+            let target = super::resolve_target(handler, ids.instance_id, ids.tab_id);
+            target.await.ok()?.paused().await
+        }
+        BrowserKind::Firefox => {
+            let session = handler.firefox(ids.instance_id.as_deref()).await.ok()?;
+            crate::backend::bidi::debugger::paused(&session, ids.tab_id.as_deref()).await
+        }
     }
 }
 
@@ -454,6 +496,57 @@ mod tests {
 
     fn names(tools: Vec<Tool>) -> BTreeSet<String> {
         tools.into_iter().map(|t| t.name).collect()
+    }
+
+    /// ISSUE-17: on a page paused in the debugger, the input tools refuse
+    /// to run (the page would handle their events only after `resume`),
+    /// naming the pause; nothing is sent to the page.
+    #[tokio::test]
+    async fn input_tools_refuse_to_run_while_paused() {
+        use crate::handler::cdp_domains::debugger::process_debugger_event;
+        use crate::handler::cdp_domains::tests::{make_event, mock_handler, spawn_recording_mock};
+        // Given a Chrome tab paused in http://a/cart.js
+        let mock = spawn_recording_mock().await;
+        let handler = mock_handler(mock.http_port);
+        let session = handler.session(None).await.unwrap();
+        let state = session.debugger_state(None).unwrap();
+        let parsed = serde_json::json!({"scriptId": "35", "hash": "h", "url": "http://a/cart.js"});
+        process_debugger_event(&make_event("Debugger.scriptParsed", parsed), &state).await;
+        state
+            .lock()
+            .await
+            .breakpoints
+            .add("1:3:0:http://a/cart.js".into());
+        let frame = serde_json::json!({"callFrameId": "f1", "url": "", "location": {"scriptId": "35", "lineNumber": 3, "columnNumber": 2}});
+        let paused = serde_json::json!({"reason": "other", "callFrames": [frame]});
+        process_debugger_event(&make_event("Debugger.paused", paused), &state).await;
+        // When each input tool runs
+        let field = serde_json::json!({"selector": "#n", "value": "x"});
+        for (name, arguments) in [
+            ("click_element", serde_json::json!({"selector": "#b"})),
+            ("hover", serde_json::json!({"selector": "#b"})),
+            (
+                "fill_input",
+                serde_json::json!({"selector": "#n", "text": "x"}),
+            ),
+            ("fill_form", serde_json::json!({"fields": [field]})),
+            ("press_key", serde_json::json!({"key": "Enter"})),
+        ] {
+            let error = call(&handler, params(name, arguments)).await.unwrap_err();
+            // Then it fails naming the pause and the tool
+            let message = error.to_string();
+            assert!(
+                message.contains("paused in the debugger at http://a/cart.js line 3")
+                    && message.contains(name),
+                "{message}"
+            );
+        }
+        // And nothing reached the page (only the session's setup)
+        let sent: Vec<String> = mock.commands().into_iter().map(|c| c.method).collect();
+        let acts = |m: &String| {
+            m.starts_with("Input.") || m.starts_with("DOM.") || m == "Runtime.evaluate"
+        };
+        assert!(!sent.iter().any(acts), "{sent:?}");
     }
 
     /// RFC-03: Listing and calling use the same tool table.

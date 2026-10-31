@@ -1,6 +1,6 @@
 use crate::handler::DebuggerState;
 use crate::handler::cdp_domains::debugger::with_script_url;
-use crate::handler::debugging::PauseLocation;
+use crate::handler::debugging::{PauseLocation, Paused};
 use crate::handler::dialogs::{OpenDialog, unless_blocked};
 use crate::handler::interruption::Interruption;
 use cdp_browser_lite::{CdpClient, CdpResult, EventFilter, Tab, WsResponse};
@@ -63,10 +63,16 @@ impl CdpTarget {
     /// Whether the tab is paused in the debugger (a pause it keeps; the
     /// ones the debugger listener skips are never recorded).
     pub(crate) async fn is_paused(&self) -> bool {
-        match &self.debugger {
-            Some(state) => state.lock().await.paused_call_frame_id.is_some(),
-            None => false,
-        }
+        self.paused().await.is_some()
+    }
+
+    /// Where the tab is stopped in the debugger, if it is (its script
+    /// named from the tab's parsed scripts).
+    pub(crate) async fn paused(&self) -> Option<Paused> {
+        let state = self.debugger.as_ref()?.lock().await;
+        state.paused_call_frame_id.as_ref()?;
+        let location = state.paused_at.clone();
+        Some(Paused(location.map(|at| with_script_url(at, &state))))
     }
 
     /// The tab's CDP target id (`None` for the browser connection).

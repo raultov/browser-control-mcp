@@ -67,9 +67,13 @@ pub(crate) async fn process_debugger_event(
                 .and_then(|first_frame: &serde_json::Value| first_frame.get("callFrameId"))
                 .and_then(|id: &serde_json::Value| id.as_str())
         {
-            state.lock().await.paused_call_frame_id = Some(call_first_frame_id.to_string());
+            let mut st = state.lock().await;
+            st.paused_call_frame_id = Some(call_first_frame_id.to_string());
+            st.paused_at = event.params.as_ref().and_then(pause_location);
         } else if method == "Debugger.resumed" {
-            state.lock().await.paused_call_frame_id = None;
+            let mut st = state.lock().await;
+            st.paused_call_frame_id = None;
+            st.paused_at = None;
         }
     }
     false
@@ -457,6 +461,26 @@ pub(crate) mod tests {
             named.to_json(),
             json!({"url": "http://a/cart.js", "script_id": "35", "line_number": 3, "column_number": 2})
         );
+    }
+
+    /// ISSUE-17: the kept pause records where it stopped; resuming clears it.
+    #[tokio::test]
+    async fn pause_records_its_location() {
+        // Given a tab with a breakpoint
+        let state = with_breakpoint();
+        // When it pauses
+        let frame = json!({"callFrameId": "f1", "url": "", "location": {"scriptId": "35", "lineNumber": 3, "columnNumber": 2}});
+        let paused = json!({"reason": "other", "callFrames": [frame]});
+        process_debugger_event(&make_event("Debugger.paused", paused), &state).await;
+        // Then the location is recorded
+        let at = state.lock().await.paused_at.clone().unwrap();
+        assert_eq!(
+            (at.script_id.as_deref(), at.line, at.column),
+            (Some("35"), 3, 2)
+        );
+        // And resuming clears it
+        process_debugger_event(&make_event("Debugger.resumed", json!({})), &state).await;
+        assert!(state.lock().await.paused_at.is_none());
     }
 
     /// FIX-02: Resuming clears the paused call frame.

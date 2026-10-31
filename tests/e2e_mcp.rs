@@ -786,6 +786,12 @@ mod e2e {
                 "The page paused in the debugger at http",
             ),
             (
+                "ISSUE-17 input while paused is refused at once",
+                "click_element",
+                json!({"instance_id": i, "selector": "#hit"}),
+                "!The page is paused in the debugger at http",
+            ),
+            (
                 "evaluate_on_call_frame after the click",
                 "evaluate_on_call_frame",
                 json!({"instance_id": i, "expression": "x * 7"}),

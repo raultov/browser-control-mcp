@@ -12,6 +12,12 @@ from a copy of its code: entries describe the differences from that release.
 
 ### Fixed
 
+- The input tools (`click_element`, `hover`, `fill_input`, `fill_form`,
+  `press_key`) fail at once, naming the pause, when the page is already
+  paused in the debugger, and send nothing: the page handles input events
+  only once it resumes. Chrome reported a click or a key as done, and
+  both browsers blamed the field ("rejected the text") or, on Firefox, a
+  covering `html` element. (#17)
 - On Chrome `evaluate_js` answers at once while the page is paused in the
   debugger: it waited 10 s and failed with "no result after 10 s", even
   for `1 + 1`, because Chrome cannot await an evaluation while no
