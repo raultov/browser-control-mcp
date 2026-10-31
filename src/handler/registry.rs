@@ -7,13 +7,17 @@ use super::TargetArgs;
 use super::cdp_domains;
 use super::chrome_instance;
 use super::debugging::{self, Paused};
+use super::{NetworkState, settle};
 use crate::backend::{BrowserKind, Capability};
 #[cfg(test)]
 use crate::backend::{Capabilities, capabilities::CapabilityFlags};
 use crate::cli::ToolGroup;
 use rust_mcp_sdk::schema::{CallToolError, CallToolRequestParams, CallToolResult, Tool};
+use std::collections::HashSet;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
+use tokio::sync::Mutex;
 
 /// What a tool handler returns.
 pub(crate) type ToolFuture<'a> =
@@ -406,14 +410,30 @@ async fn dispatch(
     handler
         .capabilities(browser)
         .require(&params.name, &needs.collect::<Vec<_>>())?;
-    if INPUT_TOOLS.contains(&params.name.as_str())
-        && let Some(paused) = paused_target(handler, browser, &params).await
-    {
+    if !INPUT_TOOLS.contains(&params.name.as_str()) {
+        return run(&entry, browser, params, handler).await;
+    }
+    if let Some(paused) = paused_target(handler, browser, &params).await {
         return Err(CallToolError::from_message(debugging::paused_input(
             &params.name,
             &paused,
         )));
     }
+    let before = network_before(handler, browser, target_args(&params)).await;
+    let result = run(&entry, browser, params, handler).await?;
+    Ok(match before {
+        Some(before) => settled(handler, before, result).await,
+        None => result,
+    })
+}
+
+/// Runs `entry`'s implementation for `browser`.
+async fn run(
+    entry: &ToolEntry,
+    browser: BrowserKind,
+    params: CallToolRequestParams,
+    handler: &McpHandler,
+) -> Result<CallToolResult, CallToolError> {
     match (browser, entry.firefox) {
         (BrowserKind::Chrome, _) => (entry.chrome)(params, handler).await,
         (BrowserKind::Firefox, Some(firefox)) => firefox(params, handler).await,
@@ -424,6 +444,104 @@ async fn dispatch(
     }
 }
 
+/// The `instance_id` / `tab_id` a call addresses.
+fn target_args(params: &CallToolRequestParams) -> TargetArgs {
+    let arguments = params.arguments.clone().unwrap_or_default();
+    serde_json::from_value(arguments.into()).unwrap_or_default()
+}
+
+/// The tab an input action runs on, and its request log before it with the
+/// requests it already held (see `settle`).
+struct NetworkBefore {
+    browser: BrowserKind,
+    ids: TargetArgs,
+    network: Arc<Mutex<NetworkState>>,
+    known: HashSet<String>,
+}
+
+/// The request log of the tab `ids` address, read before an input action;
+/// `None` when the tab cannot be resolved (the tool reports why).
+async fn network_before(
+    handler: &McpHandler,
+    browser: BrowserKind,
+    ids: TargetArgs,
+) -> Option<NetworkBefore> {
+    let network = match browser {
+        BrowserKind::Chrome => {
+            let session = handler.session(ids.instance_id.clone()).await.ok()?;
+            session.network_state(ids.tab_id.clone()).ok()?
+        }
+        BrowserKind::Firefox => {
+            let session = handler.firefox(ids.instance_id.as_deref()).await.ok()?;
+            session.tab(ids.tab_id.as_deref()).await.ok()?.1.network
+        }
+    };
+    let known = network.lock().await.known_ids();
+    Some(NetworkBefore {
+        browser,
+        ids,
+        network,
+        known,
+    })
+}
+
+/// The page of the tab `ids` address, unless the action left it blocked
+/// (a dialog open, or paused in the debugger): it answers nothing then.
+async fn page_after(
+    handler: &McpHandler,
+    browser: BrowserKind,
+    ids: &TargetArgs,
+) -> Option<settle::Page> {
+    match browser {
+        BrowserKind::Chrome => {
+            let target =
+                super::resolve_target(handler, ids.instance_id.clone(), ids.tab_id.clone());
+            let target = target.await.ok()?;
+            target
+                .paused()
+                .await
+                .is_none()
+                .then_some(settle::Page::Chrome(target))
+        }
+        BrowserKind::Firefox => {
+            let (session, id, tab) = crate::backend::bidi::tools::target(handler, ids)
+                .await
+                .ok()?;
+            let paused = crate::backend::bidi::debugger::paused(&session, Some(&id)).await;
+            paused.is_none().then_some(settle::Page::Firefox(tab.tab))
+        }
+    }
+}
+
+/// `result` of an input action once the page settled, with a line saying
+/// how it reacted, when it did.
+async fn settled(
+    handler: &McpHandler,
+    before: NetworkBefore,
+    mut result: CallToolResult,
+) -> CallToolResult {
+    let Some(page) = page_after(handler, before.browser, &before.ids).await else {
+        return result;
+    };
+    // Bounded even if the page stops answering mid-way (a navigation).
+    let limit = settle::MAX + std::time::Duration::from_secs(1);
+    let watched = settle::settle(&page, &before.network, &before.known);
+    let note = tokio::time::timeout(limit, watched)
+        .await
+        .ok()
+        .flatten()
+        .and_then(|reaction| reaction.note());
+    let first_text = result.content.iter_mut().find_map(|block| match block {
+        rust_mcp_sdk::schema::ContentBlock::TextContent(text) => Some(text),
+        _ => None,
+    });
+    if let (Some(note), Some(text)) = (note, first_text) {
+        text.text.push('\n');
+        text.text.push_str(&note);
+    }
+    result
+}
+
 /// Where the tab a call addresses is stopped in the debugger, if it is. A
 /// target that cannot be resolved is left to the tool, which reports why.
 async fn paused_target(
@@ -431,8 +549,7 @@ async fn paused_target(
     browser: BrowserKind,
     params: &CallToolRequestParams,
 ) -> Option<Paused> {
-    let arguments = params.arguments.clone().unwrap_or_default();
-    let ids: TargetArgs = serde_json::from_value(arguments.into()).unwrap_or_default();
+    let ids = target_args(params);
     match browser {
         BrowserKind::Chrome => {
             let target = super::resolve_target(handler, ids.instance_id, ids.tab_id);
@@ -563,6 +680,60 @@ mod tests {
         assert!(error.to_string().contains("bad <secret:PASS>"), "{error}");
         // And the value never reached the logs
         assert!(!logs.text().contains("hunter22"));
+    }
+
+    /// A page's answer to an evaluation: the settle snippet sees
+    /// `mutations`; the click snippet finds the element at (10, 20).
+    fn page_reacting(params: &serde_json::Value, mutations: u64) -> serde_json::Value {
+        let expression = params["expression"].as_str().unwrap_or_default();
+        let value = if expression.contains("MutationObserver") {
+            serde_json::json!({"mutations": mutations, "settled": true})
+        } else {
+            serde_json::json!({"status": "ok", "x": 10, "y": 20})
+        };
+        serde_json::json!({"result": {"result": {"type": "object", "value": value}}})
+    }
+
+    /// ISSUE-21: after an input action the page is watched until it
+    /// settles (awaiting the snippet), and the reply says how it reacted;
+    /// an action nothing reacts to keeps its reply.
+    #[tokio::test]
+    async fn input_actions_wait_for_the_page_to_settle() {
+        use crate::handler::cdp_domains::tests::{mock_handler, reply_text, spawn_recording_mock};
+        for mutations in [3, 0] {
+            // Given a page whose DOM changes (or not) after the click
+            let mock = spawn_recording_mock().await;
+            mock.respond_with("Runtime.evaluate", move |params| {
+                page_reacting(params, mutations)
+            });
+            let handler = mock_handler(mock.http_port);
+            // When the element is clicked
+            let args = serde_json::json!({"selector": "#b"});
+            let reply = call(&handler, params("click_element", args)).await.unwrap();
+            // Then the page was watched, awaiting the snippet
+            let watched: Vec<_> = mock
+                .commands_named("Runtime.evaluate")
+                .into_iter()
+                .filter(|c| {
+                    c.params["expression"]
+                        .to_string()
+                        .contains("MutationObserver")
+                })
+                .collect();
+            assert_eq!(watched.len(), 1);
+            assert_eq!(watched[0].params["awaitPromise"], true);
+            // And the reply says how the page reacted, only when it did
+            let text = reply_text(&reply);
+            assert!(
+                text.starts_with("Successfully clicked on element '#b'"),
+                "{text}"
+            );
+            let noted = text.contains(
+                "
+The page reacted (the DOM changed) and settled after ",
+            );
+            assert_eq!(noted, mutations > 0, "{text}");
+        }
     }
 
     /// ISSUE-17: on a page paused in the debugger, the input tools refuse

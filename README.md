@@ -111,6 +111,16 @@ see the note.
 | `webmcp_get_invocation` | ✓ | ✗ | needs `--enable-webmcp` |
 | `webmcp_list_invocations` | ✓ | ✗ | needs `--enable-webmcp` |
 
+After `click_element`, `hover`, `fill_input`, `fill_form` and `press_key`
+the server waits for the page to settle before answering: until its DOM
+stays unchanged for 50 ms (style changes, often animations, aside) and the
+requests the action started finished, at most 1 s, on both browsers. An
+action nothing reacts to costs those 50 ms and keeps its reply; otherwise
+the reply adds `The page reacted (the DOM changed, 1 request(s)) and settled
+after 134 ms.`, or says the page was still changing after 1 s. A click that
+navigates waits for the new page's requests. Use `wait_for` for anything
+slower (a timer, a long request).
+
 The JavaScript debugger tools on Firefox need its debugger (RDP) port: on by
 default for a launched Firefox, `--firefox-rdp-port` for an attached one. The
 same port gives Firefox's WebSocket frames and the console messages BiDi does

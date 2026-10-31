@@ -12,6 +12,15 @@ from a copy of its code: entries describe the differences from that release.
 
 ### Changed
 
+- `click_element`, `hover`, `fill_input`, `fill_form` and `press_key` wait
+  for the page to settle before answering: until the DOM stays unchanged for
+  50 ms (style changes aside) and the requests the action started finished,
+  at most 1 s, on both browsers. They answered in 1-2 ms, before the page
+  reacted, so a read right after a click that fetches data saw the old page.
+  An action nothing reacts to now takes ~50 ms and keeps its reply; one the
+  page reacts to adds how (`The page reacted (the DOM changed, 1 request(s))
+  and settled after 134 ms.`), or that it was still changing after 1 s. Not
+  done when the action left a dialog open or the page paused. (#21)
 - `snapshot` and `find_in_snapshot` no longer print a table's text two or
   three times. A table without headers (`th`, `thead`, `caption`,
   `summary`) and without a role is layout: its `table`, `row` and `cell`

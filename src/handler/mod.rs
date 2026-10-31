@@ -8,6 +8,7 @@ pub(crate) mod navigation;
 mod registry;
 pub(crate) mod routes;
 mod schema_compat;
+pub(crate) mod settle;
 pub(crate) mod shutdown;
 
 use async_trait::async_trait;
@@ -372,6 +373,27 @@ impl NetworkState {
             .skip(skip)
             .flat_map(|bucket| bucket.order.iter().cloned())
             .collect()
+    }
+
+    /// The ids of every logged request.
+    pub(crate) fn known_ids(&self) -> std::collections::HashSet<String> {
+        self.navigations
+            .iter()
+            .flat_map(|bucket| bucket.requests.keys().cloned())
+            .collect()
+    }
+
+    /// The requests not in `known`: `(how many, how many still loading)`.
+    pub(crate) fn new_since(&self, known: &std::collections::HashSet<String>) -> (usize, usize) {
+        let new = self
+            .navigations
+            .iter()
+            .flat_map(|bucket| bucket.requests.iter())
+            .filter(|(id, _)| !known.contains(*id));
+        new.fold((0, 0), |(seen, loading), (_, request)| {
+            let open = !request.finished && request.error.is_none();
+            (seen + 1, loading + usize::from(open))
+        })
     }
 
     pub(crate) fn iter_current(&self) -> std::collections::HashMap<String, NetworkRequest> {

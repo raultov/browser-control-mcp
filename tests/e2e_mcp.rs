@@ -31,6 +31,7 @@ mod e2e {
       const root = this.attachShadow({mode: 'open'}); root.innerHTML = '<button id="sb">shadow</button>';
       root.getElementById('sb').onclick = () => { window.__pierced = (window.__pierced || '') + 'shadow;'; }; } });</script>
     <input id="q" value="old"><div id="marker">needle-marker</div>
+    <button id="late" onclick="fetch('/api?late').then(r => r.text()).then(t => { document.getElementById('lateout').textContent = 'late:' + t; })">late</button><div id="lateout"></div>
     <table id="lay"><tr><td><a href="/lay">lay-link</a></td><td>lay-text</td></tr></table>
     <table id="dat"><tr><th>Name</th></tr><tr><td><a href="/dat">dat-link</a></td></tr><tr><td>dat-text <b>bold</b></td></tr></table>
     <script>console.log("hello from e2e", {n: 1});</script><script>throw new Error("boom-e2e");</script><script src="/app.js"></script></body></html>"#;
@@ -513,6 +514,27 @@ mod e2e {
                 "snapshot",
                 scoped("#dat"),
                 "- cell \"dat-text bold\" [ref=",
+            ),
+        ]
+    }
+
+    /// ISSUE-21: a click whose handler fetches then updates the page waits
+    /// for it, so the next read sees the update.
+    fn settle_steps(instance: &str) -> Vec<Step> {
+        let i = json!(instance);
+        let read = "document.getElementById('lateout').textContent";
+        vec![
+            (
+                "ISSUE-21 a click waits for the page to settle",
+                "click_element",
+                json!({"instance_id": i, "selector": "#late"}),
+                "and settled after",
+            ),
+            (
+                "ISSUE-21 the next read sees the update",
+                "evaluate_js",
+                json!({"instance_id": i, "expression": read}),
+                "late:{",
             ),
         ]
     }
@@ -1039,6 +1061,7 @@ mod e2e {
             pierce_steps("e2e"),
             snapshot_steps("e2e"),
             table_steps("e2e"),
+            settle_steps("e2e"),
             form_steps("e2e"),
             secret_steps("e2e"),
             upload_steps("e2e"),
@@ -1123,6 +1146,7 @@ mod e2e {
             pierce_steps("default"),
             snapshot_steps("default"),
             table_steps("default"),
+            settle_steps("default"),
             form_steps("default"),
             upload_steps("default"),
             pdf_steps("default"),
