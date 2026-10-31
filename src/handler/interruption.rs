@@ -65,6 +65,7 @@ mod tests {
     fn breakpoint() -> Interruption {
         Interruption::Paused(Some(PauseLocation {
             url: Some("http://a/cart.js".into()),
+            script_id: None,
             line: 3,
             column: 2,
         }))

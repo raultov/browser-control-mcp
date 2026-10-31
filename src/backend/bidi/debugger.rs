@@ -292,6 +292,7 @@ fn pause_location(debugger: &Debugger, pause: &PauseInfo) -> Option<PauseLocatio
         .and_then(|s| s.url);
     Some(PauseLocation {
         url,
+        script_id: None,
         line: line.saturating_sub(1),
         column,
     })

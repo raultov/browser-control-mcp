@@ -450,7 +450,7 @@ Both browsers answer the same replies, with 0-based lines everywhere:
 | --- | --- |
 | `set_breakpoint` | `{"breakpoint_id": "bp-N", "url", "line_number", "column_number", "resolved"}`: where the browser bound it; `resolved` is false until a script with that URL loads |
 | `remove_breakpoint` | `{"removed": "bp-N"}`; an unknown id fails listing the tab's ids |
-| `step_over`, `resume` | `{"paused", "location": {"url", "line_number", "column_number"} \| null}`: where the thread stopped next (`step_over` waits up to 2 s; `resume` reports a pause only if one follows within 250 ms) |
+| `step_over`, `resume` | `{"paused", "location": {"url", "script_id"?, "line_number", "column_number"} \| null}`: where the thread stopped next (`script_id` on Chrome, for `set_breakpoint`) (`step_over` waits up to 2 s; `resume` reports a pause only if one follows within 250 ms) |
 | `evaluate_on_call_frame` | the `evaluate_js` shape; an exception fails with `Evaluation threw: <what was thrown>` |
 
 Breakpoint ids are per tab and MCP-level (`bp-1`, `bp-2`...), like tab ids.

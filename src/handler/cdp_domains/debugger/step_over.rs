@@ -34,7 +34,7 @@ impl StepOverTool {
         let params = serde_json::json!({});
         let failure = "Failed to step over";
         crate::handler::send_or(&target, "Debugger.stepOver", params, failure).await?;
-        let location = super::wait_for_pause(&mut events, debugging::STEP_WAIT).await;
+        let location = super::wait_for_pause(&mut events, debugging::STEP_WAIT, &state).await;
         Ok(debugging::stepped(location.as_ref()))
     }
 }
@@ -82,7 +82,15 @@ mod tests {
             .lock()
             .await
             .paused_call_frame_id = Some("f1".into());
-        let paused = json!({"reason": "other", "callFrames": [{"callFrameId": "f2", "url": "http://a/app.js", "location": {"scriptId": "7", "lineNumber": 4, "columnNumber": 2}}]});
+        // (Chrome leaves the frame's URL empty: it comes from the parsed script)
+        let parsed = json!({"scriptId": "7", "hash": "h", "url": "http://a/app.js"});
+        let state = session.debugger_state(None).unwrap();
+        super::super::process_debugger_event(
+            &crate::handler::cdp_domains::tests::make_event("Debugger.scriptParsed", parsed),
+            &state,
+        )
+        .await;
+        let paused = json!({"reason": "other", "callFrames": [{"callFrameId": "f2", "url": "", "location": {"scriptId": "7", "lineNumber": 4, "columnNumber": 2}}]});
         fire_after(mock, "Debugger.stepOver", "Debugger.paused", paused);
         let reply = StepOverTool::handle(call("step_over", json!({})), &handler)
             .await
@@ -93,7 +101,7 @@ mod tests {
             serde_json::from_str(&text[text.find('{').unwrap()..]).unwrap();
         assert_eq!(
             body,
-            json!({"paused": true, "location": {"url": "http://a/app.js", "line_number": 4, "column_number": 2}})
+            json!({"paused": true, "location": {"url": "http://a/app.js", "script_id": "7", "line_number": 4, "column_number": 2}})
         );
     }
 }

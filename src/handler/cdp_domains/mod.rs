@@ -250,7 +250,7 @@ pub(crate) fn start_tab_listeners(
     states: TabDomainStates,
 ) -> event_pump::ListenerHandles {
     let mut handles = event_pump::ListenerHandles::default();
-    let target = cdp_target::CdpTarget::Tab(tab.clone());
+    let target = cdp_target::CdpTarget::tab(tab.clone());
     let TabDomainStates {
         debugger: dbg,
         network: net,

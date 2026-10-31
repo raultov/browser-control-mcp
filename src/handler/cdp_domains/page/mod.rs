@@ -356,7 +356,7 @@ mod tests {
         // whatever client the test decides to supply.
         WebmcpNavSync {
             state,
-            target: CdpTarget::Client(client),
+            target: CdpTarget::client(client),
         }
     }
 

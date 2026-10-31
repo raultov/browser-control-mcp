@@ -123,6 +123,9 @@ pub(crate) fn removed(id: &str) -> CallToolResult {
 pub(crate) struct PauseLocation {
     /// Script URL, when known.
     pub(crate) url: Option<String>,
+    /// Chrome's script id (what `set_breakpoint`'s `script_id` takes), when
+    /// the browser gives one.
+    pub(crate) script_id: Option<String>,
     /// 0-based line.
     pub(crate) line: u32,
     /// 0-based column.
@@ -130,17 +133,24 @@ pub(crate) struct PauseLocation {
 }
 
 impl PauseLocation {
-    /// `{url, line_number, column_number}` for replies.
+    /// `{url, script_id?, line_number, column_number}` for replies.
     pub(crate) fn to_json(&self) -> Value {
-        json!({"url": self.url, "line_number": self.line, "column_number": self.column})
+        let mut out =
+            json!({"url": self.url, "line_number": self.line, "column_number": self.column});
+        if let Some(id) = &self.script_id {
+            out["script_id"] = json!(id);
+        }
+        out
     }
 
-    /// ` at <url> line N, column M (0-based)` for messages.
+    /// ` at <url> line N, column M (0-based)` for messages (the script id
+    /// when the URL is unknown).
     fn at(&self) -> String {
         let (line, column) = (self.line, self.column);
-        match &self.url {
-            Some(url) => format!(" at {url} line {line}, column {column} (0-based)"),
-            None => format!(" at line {line}, column {column} (0-based)"),
+        match (&self.url, &self.script_id) {
+            (Some(url), _) => format!(" at {url} line {line}, column {column} (0-based)"),
+            (None, Some(id)) => format!(" at script {id} line {line}, column {column} (0-based)"),
+            (None, None) => format!(" at line {line}, column {column} (0-based)"),
         }
     }
 }
@@ -230,6 +240,7 @@ mod tests {
         );
         let at = PauseLocation {
             url: None,
+            script_id: None,
             line: 7,
             column: 0,
         };
@@ -247,6 +258,7 @@ mod tests {
         // Given a pause with and without the script URL
         let at = |url: Option<&str>| PauseLocation {
             url: url.map(str::to_string),
+            script_id: None,
             line: 3,
             column: 2,
         };

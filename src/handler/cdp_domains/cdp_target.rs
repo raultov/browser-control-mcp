@@ -1,28 +1,74 @@
+use crate::handler::DebuggerState;
+use crate::handler::cdp_domains::debugger::with_script_url;
 use crate::handler::debugging::PauseLocation;
 use crate::handler::dialogs::{OpenDialog, unless_blocked};
 use crate::handler::interruption::Interruption;
 use cdp_browser_lite::{CdpClient, CdpResult, EventFilter, Tab, WsResponse};
 use serde::Serialize;
 use std::future::Future;
+use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::Mutex;
 use tokio_stream::{Stream, StreamExt};
 
+/// Where a call's CDP commands go: a tab's session, or the browser
+/// connection when no tab is registered.
 #[derive(Clone)]
-pub(crate) enum CdpTarget {
+pub(crate) struct CdpTarget {
+    connection: Connection,
+    /// The debugger state of the tab (its parsed scripts), to name the
+    /// script a pause stopped in: Chrome leaves `callFrames[].url` empty.
+    debugger: Option<Arc<Mutex<DebuggerState>>>,
+}
+
+#[derive(Clone)]
+enum Connection {
     Client(CdpClient),
     Tab(Tab),
 }
 
 impl std::fmt::Debug for CdpTarget {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Client(_) => f.write_str("CdpTarget::Client"),
-            Self::Tab(t) => write!(f, "CdpTarget::Tab(target_id: {})", t.target_id()),
+        match &self.connection {
+            Connection::Client(_) => f.write_str("CdpTarget::Client"),
+            Connection::Tab(t) => write!(f, "CdpTarget::Tab(target_id: {})", t.target_id()),
         }
     }
 }
 
 impl CdpTarget {
+    /// The browser connection.
+    pub(crate) fn client(client: CdpClient) -> Self {
+        Self {
+            connection: Connection::Client(client),
+            debugger: None,
+        }
+    }
+
+    /// A tab's session.
+    pub(crate) fn tab(tab: Tab) -> Self {
+        Self {
+            connection: Connection::Tab(tab),
+            debugger: None,
+        }
+    }
+
+    /// The target with its tab's debugger state, so pauses that interrupt a
+    /// call name their script.
+    pub(crate) fn with_debugger(mut self, state: Arc<Mutex<DebuggerState>>) -> Self {
+        self.debugger = Some(state);
+        self
+    }
+
+    /// The tab's CDP target id (`None` for the browser connection).
+    #[cfg(test)]
+    pub(crate) fn tab_target_id(&self) -> Option<&str> {
+        match &self.connection {
+            Connection::Tab(t) => Some(t.target_id()),
+            Connection::Client(_) => None,
+        }
+    }
+
     /// Sends a command. A JavaScript dialog the page opens meanwhile, or a
     /// debugger pause its code hits, blocks the page, so the command would
     /// wait for a timeout: it fails at once instead, with a `ProtocolError`
@@ -45,9 +91,9 @@ impl CdpTarget {
         params: P,
     ) -> Result<CdpResult<WsResponse>, Interruption> {
         let send = async {
-            match self {
-                Self::Client(c) => c.send_raw_command(method, params).await,
-                Self::Tab(t) => t.send_raw_command(method, params).await,
+            match &self.connection {
+                Connection::Client(c) => c.send_raw_command(method, params).await,
+                Connection::Tab(t) => t.send_raw_command(method, params).await,
             }
         };
         if method == "Page.handleJavaScriptDialog" {
@@ -65,13 +111,27 @@ impl CdpTarget {
         work: impl Future<Output = T>,
     ) -> Result<T, Interruption> {
         let events = self.on_domain("Page").merge(self.on_domain("Debugger"));
-        unless_interrupted(work, events, call).await
+        // The outcome is not held across the naming's await: a tool's error
+        // (a possible `T`) is not `Send`.
+        let location = match unless_interrupted(work, events, call).await {
+            Err(Interruption::Paused(Some(location))) => location,
+            other => return other,
+        };
+        Err(Interruption::Paused(Some(self.named(location).await)))
+    }
+
+    /// `location` with its script's URL from the tab's parsed scripts.
+    async fn named(&self, location: PauseLocation) -> PauseLocation {
+        match &self.debugger {
+            Some(state) => with_script_url(location, &*state.lock().await),
+            None => location,
+        }
     }
 
     pub(crate) fn on_domain(&self, domain: &'static str) -> EventFilter {
-        match self {
-            Self::Client(c) => c.on_domain(domain),
-            Self::Tab(t) => t.on_domain(domain),
+        match &self.connection {
+            Connection::Client(c) => c.on_domain(domain),
+            Connection::Tab(t) => t.on_domain(domain),
         }
     }
 }
@@ -198,7 +258,7 @@ mod tests {
         // Then it fails within the settle window, naming the location
         let message = message(outcome.expect("the command waited for the pause"));
         assert!(
-            message.starts_with("The page paused in the debugger at line 3, column 2 (0-based) while running Input.dispatchMouseEvent:"),
+            message.starts_with("The page paused in the debugger at script 35 line 3, column 2 (0-based) while running Input.dispatchMouseEvent:"),
             "{message}"
         );
     }
@@ -231,6 +291,39 @@ mod tests {
         };
         let outcome = unless_interrupted(later, events, "Debugger.stepOver").await;
         assert_eq!(answered(outcome), Some(7));
+    }
+
+    /// ISSUE-10: a pause that interrupts a call names its script from the
+    /// tab's parsed scripts (Chrome leaves the frame's URL empty).
+    #[tokio::test]
+    async fn interrupting_pause_names_its_script() {
+        // Given a tab that parsed script 35 from http://a/cart.js
+        let mock = crate::handler::cdp_domains::tests::spawn_recording_mock().await;
+        let handler = crate::handler::cdp_domains::tests::mock_handler(mock.http_port);
+        let session = handler.session(None).await.unwrap();
+        let target = session.target(None).await.unwrap();
+        let parsed = json!({"scriptId": "35", "hash": "h", "url": "http://a/cart.js"});
+        let state = session.debugger_state(None).unwrap();
+        crate::handler::cdp_domains::debugger::process_debugger_event(
+            &make_event("Debugger.scriptParsed", parsed),
+            &state,
+        )
+        .await;
+        // When a call the page will not answer is interrupted by a pause in it
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            let paused = paused().unwrap().params.unwrap();
+            mock.emit("Debugger.paused", paused, None);
+        });
+        let blocked = std::future::pending::<()>();
+        let run = target.race_interruptions("click_element", blocked);
+        let outcome = tokio::time::timeout(std::time::Duration::from_secs(2), run).await;
+        // Then the pause has the script's URL and id
+        let Ok(Err(Interruption::Paused(Some(at)))) = outcome else {
+            panic!("expected a pause, got {outcome:?}");
+        };
+        assert_eq!(at.url.as_deref(), Some("http://a/cart.js"));
+        assert_eq!(at.script_id.as_deref(), Some("35"));
     }
 
     /// AUD-EV-05: a dialog still interrupts a command, quoting it.

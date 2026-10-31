@@ -10,6 +10,16 @@ from a copy of its code: entries describe the differences from that release.
 
 ## [Unreleased]
 
+### Fixed
+
+- On Chrome a pause's location names its script: `resume`, `step_over`,
+  the `{paused, location}` of `click_element` and `press_key`, and the
+  "The page paused in the debugger at ..." message of an interrupted call
+  gave `url: null`, because Chrome leaves the deprecated
+  `callFrames[].url` empty. The URL now comes from the tab's parsed
+  scripts, and the location also carries `script_id` (what
+  `set_breakpoint` takes). (#10)
+
 ### Changed
 
 - The package description (crates.io, npm, Homebrew `desc`) is 79

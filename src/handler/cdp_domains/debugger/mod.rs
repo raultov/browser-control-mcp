@@ -90,15 +90,47 @@ pub(crate) fn pause_location(params: &serde_json::Value) -> Option<PauseLocation
         .and_then(serde_json::Value::as_str)
         .filter(|u| !u.is_empty())
         .map(str::to_string);
+    let script_id = location
+        .get("scriptId")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string);
     Some(PauseLocation {
         url,
+        script_id,
         line: number("lineNumber")?,
         column: number("columnNumber").unwrap_or(0),
     })
 }
 
-/// Waits up to `limit` for the next `Debugger.paused` on `events`.
+/// `location` with its script's URL from the tab's parsed scripts when the
+/// pause did not carry one: Chrome leaves `callFrames[].url` empty (it is
+/// deprecated in favour of `location.scriptId`).
+pub(crate) fn with_script_url(mut location: PauseLocation, state: &DebuggerState) -> PauseLocation {
+    if location.url.is_none()
+        && let Some(script) = location
+            .script_id
+            .as_ref()
+            .and_then(|id| state.scripts.get(id))
+        && !script.url.is_empty()
+    {
+        location.url = Some(script.url.clone());
+    }
+    location
+}
+
+/// Waits up to `limit` for the next `Debugger.paused` on `events`; its
+/// script is named from `state`'s parsed scripts.
 pub(crate) async fn wait_for_pause(
+    events: &mut cdp_browser_lite::EventFilter,
+    limit: std::time::Duration,
+    state: &Arc<Mutex<DebuggerState>>,
+) -> Option<PauseLocation> {
+    let location = next_pause(events, limit).await?;
+    Some(with_script_url(location, &*state.lock().await))
+}
+
+/// The next `Debugger.paused` on `events` within `limit`.
+async fn next_pause(
     events: &mut cdp_browser_lite::EventFilter,
     limit: std::time::Duration,
 ) -> Option<PauseLocation> {
@@ -405,6 +437,26 @@ pub(crate) mod tests {
         let debugging = with_breakpoint();
         assert!(!process_debugger_event(&paused(), &debugging).await);
         assert!(debugging.lock().await.paused_call_frame_id.is_some());
+    }
+
+    /// ISSUE-10: Chrome leaves a pause's `callFrames[].url` empty (it is
+    /// deprecated): the location keeps the script id and names the script's
+    /// URL from the tab's parsed scripts.
+    #[tokio::test]
+    async fn pause_names_its_script_from_parsed_scripts() {
+        // Given script 35 parsed from http://a/cart.js, and a pause in it without a URL
+        let state = with_breakpoint();
+        let parsed = json!({"scriptId": "35", "hash": "h", "url": "http://a/cart.js"});
+        process_debugger_event(&make_event("Debugger.scriptParsed", parsed), &state).await;
+        let frame = json!({"callFrameId": "f1", "url": "", "location": {"scriptId": "35", "lineNumber": 3, "columnNumber": 2}});
+        let location = pause_location(&json!({"callFrames": [frame]})).unwrap();
+        // When it is named from the tab's scripts
+        let named = with_script_url(location, &*state.lock().await);
+        // Then it has the URL and the script id
+        assert_eq!(
+            named.to_json(),
+            json!({"url": "http://a/cart.js", "script_id": "35", "line_number": 3, "column_number": 2})
+        );
     }
 
     /// FIX-02: Resuming clears the paused call frame.

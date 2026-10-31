@@ -769,7 +769,7 @@ mod e2e {
                 "ISSUE-1/11 click into a breakpoint answers at once, noting the pause",
                 "click_element",
                 json!({"instance_id": i, "selector": "#hit"}),
-                "The page paused in the debugger",
+                "The page paused in the debugger at http",
             ),
             (
                 "evaluate_on_call_frame after the click",

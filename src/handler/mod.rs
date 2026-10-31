@@ -576,7 +576,8 @@ async fn wait_for_active_tab(
             let registry = crate::util::sync::read(tabs);
             let active = registry.active_tab_id.as_ref();
             if let Some(entry) = active.and_then(|id| registry.tabs.get(id)) {
-                return Some(cdp_domains::cdp_target::CdpTarget::Tab(entry.tab.clone()));
+                let target = cdp_domains::cdp_target::CdpTarget::tab(entry.tab.clone());
+                return Some(target.with_debugger(entry.debugger_state.clone()));
             }
         }
         if tokio::time::Instant::now() >= deadline {
@@ -730,7 +731,7 @@ impl BrowserSession {
         }
         *self.browser_version.lock().await = read_browser_version(client).await;
 
-        let target = cdp_domains::cdp_target::CdpTarget::Client(client.clone());
+        let target = cdp_domains::cdp_target::CdpTarget::client(client.clone());
         let mut handles = self.start_session_listeners(&target);
         // WebMCP.enable replays the page's tools: its listener runs first.
         self.enable_session_webmcp(client).await;
@@ -828,10 +829,10 @@ impl BrowserSession {
     ) -> std::result::Result<Option<cdp_domains::cdp_target::CdpTarget>, CallToolError> {
         let registry = crate::util::sync::read(&self.tabs);
         let tab = |id: &String| {
-            registry
-                .tabs
-                .get(id)
-                .map(|entry| cdp_domains::cdp_target::CdpTarget::Tab(entry.tab.clone()))
+            registry.tabs.get(id).map(|entry| {
+                cdp_domains::cdp_target::CdpTarget::tab(entry.tab.clone())
+                    .with_debugger(entry.debugger_state.clone())
+            })
         };
         let Some(id) = tab_id else {
             return Ok(registry.active_tab_id.as_ref().and_then(tab));
@@ -989,7 +990,10 @@ impl BrowserSession {
             return Ok(tab);
         }
         client
-            .map(cdp_domains::cdp_target::CdpTarget::Client)
+            .map(|client| {
+                cdp_domains::cdp_target::CdpTarget::client(client)
+                    .with_debugger(self.debugger_state.clone())
+            })
             .ok_or_else(|| {
                 CallToolError::from_message(
                     "Failed to retrieve target: no active tabs or default connection available",
@@ -1738,9 +1742,7 @@ mod tests {
         // When the first call looks for its target
         let found = wait_for_active_tab(&tabs, std::time::Duration::from_secs(2)).await;
         // Then it gets that tab
-        assert!(
-            matches!(found, Some(cdp_domains::cdp_target::CdpTarget::Tab(ref t)) if t.target_id() == "T-first")
-        );
+        assert!(found.as_ref().and_then(|t| t.tab_target_id()) == Some("T-first"));
         // And with no page at all it gives up after the limit
         let empty = Arc::new(std::sync::RwLock::new(
             chrome_instance::tab_registry::TabRegistry::new(4),

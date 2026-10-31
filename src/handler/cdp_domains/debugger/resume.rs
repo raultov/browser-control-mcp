@@ -53,7 +53,8 @@ impl ResumeTool {
                 .send_raw_command("Page.removeScriptToEvaluateOnNewDocument", params)
                 .await;
         }
-        let location = super::wait_for_pause(&mut events, debugging::RESUME_WAIT).await;
+        let location =
+            super::wait_for_pause(&mut events, debugging::RESUME_WAIT, &debugger_state).await;
         Ok(debugging::resumed(location.as_ref()))
     }
 }

@@ -459,7 +459,7 @@ mod tests {
         )
         .await
         .unwrap();
-        CdpTarget::Client(client)
+        CdpTarget::client(client)
     }
 
     /// AUD-RW-04: when the handler falls behind (lagged events) it keeps
@@ -477,7 +477,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let target = CdpTarget::Client(client);
+        let target = CdpTarget::client(client);
         let events = target.on_domain("Fetch");
         let handler = tokio::spawn(answer_challenges(target, events, creds()));
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;

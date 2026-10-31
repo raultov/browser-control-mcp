@@ -100,7 +100,7 @@ mod tests {
         let port = spawn_mock_chrome_server().await;
         let address = format!("127.0.0.1:{port}");
         let timeout = std::time::Duration::from_secs(5);
-        CdpTarget::Client(
+        CdpTarget::client(
             cdp_browser_lite::CdpClient::new(&address, timeout)
                 .await
                 .unwrap(),
