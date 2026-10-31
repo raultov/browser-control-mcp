@@ -34,6 +34,8 @@ mod e2e {
     <label style="position:relative;display:inline-block;width:60px;height:24px"><input type="checkbox" id="sw" style="position:absolute;left:0;top:0;width:60px;height:24px;margin:0"><span style="position:absolute;inset:0;background:#ccc"></span></label>
     <div style="position:relative;display:inline-block"><button id="covered">covered</button><div style="position:absolute;inset:0;background:#fff"></div></div>
     <div id="shot" style="width:123px;height:45px;background:#c00">shot</div>
+    <input role="combobox" aria-label="Movie" value="The Godfather"><button role="combobox" aria-label="Food">Blueberry</button>
+    <span role="spinbutton" aria-label="Month" aria-valuenow="10" aria-valuetext="October" tabindex="0">10</span><div role="slider" aria-label="Volume" aria-valuenow="30" tabindex="0">|</div>
     <input id="app" value="draft"><input id="appn" type="number" value="12">
     <div id="card" style="cursor:pointer" onclick="window.__card = true"><a href="/card">card-link</a> <button id="card-btn">card-button</button></div>
     <div id="plaincard" style="cursor:pointer" onclick="window.__plain = true">plain card text</div>
@@ -551,6 +553,39 @@ mod e2e {
                 "snapshot",
                 scoped("#dat"),
                 "- cell \"dat-text bold\" [ref=",
+            ),
+        ]
+    }
+
+    /// ISSUE-29: snapshot shows the value of ARIA comboboxes, spinbuttons
+    /// and sliders.
+    fn aria_value_steps(instance: &str) -> Vec<Step> {
+        let i = json!(instance);
+        let line = |regex: &str| json!({"instance_id": i, "regex": regex});
+        vec![
+            (
+                "ISSUE-29 a combobox input shows its value",
+                "find_in_snapshot",
+                line(r#"combobox "Movie" \[ref=e\d+\]: "The Godfather""#),
+                "1 matches",
+            ),
+            (
+                "ISSUE-29 a combobox button shows its text",
+                "find_in_snapshot",
+                line(r#"combobox "Food" \[ref=e\d+\]: "Blueberry""#),
+                "1 matches",
+            ),
+            (
+                "ISSUE-29 a spinbutton shows its aria-valuetext",
+                "find_in_snapshot",
+                line(r#"spinbutton "Month" \[ref=e\d+\]: "October""#),
+                "1 matches",
+            ),
+            (
+                "ISSUE-29 a slider shows its aria-valuenow",
+                "find_in_snapshot",
+                line(r#"slider "Volume" \[ref=e\d+\]: "30""#),
+                "1 matches",
             ),
         ]
     }
@@ -1358,6 +1393,7 @@ mod e2e {
             clickable_steps("e2e"),
             hover_reveal_steps("e2e"),
             element_shot_steps("e2e"),
+            aria_value_steps("e2e"),
             append_steps("e2e"),
             form_steps("e2e"),
             secret_steps("e2e"),
@@ -1451,6 +1487,7 @@ mod e2e {
             clickable_steps("default"),
             hover_reveal_steps("default"),
             element_shot_steps("default"),
+            aria_value_steps("default"),
             append_steps("default"),
             form_steps("default"),
             upload_steps("default"),

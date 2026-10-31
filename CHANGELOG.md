@@ -43,6 +43,15 @@ from a copy of its code: entries describe the differences from that release.
   viewport (at most 16 384 px per side, with a note). Checking one component
   no longer costs a whole viewport image. (#33)
 
+### Fixed
+
+- `snapshot` and `find_in_snapshot` show the value of ARIA widgets: an
+  `<input role="combobox">` its text (MUI Autocomplete after a pick), a
+  spinbutton or slider its `aria-valuetext` or `aria-valuenow` (MUI X
+  DatePicker sections), and a button-like combobox the option it shows
+  (Radix Select). Before, only text fields, sliders and `<select>` had one,
+  so the agent could not see that a pick took. (#29)
+
 ## [0.6.0-beta.10] - 2026-10-31
 
 Public **BETA**. Fixes four input and snapshot bugs found while driving a

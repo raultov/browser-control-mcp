@@ -140,10 +140,13 @@ const OUTLINE: &str = r#"const outline = (root, maxDepth, maxChars) => {
         if (role === 'link') out.push('[href=' + cut(el.getAttribute('href') || '', 120) + ']');
         return out;
     };
-    const valueOf = (el, role) => {
+    const valueOf = (el, role, name) => {
         if (el.tagName === 'SELECT' && !el.multiple) { const option = el.selectedOptions[0]; return option ? clean(option.label) : ''; }
-        const typed = ['textbox', 'searchbox', 'spinbutton', 'slider'].includes(role);
-        return typed && typeof el.value === 'string' && el.type !== 'password' ? el.value : '';
+        const field = el.tagName === 'INPUT' || el.tagName === 'TEXTAREA';
+        if (field && ['textbox', 'searchbox', 'spinbutton', 'slider', 'combobox'].includes(role)) return el.type !== 'password' ? el.value : '';
+        if (['spinbutton', 'slider', 'progressbar', 'scrollbar', 'meter'].includes(role)) return clean(el.getAttribute('aria-valuetext') || el.getAttribute('aria-valuenow') || '');
+        if (role === 'combobox') { const shown = textOf(el); return shown !== name ? shown : ''; }
+        return '';
     };
     const childrenOf = node => {
         if (node.shadowRoot) return Array.from(node.shadowRoot.childNodes);
@@ -175,7 +178,7 @@ const OUTLINE: &str = r#"const outline = (root, maxDepth, maxChars) => {
         }
         flush();
         const holder = role === 'clickable' && !!el.querySelector(INTERACTIVE);
-        const name = nameOf(el, holder ? 'group' : role), value = valueOf(el, role), at = lines.length;
+        const name = nameOf(el, holder ? 'group' : role), value = valueOf(el, role, name), at = lines.length;
         const parts = [role];
         if (name) parts.push(JSON.stringify(cut(name, 100)));
         parts.push(...details(el, role), '[ref=' + refOf(el) + ']');
@@ -315,6 +318,26 @@ mod tests {
             "{OUTLINE}"
         );
         assert!(OUTLINE.contains("(LEAF.has(role) && !holder)"), "{OUTLINE}");
+    }
+
+    /// ISSUE-29: ARIA widgets show their value: a combobox input its text,
+    /// a spinbutton or slider its aria-valuetext (else aria-valuenow), and
+    /// a combobox that is not a field the text it shows, unless that is
+    /// already its name.
+    #[test]
+    fn aria_widgets_show_their_value() {
+        assert!(
+            OUTLINE.contains(
+                "['textbox', 'searchbox', 'spinbutton', 'slider', 'combobox'].includes(role)"
+            ),
+            "{OUTLINE}"
+        );
+        assert!(
+            OUTLINE
+                .contains("el.getAttribute('aria-valuetext') || el.getAttribute('aria-valuenow')"),
+            "{OUTLINE}"
+        );
+        assert!(OUTLINE.contains("valueOf(el, role, name)"), "{OUTLINE}");
     }
 
     /// ISSUE-4: the scope and the search reach JavaScript as one literal.
