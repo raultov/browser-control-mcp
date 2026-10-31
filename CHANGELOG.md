@@ -10,6 +10,21 @@ from a copy of its code: entries describe the differences from that release.
 
 ## [Unreleased]
 
+## [0.4.0-beta.7] - 2026-10-31
+
+Public **BETA**. Closes the gaps a comparison with Playwright MCP showed:
+`snapshot` and `find_in_snapshot` outline the page with refs every
+selector accepts, selectors reach into shadow roots and iframes with `>>>`,
+and new tools wait for content (`wait_for`), fill forms (`fill_form`),
+upload files, press keys, hover, read and change cookies and web storage,
+and emulate viewports. A click into a breakpoint or a dialog answers at once.
+Some behaviour changes: the `raw`, `perf`, `storage`, `files` and
+`emulation` tools are listed only with the new `--tool-groups` (start the
+server with `--tool-groups raw,perf` or `all` to keep `send_cdp_command`,
+`get_custom_events` and the performance tools), tool descriptions are about
+half as long, and `click_element` succeeds (noting it) when the click opens
+a dialog or hits a breakpoint.
+
 ### Added
 
 - `--tool-groups` lists opt-in tool groups, comma separated: `storage`
