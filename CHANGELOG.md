@@ -10,6 +10,17 @@ from a copy of its code: entries describe the differences from that release.
 
 ## [Unreleased]
 
+## [0.5.0-beta.8] - 2026-10-31
+
+Public **BETA**. Closes the rest of the Playwright MCP comparison: the new
+`network` tool group mocks requests (`mock_route`, `list_routes`,
+`remove_route`) and takes a tab offline (`set_offline`), `save_pdf` prints
+a tab to PDF, and `--secrets` keeps known values out of what the agent
+reads. Debugging a paused page works better: `evaluate_js` answers at once
+on Chrome, a pause names its script, and the input tools fail at once
+naming the pause instead of reporting a click or a text that has not
+happened (a behaviour change: they used to "succeed").
+
 ### Added
 
 - `--secrets <file>` (dotenv): every tool result and error shows the
