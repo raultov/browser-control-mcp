@@ -364,7 +364,7 @@ fn fill_snippet(selector: &str, text: &str, mode: FillMode, body: &str) -> Strin
     status_of(
         selector,
         &format!(
-            "const text = {}; const append = {append}; {TEXT_OF} {body}",
+            "const text = {}; const append = {append}; {TEXT_OF} {CUSTOM_EDITOR} {body}",
             string_literal(text)
         ),
     )
@@ -375,6 +375,18 @@ fn fill_snippet(selector: &str, text: &str, mode: FillMode, body: &str) -> Strin
 /// spaces as spaces.
 const TEXT_OF: &str =
     "const textOf = n => n.textContent.replace(/\\uFEFF/g, '').replace(/\\u00A0/g, ' ');";
+
+/// Whether the element is an editor of its own: neither a form field nor
+/// contenteditable, but with an `EditContext` (Monaco on Chrome) or a
+/// focusable text role; or a text field without a visible box, the hidden
+/// input a code editor reads keys from (Monaco on Firefox, Ace,
+/// CodeMirror 5). Its content is the page's model, out of reach of the
+/// DOM: the keys a user would press select or reach it.
+const CUSTOM_EDITOR: &str = "const custom = (e => { const V = e.ownerDocument.defaultView; \
+    const sized = Array.from(e.getClientRects()).some(r => r.width > 2 && r.height > 2); \
+    if (e instanceof V.HTMLTextAreaElement || (e instanceof V.HTMLInputElement && ['text', 'search', ''].includes(e.getAttribute('type') || ''))) return !sized; \
+    if (e instanceof V.HTMLInputElement || e.isContentEditable) return false; \
+    return !!e.editContext || (['textbox', 'searchbox', 'combobox'].includes(e.getAttribute('role')) && e.tabIndex >= 0); })(el);";
 
 const PREPARE_FILL: &str = "const W = el.ownerDocument.defaultView; \
     if (el instanceof W.HTMLSelectElement) { \
@@ -390,12 +402,26 @@ const PREPARE_FILL: &str = "const W = el.ownerDocument.defaultView; \
     const field = el instanceof W.HTMLInputElement || el instanceof W.HTMLTextAreaElement; \
     const typed = ['text', 'search', 'email', 'url', 'tel', 'password', 'number', 'date', 'datetime-local', 'month', 'week', 'time']; \
     if (el instanceof W.HTMLInputElement && !typed.includes(el.type)) return { status: 'not_editable', reason: 'an input of type ' + el.type }; \
-    if (!field && !el.isContentEditable) return { status: 'not_editable', reason: 'not an input, textarea or contenteditable element' }; \
+    if (!field && !el.isContentEditable && !custom) return { status: 'not_editable', reason: 'not an input, textarea or contenteditable element' }; \
+    const host = custom && !Array.from(el.getClientRects()).some(r => r.width > 2 && r.height > 2) ? (() => { \
+        let box = el.parentElement; \
+        while (box && !(box.getBoundingClientRect().width >= 20 && box.getBoundingClientRect().height >= 10)) box = box.parentElement; \
+        if (!box) return null; \
+        box.scrollIntoView({ behavior: 'instant', block: 'nearest' }); \
+        let win = el.ownerDocument.defaultView; const r = box.getBoundingClientRect(); \
+        let x = (Math.max(r.left, 0) + Math.min(r.right, win.innerWidth)) / 2, y = (Math.max(r.top, 0) + Math.min(r.bottom, win.innerHeight)) / 2; \
+        while (win.frameElement) { const frame = win.frameElement, f = frame.getBoundingClientRect(); x += f.left + frame.clientLeft; y += f.top + frame.clientTop; win = frame.ownerDocument.defaultView; } \
+        return { x: Math.round(x), y: Math.round(y) }; })() : null; \
     if (field && el.matches(':disabled')) return { status: 'not_editable', reason: 'disabled' }; \
     if (field && el.readOnly) return { status: 'not_editable', reason: 'read-only' }; \
     el.focus(); \
     const active = el.getRootNode().activeElement; \
     if (active !== el && !(el.isContentEditable && active && active.contains(el))) return { status: 'not_editable', reason: 'it cannot take focus (hidden or inert)' }; \
+    if (custom) { \
+        const mac = /Mac|iPhone|iPad/.test(W.navigator.platform), mod = mac ? 'Meta' : 'Control'; \
+        const clear = !append && text === '' ? [{ key: 'Backspace', modifiers: [] }] : []; \
+        return { status: 'ready', prefix: '', click: host, keys: append ? [{ key: mac ? 'ArrowDown' : 'End', modifiers: [mod] }] : [{ key: 'a', modifiers: [mod] }].concat(clear) }; \
+    } \
     let prefix = ''; \
     if (field) { \
         el[Symbol.for('browser-control-mcp.fill-before')] = el.value; \
@@ -430,7 +456,8 @@ const PREPARE_FILL: &str = "const W = el.ownerDocument.defaultView; \
 /// preparation found gets `change` here.
 pub fn fill_result(selector: &str, text: &str, mode: FillMode) -> String {
     let body = format!(
-        "const W = el.ownerDocument.defaultView; \
+        "if (custom) return {{ status: 'done', unchecked: true, append }}; \
+             const W = el.ownerDocument.defaultView; \
              const field = el instanceof W.HTMLInputElement || el instanceof W.HTMLTextAreaElement; \
              const value = field ? el.value : textOf(el); \
              const before = el[{FILL_BEFORE}]; delete el[{FILL_BEFORE}]; \
@@ -848,6 +875,34 @@ mod tests {
         assert!(expression.contains("el.labels"), "{expression}");
         assert!(expression.contains("aria-labelledby"), "{expression}");
         assert!(expression.contains("!labelOf(hit)"), "{expression}");
+    }
+
+    /// ISSUE-28: an editor that is neither a field nor contenteditable but
+    /// has an EditContext (Monaco) or a focusable text role is focused and
+    /// gets the keys that select its content (or move to its end) before
+    /// the text is typed; its content cannot be read back, so the result
+    /// says it was not checked.
+    #[test]
+    fn custom_editors_get_keys_and_no_check() {
+        let prepare = prepare_fill("e12", "x", FillMode::Replace);
+        assert!(prepare.contains("e.editContext"), "{prepare}");
+        // An editor without a visible box gets a click on its container first
+        assert!(prepare.contains("click: host"), "{prepare}");
+        assert!(prepare.contains("return !sized;"), "{prepare}");
+        assert!(
+            prepare.contains("if (!field && !el.isContentEditable && !custom)"),
+            "{prepare}"
+        );
+        assert!(
+            prepare
+                .contains("keys: append ? [{ key: mac ? 'ArrowDown' : 'End', modifiers: [mod] }]"),
+            "{prepare}"
+        );
+        let result = fill_result("e12", "x", FillMode::Replace);
+        assert!(
+            result.contains("if (custom) return { status: 'done', unchecked: true, append };"),
+            "{result}"
+        );
     }
 
     /// ISSUE-32: in append mode nothing is cleared: the caret goes to the

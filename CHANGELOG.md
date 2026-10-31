@@ -45,6 +45,16 @@ from a copy of its code: entries describe the differences from that release.
 
 ### Fixed
 
+- `fill_input` types into editors of their own, such as Monaco (VS Code
+  for the web): the snapshot named Monaco's input `textbox "JavaScript
+  Input"`, but `fill_input` refused it (not an input, textarea or
+  contenteditable element) on Chrome, where it is an `EditContext`
+  element, and on Firefox, where it is a hidden textarea, reported success
+  while the editor never got the text. Such an editor (an `EditContext`,
+  a focusable `textbox` role, or a text field without a visible box) now
+  gets a click on its visible container when its input has none, Control+A
+  (Command+A on macOS) or, with `append`, Control+End, then the text; its
+  content cannot be read back, so the reply says it was not checked. (#28)
 - `snapshot` and `find_in_snapshot` show the value of ARIA widgets: an
   `<input role="combobox">` its text (MUI Autocomplete after a pick), a
   spinbutton or slider its `aria-valuetext` or `aria-valuenow` (MUI X

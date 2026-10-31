@@ -531,9 +531,20 @@ impl OnTab<'_> {
         let filling = async {
             let prepare = crate::util::js::prepare_fill(selector, text, mode);
             let prepared = page::run_snippet(self.tab, &prepare).await?;
-            let FillStart::Type(prefix) = fill_start(&prepared, selector)? else {
+            let FillStart::Type {
+                click,
+                prefix,
+                keys,
+            } = fill_start(&prepared, selector)?
+            else {
                 return Ok(selected_reply(selector));
             };
+            if let Some(point) = click {
+                page::click_at(self.tab, point, &ClickOptions::default()).await?;
+            }
+            for (key, held) in &keys {
+                page::press_key(self.tab, key, held).await?;
+            }
             page::type_text(self.tab, &format!("{prefix}{text}")).await?;
             let check = crate::util::js::fill_result(selector, text, mode);
             fill_reply(&page::run_snippet(self.tab, &check).await?, selector)

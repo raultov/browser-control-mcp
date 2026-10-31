@@ -1,3 +1,4 @@
+use super::keys::{Key, Modifier};
 use crate::handler::McpHandler;
 use crate::handler::cdp_domains::cdp_target::CdpTarget;
 use crate::util::js::FillMode;
@@ -27,10 +28,18 @@ pub struct FillInputTool {
 
 /// What is left after the preparation snippet (`util::js::prepare_fill`).
 pub(crate) enum FillStart {
-    /// The field is focused, empty or with the caret at the end: type
-    /// `prefix` (what an appended field without a caret held, such as a
-    /// number field, emptied to be retyped) then the text.
-    Type(String),
+    /// The field is focused, empty or with the caret at the end: click
+    /// `click` (the visible container of an editor whose input has no box:
+    /// Monaco takes the focus only from its own mouse handling), press
+    /// `keys` (an editor of its own selects its content or reaches its end
+    /// the way a user does), then type `prefix` (what an appended field
+    /// without a caret held, such as a number field, emptied to be
+    /// retyped) and the text.
+    Type {
+        click: Option<(f64, f64)>,
+        prefix: String,
+        keys: Vec<Shortcut>,
+    },
     /// A `<select>` option was picked: nothing to type.
     Selected,
 }
@@ -39,9 +48,13 @@ pub(crate) enum FillStart {
 /// typed into is an error, so the text never lands in another element.
 pub(crate) fn fill_start(value: &Value, selector: &str) -> Result<FillStart, CallToolError> {
     match value["status"].as_str() {
-        Some("ready") => Ok(FillStart::Type(
-            value["prefix"].as_str().unwrap_or_default().to_string(),
-        )),
+        Some("ready") => Ok(FillStart::Type {
+            click: value["click"]["x"]
+                .as_f64()
+                .zip(value["click"]["y"].as_f64()),
+            prefix: value["prefix"].as_str().unwrap_or_default().to_string(),
+            keys: shortcuts(value)?,
+        }),
         Some("selected") => Ok(FillStart::Selected),
         Some("not_editable") => Err(CallToolError::from_message(format!(
             "Element '{selector}' is not editable ({}); nothing was typed.",
@@ -62,6 +75,24 @@ pub(crate) fn fill_start(value: &Value, selector: &str) -> Result<FillStart, Cal
             crate::util::js::ref_hint(selector)
         ))),
     }
+}
+
+/// A key pressed with modifiers held (Control+A).
+pub(crate) type Shortcut = (Key, Vec<Modifier>);
+
+/// The keys the preparation snippet asks for (`keys: [{key, modifiers}]`).
+fn shortcuts(value: &Value) -> Result<Vec<Shortcut>, CallToolError> {
+    let Some(keys) = value["keys"].as_array() else {
+        return Ok(Vec::new());
+    };
+    keys.iter()
+        .map(|entry| {
+            let name = entry["key"].as_str().unwrap_or_default();
+            let key = super::keys::key(name).map_err(CallToolError::from_message)?;
+            let held = serde_json::from_value(entry["modifiers"].clone()).unwrap_or_default();
+            Ok((key, held))
+        })
+        .collect()
 }
 
 /// The reply once a `<select>` option was picked.
@@ -87,6 +118,11 @@ pub(crate) fn fill_reply(value: &Value, selector: &str) -> Result<CallToolResult
     };
     if value["matches"].as_bool() == Some(true) {
         return Ok(CallToolResult::text_content(vec![done.into()]));
+    }
+    if value["unchecked"].as_bool() == Some(true) {
+        return Ok(CallToolResult::text_content(vec![
+            format!("{done}\nNote: '{selector}' is an editor of its own (such as Monaco): its content could not be read back, so the text was typed but not checked.").into(),
+        ]));
     }
     let empty = value["empty"].as_bool() == Some(true);
     if value["rejected"].as_bool().unwrap_or(empty) {
@@ -153,9 +189,22 @@ pub(crate) async fn fill(
 ) -> Result<CallToolResult, CallToolError> {
     let prepare = crate::util::js::prepare_fill(selector, text, mode);
     let prepared = crate::handler::snippet_value(target, &prepare).await?;
-    let FillStart::Type(prefix) = fill_start(&prepared, selector)? else {
+    let FillStart::Type {
+        click,
+        prefix,
+        keys,
+    } = fill_start(&prepared, selector)?
+    else {
         return Ok(selected_reply(selector));
     };
+    if let Some(point) = click {
+        let once = super::click_element::ClickOptions::default();
+        super::click_element::press_and_release(target, point, &once).await?;
+    }
+    for (key, held) in &keys {
+        let pressing = super::press_key::press(target, key, held);
+        super::keys::holding(target, held, pressing).await?;
+    }
     for c in prefix.chars().chain(text.chars()) {
         for (method, params) in typing(c) {
             crate::handler::send_or(target, method, params, "CDP Error").await?;
@@ -215,6 +264,42 @@ mod tests {
             json!({"result": {"result": {"type": "object", "value": value}}})
         });
         mock
+    }
+
+    /// ISSUE-28: a custom editor (Monaco) first gets the keys the
+    /// preparation names (Control+A), then the text; the reply says its
+    /// content could not be checked.
+    #[tokio::test]
+    async fn custom_editors_get_their_keys_first() {
+        // Given an editor whose content the page does not expose
+        let ready = json!({"status": "ready", "prefix": "", "keys": [{"key": "a", "modifiers": ["Control"]}]});
+        let mock = page_answering(
+            ready,
+            json!({"status": "done", "unchecked": true, "append": false}),
+        )
+        .await;
+        let handler = crate::handler::cdp_domains::tests::mock_handler(mock.http_port);
+        // When it is filled
+        let args = json!({"selector": "e12", "text": "ok"});
+        let params = crate::handler::cdp_domains::tests::call("fill_input", args);
+        let reply = FillInputTool::handle(params, &handler).await.unwrap();
+        // Then Control+A comes before the typed keys, and the reply says unchecked
+        let keys: Vec<(String, i64)> = mock
+            .commands_named("Input.dispatchKeyEvent")
+            .iter()
+            .map(|c| {
+                (
+                    c.params["key"].as_str().unwrap_or_default().to_string(),
+                    c.params["modifiers"].as_i64().unwrap_or(0),
+                )
+            })
+            .collect();
+        let first_a = keys.iter().position(|(k, _)| k == "a").unwrap();
+        let first_o = keys.iter().position(|(k, _)| k == "o").unwrap();
+        assert!(first_a < first_o, "{keys:?}");
+        assert_eq!(keys[first_a].1, 2, "Control held: {keys:?}");
+        let text = &reply.content[0].as_text_content().unwrap().text;
+        assert!(text.contains("could not be read back"), "{text}");
     }
 
     /// ISSUE-32: append types after the content, says so, and fails when

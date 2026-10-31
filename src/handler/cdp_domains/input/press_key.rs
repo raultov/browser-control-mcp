@@ -64,7 +64,7 @@ impl PressKeyTool {
 /// Presses and releases `key` with `held` down; what interrupted it (a
 /// dialog or a pause its handlers caused), if anything. A release the press
 /// left unsent goes in the background, so the key is not left held.
-async fn press(
+pub(crate) async fn press(
     target: &CdpTarget,
     key: &Key,
     held: &[Modifier],

@@ -118,7 +118,7 @@ pub(crate) async fn click(
 /// interrupted the click (a dialog or a pause its handlers caused), if
 /// anything. The click still happened: the page handles the events once it
 /// runs again.
-async fn press_and_release(
+pub(crate) async fn press_and_release(
     target: &CdpTarget,
     (x, y): (f64, f64),
     options: &ClickOptions,

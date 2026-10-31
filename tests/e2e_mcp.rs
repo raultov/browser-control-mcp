@@ -34,6 +34,13 @@ mod e2e {
     <label style="position:relative;display:inline-block;width:60px;height:24px"><input type="checkbox" id="sw" style="position:absolute;left:0;top:0;width:60px;height:24px;margin:0"><span style="position:absolute;inset:0;background:#ccc"></span></label>
     <div style="position:relative;display:inline-block"><button id="covered">covered</button><div style="position:absolute;inset:0;background:#fff"></div></div>
     <div id="shot" style="width:123px;height:45px;background:#c00">shot</div>
+    <div id="custom" role="textbox" tabindex="0" aria-label="custom editor">old</div>
+    <script>(() => { const ed = document.getElementById('custom'); let model = 'old', all = false; window.__custom = model;
+      ed.addEventListener('keydown', e => { const mod = e.ctrlKey || e.metaKey;
+        if (mod && e.key === 'a') all = true; else if (mod && (e.key === 'End' || e.key === 'ArrowDown')) all = false;
+        else if (e.key === 'Backspace') { model = all ? '' : model.slice(0, -1); all = false; }
+        else if (e.key.length === 1 && !mod) { model = all ? e.key : model + e.key; all = false; } else return;
+        e.preventDefault(); ed.textContent = model; window.__custom = model; }); })();</script>
     <input role="combobox" aria-label="Movie" value="The Godfather"><button role="combobox" aria-label="Food">Blueberry</button>
     <span role="spinbutton" aria-label="Month" aria-valuenow="10" aria-valuetext="October" tabindex="0">10</span><div role="slider" aria-label="Volume" aria-valuenow="30" tabindex="0">|</div>
     <input id="app" value="draft"><input id="appn" type="number" value="12">
@@ -553,6 +560,41 @@ mod e2e {
                 "snapshot",
                 scoped("#dat"),
                 "- cell \"dat-text bold\" [ref=",
+            ),
+        ]
+    }
+
+    /// ISSUE-28: an editor of its own (a focusable textbox that keeps its
+    /// own model) is filled through the keys a user presses: Control+A
+    /// then the text, Control+End then the appended text; the reply says
+    /// the content was not checked.
+    fn custom_editor_steps(instance: &str) -> Vec<Step> {
+        let i = json!(instance);
+        let model = json!({"instance_id": i, "expression": "window.__custom"});
+        vec![
+            (
+                "ISSUE-28 fill a custom editor",
+                "fill_input",
+                json!({"instance_id": i, "selector": "#custom", "text": "new text"}),
+                "not checked",
+            ),
+            (
+                "ISSUE-28 its model holds the text",
+                "evaluate_js",
+                model.clone(),
+                "\"value\": \"new text\"",
+            ),
+            (
+                "ISSUE-28 append to a custom editor",
+                "fill_input",
+                json!({"instance_id": i, "selector": "#custom", "text": " more", "append": true}),
+                "Successfully appended",
+            ),
+            (
+                "ISSUE-28 its model holds both",
+                "evaluate_js",
+                model,
+                "\"value\": \"new text more\"",
             ),
         ]
     }
@@ -1394,6 +1436,7 @@ mod e2e {
             hover_reveal_steps("e2e"),
             element_shot_steps("e2e"),
             aria_value_steps("e2e"),
+            custom_editor_steps("e2e"),
             append_steps("e2e"),
             form_steps("e2e"),
             secret_steps("e2e"),
@@ -1488,6 +1531,7 @@ mod e2e {
             hover_reveal_steps("default"),
             element_shot_steps("default"),
             aria_value_steps("default"),
+            custom_editor_steps("default"),
             append_steps("default"),
             form_steps("default"),
             upload_steps("default"),
