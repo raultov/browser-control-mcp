@@ -67,6 +67,8 @@ pub enum Capability {
     Input,
     /// Capture screenshots.
     Screenshot,
+    /// Print the page to PDF.
+    Print,
     /// Buffered console messages.
     ConsoleLogs,
     /// Buffered HTTP requests.
@@ -127,6 +129,7 @@ const COMMON: &[Capability] = &[
     Capability::Dom,
     Capability::Input,
     Capability::Screenshot,
+    Capability::Print,
     Capability::ConsoleLogs,
     Capability::NetworkLogs,
     Capability::NetworkControl,

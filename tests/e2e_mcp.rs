@@ -540,6 +540,28 @@ mod e2e {
         ]
     }
 
+    /// ISSUE-13: save_pdf writes the first page to a file under the
+    /// server's working directory (an upload root), and without a path
+    /// returns the PDF in the reply.
+    fn pdf_steps(instance: &str) -> Vec<Step> {
+        let i = json!(instance);
+        let path = format!("{}/target/e2e-{instance}.pdf", env!("CARGO_MANIFEST_DIR"));
+        vec![
+            (
+                "ISSUE-13 save_pdf to a file",
+                "save_pdf",
+                json!({"instance_id": i, "path": path, "page_ranges": "1", "landscape": true}),
+                "\"pages\": 1",
+            ),
+            (
+                "ISSUE-13 save_pdf in the reply",
+                "save_pdf",
+                json!({"instance_id": i}),
+                "-byte PDF",
+            ),
+        ]
+    }
+
     /// ISSUE-7: hover, keys with modifiers, double and right clicks.
     fn key_and_pointer_steps(instance: &str) -> Vec<Step> {
         let i = json!(instance);
@@ -932,7 +954,7 @@ mod e2e {
         let base = serve().await;
         // Every opt-in tool group: the suite drives them all.
         let mut mcp = Mcp::start(&["--tool-groups", "all"]).await;
-        mcp.list_tools(47).await;
+        mcp.list_tools(48).await;
         let all = [
             page_steps(browser, &base),
             tab_steps("e2e", &base),
@@ -942,6 +964,7 @@ mod e2e {
             snapshot_steps("e2e"),
             form_steps("e2e"),
             upload_steps("e2e"),
+            pdf_steps("e2e"),
             key_and_pointer_steps("e2e"),
             storage_steps("e2e"),
             emulate_steps("e2e", browser == "chrome"),
@@ -1023,6 +1046,7 @@ mod e2e {
             snapshot_steps("default"),
             form_steps("default"),
             upload_steps("default"),
+            pdf_steps("default"),
             key_and_pointer_steps("default"),
             storage_steps("default"),
             emulate_steps("default", variable.contains("CHROME")),

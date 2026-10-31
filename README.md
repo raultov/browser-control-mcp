@@ -37,7 +37,7 @@ tools are off by default and listed only with `--tool-groups`:
 | Group | Tools | Why it is opt-in |
 | --- | --- | --- |
 | `storage` | `cookies`, `web_storage` | reads and changes session tokens |
-| `files` | `upload_file` | hands a page files of the machine |
+| `files` | `upload_file`, `save_pdf` | reads and writes files of the machine |
 | `raw` | `send_cdp_command`, `send_bidi_command`, `send_rdp_request`, `get_custom_events` | anything the protocol allows |
 | `perf` | `get_performance_metrics`, `profile_page_performance` | niche |
 | `emulation` | `emulate` | niche |
@@ -74,6 +74,7 @@ see the note.
 | `inspect_dom` | ✓ | ✓ | includes open shadow roots and same-origin iframes (cross-origin ones are noted); at most 100 000 characters without `query` (cut in the page) |
 | `snapshot` | ✓ | ✓ | outline of the page: role, name, states, value and a ref (`e12`) per element, through open shadow roots and same-origin iframes; at most 50 000 characters (`selector` and `depth` narrow it); the same JavaScript on both browsers |
 | `find_in_snapshot` | ✓ | ✓ | `text` (case-insensitive) or `regex` over the whole outline; matching lines under their ancestors, at most 20 |
+| `save_pdf` | ✓ | ✓ | `files` group; prints the tab as the browser's print does (`landscape`, `print_background`, `scale` 0.1–2, `page_ranges` like `1-3, 5`); with `path` (an absolute `.pdf` under the upload roots) writes the file and answers `{path, bytes, pages}`, else returns the PDF as an embedded `application/pdf` resource (at most 5 MB); Chrome `Page.printToPDF`, Firefox `browsingContext.print` |
 | `capture_screenshot` | ✓ | ✓ | `format` `png`, `jpeg` (or `jpg`) or `webp`; `full_page` at most 16 384 px per side (a text note says when cut) |
 | `click_element` | ✓ | ✓ | scrolls the element into view; `button` (left/right/middle), `click_count` (2 = double click) and `modifiers`; fails without clicking when it is hidden or covered; `host >>> inner` selectors reach open shadow roots and same-origin iframes (also in `fill_input`, `scroll`, `wait_for`); a dialog or debugger pause the click causes is noted in a successful reply (`{dialog}` or `{paused, location}`) |
 | `fill_input` | ✓ | ✓ | picks `<select>` options; fails without typing on elements that cannot take the text; types key by key on both (key handlers run; newlines and tabs inserted as text), about 1 ms per character; `change` on leaving the field, or at the end when the window has no focus |
@@ -385,7 +386,7 @@ claude mcp add browser-control-mcp -- npx -y @raultov/browser-control-mcp
 | `--user-profile` | off | your default profile (no `--user-data-dir`) | only with `--firefox-port` (attach to your running Firefox) |
 | `--allow-cookie-import` | off | exposes `copy_cookies` | capability error |
 | `--tool-groups <GROUPS>` | none | lists the opt-in tool groups, comma separated: `storage`, `files`, `raw`, `perf`, `emulation`, `network` or `all` (see [Tool groups](#tool-groups)) | same |
-| `--upload-root <DIR>` | working + temp dir | directory `upload_file` may read files from (repeatable; replaces the defaults) | same |
+| `--upload-root <DIR>` | working + temp dir | directory `upload_file` may read files from and `save_pdf` may write PDFs to (repeatable; replaces the defaults) | same |
 | `--enable-webmcp` | off | WebMCP switches and `webmcp_*` tools | capability error |
 | `--proxy-server <URL>` | none | proxy for every instance; exposes `enable_proxy_auth` | `http://` and `socks5://` proxies |
 | `--proxy-username <USER>` | none | answers proxy (407) challenges | same (untested) |
@@ -569,6 +570,8 @@ incompatible:
   the upload roots (the server's working directory and the system temp
   directory, or the `--upload-root` directories), resolved so `..` and
   symlinks cannot leave them. Paths are never logged.
+- `save_pdf` writes only `.pdf` files, under the same upload roots and
+  resolved the same way; it overwrites an existing `.pdf` there.
 - The proxy password is never logged and is given only to proxy (407)
   challenges, never to a site's own authentication.
 - The Firefox debugger port needs `devtools.chrome.enabled`: any local

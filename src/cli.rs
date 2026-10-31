@@ -64,7 +64,8 @@ pub struct ToolArgs {
 pub enum ToolGroup {
     /// `cookies` and `web_storage`: they read and change session tokens.
     Storage,
-    /// `upload_file`: it hands a page files of the machine.
+    /// `upload_file` and `save_pdf`: they read and write files of the
+    /// machine.
     Files,
     /// The raw protocol tools and `get_custom_events`: anything goes.
     Raw,
@@ -98,7 +99,7 @@ impl ToolGroup {
 /// gets its contents, so the agent cannot hand it any file of the machine.
 #[derive(clap::Args, Debug, Clone, Default, PartialEq, Eq)]
 pub struct UploadArgs {
-    /// Directory `upload_file` may read files from (repeatable). Default: the server's working directory and the system temp directory.
+    /// Directory `upload_file` may read files from and `save_pdf` may write PDFs to (repeatable). Default: the server's working directory and the system temp directory.
     #[arg(long = "upload-root")]
     pub upload_roots: Vec<std::path::PathBuf>,
 }

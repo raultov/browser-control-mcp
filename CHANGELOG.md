@@ -12,6 +12,12 @@ from a copy of its code: entries describe the differences from that release.
 
 ### Added
 
+- `save_pdf`, in the `files` tool group: prints the tab to PDF
+  (`landscape`, `print_background`, `scale`, `page_ranges`) and writes it to
+  `path`, an absolute `.pdf` under the upload roots, answering `{path,
+  bytes, pages}`; without `path` the PDF comes back as an embedded
+  `application/pdf` resource (at most 5 MB). Chrome `Page.printToPDF`,
+  Firefox `browsingContext.print`. (#13)
 - `mock_route`, `list_routes`, `remove_route` and `set_offline`, in the new
   `network` tool group (`--tool-groups network`). A route answers the tab's
   requests whose URL matches a glob with a mocked status, body, content

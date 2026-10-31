@@ -114,7 +114,7 @@ impl UploadFileTool {
 }
 
 /// The roots files may come from, resolved (those that do not exist left out).
-fn allowed_roots(roots: &[PathBuf]) -> Vec<PathBuf> {
+pub(crate) fn allowed_roots(roots: &[PathBuf]) -> Vec<PathBuf> {
     let defaults;
     let roots = if roots.is_empty() {
         defaults = [

@@ -3,6 +3,7 @@ pub mod emulate;
 pub mod handle_dialog;
 pub mod navigate;
 pub mod reload;
+pub mod save_pdf;
 pub mod scroll;
 pub mod wait_for;
 

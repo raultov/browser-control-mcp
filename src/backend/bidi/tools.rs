@@ -24,6 +24,7 @@ use crate::handler::cdp_domains::network::get_network_logs::{self, GetNetworkLog
 use crate::handler::cdp_domains::page::capture_screenshot::{self, CaptureScreenshotTool};
 use crate::handler::cdp_domains::page::emulate::EmulateTool;
 use crate::handler::cdp_domains::page::navigate::NavigateTool;
+use crate::handler::cdp_domains::page::save_pdf::SavePdfTool;
 use crate::handler::cdp_domains::page::scroll::ScrollTool;
 use crate::handler::cdp_domains::page::wait_for::WaitForTool;
 use crate::handler::cdp_domains::runtime::evaluate_js::EvaluateJsTool;
@@ -240,6 +241,16 @@ pub(crate) async fn emulate(params: CallToolRequestParams, handler: &McpHandler)
     page::command(&tab.tab, "browsingContext.setViewport", viewport).await?;
     let seen = page::run_snippet(&tab.tab, EmulateTool::measure()).await?;
     Ok(args.reply(&seen))
+}
+
+/// `save_pdf`: `browsingContext.print`, then the shared delivery.
+pub(crate) async fn save_pdf(params: CallToolRequestParams, handler: &McpHandler) -> ToolResult {
+    let args: SavePdfTool = parse_args(params)?;
+    let path = args.checked(&handler.upload_roots)?;
+    let (_, _, tab) = target(handler, &ids(&args.instance_id, &args.tab_id)).await?;
+    let print = args.bidi_params(tab.tab.context_id());
+    let printed = page::command(&tab.tab, "browsingContext.print", print).await?;
+    args.deliver(printed["data"].as_str(), path).await
 }
 
 /// `wait_for`: the shared checks, the whole wait raced against a dialog
@@ -786,6 +797,39 @@ mod tests {
 
     use super::super::test_support::{self as ts, evaluate_success};
     use bidi_browser_lite::test_support::MockFirefox;
+
+    /// PDF-03 (Firefox): browsingContext.print on the tab, the PDF written
+    /// to the path.
+    #[tokio::test]
+    async fn firefox_writes_the_pdf() {
+        use base64::Engine;
+        let mock = MockFirefox::start(false).await.unwrap();
+        let pdf = b"%PDF-1.4\n1 0 obj <</Type /Page>>\n%%EOF";
+        let data = base64::engine::general_purpose::STANDARD.encode(pdf);
+        mock.bidi().respond_with(
+            "browsingContext.print",
+            move |_| json!({"data": data.clone()}),
+        );
+        let mut handler = ts::handler(&mock);
+        let root = tempfile::tempdir().unwrap();
+        handler.upload_roots = vec![root.path().to_path_buf()];
+        let path = root.path().join("page.pdf");
+        let args = json!({"path": path.display().to_string(), "page_ranges": "1"});
+        let reply = save_pdf(call("save_pdf", args), &handler).await.unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), pdf);
+        assert!(
+            ts::text(&reply).contains("of 1 page(s)"),
+            "{}",
+            ts::text(&reply)
+        );
+        let sent = &mock.bidi().commands_named("browsingContext.print")[0].params;
+        assert_eq!(
+            *sent,
+            json!({"context": "ctx-0", "orientation": "portrait", "background": false,
+                "scale": 1.0, "pageRanges": ["1"]})
+        );
+        ts::stop(&handler).await;
+    }
 
     /// A Firefox whose navigation `n1` got a document response with
     /// `status` and `headers` (BiDi header list).
