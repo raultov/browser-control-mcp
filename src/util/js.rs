@@ -417,11 +417,10 @@ const PREPARE_FILL: &str = "const W = el.ownerDocument.defaultView; \
     el.focus(); \
     const active = el.getRootNode().activeElement; \
     if (active !== el && !(el.isContentEditable && active && active.contains(el))) return { status: 'not_editable', reason: 'it cannot take focus (hidden or inert)' }; \
-    if (custom) { \
-        const mac = /Mac|iPhone|iPad/.test(W.navigator.platform), mod = mac ? 'Meta' : 'Control'; \
-        const clear = !append && text === '' ? [{ key: 'Backspace', modifiers: [] }] : []; \
-        return { status: 'ready', prefix: '', click: host, keys: append ? [{ key: mac ? 'ArrowDown' : 'End', modifiers: [mod] }] : [{ key: 'a', modifiers: [mod] }].concat(clear) }; \
-    } \
+    const mac = /Mac|iPhone|iPad/.test(W.navigator.platform), mod = mac ? 'Meta' : 'Control'; \
+    const clear = !append && text === '' ? [{ key: 'Backspace', modifiers: [] }] : []; \
+    const keys = append ? [{ key: mac ? 'ArrowDown' : 'End', modifiers: [mod] }] : [{ key: 'a', modifiers: [mod] }].concat(clear); \
+    if (custom) return { status: 'ready', prefix: '', click: host, keys }; \
     let prefix = ''; \
     if (field) { \
         el[Symbol.for('browser-control-mcp.fill-before')] = el.value; \
@@ -445,7 +444,7 @@ const PREPARE_FILL: &str = "const W = el.ownerDocument.defaultView; \
         selection.removeAllRanges(); selection.addRange(range); \
         if (!append && text === '' && el.textContent !== '') doc.execCommand('delete'); \
     } \
-    return { status: 'ready', prefix };";
+    return { status: 'ready', prefix, keys: field ? [] : keys };";
 
 /// What the element matching `selector` holds after `text` was typed:
 /// `{status: 'missing'}` or `{status: 'done', matches, empty}` (the value
@@ -877,6 +876,18 @@ mod tests {
         assert!(expression.contains("!labelOf(hit)"), "{expression}");
     }
 
+    /// ISSUE-34: a contenteditable element also gets the keys after the
+    /// range (an editor may put its own selection back, as CodeMirror 6
+    /// does on Firefox); a form field gets none.
+    #[test]
+    fn contenteditable_elements_get_the_keys_too() {
+        let prepare = prepare_fill("#rich", "x", FillMode::Replace);
+        assert!(
+            prepare.contains("return { status: 'ready', prefix, keys: field ? [] : keys };"),
+            "{prepare}"
+        );
+    }
+
     /// ISSUE-28: an editor that is neither a field nor contenteditable but
     /// has an EditContext (Monaco) or a focusable text role is focused and
     /// gets the keys that select its content (or move to its end) before
@@ -894,8 +905,13 @@ mod tests {
             "{prepare}"
         );
         assert!(
-            prepare
-                .contains("keys: append ? [{ key: mac ? 'ArrowDown' : 'End', modifiers: [mod] }]"),
+            prepare.contains(
+                "const keys = append ? [{ key: mac ? 'ArrowDown' : 'End', modifiers: [mod] }]"
+            ),
+            "{prepare}"
+        );
+        assert!(
+            prepare.contains("return { status: 'ready', prefix: '', click: host, keys };"),
             "{prepare}"
         );
         let result = fill_result("e12", "x", FillMode::Replace);

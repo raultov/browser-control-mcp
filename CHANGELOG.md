@@ -45,6 +45,13 @@ from a copy of its code: entries describe the differences from that release.
 
 ### Fixed
 
+- `fill_input` replaces the content of CodeMirror 6 on Firefox: the text
+  was typed before the old content, because CodeMirror puts its own caret
+  back once focused and drops the selection #23 made with a DOM range. A
+  contenteditable element now also gets the keys a user presses after the
+  range: Control+A (Command+A on macOS) to replace, Control+End with
+  `append`. Checked with CodeMirror 6, ProseMirror, Lexical and the test
+  page's editor on both browsers. (#34)
 - `fill_input` types into editors of their own, such as Monaco (VS Code
   for the web): the snapshot named Monaco's input `textbox "JavaScript
   Input"`, but `fill_input` refused it (not an input, textarea or

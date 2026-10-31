@@ -50,6 +50,8 @@ mod e2e {
     <div class="row" style="padding:8px">a message <button class="tool" id="more" onclick="window.__more = (window.__more || 0) + 1">More</button></div>
     <div id="rich" contenteditable="true">old-rich</div>
     <script>(() => { const ed = document.getElementById('rich'); let model = 'old-rich'; window.__rich = model;
+      // Like CodeMirror 6 on Firefox: the editor puts its caret back at the start once focused.
+      ed.addEventListener('focus', () => setTimeout(() => { const r = document.createRange(); r.setStart(ed.firstChild || ed, 0); r.collapse(true); getSelection().removeAllRanges(); getSelection().addRange(r); }, 0));
       const at = (node, off) => node === ed ? (off === 0 ? 0 : model.length) : off;
       const render = caret => { ed.textContent = model; window.__rich = model; const r = document.createRange();
         r.setStart(ed.firstChild || ed, ed.firstChild ? caret : 0); r.collapse(true); getSelection().removeAllRanges(); getSelection().addRange(r); };
