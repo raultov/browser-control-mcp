@@ -26,9 +26,8 @@ impl HoverTool {
     ) -> Result<CallToolResult, CallToolError> {
         let ids = |a: &Self| (a.instance_id.clone(), a.tab_id.clone());
         let (args, target) = crate::handler::args_and_target(params, handler, ids).await?;
-        let expression = crate::util::js::click_point(&args.selector);
-        let point = crate::handler::snippet_value(&target, &expression).await?;
-        let (x, y) = super::click_element::click_point(&point, &args.selector, "hovered")?;
+        let point = super::click_element::checked_point(&target, &args.selector, "hovered");
+        let (x, y) = point.await?;
         let moved = json!({"type": "mouseMoved", "x": x, "y": y, "button": "none"});
         crate::handler::send_or(&target, "Input.dispatchMouseEvent", moved, "CDP Error").await?;
         Ok(hovered_reply(&args.selector, (x, y)))
@@ -80,6 +79,7 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("nothing was hovered"), "{error}");
-        assert_eq!(mock.commands_named("Input.dispatchMouseEvent").len(), 1);
+        // The covered element only got the reveal move (ISSUE-26), and failed
+        assert_eq!(mock.commands_named("Input.dispatchMouseEvent").len(), 2);
     }
 }

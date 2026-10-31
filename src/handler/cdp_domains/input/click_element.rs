@@ -103,9 +103,7 @@ pub(crate) async fn click(
     selector: &str,
     options: &ClickOptions,
 ) -> Result<CallToolResult, CallToolError> {
-    let expression = crate::util::js::click_point(selector);
-    let point = crate::handler::snippet_value(target, &expression).await?;
-    let point = click_point(&point, selector, "clicked")?;
+    let point = checked_point(target, selector, "clicked").await?;
     let clicking = press_and_release(target, point, options);
     let interrupted = super::keys::holding(target, &options.modifiers, clicking).await?;
     Ok(clicked_reply(
@@ -173,6 +171,38 @@ pub(crate) fn clicked_reply(
         format!("Successfully clicked{how} on element '{selector}' at coordinates ({x}, {y})");
     let text = interrupted.map_or_else(|| done.clone(), |stopped| stopped.after(&done));
     CallToolResult::text_content(vec![text.into()])
+}
+
+/// How long the page gets to show what a pointer over a covered element
+/// reveals (hover toolbars, menus) before the point is checked again.
+pub(crate) const HOVER_REVEAL: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// The point of a `covered` click check, where the mouse goes before the
+/// check runs again: controls shown only on hover (a message's actions, a
+/// row's toolbar) are under an element that gives way once hovered.
+pub(crate) fn covered_at(value: &Value) -> Option<(f64, f64)> {
+    (value["status"].as_str() == Some("covered"))
+        .then(|| Some((value["x"].as_f64()?, value["y"].as_f64()?)))
+        .flatten()
+}
+
+/// The point where `selector`'s element can be `action` on Chrome (clicked,
+/// hovered): checked by the shared snippet, and when covered checked again
+/// with the mouse over it ([`covered_at`]).
+pub(crate) async fn checked_point(
+    target: &CdpTarget,
+    selector: &str,
+    action: &str,
+) -> Result<(f64, f64), CallToolError> {
+    let expression = crate::util::js::click_point(selector);
+    let mut point = crate::handler::snippet_value(target, &expression).await?;
+    if let Some((x, y)) = covered_at(&point) {
+        let moved = json!({"type": "mouseMoved", "x": x, "y": y, "button": "none"});
+        crate::handler::send_or(target, "Input.dispatchMouseEvent", moved, "CDP Error").await?;
+        tokio::time::sleep(HOVER_REVEAL).await;
+        point = crate::handler::snippet_value(target, &expression).await?;
+    }
+    click_point(&point, selector, action)
 }
 
 /// The point the click snippet (`util::js::click_point`) checked, or why
@@ -251,6 +281,53 @@ mod tests {
         ClickElementTool::handle(params, &handler).await
     }
 
+    /// The click check's reply: the point is free, or covered by the row.
+    fn check_reply(free: bool) -> Value {
+        let value = if free {
+            json!({"status": "ok", "x": 30, "y": 40})
+        } else {
+            json!({"status": "covered", "by": "div.row", "x": 30, "y": 40})
+        };
+        json!({"result": {"result": {"type": "object", "value": value}}})
+    }
+
+    /// ISSUE-26: a covered element gets the mouse first and is checked
+    /// again: a control shown only on hover is then on top and clicked; one
+    /// still covered fails without a click.
+    #[tokio::test]
+    async fn covered_elements_get_the_mouse_first() {
+        for revealed in [true, false] {
+            // Given an element covered until the mouse is over it (or always)
+            let mock = crate::handler::cdp_domains::tests::spawn_recording_mock().await;
+            let checks = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let counted = checks.clone();
+            mock.respond_with("Runtime.evaluate", move |_| {
+                let n = counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                check_reply(n > 0 && revealed)
+            });
+            // When it is clicked
+            let outcome = click(mock).await;
+            // Then the mouse moved to it first, and the click happens only when revealed
+            let events: Vec<String> = mock
+                .commands_named("Input.dispatchMouseEvent")
+                .iter()
+                .map(|c| c.params["type"].as_str().unwrap_or_default().to_string())
+                .collect();
+            assert_eq!(
+                events.first().map(String::as_str),
+                Some("mouseMoved"),
+                "{events:?}"
+            );
+            assert_eq!(checks.load(std::sync::atomic::Ordering::SeqCst), 2);
+            assert_eq!(
+                events.contains(&"mousePressed".to_string()),
+                revealed,
+                "{events:?}"
+            );
+            assert_eq!(outcome.is_ok(), revealed);
+        }
+    }
+
     /// AUD-IN-03: a covered element fails naming what covers it, and no
     /// mouse event is sent (the overlay used to get the click).
     #[tokio::test]
@@ -265,7 +342,13 @@ mod tests {
             error,
             "Element '#b' is covered by 'div#overlay' at (81, 240); nothing was clicked. Close or remove the covering element first, or click it if that is the intent."
         );
-        assert!(mock.commands_named("Input.dispatchMouseEvent").is_empty());
+        // The mouse only moved there (to reveal a hover control, ISSUE-26)
+        let events: Vec<_> = mock
+            .commands_named("Input.dispatchMouseEvent")
+            .into_iter()
+            .map(|c| c.params["type"].clone())
+            .collect();
+        assert_eq!(events, [json!("mouseMoved")]);
     }
 
     /// AUD-IN-02: a hidden element fails (Chrome used to click at (0, 0)).

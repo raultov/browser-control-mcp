@@ -35,6 +35,8 @@ mod e2e {
     <div style="position:relative;display:inline-block"><button id="covered">covered</button><div style="position:absolute;inset:0;background:#fff"></div></div>
     <div id="card" style="cursor:pointer" onclick="window.__card = true"><a href="/card">card-link</a> <button id="card-btn">card-button</button></div>
     <div id="plaincard" style="cursor:pointer" onclick="window.__plain = true">plain card text</div>
+    <style>.row .tool { opacity: 0; pointer-events: none; } .row:hover .tool { opacity: 1; pointer-events: auto; }</style>
+    <div class="row" style="padding:8px">a message <button class="tool" id="more" onclick="window.__more = (window.__more || 0) + 1">More</button></div>
     <div id="rich" contenteditable="true">old-rich</div>
     <script>(() => { const ed = document.getElementById('rich'); let model = 'old-rich'; window.__rich = model;
       const at = (node, off) => node === ed ? (off === 0 ? 0 : model.length) : off;
@@ -529,6 +531,25 @@ mod e2e {
                 "snapshot",
                 scoped("#dat"),
                 "- cell \"dat-text bold\" [ref=",
+            ),
+        ]
+    }
+
+    /// ISSUE-26: a button shown only while its row is hovered is clicked.
+    fn hover_reveal_steps(instance: &str) -> Vec<Step> {
+        let i = json!(instance);
+        vec![
+            (
+                "ISSUE-26 click a control shown on hover",
+                "click_element",
+                json!({"instance_id": i, "selector": "#more"}),
+                "Successfully clicked",
+            ),
+            (
+                "ISSUE-26 its handler ran",
+                "evaluate_js",
+                json!({"instance_id": i, "expression": "window.__more"}),
+                "\"value\": 1",
             ),
         ]
     }
@@ -1166,6 +1187,7 @@ mod e2e {
             rich_editor_steps("e2e"),
             label_steps("e2e"),
             clickable_steps("e2e"),
+            hover_reveal_steps("e2e"),
             form_steps("e2e"),
             secret_steps("e2e"),
             upload_steps("e2e"),
@@ -1254,6 +1276,7 @@ mod e2e {
             rich_editor_steps("default"),
             label_steps("default"),
             clickable_steps("default"),
+            hover_reveal_steps("default"),
             form_steps("default"),
             upload_steps("default"),
             pdf_steps("default"),

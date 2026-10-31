@@ -9,7 +9,7 @@ use crate::backend::BackendError;
 use crate::backend::BrowserKind;
 use crate::handler::cdp_domains::custom::get_custom_events::GetCustomEventsTool;
 use crate::handler::cdp_domains::input::click_element::{
-    ClickElementTool, ClickOptions, click_point, clicked_reply,
+    ClickElementTool, ClickOptions, HOVER_REVEAL, click_point, clicked_reply, covered_at,
 };
 use crate::handler::cdp_domains::input::fill_form::{FillFormTool, FormOps};
 use crate::handler::cdp_domains::input::fill_input::{
@@ -377,7 +377,15 @@ impl OnTab<'_> {
     async fn point(&self, selector: &str, action: &str) -> Result<(f64, f64), CallToolError> {
         let expression = crate::util::js::click_point(selector);
         let checked = page::run_snippet(self.tab, &expression);
-        let point = unless_paused(self.session, self.id, action, checked).await?;
+        let mut point = unless_paused(self.session, self.id, action, checked).await?;
+        // Covered: the mouse goes there first, then the check runs again
+        // (controls shown only on hover), as on Chrome.
+        if let Some(at) = covered_at(&point) {
+            page::hover_at(self.tab, at).await?;
+            tokio::time::sleep(HOVER_REVEAL).await;
+            let checked = page::run_snippet(self.tab, &expression);
+            point = unless_paused(self.session, self.id, action, checked).await?;
+        }
         click_point(&point, selector, action)
     }
 
@@ -1181,7 +1189,24 @@ mod tests {
             error.starts_with("Element '#b' is covered by 'div#overlay'"),
             "{error}"
         );
-        assert_eq!(script_and_input(&mock), ["script.evaluate"]);
+        // The mouse moved there to reveal a hover control (ISSUE-26), nothing was pressed
+        let sent = script_and_input(&mock);
+        assert_eq!(
+            sent,
+            [
+                "script.evaluate",
+                "input.performActions",
+                "input.releaseActions",
+                "script.evaluate"
+            ]
+        );
+        let moved = mock.bidi().commands_named("input.performActions")[0]
+            .params
+            .to_string();
+        assert!(
+            moved.contains("pointerMove") && !moved.contains("pointerDown"),
+            "{moved}"
+        );
         ts::stop(&handler).await;
     }
 

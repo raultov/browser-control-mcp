@@ -12,6 +12,12 @@ from a copy of its code: entries describe the differences from that release.
 
 ### Fixed
 
+- `click_element`, `hover` and `fill_form` reach controls shown only while
+  the mouse is over something (a message's actions, a row's toolbar): a
+  covered element now gets the mouse first and is checked again 100 ms
+  later. Discord's message "More" button failed with "covered by
+  'div.message…'". An element that stays covered still fails, naming what
+  covers it, without a click. (#26)
 - `snapshot` and `find_in_snapshot` list what a clickable container holds:
   an element without a role that has a click handler or a pointer cursor
   was a leaf named from its whole text, so a container that sets
