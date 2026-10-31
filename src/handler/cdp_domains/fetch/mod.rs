@@ -1,4 +1,5 @@
 pub mod enable_proxy_auth;
+pub mod mock_route;
 
 use std::collections::HashMap;
 use std::sync::Arc;

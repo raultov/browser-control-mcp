@@ -32,6 +32,7 @@ pub(crate) struct TabEntry {
     pub(crate) custom_state: Arc<Mutex<CustomState>>,
     pub(crate) webmcp_state: Arc<Mutex<WebmcpState>>,
     pub(crate) dialog_state: Arc<Mutex<DialogState>>,
+    pub(crate) route_state: Arc<Mutex<crate::handler::routes::RouteState>>,
     pub(crate) listeners: Option<ListenerHandles>,
 }
 
@@ -130,6 +131,7 @@ impl TabRegistry {
             custom_state: Arc::new(Mutex::new(CustomState::default())),
             webmcp_state: Arc::new(Mutex::new(webmcp_st)),
             dialog_state: Default::default(),
+            route_state: Default::default(),
             listeners: None,
         };
 

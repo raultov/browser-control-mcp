@@ -665,6 +665,74 @@ mod e2e {
         ]
     }
 
+    /// `evaluate_js` of a fetch of `url` plus a fresh suffix (never cached):
+    /// its text, or `failed: <error>`.
+    fn fresh_fetch(i: &Value, url: &str) -> Value {
+        json!({"instance_id": i, "expression": format!(
+            "fetch('{url}' + Date.now()).then(r => r.text(), e => 'failed: ' + e)")})
+    }
+
+    /// ISSUE-12: a mocked route answers a fetch, counts its hit and goes;
+    /// then offline.
+    fn network_steps(instance: &str) -> Vec<Step> {
+        let i = json!(instance);
+        let fetch = |url: &str| fresh_fetch(&i, url);
+        let route = json!({"instance_id": i, "url_pattern": "*/api/mocked*",
+            "body": "from-the-route", "content_type": "text/plain"});
+        let mut steps = vec![
+            (
+                "ISSUE-12 mock_route",
+                "mock_route",
+                route,
+                "Route route-1 added",
+            ),
+            (
+                "ISSUE-12 the route answers",
+                "evaluate_js",
+                fetch("/api/mocked?"),
+                "from-the-route",
+            ),
+            (
+                "ISSUE-12 list_routes counts the hit",
+                "list_routes",
+                json!({"instance_id": i}),
+                "\"hits\": 1",
+            ),
+            (
+                "ISSUE-12 remove_route",
+                "remove_route",
+                json!({"instance_id": i}),
+                "0 left",
+            ),
+        ];
+        steps.extend(offline_steps(&i));
+        steps
+    }
+
+    /// ISSUE-12: offline makes an uncached fetch fail, then online again.
+    fn offline_steps(i: &Value) -> Vec<Step> {
+        vec![
+            (
+                "ISSUE-12 set_offline",
+                "set_offline",
+                json!({"instance_id": i, "offline": true}),
+                "\"navigator_online\": false",
+            ),
+            (
+                "ISSUE-12 offline fetch fails",
+                "evaluate_js",
+                fresh_fetch(i, "/api/fresh?"),
+                "failed: ",
+            ),
+            (
+                "ISSUE-12 back online",
+                "set_offline",
+                json!({"instance_id": i, "offline": false}),
+                "online again",
+            ),
+        ]
+    }
+
     /// Observation steps: console, network, screenshot, DOM.
     fn observation_steps(instance: &str) -> Vec<Step> {
         let i = json!(instance);
@@ -864,7 +932,7 @@ mod e2e {
         let base = serve().await;
         // Every opt-in tool group: the suite drives them all.
         let mut mcp = Mcp::start(&["--tool-groups", "all"]).await;
-        mcp.list_tools(43).await;
+        mcp.list_tools(47).await;
         let all = [
             page_steps(browser, &base),
             tab_steps("e2e", &base),
@@ -878,6 +946,7 @@ mod e2e {
             storage_steps("e2e"),
             emulate_steps("e2e", browser == "chrome"),
             observation_steps("e2e"),
+            network_steps("e2e"),
             websocket_steps("e2e", &base),
             debugger_steps("e2e", &base),
             closing_steps(browser),
@@ -957,6 +1026,7 @@ mod e2e {
             key_and_pointer_steps("default"),
             storage_steps("default"),
             emulate_steps("default", variable.contains("CHROME")),
+            network_steps("default"),
             debugger_steps("default", &base),
         ];
         mcp.steps(all.concat()).await;

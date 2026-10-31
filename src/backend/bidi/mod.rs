@@ -14,6 +14,7 @@ pub(crate) mod proxy;
 pub(crate) mod pump;
 pub(crate) mod raw;
 pub mod remote_value;
+pub(crate) mod routes;
 pub(crate) mod session;
 pub(crate) mod storage;
 #[cfg(test)]

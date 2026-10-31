@@ -41,6 +41,7 @@ tools are off by default and listed only with `--tool-groups`:
 | `raw` | `send_cdp_command`, `send_bidi_command`, `send_rdp_request`, `get_custom_events` | anything the protocol allows |
 | `perf` | `get_performance_metrics`, `profile_page_performance` | niche |
 | `emulation` | `emulate` | niche |
+| `network` | `mock_route`, `list_routes`, `remove_route`, `set_offline` | changes what the page receives |
 
 `--tool-groups all` lists every group. The page, input, observation and
 debugger tools are always listed (33 tools), plus `enable_proxy_auth` with
@@ -86,6 +87,10 @@ see the note.
 | `web_storage` | ✓ | ✓ | `storage` group; `get` / `set` / `delete` / `clear` on the page's `localStorage` or `sessionStorage`; values hidden unless `show_values: true` |
 | `get_console_logs` | ✓ | ✓ | a message keeps at most 10 000 characters; Firefox: page errors, CSS warnings and platform messages need the debugger port |
 | `get_network_logs` | ✓ | ✓ | a failed request has `error`, a binary body `response_body_encoding: "base64"`; bodies at most 64 000 characters, none over 2 MB; a WebSocket payload keeps 64 000 (`payload_len` is the whole); Firefox: WebSocket frames need the debugger port |
+| `mock_route` | ✓ | ✓ | `network` group; requests whose URL matches a glob (`*`, `?`, `\` escapes) get a mocked `status`, `body` (text, at most 1 MB), `content_type` and `headers` without reaching the network; the latest matching route wins; at most 50 routes per tab, kept until `remove_route` or the tab closes (Chrome `Fetch`, not while `enable_proxy_auth` is active; Firefox a `network` intercept) |
+| `list_routes` | ✓ | ✓ | `network` group; the tab's routes with the `hits` each answered |
+| `remove_route` | ✓ | ✓ | `network` group; one route by id, or all |
+| `set_offline` | ✓ | ✓ | `network` group; requests fail as without a network and `navigator.onLine` is false, until set back (Chrome `Network.emulateNetworkConditions`, Firefox `emulation.setNetworkConditions`); mocked routes still answer; Chrome still serves what its HTTP cache holds, as an offline browser does, Firefox fails every request |
 | `get_custom_events` | ✓ | partial | `raw` group; `{events, total, truncated}`, the newest `limit` events; `clear` removes the returned ones; params over 64 000 characters of JSON are replaced by `{truncated, characters}`; Firefox: events of the modules subscribed with `send_bidi_command` |
 | `get_performance_metrics` | ✓ | partial | `perf` group; Firefox: `Nodes`, `Frames`, `Resources`, `TransferSize` from the Web Performance APIs (no Performance domain), plus a note |
 | `profile_page_performance` | ✓ | partial | `perf` group; Firefox: FCP, LCP, DCL and Load from the Web Performance APIs; no trace, so `total_blocking_time_ms` and `top_long_tasks` are `null` |
@@ -379,7 +384,7 @@ claude mcp add browser-control-mcp -- npx -y @raultov/browser-control-mcp
 | `--enable-automation` | off | shows the automation infobar | ignored; `list_instances` shows a warning |
 | `--user-profile` | off | your default profile (no `--user-data-dir`) | only with `--firefox-port` (attach to your running Firefox) |
 | `--allow-cookie-import` | off | exposes `copy_cookies` | capability error |
-| `--tool-groups <GROUPS>` | none | lists the opt-in tool groups, comma separated: `storage`, `files`, `raw`, `perf`, `emulation` or `all` (see [Tool groups](#tool-groups)) | same |
+| `--tool-groups <GROUPS>` | none | lists the opt-in tool groups, comma separated: `storage`, `files`, `raw`, `perf`, `emulation`, `network` or `all` (see [Tool groups](#tool-groups)) | same |
 | `--upload-root <DIR>` | working + temp dir | directory `upload_file` may read files from (repeatable; replaces the defaults) | same |
 | `--enable-webmcp` | off | WebMCP switches and `webmcp_*` tools | capability error |
 | `--proxy-server <URL>` | none | proxy for every instance; exposes `enable_proxy_auth` | `http://` and `socks5://` proxies |

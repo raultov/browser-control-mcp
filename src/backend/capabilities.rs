@@ -71,6 +71,8 @@ pub enum Capability {
     ConsoleLogs,
     /// Buffered HTTP requests.
     NetworkLogs,
+    /// Mock responses and emulate offline.
+    NetworkControl,
     /// Buffered WebSocket frames.
     WebsocketFrames,
     /// Events of protocol domains/modules enabled by the agent.
@@ -127,6 +129,7 @@ const COMMON: &[Capability] = &[
     Capability::Screenshot,
     Capability::ConsoleLogs,
     Capability::NetworkLogs,
+    Capability::NetworkControl,
     Capability::CustomEvents,
 ];
 

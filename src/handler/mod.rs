@@ -6,6 +6,7 @@ pub(crate) mod evaluation;
 pub(crate) mod interruption;
 pub(crate) mod navigation;
 mod registry;
+pub(crate) mod routes;
 mod schema_compat;
 pub(crate) mod shutdown;
 
@@ -611,6 +612,7 @@ pub(crate) struct BrowserSession {
     pub(crate) custom_state: Arc<Mutex<CustomState>>,
     pub(crate) webmcp_state: Arc<Mutex<cdp_domains::webmcp::WebmcpState>>,
     pub(crate) dialog_state: Arc<Mutex<dialogs::DialogState>>,
+    pub(crate) route_state: Arc<Mutex<routes::RouteState>>,
     pub(crate) chrome_manager: Arc<Mutex<dyn chrome_instance::ChromeManager>>,
     pub(crate) tabs: Arc<std::sync::RwLock<chrome_instance::tab_registry::TabRegistry>>,
     pub(crate) session_listeners: Arc<Mutex<cdp_domains::event_pump::ListenerHandles>>,
@@ -656,6 +658,7 @@ impl BrowserSession {
             custom_state: Default::default(),
             webmcp_state: Arc::new(Mutex::new(webmcp_state)),
             dialog_state: Default::default(),
+            route_state: Default::default(),
             chrome_manager,
             tabs: Arc::new(std::sync::RwLock::new(
                 chrome_instance::tab_registry::TabRegistry::new(16),
@@ -680,6 +683,7 @@ impl BrowserSession {
         self.fallback_debugger
             .store(false, std::sync::atomic::Ordering::SeqCst);
         self.proxy_auth_tasks.lock().await.clear();
+        *self.route_state.lock().await = Default::default();
         cdp_domains::custom::clear_custom_listeners(&self.custom_state).await;
         crate::util::sync::write(&self.tabs).clear();
     }
@@ -1046,6 +1050,16 @@ impl BrowserSession {
     state_accessor!(custom_state, CustomState);
     state_accessor!(webmcp_state, cdp_domains::webmcp::WebmcpState);
     state_accessor!(dialog_state, dialogs::DialogState);
+    state_accessor!(route_state, routes::RouteState);
+
+    /// Whether an `enable_proxy_auth` handler still runs: it owns Chrome's
+    /// Fetch domain, which mocked routes need too.
+    pub(crate) async fn proxy_auth_running(&self) -> bool {
+        let tasks = self.proxy_auth_tasks.lock().await;
+        tasks
+            .values()
+            .any(cdp_domains::event_pump::ListenerHandles::is_running)
+    }
 }
 
 #[derive(Debug, Clone)]

@@ -93,6 +93,11 @@ impl ListenerHandles {
         self.0.len()
     }
 
+    /// Whether a task is still running.
+    pub(crate) fn is_running(&self) -> bool {
+        self.0.iter().any(|task| !task.is_finished())
+    }
+
     /// Whether no task is owned.
     pub(crate) fn is_empty(&self) -> bool {
         self.0.is_empty()

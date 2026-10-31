@@ -93,6 +93,12 @@ impl EnableProxyAuthTool {
             )));
         }
         let session = handler.session(tool.instance_id.clone()).await?;
+        let routes = session.route_state(tool.tab_id.clone())?;
+        if !routes.lock().await.is_empty() {
+            return Err(CallToolError::from_message(
+                "The tab has mocked routes, and both need Chrome's Fetch domain: remove them with remove_route first",
+            ));
+        }
         let target = session.target(tool.tab_id.clone()).await?;
         let resource_type = tool.resource_type.as_deref().unwrap_or("Document");
         // Subscribed before Fetch.enable: a request paused in between would

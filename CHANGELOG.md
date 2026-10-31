@@ -10,6 +10,17 @@ from a copy of its code: entries describe the differences from that release.
 
 ## [Unreleased]
 
+### Added
+
+- `mock_route`, `list_routes`, `remove_route` and `set_offline`, in the new
+  `network` tool group (`--tool-groups network`). A route answers the tab's
+  requests whose URL matches a glob with a mocked status, body, content
+  type and headers, without reaching the network; the latest matching
+  route wins and `list_routes` counts its hits. Chrome uses the `Fetch`
+  domain (not while `enable_proxy_auth` is active), Firefox a
+  `beforeRequestSent` network intercept. `set_offline` takes the tab
+  offline or back online (Chrome still serves its HTTP cache). (#12)
+
 ### Fixed
 
 - The input tools (`click_element`, `hover`, `fill_input`, `fill_form`,

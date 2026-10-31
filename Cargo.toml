@@ -55,6 +55,8 @@ fn_params_excessive_bools = "warn"
 
 [dependencies]
 async-trait = "0.1.92"
+# Mocked bodies (Fetch.fulfillRequest) and PDFs (Page.printToPDF) travel in base64.
+base64 = "0.23.1"
 cdp-browser-lite = "0.4.2"
 bidi-browser-lite = "0.1.5"
 chrono = "0.4.45"

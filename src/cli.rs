@@ -72,6 +72,9 @@ pub enum ToolGroup {
     Perf,
     /// `emulate`.
     Emulation,
+    /// `mock_route`, `list_routes`, `remove_route` and `set_offline`: they
+    /// change what the page receives.
+    Network,
     /// Every group.
     All,
 }
@@ -85,6 +88,7 @@ impl ToolGroup {
             Self::Raw => "raw",
             Self::Perf => "perf",
             Self::Emulation => "emulation",
+            Self::Network => "network",
             Self::All => "all",
         }
     }

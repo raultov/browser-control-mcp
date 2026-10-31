@@ -67,6 +67,7 @@ const FILES: Gate = Gate::Group(ToolGroup::Files);
 const RAW: Gate = Gate::Group(ToolGroup::Raw);
 const PERF: Gate = Gate::Group(ToolGroup::Perf);
 const EMULATION: Gate = Gate::Group(ToolGroup::Emulation);
+const NETWORK: Gate = Gate::Group(ToolGroup::Network);
 
 /// A tool implementation for one browser.
 pub(crate) type ToolHandler = for<'a> fn(CallToolRequestParams, &'a McpHandler) -> ToolFuture<'a>;
@@ -147,8 +148,22 @@ pub(crate) fn table() -> Vec<ToolEntry> {
     tools.extend(instance_tools());
     tools.extend(observation_tools());
     tools.extend(firefox_tools());
+    tools.extend(network_tools());
     tools.extend(gated_tools());
     tools
+}
+
+fn network_tools() -> Vec<ToolEntry> {
+    use crate::backend::bidi::routes as ff;
+    use cdp_domains::fetch::mock_route::{ListRoutesTool, MockRouteTool, RemoveRouteTool};
+    use cdp_domains::network::set_offline::SetOfflineTool;
+    const NEEDS: &[Capability] = &[Capability::NetworkControl];
+    vec![
+        entry!(MockRouteTool, NETWORK, NEEDS, ff::mock_route),
+        entry!(ListRoutesTool, NETWORK, NEEDS, ff::list_routes),
+        entry!(RemoveRouteTool, NETWORK, NEEDS, ff::remove_route),
+        entry!(SetOfflineTool, NETWORK, NEEDS, ff::set_offline),
+    ]
 }
 
 fn page_tools() -> Vec<ToolEntry> {
@@ -700,7 +715,7 @@ mod tests {
         handler.flags.enable_webmcp = true;
         handler.tool_groups = vec![crate::cli::ToolGroup::All];
         let listed = names(listed_tools(&handler));
-        assert_eq!(listed.len(), 48);
+        assert_eq!(listed.len(), 52);
         assert!(listed.contains("restart_browser") && listed.contains("stop_browser"));
         assert!(!listed.contains("restart_chrome") && !listed.contains("stop_chrome"));
     }

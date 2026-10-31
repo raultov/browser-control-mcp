@@ -41,6 +41,8 @@ pub(crate) struct FirefoxTab {
     pub(crate) custom: Arc<Mutex<CustomState>>,
     /// The JavaScript dialog open on the tab, if any.
     pub(crate) dialog: Arc<Mutex<crate::handler::dialogs::DialogState>>,
+    /// Mocked routes, and the intercept answering them.
+    pub(crate) routes: Arc<Mutex<crate::handler::routes::RouteState>>,
 }
 
 /// Tabs by MCP id, plus the context tree used to route iframe events.
@@ -98,6 +100,7 @@ impl FirefoxTabs {
             network: Default::default(),
             custom: Default::default(),
             dialog: Default::default(),
+            routes: Default::default(),
         };
         self.tabs.insert(id.clone(), entry);
         self.active.get_or_insert_with(|| id.clone());

@@ -1,4 +1,5 @@
 pub mod get_network_logs;
+pub mod set_offline;
 
 use crate::handler::NetworkRequest;
 use crate::handler::NetworkState;
