@@ -668,7 +668,10 @@ mod tests {
     fn rich_text_editors_keep_their_model() {
         let prepare = prepare_fill("#rich", "x");
         assert!(!prepare.contains("el.textContent = ''"), "{prepare}");
-        assert!(prepare.contains("range.selectNodeContents(el)"), "{prepare}");
+        assert!(
+            prepare.contains("range.selectNodeContents(el)"),
+            "{prepare}"
+        );
         assert!(prepare.contains("execCommand('delete')"), "{prepare}");
         let result = fill_result("#rich", "x");
         assert!(result.contains("\\uFEFF"), "{result}");
