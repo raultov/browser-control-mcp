@@ -10,6 +10,12 @@ from a copy of its code: entries describe the differences from that release.
 
 ## [Unreleased]
 
+### Changed
+
+- The package description (crates.io, npm, Homebrew `desc`) is 79
+  characters instead of 213, within Homebrew's 80, so `brew style` no
+  longer flags the formula's `desc` line as too long.
+
 ## [0.4.0-beta.7] - 2026-10-31
 
 Public **BETA**. Closes the gaps a comparison with Playwright MCP showed:
