@@ -12,6 +12,14 @@ from a copy of its code: entries describe the differences from that release.
 
 ### Added
 
+- `fill_input` takes `append: true`: the text is typed at the end of what
+  the field already holds instead of replacing it, in text fields,
+  textareas and contenteditable elements, rich text editors included (the
+  caret goes to the end of their last text, so the editor records the
+  edit). A number, email or date field, which has no caret to move, is
+  emptied and retyped whole. The reply says `appended`; a field that did
+  not change is an error. Adding to a draft took one `press_key` per
+  character before. (#32)
 - `navigate` takes `history: "back"` or `"forward"` instead of `url`: it
   moves one entry in the tab's history and waits for that page to load,
   answering like a URL navigation (`Went back to <url>.`). A page restored

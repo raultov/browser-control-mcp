@@ -48,7 +48,8 @@ impl FormOps for CdpTarget {
     }
 
     async fn fill(&self, selector: &str, text: &str) -> Result<CallToolResult, CallToolError> {
-        super::fill_input::fill(self, selector, text).await
+        let mode = crate::util::js::FillMode::Replace;
+        super::fill_input::fill(self, selector, text, mode).await
     }
 
     async fn click(&self, selector: &str) -> Result<CallToolResult, CallToolError> {

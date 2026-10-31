@@ -34,6 +34,7 @@ mod e2e {
     <label style="position:relative;display:inline-block;width:60px;height:24px"><input type="checkbox" id="sw" style="position:absolute;left:0;top:0;width:60px;height:24px;margin:0"><span style="position:absolute;inset:0;background:#ccc"></span></label>
     <div style="position:relative;display:inline-block"><button id="covered">covered</button><div style="position:absolute;inset:0;background:#fff"></div></div>
     <div id="shot" style="width:123px;height:45px;background:#c00">shot</div>
+    <input id="app" value="draft"><input id="appn" type="number" value="12">
     <div id="card" style="cursor:pointer" onclick="window.__card = true"><a href="/card">card-link</a> <button id="card-btn">card-button</button></div>
     <div id="plaincard" style="cursor:pointer" onclick="window.__plain = true">plain card text</div>
     <style>.row .tool { opacity: 0; pointer-events: none; } .row:hover .tool { opacity: 1; pointer-events: auto; }</style>
@@ -545,6 +546,53 @@ mod e2e {
             json!({"instance_id": instance, "selector": "#shot"}),
             "iVBORw0KGgoAAAANSUhEUgAAAHsAAAAt",
         )]
+    }
+
+    /// ISSUE-32: fill_input with append types after the content: a text
+    /// field, a number field (no caret, retyped whole) and the model-driven
+    /// rich text editor, which holds "rich-typed" from ISSUE-23.
+    fn append_steps(instance: &str) -> Vec<Step> {
+        let i = json!(instance);
+        let append = |selector: &str, text: &str| json!({"instance_id": i, "selector": selector, "text": text, "append": true});
+        let read = |expression: &str| json!({"instance_id": i, "expression": expression});
+        vec![
+            (
+                "ISSUE-32 append to a text field",
+                "fill_input",
+                append("#app", " more"),
+                "Successfully appended",
+            ),
+            (
+                "ISSUE-32 the field holds both",
+                "evaluate_js",
+                read("document.getElementById('app').value"),
+                "\"value\": \"draft more\"",
+            ),
+            (
+                "ISSUE-32 append to a number field",
+                "fill_input",
+                append("#appn", "3"),
+                "Successfully appended",
+            ),
+            (
+                "ISSUE-32 the number is 123",
+                "evaluate_js",
+                read("document.getElementById('appn').value"),
+                "\"value\": \"123\"",
+            ),
+            (
+                "ISSUE-32 append in a rich text editor",
+                "fill_input",
+                append("#rich", "-more"),
+                "Successfully appended",
+            ),
+            (
+                "ISSUE-32 the editor's model holds both",
+                "evaluate_js",
+                read("window.__rich"),
+                "\"value\": \"rich-typed-more\"",
+            ),
+        ]
     }
 
     /// ISSUE-26: a button shown only while its row is hovered is clicked.
@@ -1246,6 +1294,7 @@ mod e2e {
             clickable_steps("e2e"),
             hover_reveal_steps("e2e"),
             element_shot_steps("e2e"),
+            append_steps("e2e"),
             form_steps("e2e"),
             secret_steps("e2e"),
             upload_steps("e2e"),
@@ -1337,6 +1386,7 @@ mod e2e {
             clickable_steps("default"),
             hover_reveal_steps("default"),
             element_shot_steps("default"),
+            append_steps("default"),
             form_steps("default"),
             upload_steps("default"),
             pdf_steps("default"),

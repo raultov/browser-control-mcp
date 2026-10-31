@@ -35,6 +35,7 @@ use crate::handler::chrome_instance::registry::InstanceDescriptor;
 use crate::handler::chrome_instance::{close_instance, open_instance, open_tab, switch_tab};
 use crate::handler::navigation::NavigationOutcome;
 use crate::handler::{McpHandler, NetworkRequest, TargetArgs, parse_args};
+use crate::util::js::FillMode;
 use crate::util::sync::{read, write};
 use bidi_browser_lite::Tab;
 use rust_mcp_sdk::schema::{CallToolError, CallToolRequestParams, CallToolResult};
@@ -338,7 +339,7 @@ pub(crate) async fn fill_input(params: CallToolRequestParams, handler: &McpHandl
         id: &id,
         tab: &tab.tab,
     };
-    on.fill(&args.selector, &args.text).await
+    on.fill(&args.selector, &args.text, args.mode()).await
 }
 
 /// `upload_file`: the same checks and reply as on Chrome; the files go
@@ -377,7 +378,7 @@ impl FormOps for OnTab<'_> {
     }
 
     async fn fill(&self, selector: &str, text: &str) -> ToolResult {
-        OnTab::fill(self, selector, text).await
+        OnTab::fill(self, selector, text, FillMode::Replace).await
     }
 
     async fn click(&self, selector: &str) -> ToolResult {
@@ -462,15 +463,15 @@ impl OnTab<'_> {
 
     /// Fills the element `selector` names with `text` by typing
     /// (`fill_input`, each field of `fill_form`).
-    pub(crate) async fn fill(&self, selector: &str, text: &str) -> ToolResult {
+    pub(crate) async fn fill(&self, selector: &str, text: &str, mode: FillMode) -> ToolResult {
         let filling = async {
-            let prepare = crate::util::js::prepare_fill(selector, text);
+            let prepare = crate::util::js::prepare_fill(selector, text, mode);
             let prepared = page::run_snippet(self.tab, &prepare).await?;
-            if let FillStart::Selected = fill_start(&prepared, selector)? {
+            let FillStart::Type(prefix) = fill_start(&prepared, selector)? else {
                 return Ok(selected_reply(selector));
-            }
-            page::type_text(self.tab, text).await?;
-            let check = crate::util::js::fill_result(selector, text);
+            };
+            page::type_text(self.tab, &format!("{prefix}{text}")).await?;
+            let check = crate::util::js::fill_result(selector, text, mode);
             fill_reply(&page::run_snippet(self.tab, &check).await?, selector)
         };
         unless_paused(self.session, self.id, "fill_input", filling).await

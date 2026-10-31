@@ -1,5 +1,6 @@
 use crate::handler::McpHandler;
 use crate::handler::cdp_domains::cdp_target::CdpTarget;
+use crate::util::js::FillMode;
 use rust_mcp_sdk::{
     macros,
     schema::{CallToolError, CallToolRequestParams, CallToolResult},
@@ -8,7 +9,7 @@ use serde_json::{Value, json};
 
 #[macros::mcp_tool(
     name = "fill_input",
-    description = "Replaces the content of a text field, textarea or contenteditable element by typing key by key (the page's key handlers run; about 1 ms per character), or picks the <select> option whose value or label is the text. Fails without typing on disabled, read-only, non-text or unfocusable elements, and when the field rejects the text; notes when the page reformatted it."
+    description = "Replaces the content of a text field, textarea or contenteditable element (or, with append, types after it) by typing key by key (the page's key handlers run; about 1 ms per character), or picks the <select> option whose value or label is the text. Fails without typing on disabled, read-only, non-text or unfocusable elements, and when the field rejects the text; notes when the page reformatted it."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct FillInputTool {
@@ -20,12 +21,16 @@ pub struct FillInputTool {
     pub selector: String,
     /// Text to type, or the value or label of the option of a `<select>`.
     pub text: String,
+    /// Type the text at the end of the current content instead of replacing it. Default: false.
+    pub append: Option<bool>,
 }
 
 /// What is left after the preparation snippet (`util::js::prepare_fill`).
 pub(crate) enum FillStart {
-    /// The field is focused and empty: type the text.
-    Type,
+    /// The field is focused, empty or with the caret at the end: type
+    /// `prefix` (what an appended field without a caret held, such as a
+    /// number field, emptied to be retyped) then the text.
+    Type(String),
     /// A `<select>` option was picked: nothing to type.
     Selected,
 }
@@ -34,7 +39,9 @@ pub(crate) enum FillStart {
 /// typed into is an error, so the text never lands in another element.
 pub(crate) fn fill_start(value: &Value, selector: &str) -> Result<FillStart, CallToolError> {
     match value["status"].as_str() {
-        Some("ready") => Ok(FillStart::Type),
+        Some("ready") => Ok(FillStart::Type(
+            value["prefix"].as_str().unwrap_or_default().to_string(),
+        )),
         Some("selected") => Ok(FillStart::Selected),
         Some("not_editable") => Err(CallToolError::from_message(format!(
             "Element '{selector}' is not editable ({}); nothing was typed.",
@@ -73,13 +80,19 @@ pub(crate) fn fill_reply(value: &Value, selector: &str) -> Result<CallToolResult
             "Element '{selector}' disappeared while typing (the page replaced it)."
         )));
     }
-    let done = format!("Successfully filled input '{selector}' with text.");
+    let done = if value["append"].as_bool() == Some(true) {
+        format!("Successfully appended text to '{selector}'.")
+    } else {
+        format!("Successfully filled input '{selector}' with text.")
+    };
     if value["matches"].as_bool() == Some(true) {
         return Ok(CallToolResult::text_content(vec![done.into()]));
     }
-    if value["empty"].as_bool() == Some(true) {
+    let empty = value["empty"].as_bool() == Some(true);
+    if value["rejected"].as_bool().unwrap_or(empty) {
+        let state = if empty { "is empty" } else { "did not change" };
         return Err(CallToolError::from_message(format!(
-            "'{selector}' is empty after typing: the field rejected the text (for example letters in a number field, or a date field that needs its own format). Set the value with 'evaluate_js' instead."
+            "'{selector}' {state} after typing: the field rejected the text (for example letters in a number field, or a date field that needs its own format). Set the value with 'evaluate_js' instead."
         )));
     }
     Ok(CallToolResult::text_content(vec![
@@ -111,13 +124,22 @@ fn typing(c: char) -> Vec<(&'static str, Value)> {
 }
 
 impl FillInputTool {
+    /// Whether the text replaces the content or follows it.
+    pub(crate) fn mode(&self) -> FillMode {
+        if self.append == Some(true) {
+            FillMode::Append
+        } else {
+            FillMode::Replace
+        }
+    }
+
     pub async fn handle(
         params: CallToolRequestParams,
         handler: &McpHandler,
     ) -> Result<CallToolResult, CallToolError> {
         let ids = |a: &Self| (a.instance_id.clone(), a.tab_id.clone());
         let (args, target) = crate::handler::args_and_target(params, handler, ids).await?;
-        fill(&target, &args.selector, &args.text).await
+        fill(&target, &args.selector, &args.text, args.mode()).await
     }
 }
 
@@ -127,18 +149,19 @@ pub(crate) async fn fill(
     target: &CdpTarget,
     selector: &str,
     text: &str,
+    mode: FillMode,
 ) -> Result<CallToolResult, CallToolError> {
-    let prepare = crate::util::js::prepare_fill(selector, text);
+    let prepare = crate::util::js::prepare_fill(selector, text, mode);
     let prepared = crate::handler::snippet_value(target, &prepare).await?;
-    if let FillStart::Selected = fill_start(&prepared, selector)? {
+    let FillStart::Type(prefix) = fill_start(&prepared, selector)? else {
         return Ok(selected_reply(selector));
-    }
-    for c in text.chars() {
+    };
+    for c in prefix.chars().chain(text.chars()) {
         for (method, params) in typing(c) {
             crate::handler::send_or(target, method, params, "CDP Error").await?;
         }
     }
-    let check = crate::util::js::fill_result(selector, text);
+    let check = crate::util::js::fill_result(selector, text, mode);
     fill_reply(
         &crate::handler::snippet_value(target, &check).await?,
         selector,
@@ -192,6 +215,44 @@ mod tests {
             json!({"result": {"result": {"type": "object", "value": value}}})
         });
         mock
+    }
+
+    /// ISSUE-32: append types after the content, says so, and fails when
+    /// the field did not change.
+    #[tokio::test]
+    async fn append_says_where_the_text_went() {
+        // Given a field that took the text
+        let done = json!({"status": "done", "matches": true, "empty": false, "rejected": false, "append": true});
+        let mock = page_answering(json!({"status": "ready"}), done).await;
+        let handler = crate::handler::cdp_domains::tests::mock_handler(mock.http_port);
+        // When text is appended
+        let args = json!({"selector": "#q", "text": "ab", "append": true});
+        let params = crate::handler::cdp_domains::tests::call("fill_input", args);
+        let reply = FillInputTool::handle(params, &handler).await.unwrap();
+        // Then the preparation kept the content and the reply says appended
+        let expressions: Vec<String> = mock
+            .commands_named("Runtime.evaluate")
+            .iter()
+            .map(|c| {
+                c.params["expression"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string()
+            })
+            .collect();
+        assert!(
+            expressions[0].contains("const append = true;"),
+            "{expressions:?}"
+        );
+        let text = &reply.content[0].as_text_content().unwrap().text;
+        assert!(
+            text.starts_with("Successfully appended text to '#q'."),
+            "{text}"
+        );
+        // And a field that did not change is an error
+        let unchanged = json!({"status": "done", "matches": false, "empty": false, "rejected": true, "append": true});
+        let error = fill_reply(&unchanged, "#q").unwrap_err().to_string();
+        assert!(error.contains("did not change after typing"), "{error}");
     }
 
     async fn fill(

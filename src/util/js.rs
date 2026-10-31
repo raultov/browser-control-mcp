@@ -257,6 +257,15 @@ pub fn file_names(selector: &str) -> String {
 /// check to fire `change` (a symbol: it never collides with the page's).
 const FILL_BEFORE: &str = "Symbol.for('browser-control-mcp.fill-before')";
 
+/// Whether `fill_input` replaces the content of a field or types after it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FillMode {
+    /// The text replaces the content.
+    Replace,
+    /// The text is typed at the end of the content.
+    Append,
+}
+
 /// Readies the first element matching `selector` for `text` (`fill_input`).
 /// A text field is focused and emptied (through the native `value` setter,
 /// which frameworks such as React observe); a contenteditable element is
@@ -268,12 +277,28 @@ const FILL_BEFORE: &str = "Symbol.for('browser-control-mcp.fill-before')";
 /// `not_editable` (with `reason`), `no_option` (with `options`), `selected`
 /// or `ready`. Checking focus matters: typing goes to whatever element has
 /// it, so an element that cannot take it would send the text elsewhere.
-pub fn prepare_fill(selector: &str, text: &str) -> String {
+pub fn prepare_fill(selector: &str, text: &str, mode: FillMode) -> String {
+    fill_snippet(selector, text, mode, PREPARE_FILL)
+}
+
+/// `body` run on the element `selector` names, with `text`, `append` (the
+/// [`FillMode`]) and `textOf` ([`TEXT_OF`]) defined.
+fn fill_snippet(selector: &str, text: &str, mode: FillMode, body: &str) -> String {
+    let append = mode == FillMode::Append;
     status_of(
         selector,
-        &format!("const text = {}; {PREPARE_FILL}", string_literal(text)),
+        &format!(
+            "const text = {}; const append = {append}; {TEXT_OF} {body}",
+            string_literal(text)
+        ),
     )
 }
+
+/// The text of a contenteditable element as typed into it: without the
+/// zero-width placeholders rich text editors insert, with non-breaking
+/// spaces as spaces.
+const TEXT_OF: &str =
+    "const textOf = n => n.textContent.replace(/\\uFEFF/g, '').replace(/\\u00A0/g, ' ');";
 
 const PREPARE_FILL: &str = "const W = el.ownerDocument.defaultView; \
     if (el instanceof W.HTMLSelectElement) { \
@@ -295,17 +320,30 @@ const PREPARE_FILL: &str = "const W = el.ownerDocument.defaultView; \
     el.focus(); \
     const active = el.getRootNode().activeElement; \
     if (active !== el && !(el.isContentEditable && active && active.contains(el))) return { status: 'not_editable', reason: 'it cannot take focus (hidden or inert)' }; \
+    let prefix = ''; \
     if (field) { \
         el[Symbol.for('browser-control-mcp.fill-before')] = el.value; \
-        const value = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), 'value'); \
-        if (value && value.set) { value.set.call(el, ''); } else { el.value = ''; } \
-        el.dispatchEvent(new Event('input', { bubbles: true })); \
+        let kept = append; \
+        if (append) { try { el.setSelectionRange(el.value.length, el.value.length); } catch (e) { kept = false; prefix = el.value; } } \
+        if (!kept) { \
+            const value = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), 'value'); \
+            if (value && value.set) { value.set.call(el, ''); } else { el.value = ''; } \
+            el.dispatchEvent(new Event('input', { bubbles: true })); \
+        } \
     } else { \
         const doc = el.ownerDocument, range = doc.createRange(), selection = doc.getSelection(); \
-        range.selectNodeContents(el); selection.removeAllRanges(); selection.addRange(range); \
-        if (text === '' && el.textContent !== '') doc.execCommand('delete'); \
+        range.selectNodeContents(el); \
+        if (append) { \
+            el[Symbol.for('browser-control-mcp.fill-before')] = textOf(el); \
+            const walker = doc.createTreeWalker(el, 4); let last = null; \
+            while (walker.nextNode()) last = walker.currentNode; \
+            if (last) range.setStart(last, last.length); \
+            range.collapse(!!last); \
+        } \
+        selection.removeAllRanges(); selection.addRange(range); \
+        if (!append && text === '' && el.textContent !== '') doc.execCommand('delete'); \
     } \
-    return { status: 'ready' };";
+    return { status: 'ready', prefix };";
 
 /// What the element matching `selector` holds after `text` was typed:
 /// `{status: 'missing'}` or `{status: 'done', matches, empty}` (the value
@@ -314,20 +352,18 @@ const PREPARE_FILL: &str = "const W = el.ownerDocument.defaultView; \
 /// without focus (Firefox headless, a background window) fires no blur, so
 /// there an input or textarea whose value differs from the one the
 /// preparation found gets `change` here.
-pub fn fill_result(selector: &str, text: &str) -> String {
-    status_of(
-        selector,
-        &format!(
-            "const text = {}; \
-             const W = el.ownerDocument.defaultView; \
+pub fn fill_result(selector: &str, text: &str, mode: FillMode) -> String {
+    let body = format!(
+        "const W = el.ownerDocument.defaultView; \
              const field = el instanceof W.HTMLInputElement || el instanceof W.HTMLTextAreaElement; \
-             const value = field ? el.value : el.textContent.replace(/\\uFEFF/g, '').replace(/\\u00A0/g, ' '); \
-             if (field) {{ const before = el[{FILL_BEFORE}]; delete el[{FILL_BEFORE}]; \
-               if (!el.ownerDocument.hasFocus() && value !== before) el.dispatchEvent(new Event('change', {{ bubbles: true }})); }} \
-             return {{ status: 'done', matches: value === text, empty: value === '' }};",
-            string_literal(text)
-        ),
-    )
+             const value = field ? el.value : textOf(el); \
+             const before = el[{FILL_BEFORE}]; delete el[{FILL_BEFORE}]; \
+             if (field && !el.ownerDocument.hasFocus() && value !== before) el.dispatchEvent(new Event('change', {{ bubbles: true }})); \
+             const expected = append ? (before || '') + text : text; \
+             const rejected = text !== '' && value === (append ? (before || '') : ''); \
+             return {{ status: 'done', matches: value === expected, empty: value === '', rejected, append }};"
+    );
+    fill_snippet(selector, text, mode, &body)
 }
 
 /// Most characters of HTML `inspect_dom` returns without a query: the
@@ -526,8 +562,8 @@ mod tests {
         for expression in [
             scroll_into_view(selector),
             click_point(selector),
-            prepare_fill(selector, selector),
-            fill_result(selector, selector),
+            prepare_fill(selector, selector, FillMode::Replace),
+            fill_result(selector, selector, FillMode::Replace),
         ] {
             // Then it is one JSON string literal that parses back to the original
             assert_eq!(embedded_selector(&expression), selector, "{expression}");
@@ -569,12 +605,12 @@ mod tests {
     /// headless) the check fires it for a field whose value changed.
     #[test]
     fn fill_fires_change_when_the_value_changed() {
-        let prepare = prepare_fill("#q", "x");
+        let prepare = prepare_fill("#q", "x", FillMode::Replace);
         assert!(
             prepare.contains(&format!("el[{FILL_BEFORE}] = ")),
             "{prepare}"
         );
-        let check = fill_result("#q", "x");
+        let check = fill_result("#q", "x", FillMode::Replace);
         assert!(check.contains(&format!("el[{FILL_BEFORE}]")), "{check}");
         assert!(
             check.contains("new Event('change', { bubbles: true })"),
@@ -602,8 +638,8 @@ mod tests {
         for expression in [
             scroll_into_view("#a"),
             click_point("#a"),
-            prepare_fill("#a", "x"),
-            fill_result("#a", "x"),
+            prepare_fill("#a", "x", FillMode::Replace),
+            fill_result("#a", "x", FillMode::Replace),
             wait_check(&wanted),
         ] {
             // Then each declares the resolver and none queries the document directly
@@ -615,7 +651,10 @@ mod tests {
         }
         // And fields are recognised by their own window's classes (an
         // iframe's input is not an instance of the top window's)
-        for expression in [prepare_fill("#a", "x"), fill_result("#a", "x")] {
+        for expression in [
+            prepare_fill("#a", "x", FillMode::Replace),
+            fill_result("#a", "x", FillMode::Replace),
+        ] {
             assert!(expression.contains("const W = el.ownerDocument.defaultView;"));
             assert!(!expression.contains("instanceof HTML"), "{expression}");
         }
@@ -717,6 +756,33 @@ mod tests {
         assert!(expression.contains("!labelOf(hit)"), "{expression}");
     }
 
+    /// ISSUE-32: in append mode nothing is cleared: the caret goes to the
+    /// end of the field (or of the last text of a contenteditable element)
+    /// and the result expects the old content followed by the text.
+    #[test]
+    fn append_types_after_the_content() {
+        let prepare = prepare_fill("#q", "x", FillMode::Append);
+        assert!(prepare.contains("const append = true;"), "{prepare}");
+        assert!(
+            prepare.contains("el.setSelectionRange(el.value.length, el.value.length)"),
+            "{prepare}"
+        );
+        assert!(prepare.contains("createTreeWalker(el, 4)"), "{prepare}");
+        // A field without a caret (number, email, date) is retyped whole
+        assert!(
+            prepare.contains("catch (e) { kept = false; prefix = el.value; }"),
+            "{prepare}"
+        );
+        let replace = prepare_fill("#q", "x", FillMode::Replace);
+        assert!(replace.contains("const append = false;"), "{replace}");
+        let result = fill_result("#q", "x", FillMode::Append);
+        assert!(
+            result.contains("const expected = append ? (before || '') + text : text;"),
+            "{result}"
+        );
+        assert_eq!(embedded_text(&prepare), "x");
+    }
+
     /// ISSUE-23: a contenteditable element is not emptied through its DOM
     /// (rich text editors keep their own model of it): its contents are
     /// selected so the first typed key replaces them, and an empty text
@@ -724,21 +790,21 @@ mod tests {
     /// without the editors' zero-width placeholders.
     #[test]
     fn rich_text_editors_keep_their_model() {
-        let prepare = prepare_fill("#rich", "x");
+        let prepare = prepare_fill("#rich", "x", FillMode::Replace);
         assert!(!prepare.contains("el.textContent = ''"), "{prepare}");
         assert!(
             prepare.contains("range.selectNodeContents(el)"),
             "{prepare}"
         );
         assert!(prepare.contains("execCommand('delete')"), "{prepare}");
-        let result = fill_result("#rich", "x");
+        let result = fill_result("#rich", "x", FillMode::Replace);
         assert!(result.contains("\\uFEFF"), "{result}");
     }
 
     #[test]
     fn fill_input_replaces_value() {
         let text = r#"x"; window.__pwned = 1; ""#;
-        let expression = prepare_fill("#q", text);
+        let expression = prepare_fill("#q", text, FillMode::Replace);
         assert!(expression.contains("el.focus()"));
         assert!(
             expression.contains("value.set.call(el, '')"),
@@ -749,6 +815,9 @@ mod tests {
             "{expression}"
         );
         assert_eq!(embedded_text(&expression), text);
-        assert_eq!(embedded_text(&fill_result("#q", text)), text);
+        assert_eq!(
+            embedded_text(&fill_result("#q", text, FillMode::Replace)),
+            text
+        );
     }
 }
