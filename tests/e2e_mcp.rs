@@ -26,7 +26,7 @@ mod e2e {
     <input id="pk" onkeydown="window.__keys = (window.__keys || '') + event.key + (event.ctrlKey ? '^' : '') + ';'">
     <button id="dbl" ondblclick="window.__dbl = (window.__dbl || 0) + 1" oncontextmenu="window.__ctx = true; return false">dbl</button>
     <input type="file" id="up" onchange="window.__up = this.files[0].name + ':' + this.files[0].size">
-    <my-widget></my-widget><iframe id="fr" src="/frame.html" width="300" height="80"></iframe>
+    <my-widget></my-widget><iframe id="fr" src="/frame.html" width="300" height="80"></iframe><iframe id="fr2" src="/frame.html" width="300" height="80"></iframe>
     <script>customElements.define('my-widget', class extends HTMLElement { connectedCallback() {
       const root = this.attachShadow({mode: 'open'}); root.innerHTML = '<button id="sb">shadow</button>';
       root.getElementById('sb').onclick = () => { window.__pierced = (window.__pierced || '') + 'shadow;'; }; } });</script>
@@ -562,6 +562,40 @@ mod e2e {
                 "snapshot",
                 scoped("#dat"),
                 "- cell \"dat-text bold\" [ref=",
+            ),
+        ]
+    }
+
+    /// ISSUE-35: keys reach a field inside an iframe that was never
+    /// clicked (the pierce steps clicked into #fr, so the top document's
+    /// focus is there, not on #fr2).
+    fn frame_focus_steps(instance: &str) -> Vec<Step> {
+        let i = json!(instance);
+        let value = json!({"instance_id": i, "expression": "document.querySelector('#fr2').contentDocument.querySelector('#fq').value"});
+        vec![
+            (
+                "ISSUE-35 fill a field in another iframe",
+                "fill_input",
+                json!({"instance_id": i, "selector": "#fr2 >>> #fq", "text": "second-frame"}),
+                "Successfully filled",
+            ),
+            (
+                "ISSUE-35 the field holds the text",
+                "evaluate_js",
+                value.clone(),
+                "\"value\": \"second-frame\"",
+            ),
+            (
+                "ISSUE-35 press a key in it",
+                "press_key",
+                json!({"instance_id": i, "selector": "#fr2 >>> #fq", "key": "z"}),
+                "Pressed z",
+            ),
+            (
+                "ISSUE-35 the key reached it",
+                "evaluate_js",
+                value,
+                "\"value\": \"second-framez\"",
             ),
         ]
     }
@@ -1439,6 +1473,7 @@ mod e2e {
             element_shot_steps("e2e"),
             aria_value_steps("e2e"),
             custom_editor_steps("e2e"),
+            frame_focus_steps("e2e"),
             append_steps("e2e"),
             form_steps("e2e"),
             secret_steps("e2e"),
@@ -1534,6 +1569,7 @@ mod e2e {
             element_shot_steps("default"),
             aria_value_steps("default"),
             custom_editor_steps("default"),
+            frame_focus_steps("default"),
             append_steps("default"),
             form_steps("default"),
             upload_steps("default"),

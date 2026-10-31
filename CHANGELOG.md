@@ -45,6 +45,12 @@ from a copy of its code: entries describe the differences from that release.
 
 ### Fixed
 
+- On Firefox, `fill_input`, `fill_form` and `press_key` type into an
+  element inside an iframe (TinyMCE): its script focus left the top
+  document's focus on its `<body>`, where Firefox sent the keys, so nothing
+  reached the editor and `fill_input` reported that the field held
+  "something other than the text". Each iframe the element is in is now
+  focused first. (#35)
 - `fill_input` replaces the content of CodeMirror 6 on Firefox: the text
   was typed before the old content, because CodeMirror puts its own caret
   back once focused and drops the selection #23 made with a DOM range. A

@@ -292,11 +292,14 @@ pub fn web_storage(action: &str, kind: &str, key: Option<&str>, value: Option<&s
 
 /// Focuses the element `selector` names (`press_key`): `{status}`
 /// `missing`, `focused` (it, or an element inside it, has the focus) or
-/// `unfocusable`.
+/// `unfocusable`. Each iframe it is in is focused first, in its parent:
+/// Firefox sends keys to the top document's focused element, which a
+/// script focus inside a frame may leave on the top `<body>` (TinyMCE).
 pub fn focus(selector: &str) -> String {
     status_of(
         selector,
-        "el.focus(); const active = el.getRootNode().activeElement; \
+        "{ let w = el.ownerDocument.defaultView; while (w.frameElement) { w.frameElement.focus(); w = w.frameElement.ownerDocument.defaultView; } } \
+         el.focus(); const active = el.getRootNode().activeElement; \
          return { status: active && (active === el || el.contains(active)) ? 'focused' : 'unfocusable' };",
     )
 }
@@ -414,6 +417,7 @@ const PREPARE_FILL: &str = "const W = el.ownerDocument.defaultView; \
         return { x: Math.round(x), y: Math.round(y) }; })() : null; \
     if (field && el.matches(':disabled')) return { status: 'not_editable', reason: 'disabled' }; \
     if (field && el.readOnly) return { status: 'not_editable', reason: 'read-only' }; \
+    { let w = el.ownerDocument.defaultView; while (w.frameElement) { w.frameElement.focus(); w = w.frameElement.ownerDocument.defaultView; } } \
     el.focus(); \
     const active = el.getRootNode().activeElement; \
     if (active !== el && !(el.isContentEditable && active && active.contains(el))) return { status: 'not_editable', reason: 'it cannot take focus (hidden or inert)' }; \
@@ -874,6 +878,22 @@ mod tests {
         assert!(expression.contains("el.labels"), "{expression}");
         assert!(expression.contains("aria-labelledby"), "{expression}");
         assert!(expression.contains("!labelOf(hit)"), "{expression}");
+    }
+
+    /// ISSUE-35: before an element is focused for typing, each iframe it
+    /// is in is focused in its parent, so the top document's focus leads
+    /// to it (Firefox sends keys to the top document's focused element).
+    #[test]
+    fn typing_focuses_the_frames_first() {
+        for expression in [
+            focus("#fr >>> #q"),
+            prepare_fill("#fr >>> #q", "x", FillMode::Replace),
+        ] {
+            assert!(
+                expression.contains("w.frameElement.focus()"),
+                "{expression}"
+            );
+        }
     }
 
     /// ISSUE-34: a contenteditable element also gets the keys after the
