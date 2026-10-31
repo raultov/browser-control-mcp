@@ -141,6 +141,27 @@ const CLICK_POINT: &str = "el.scrollIntoView({ behavior: 'instant', block: 'cent
     } \
     return { status: 'ok', x, y };";
 
+/// Scrolls the first element matching `selector` into view and measures
+/// its box for `capture_screenshot`: `{status: 'ok', x, y, width, height}`
+/// in CSS pixels of the top document (an element inside iframes is offset
+/// by each frame), or `missing`, or `hidden` (no visible box). Document
+/// coordinates, so an element taller than the viewport is captured whole.
+pub fn element_box(selector: &str) -> String {
+    status_of(selector, ELEMENT_BOX)
+}
+
+const ELEMENT_BOX: &str = "el.scrollIntoView({ behavior: 'instant', block: 'center', inline: 'center' }); \
+    let win = el.ownerDocument.defaultView; \
+    const r = el.getBoundingClientRect(); \
+    if (r.width === 0 || r.height === 0 || win.getComputedStyle(el).visibility !== 'visible') return { status: 'hidden' }; \
+    let x = r.left, y = r.top; \
+    while (win.frameElement) { \
+        const frame = win.frameElement, f = frame.getBoundingClientRect(); \
+        x += f.left + frame.clientLeft; y += f.top + frame.clientTop; \
+        win = frame.ownerDocument.defaultView; \
+    } \
+    return { status: 'ok', x: x + win.scrollX, y: y + win.scrollY, width: r.width, height: r.height };";
+
 /// What `fill_form` does with the element `selector` names:
 /// `{status: 'missing'}`, `{status: 'box', checked}` for a checkbox or
 /// radio (it is clicked when its state differs), or `{status: 'field'}`
@@ -666,6 +687,19 @@ mod tests {
 
     /// FIX-07 / AUD-IN-08: fill_input empties the field it focused, and
     /// the text reaches JavaScript as one string literal.
+    /// ISSUE-33: the box of an element to capture is scrolled into view,
+    /// offset by the frames it is in and given in document coordinates.
+    #[test]
+    fn element_box_is_in_document_coordinates() {
+        let expression = element_box("#chart");
+        assert!(expression.contains("el.scrollIntoView("), "{expression}");
+        assert!(
+            expression.contains("while (win.frameElement)"),
+            "{expression}"
+        );
+        assert!(expression.contains("x + win.scrollX"), "{expression}");
+    }
+
     /// ISSUE-24: the click check accepts the control's own label (or the
     /// element its aria-labelledby names) at the click point: clicking a
     /// label clicks its control.

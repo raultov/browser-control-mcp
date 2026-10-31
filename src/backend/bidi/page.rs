@@ -440,9 +440,9 @@ pub(crate) struct ShotRequest<'a> {
     pub(crate) quality: Option<u32>,
     /// The whole document instead of the viewport.
     pub(crate) full_page: bool,
-    /// Width and height of the document's top-left box to capture, when the
-    /// whole document is too large.
-    pub(crate) clip: Option<(f64, f64)>,
+    /// The document box `(x, y, width, height)` to capture: one element, or
+    /// the top left of a document too large to capture whole.
+    pub(crate) clip: Option<crate::handler::cdp_domains::page::capture_screenshot::Clip>,
 }
 
 /// `browsingContext.captureScreenshot` params for a request (spike H7).
@@ -457,8 +457,8 @@ pub(crate) fn screenshot_params(context: &str, req: &ShotRequest<'_>) -> Value {
         "viewport"
     };
     let mut params = json!({"context": context, "origin": origin, "format": format});
-    if let (Some((width, height)), Some(map)) = (req.clip, params.as_object_mut()) {
-        let clip = json!({"type": "box", "x": 0, "y": 0, "width": width, "height": height});
+    if let (Some((x, y, width, height)), Some(map)) = (req.clip, params.as_object_mut()) {
+        let clip = json!({"type": "box", "x": x, "y": y, "width": width, "height": height});
         map.insert("clip".into(), clip);
     }
     params
@@ -541,13 +541,13 @@ mod tests {
                 format: "jpeg",
                 quality: Some(80),
                 full_page: true,
-                clip: Some((800.0, 16384.0)),
+                clip: Some((0.0, 0.0, 800.0, 16384.0)),
             },
         );
         assert_eq!(jpeg["origin"], "document");
         assert_eq!(
             jpeg["clip"],
-            json!({"type": "box", "x": 0, "y": 0, "width": 800.0, "height": 16384.0})
+            json!({"type": "box", "x": 0.0, "y": 0.0, "width": 800.0, "height": 16384.0})
         );
         assert_eq!(
             jpeg["format"],

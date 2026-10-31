@@ -33,6 +33,7 @@ mod e2e {
     <input id="q" value="old"><div id="marker">needle-marker</div>
     <label style="position:relative;display:inline-block;width:60px;height:24px"><input type="checkbox" id="sw" style="position:absolute;left:0;top:0;width:60px;height:24px;margin:0"><span style="position:absolute;inset:0;background:#ccc"></span></label>
     <div style="position:relative;display:inline-block"><button id="covered">covered</button><div style="position:absolute;inset:0;background:#fff"></div></div>
+    <div id="shot" style="width:123px;height:45px;background:#c00">shot</div>
     <div id="card" style="cursor:pointer" onclick="window.__card = true"><a href="/card">card-link</a> <button id="card-btn">card-button</button></div>
     <div id="plaincard" style="cursor:pointer" onclick="window.__plain = true">plain card text</div>
     <style>.row .tool { opacity: 0; pointer-events: none; } .row:hover .tool { opacity: 1; pointer-events: auto; }</style>
@@ -533,6 +534,17 @@ mod e2e {
                 "- cell \"dat-text bold\" [ref=",
             ),
         ]
+    }
+
+    /// ISSUE-33: a capture of one element is its size (the PNG header of
+    /// a 123 x 45 px image).
+    fn element_shot_steps(instance: &str) -> Vec<Step> {
+        vec![(
+            "ISSUE-33 screenshot of one element",
+            "capture_screenshot",
+            json!({"instance_id": instance, "selector": "#shot"}),
+            "iVBORw0KGgoAAAANSUhEUgAAAHsAAAAt",
+        )]
     }
 
     /// ISSUE-26: a button shown only while its row is hovered is clicked.
@@ -1188,6 +1200,7 @@ mod e2e {
             label_steps("e2e"),
             clickable_steps("e2e"),
             hover_reveal_steps("e2e"),
+            element_shot_steps("e2e"),
             form_steps("e2e"),
             secret_steps("e2e"),
             upload_steps("e2e"),
@@ -1277,6 +1290,7 @@ mod e2e {
             label_steps("default"),
             clickable_steps("default"),
             hover_reveal_steps("default"),
+            element_shot_steps("default"),
             form_steps("default"),
             upload_steps("default"),
             pdf_steps("default"),

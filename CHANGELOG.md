@@ -10,6 +10,14 @@ from a copy of its code: entries describe the differences from that release.
 
 ## [Unreleased]
 
+### Added
+
+- `capture_screenshot` takes a `selector` and captures only that element
+  (CSS, `host >>> inner` into shadow roots and iframes, or a snapshot ref):
+  scrolled into view, clipped to its box, whole even when taller than the
+  viewport (at most 16 384 px per side, with a note). Checking one component
+  no longer costs a whole viewport image. (#33)
+
 ## [0.6.0-beta.10] - 2026-10-31
 
 Public **BETA**. Fixes four input and snapshot bugs found while driving a

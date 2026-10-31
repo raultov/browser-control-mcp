@@ -7,7 +7,7 @@ use serde_json::json;
 
 #[macros::mcp_tool(
     name = "capture_screenshot",
-    description = "Screenshot of the tab's viewport, or of the whole page with full_page (at most 16384 CSS pixels per side; a larger page gets a note). To find elements to act on, prefer 'snapshot'."
+    description = "Screenshot of the tab's viewport, of the whole page with full_page, or of one element with selector (at most 16384 CSS pixels per side; a larger capture gets a note). To find elements to act on, prefer 'snapshot'."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct CaptureScreenshotTool {
@@ -21,6 +21,8 @@ pub struct CaptureScreenshotTool {
     pub quality: Option<u32>,
     /// Capture the whole scrollable page. Default: false.
     pub full_page: Option<bool>,
+    /// Capture only this element's box. Element: CSS selector, 'host >>> inner' (inside an open shadow root or same-origin iframe), or a snapshot ref (e12).
+    pub selector: Option<String>,
 }
 
 impl CaptureScreenshotTool {
@@ -37,10 +39,22 @@ impl CaptureScreenshotTool {
         if let (Some(q), Some(map)) = (args.quality, command_params.as_object_mut()) {
             map.insert("quality".to_string(), json!(q));
         }
-        let note = if args.full_page.unwrap_or(false) {
-            add_full_page_clip(&target, &mut command_params).await?
-        } else {
-            None
+        let note = match (args.selector.as_deref(), args.full_page.unwrap_or(false)) {
+            (Some(_), true) => return Err(selector_or_full_page()),
+            (Some(selector), false) => {
+                let expression = crate::util::js::element_box(selector);
+                let measured = crate::handler::snippet_value(&target, &expression).await?;
+                let ((x, y, width, height), note) = element_clip(&measured, selector)?;
+                if let Some(map) = command_params.as_object_mut() {
+                    let clip =
+                        json!({"x": x, "y": y, "width": width, "height": height, "scale": 1});
+                    map.insert("clip".to_string(), clip);
+                    map.insert("captureBeyondViewport".to_string(), json!(true));
+                }
+                note
+            }
+            (None, true) => add_full_page_clip(&target, &mut command_params).await?,
+            (None, false) => None,
         };
         let failure = "CDP Error";
         let val =
@@ -65,13 +79,56 @@ pub(crate) const FULL_PAGE_MAX: f64 = 16_384.0;
 /// What a full-page capture of a `width` x `height` document says when it
 /// is cut to [`FULL_PAGE_MAX`].
 pub(crate) fn full_page_note(width: f64, height: f64) -> Option<String> {
+    cut_note("Full page", width, height)
+}
+
+/// What a capture of `what` (`width` x `height`) says when it is cut to
+/// [`FULL_PAGE_MAX`].
+fn cut_note(what: &str, width: f64, height: f64) -> Option<String> {
     if width <= FULL_PAGE_MAX && height <= FULL_PAGE_MAX {
         return None;
     }
     let (shown_width, shown_height) = (width.min(FULL_PAGE_MAX), height.min(FULL_PAGE_MAX));
     Some(format!(
-        "Full page cut to {FULL_PAGE_MAX} px per side, from the top left: height {shown_height:.0} of {height:.0} px, width {shown_width:.0} of {width:.0} px. Scroll and capture the viewport for the rest."
+        "{what} cut to {FULL_PAGE_MAX} px per side, from the top left: height {shown_height:.0} of {height:.0} px, width {shown_width:.0} of {width:.0} px. Scroll and capture the viewport for the rest."
     ))
+}
+
+/// A document box to capture: `(x, y, width, height)` in CSS pixels.
+pub(crate) type Clip = (f64, f64, f64, f64);
+
+/// The refusal of a capture asked for both one element and the whole page.
+pub(crate) fn selector_or_full_page() -> CallToolError {
+    CallToolError::from_message("Pass either 'selector' (one element) or 'full_page', not both.")
+}
+
+/// The document box `(x, y, width, height)` to capture for the element the
+/// box snippet (`util::js::element_box`) measured, at most
+/// [`FULL_PAGE_MAX`] per side, with the note when it was cut; or why the
+/// element cannot be captured.
+pub(crate) fn element_clip(
+    measured: &serde_json::Value,
+    selector: &str,
+) -> Result<(Clip, Option<String>), CallToolError> {
+    let side = |key: &str| measured[key].as_f64();
+    match measured["status"].as_str() {
+        Some("ok") => {
+            let (x, y) = (side("x").unwrap_or_default(), side("y").unwrap_or_default());
+            let (width, height) = (
+                side("width").unwrap_or_default(),
+                side("height").unwrap_or_default(),
+            );
+            let clip = (x, y, width.min(FULL_PAGE_MAX), height.min(FULL_PAGE_MAX));
+            Ok((clip, cut_note("Element", width, height)))
+        }
+        Some("hidden") => Err(CallToolError::from_message(format!(
+            "Element '{selector}' is not visible (display:none, visibility:hidden or zero size); nothing was captured."
+        ))),
+        _ => Err(CallToolError::from_message(format!(
+            "Element not found for selector: {selector}{}",
+            crate::util::js::ref_hint(selector)
+        ))),
+    }
 }
 
 /// The capture format `format` names (any case; `jpg` is `jpeg`), `png`
@@ -226,6 +283,64 @@ mod tests {
         };
         assert!(note.text.contains("16384 of 30000"), "{}", note.text);
         assert_eq!(full_page_note(1905.0, 300.0), None);
+    }
+
+    /// ISSUE-33: with a selector the capture is clipped to the element's
+    /// box in document coordinates (beyond the viewport when it is taller).
+    #[tokio::test]
+    async fn an_element_is_captured_alone() {
+        use crate::handler::cdp_domains::tests::{call, mock_handler, spawn_recording_mock};
+        // Given an element at (10, 2000) of 123 x 45 px in the document
+        let mock = spawn_recording_mock().await;
+        mock.respond_with("Runtime.evaluate", |_| {
+            let value = json!({"status": "ok", "x": 10, "y": 2000, "width": 123, "height": 45});
+            json!({"result": {"result": {"type": "object", "value": value}}})
+        });
+        mock.respond_with(
+            "Page.captureScreenshot",
+            |_| json!({"result": {"data": "iVBO"}}),
+        );
+        let handler = mock_handler(mock.http_port);
+        // When it is captured
+        let args = json!({"selector": "#chart"});
+        let reply = CaptureScreenshotTool::handle(call("capture_screenshot", args), &handler).await;
+        // Then the capture is clipped to its box
+        assert!(reply.is_ok(), "{reply:?}");
+        let sent = &mock.commands_named("Page.captureScreenshot")[0].params;
+        assert_eq!(
+            sent["clip"],
+            json!({"x": 10.0, "y": 2000.0, "width": 123.0, "height": 45.0, "scale": 1})
+        );
+        assert_eq!(sent["captureBeyondViewport"], true);
+    }
+
+    /// ISSUE-33: a missing element, or a selector with full_page, fails
+    /// without capturing.
+    #[tokio::test]
+    async fn a_missing_element_is_not_captured() {
+        use crate::handler::cdp_domains::tests::{call, mock_handler, spawn_recording_mock};
+        let mock = spawn_recording_mock().await;
+        mock.respond_with(
+            "Runtime.evaluate",
+            |_| json!({"result": {"result": {"type": "object", "value": {"status": "missing"}}}}),
+        );
+        let handler = mock_handler(mock.http_port);
+        let missing = json!({"selector": "#nope"});
+        let error = CaptureScreenshotTool::handle(call("capture_screenshot", missing), &handler)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("Element not found for selector: #nope"),
+            "{error}"
+        );
+        let both = json!({"selector": "#chart", "full_page": true});
+        let error = CaptureScreenshotTool::handle(call("capture_screenshot", both), &handler)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("either"), "{error}");
+        assert!(mock.commands_named("Page.captureScreenshot").is_empty());
     }
 
     /// AUD-IN-20: the format is checked before anything is sent; `jpg` and

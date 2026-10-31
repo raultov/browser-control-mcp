@@ -465,28 +465,44 @@ pub(crate) async fn capture_screenshot(
     let (_, _, tab) = target(handler, &ids(&args.instance_id, &args.tab_id)).await?;
     let format = capture_screenshot::image_format(args.format.as_deref())?;
     let full_page = args.full_page.unwrap_or(false);
-    let (clip, note) = if full_page {
-        let size = page::run_snippet(&tab.tab, crate::util::js::DOCUMENT_SIZE).await?;
-        let side = |key: &str| size[key].as_f64().unwrap_or_default();
-        let (width, height) = (side("width"), side("height"));
-        match capture_screenshot::full_page_note(width, height) {
-            Some(note) => {
-                let max = capture_screenshot::FULL_PAGE_MAX;
-                (Some((width.min(max), height.min(max))), Some(note))
-            }
-            None => (None, None),
+    let (clip, note) = match (args.selector.as_deref(), full_page) {
+        (Some(_), true) => return Err(capture_screenshot::selector_or_full_page()),
+        (Some(selector), false) => {
+            let expression = crate::util::js::element_box(selector);
+            let measured = page::run_snippet(&tab.tab, &expression).await?;
+            let (clip, note) = capture_screenshot::element_clip(&measured, selector)?;
+            (Some(clip), note)
         }
-    } else {
-        (None, None)
+        (None, true) => full_page_clip(&tab.tab).await?,
+        (None, false) => (None, None),
     };
     let request = page::ShotRequest {
         format,
         quality: args.quality,
-        full_page,
+        // Document coordinates for a whole page and for one element.
+        full_page: full_page || clip.is_some(),
         clip,
     };
     let data = page::screenshot(&tab.tab, &request).await?;
     Ok(capture_screenshot::image_reply(data, format, note))
+}
+
+/// The clip and note of a full-page capture on Firefox: none when the
+/// document fits [`capture_screenshot::FULL_PAGE_MAX`], else its top left.
+async fn full_page_clip(
+    tab: &bidi_browser_lite::Tab,
+) -> Result<(Option<capture_screenshot::Clip>, Option<String>), BackendError> {
+    let size = page::run_snippet(tab, crate::util::js::DOCUMENT_SIZE).await?;
+    let side = |key: &str| size[key].as_f64().unwrap_or_default();
+    let (width, height) = (side("width"), side("height"));
+    let max = capture_screenshot::FULL_PAGE_MAX;
+    Ok(match capture_screenshot::full_page_note(width, height) {
+        Some(note) => (
+            Some((0.0, 0.0, width.min(max), height.min(max))),
+            Some(note),
+        ),
+        None => (None, None),
+    })
 }
 
 // ---- observation ----
@@ -1316,10 +1332,41 @@ mod tests {
         assert_eq!(sent["origin"], "document");
         assert_eq!(
             sent["clip"],
-            json!({"type": "box", "x": 0, "y": 0, "width": 1905.0, "height": FULL_PAGE_MAX})
+            json!({"type": "box", "x": 0.0, "y": 0.0, "width": 1905.0, "height": FULL_PAGE_MAX})
         );
         let note = &reply.content[1].as_text_content().unwrap().text;
         assert!(note.contains("16384 of 30000"), "{note}");
+        ts::stop(&handler).await;
+    }
+
+    /// ISSUE-33 (Firefox): with a selector the capture is a box clip of the
+    /// document, at the element.
+    #[tokio::test]
+    async fn an_element_is_captured_alone() {
+        // Given an element at (10, 2000) of 123 x 45 px in the document
+        let mock = MockFirefox::start(false).await.unwrap();
+        let measured = json!({"status": "ok", "x": 10, "y": 2000, "width": 123, "height": 45});
+        page_with_point(&mock, measured);
+        mock.bidi().respond_with(
+            "browsingContext.captureScreenshot",
+            |_| json!({"type": "success", "result": {"data": "iVBO"}}),
+        );
+        let handler = ts::handler(&mock);
+        // When it is captured
+        let args = json!({"selector": "#chart"});
+        capture_screenshot(call("capture_screenshot", args), &handler)
+            .await
+            .unwrap();
+        // Then the capture is clipped to its box
+        let sent = &mock
+            .bidi()
+            .commands_named("browsingContext.captureScreenshot")[0]
+            .params;
+        assert_eq!(sent["origin"], "document");
+        assert_eq!(
+            sent["clip"],
+            json!({"type": "box", "x": 10.0, "y": 2000.0, "width": 123.0, "height": 45.0})
+        );
         ts::stop(&handler).await;
     }
 
