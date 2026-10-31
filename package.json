@@ -1,6 +1,6 @@
 {
   "name": "@raultov/browser-control-mcp",
-  "version": "0.5.0-beta.8",
+  "version": "0.6.0-beta.9",
   "description": "MCP server to control and debug Chrome and Firefox, with JavaScript breakpoints",
   "license": "MIT",
   "homepage": "https://github.com/raultov/browser-control-mcp",

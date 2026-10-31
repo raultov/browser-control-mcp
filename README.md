@@ -11,7 +11,7 @@ It is the successor of
 from a copy of its code) and complements Playwright MCP or
 chrome-devtools-mcp with runtime JavaScript debugging on both browsers.
 
-> **Status: BETA (0.5.0-beta.8).** This version contains known bugs and differences
+> **Status: BETA (0.6.0-beta.9).** This version contains known bugs and differences
 > between Chrome and Firefox (see [Limitations and TODO](#limitations-and-todo))
 > and parts that have not been verified (see [Untested](#untested)). Tool
 > replies may change in incompatible ways before 1.0. Please report problems

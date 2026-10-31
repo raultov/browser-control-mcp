@@ -10,6 +10,18 @@ from a copy of its code: entries describe the differences from that release.
 
 ## [Unreleased]
 
+## [0.6.0-beta.9] - 2026-10-31
+
+Public **BETA**. Spends fewer tokens and answers what the agent needs, after
+a side-by-side study with Playwright MCP and chrome-devtools-mcp (now in the
+README): `get_network_logs` and `get_console_logs` answer one line per entry
+(details on demand), `snapshot` no longer repeats table text, input actions
+wait for the page to settle, and `profile_page_performance` explains its
+numbers with `insights`. Behaviour changes: the two log tools answer text
+instead of JSON unless `include_details: true`, layout tables leave only
+their content in `snapshot`, and input actions take ~50 ms more when the
+page does not react.
+
 ### Added
 
 - `profile_page_performance` takes `insights: true`: what explains the
