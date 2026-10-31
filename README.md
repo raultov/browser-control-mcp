@@ -54,8 +54,8 @@ Tokens are estimated as characters / 4 for every server.
 
 | Task | browser-control-mcp | Playwright MCP | chrome-devtools-mcp |
 | --- | --- | --- | --- |
-| Tool list in context, default tools | 6 040 tokens | 5 330 tokens | 7 770 tokens |
-| Tool list in context, every opt-in tool on | 9 500 tokens | 12 040 tokens | not measured (optional categories) |
+| Tool list in context, default tools | 6 430 tokens | 5 330 tokens | 7 770 tokens |
+| Tool list in context, every opt-in tool on | 9 880 tokens | 12 040 tokens | not measured (optional categories) |
 | Snapshot of Hacker News | **4 588 tokens** | 12 356 tokens | 6 869 tokens |
 | Snapshot of Wikipedia "Web browser" | **12 643 tokens** (cut, searchable) | 34 349 tokens | 27 656 tokens |
 | Snapshot of MDN `<input>` | **12 625 tokens** (cut, searchable) | 158 077 tokens | 76 654 tokens |
