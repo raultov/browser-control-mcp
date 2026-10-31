@@ -27,3 +27,8 @@ publish-jobs = ["homebrew", "npm"]
 publish-prereleases = true
 # Pin the actions dist uses by commit SHA
 github-action-commits = { "actions/checkout" = "3d3c42e5aac5ba805825da76410c181273ba90b1", "actions/download-artifact" = "9000827ccba6bdab643e8b6fd33ac0654aef8333", "actions/setup-node" = "249970729cb0ef3589644e2896645e5dc5ba9c38", "actions/upload-artifact" = "cf430e030ddbb5b0abf93d22962f4752f3646cd9" }
+
+# macos-14 (dist's default for Apple Silicon) is retired on 2026-11-02 and
+# its scheduled brownouts already cancel release jobs.
+[dist.github-custom-runners]
+aarch64-apple-darwin = "macos-15"
