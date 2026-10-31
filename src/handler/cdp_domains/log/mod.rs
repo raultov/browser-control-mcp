@@ -203,6 +203,84 @@ fn log_entry(entry: &Value) -> ConsoleMessage {
     }
 }
 
+/// Most properties or items a console preview shows.
+const PREVIEW_ITEMS: usize = 10;
+
+/// Most characters of a string inside a preview (Chrome cuts its own at 100).
+const PREVIEW_STRING_CHARS: usize = 100;
+
+/// `items` between `open` and `close` as the console previews them, with
+/// `…` when there are more (`overflow`, or over [`PREVIEW_ITEMS`]).
+fn listed(open: &str, close: &str, items: Vec<String>, overflow: bool) -> String {
+    let more = overflow || items.len() > PREVIEW_ITEMS;
+    let mut shown: Vec<String> = items.into_iter().take(PREVIEW_ITEMS).collect();
+    if more {
+        shown.push("…".to_string());
+    }
+    format!("{open}{}{close}", shown.join(", "))
+}
+
+/// An object as the console previews it: `{n: 1, s: 'x'}`.
+pub(crate) fn object_preview(entries: Vec<(String, String)>, overflow: bool) -> String {
+    let items = entries
+        .into_iter()
+        .map(|(name, value)| format!("{name}: {value}"))
+        .collect();
+    listed("{", "}", items, overflow)
+}
+
+/// An array as the console previews it: `[1, 2, 3]`.
+pub(crate) fn array_preview(items: Vec<String>, overflow: bool) -> String {
+    listed("[", "]", items, overflow)
+}
+
+/// A string inside a preview: quoted, and cut at [`PREVIEW_STRING_CHARS`].
+pub(crate) fn quoted(text: &str) -> String {
+    match text.char_indices().nth(PREVIEW_STRING_CHARS) {
+        Some((cut, _)) => format!("'{}…'", &text[..cut]),
+        None => format!("'{text}'"),
+    }
+}
+
+/// A CDP object preview (`RemoteObject.preview`) as text: plain objects
+/// and arrays, the rest (errors, maps, nodes...) by their description.
+fn preview_text(preview: &Value) -> Option<String> {
+    let properties = preview.get("properties")?.as_array()?;
+    let overflow = preview.get("overflow").and_then(Value::as_bool) == Some(true);
+    let value = |property: &Value| {
+        let text = str_field(property, "value").unwrap_or_default();
+        match str_field(property, "type") {
+            Some("string") => quoted(text),
+            Some("undefined") => "undefined".to_string(),
+            _ => text.to_string(),
+        }
+    };
+    let description = str_field(preview, "description").unwrap_or_default();
+    match str_field(preview, "subtype") {
+        Some("array") => Some(array_preview(
+            properties.iter().map(value).collect(),
+            overflow,
+        )),
+        None if str_field(preview, "type") == Some("object") => {
+            let entries = properties
+                .iter()
+                .map(|p| {
+                    (
+                        str_field(p, "name").unwrap_or_default().to_string(),
+                        value(p),
+                    )
+                })
+                .collect();
+            let object = object_preview(entries, overflow);
+            Some(match description {
+                "Object" | "" => object,
+                class => format!("{class} {object}"),
+            })
+        }
+        _ => None,
+    }
+}
+
 fn console_api_call(params: &Value) -> ConsoleMessage {
     let text = params
         .get("args")
@@ -214,20 +292,32 @@ fn console_api_call(params: &Value) -> ConsoleMessage {
                 .join(" ")
         })
         .unwrap_or_default();
+    // Where the call was made; evaluated code has no URL.
+    let frame = params
+        .pointer("/stackTrace/callFrames/0")
+        .filter(|frame| str_field(frame, "url").is_some_and(|url| !url.is_empty()));
     ConsoleMessage {
         source: "console-api".to_string(),
         level: string_or_empty(params, "type"),
         text,
         timestamp: timestamp(params),
-        url: None, // Could extract from stackTrace if needed
-        line_number: None,
+        url: frame.and_then(|f| opt_string(f, "url")),
+        line_number: frame
+            .and_then(|f| f.get("lineNumber"))
+            .and_then(Value::as_i64),
         channel: Channel::Primary,
     }
 }
 
 /// One `console.*` argument as text: strings as is, numbers and booleans
-/// printed, objects by their description.
+/// printed, objects and arrays previewed, the rest by their description.
 fn arg_text(arg: &Value) -> Option<String> {
+    if let Some(text) = arg.get("preview").and_then(preview_text) {
+        return Some(text);
+    }
+    if str_field(arg, "type") == Some("undefined") {
+        return Some("undefined".to_string());
+    }
     let description = str_field(arg, "description").map(str::to_string);
     match arg.get("value") {
         Some(Value::String(s)) => Some(s.clone()),
@@ -277,6 +367,38 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// ISSUE-19: console arguments print as the console shows them (object
+    /// and array previews, not "Object"), and the call's location is kept
+    /// when the code has a URL (evaluated code has none).
+    #[test]
+    fn console_api_arguments_are_previewed() {
+        let events: Value = serde_json::from_str(include_str!(
+            "../../../../tests/fixtures/cdp/runtime-console-api-called.json"
+        ))
+        .unwrap();
+        let first = console_message("Runtime.consoleAPICalled", &events[0]["params"]).unwrap();
+        assert_eq!(
+            first.text,
+            "hello from page {n: 1, s: 'x', nested: Object} [1, 2, 3] 42 null"
+        );
+        assert_eq!((first.url, first.line_number), (None, None));
+        let error = console_message("Runtime.consoleAPICalled", &events[2]["params"]).unwrap();
+        assert!(
+            error.text.starts_with("Error: boom-error"),
+            "{}",
+            error.text
+        );
+        // A call from a page script keeps its location
+        let mut from_page = events[1]["params"].clone();
+        from_page["stackTrace"]["callFrames"][0]["url"] = json!("http://a/app.js");
+        from_page["stackTrace"]["callFrames"][0]["lineNumber"] = json!(6);
+        let warn = console_message("Runtime.consoleAPICalled", &from_page).unwrap();
+        assert_eq!(
+            (warn.url.as_deref(), warn.line_number),
+            (Some("http://a/app.js"), Some(6))
+        );
+    }
+
     /// AUD-OB-13: a huge console message is kept cut, on both feeds.
     #[test]
     fn long_console_text_is_capped() {
@@ -316,7 +438,7 @@ mod tests {
             {"type": "object", "value": {"a": 1}, "description": "Object"},
             {"type": "object", "description": "Window"}, {"type": "undefined"}]});
         let m = console_message("Runtime.consoleAPICalled", &params).unwrap();
-        assert_eq!(m.text, "hi 3 Object Window");
+        assert_eq!(m.text, "hi 3 Object Window undefined");
         assert_eq!(
             (m.source.as_str(), m.level.as_str()),
             ("console-api", "log")

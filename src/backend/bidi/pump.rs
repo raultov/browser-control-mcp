@@ -188,7 +188,7 @@ pub(crate) fn console_message(params: &Value) -> ConsoleMessage {
             let method = str_field(params, "method").or_else(|| str_field(params, "level"));
             crate::handler::cdp_domains::log::canonical_level(method.unwrap_or_default())
         },
-        text: string_or_empty(params, "text"),
+        text: args_text(params).unwrap_or_else(|| string_or_empty(params, "text")),
         timestamp: params
             .get("timestamp")
             .and_then(Value::as_f64)
@@ -199,6 +199,86 @@ pub(crate) fn console_message(params: &Value) -> ConsoleMessage {
             .and_then(Value::as_i64),
         channel: Default::default(),
     }
+}
+
+/// The console arguments printed as Chrome previews them (Firefox's own
+/// text says `Object(3)`), or `None` when one is a value BiDi does not
+/// serialize (an error, a node, a map) or the first is a format string
+/// (`%s`): Firefox's text then says it better.
+fn args_text(params: &Value) -> Option<String> {
+    let args = params.get("args")?.as_array()?;
+    let first = args.first()?;
+    if str_field(first, "type") == Some("string")
+        && str_field(first, "value").is_some_and(|text| text.contains('%'))
+    {
+        return None;
+    }
+    let printed: Option<Vec<String>> = args.iter().map(|arg| bidi_value(arg, true)).collect();
+    Some(printed?.join(" "))
+}
+
+/// A BiDi remote value as the console prints it: at the top level strings
+/// as is, objects and arrays previewed; inside a preview strings quoted and
+/// objects and arrays by name, as Chrome's previews show them.
+fn bidi_value(arg: &Value, top: bool) -> Option<String> {
+    let value = arg.get("value");
+    match str_field(arg, "type")? {
+        "string" => {
+            let text = value?.as_str()?;
+            Some(if top {
+                text.to_string()
+            } else {
+                crate::handler::cdp_domains::log::quoted(text)
+            })
+        }
+        "number" | "boolean" => Some(match value? {
+            // NaN, -0, Infinity and -Infinity come as strings.
+            Value::String(special) => special.clone(),
+            other => other.to_string(),
+        }),
+        "bigint" => Some(format!("{}n", value?.as_str()?)),
+        "null" => Some("null".to_string()),
+        "undefined" => Some("undefined".to_string()),
+        "array" if top => bidi_array(value?),
+        "object" if top => bidi_object(value?),
+        "array" => Some(match value.and_then(Value::as_array) {
+            Some(items) => format!("Array({})", items.len()),
+            None => "Array".to_string(),
+        }),
+        "object" => Some("Object".to_string()),
+        _ => None,
+    }
+}
+
+/// A serialized array previewed: `[1, 2, 3]`.
+fn bidi_array(items: &Value) -> Option<String> {
+    let items: Option<Vec<String>> = items
+        .as_array()?
+        .iter()
+        .map(|item| bidi_value(item, false))
+        .collect();
+    Some(crate::handler::cdp_domains::log::array_preview(
+        items?, false,
+    ))
+}
+
+/// A serialized object (`[[key, value], ...]`) previewed: `{n: 1}`.
+fn bidi_object(pairs: &Value) -> Option<String> {
+    let entries: Option<Vec<(String, String)>> = pairs
+        .as_array()?
+        .iter()
+        .map(|pair| {
+            let key = pair.get(0)?;
+            let key = key
+                .as_str()
+                .map(str::to_string)
+                .or_else(|| bidi_value(key, false))?;
+            Some((key, bidi_value(pair.get(1)?, false)?))
+        })
+        .collect();
+    Some(crate::handler::cdp_domains::log::object_preview(
+        entries?, false,
+    ))
 }
 
 /// BiDi headers `[{name, value: {type, value}}]` as `{name: value}`; a
@@ -291,6 +371,28 @@ async fn on_custom(method: &str, params: &Value, state: &PumpState) {
 
 #[cfg(test)]
 mod tests {
+    /// ISSUE-19: Firefox console arguments print as on Chrome (its own
+    /// text says "Object(3) Array(3)"); an argument BiDi does not serialize
+    /// (an error) keeps Firefox's text.
+    #[test]
+    fn console_arguments_print_as_on_chrome() {
+        let events: Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/bidi/event-log-console-args.json"
+        ))
+        .unwrap();
+        let first = console_message(&events[0]["params"]);
+        assert_eq!(
+            first.text,
+            "hello from page {n: 1, s: 'x', nested: Object} [1, 2, 3] 42 null"
+        );
+        let location = (first.url.as_deref(), first.line_number);
+        assert_eq!(location, (Some("http://127.0.0.1:8765/form.html"), Some(0)));
+        assert_eq!(
+            console_message(&events[2]["params"]).text,
+            "Error: boom-error"
+        );
+    }
+
     use super::*;
     use bidi_browser_lite::test_support::{MockBidi, MockBidiBehavior};
     use serde_json::json;

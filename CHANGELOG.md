@@ -12,6 +12,11 @@ from a copy of its code: entries describe the differences from that release.
 
 ### Changed
 
+- `get_console_logs` answers one line per message by default: `[level]
+  text @ url:line` (lines from 1), repeats in a row folded (`[x3]`),
+  uncaught errors marked (`Uncaught ...`) with up to 5 stack lines
+  indented; `include_details: true` keeps the previous JSON. A page with
+  six messages went from ~550 to ~150 tokens. (#19)
 - `get_network_logs` answers one line per request by default (`id METHOD
   url => status [type]`, oldest first), then one per WebSocket frame with a
   payload preview: ~100 tokens for a page of four requests instead of ~2 250.
@@ -21,6 +26,11 @@ from a copy of its code: entries describe the differences from that release.
 
 ### Fixed
 
+- `get_console_logs` previews objects and arrays as the console shows
+  them (`hello {n: 1, s: 'x'} [1, 2, 3]`): Chrome printed `Object`, Firefox
+  `Object(3) Array(3)`. On Chrome a `console.*` call keeps its location
+  (`url`, `line_number`), which was always empty, and `undefined`
+  arguments are printed. (#19)
 - `get_network_logs` no longer lists the browser's own requests: a freshly
   launched Chrome logged its new-tab page (`chrome://resources/...`, `data:`
   images) before the first navigation. `chrome://`, `devtools://`, `data:`,

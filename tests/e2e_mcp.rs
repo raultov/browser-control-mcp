@@ -31,7 +31,7 @@ mod e2e {
       const root = this.attachShadow({mode: 'open'}); root.innerHTML = '<button id="sb">shadow</button>';
       root.getElementById('sb').onclick = () => { window.__pierced = (window.__pierced || '') + 'shadow;'; }; } });</script>
     <input id="q" value="old"><div id="marker">needle-marker</div>
-    <script>console.log("hello from e2e");</script><script>throw new Error("boom-e2e");</script><script src="/app.js"></script></body></html>"#;
+    <script>console.log("hello from e2e", {n: 1});</script><script>throw new Error("boom-e2e");</script><script src="/app.js"></script></body></html>"#;
     const FRAME: &str = r#"<!doctype html><html><body>
     <button id="fb" onclick="parent.__pierced = (parent.__pierced || '') + 'frame;'">framed</button><input id="fq"></body></html>"#;
     const APP_JS: &str = "function appTarget(x) {\n  const y = x * 2;\n  return y + 1;\n}\nwindow.appTarget = appTarget;\nfetch('/api');\n";
@@ -760,16 +760,16 @@ mod e2e {
         let i = json!(instance);
         vec![
             (
-                "console log",
+                "ISSUE-19 console log: object preview and location",
                 "get_console_logs",
                 json!({"instance_id": i}),
-                "hello from e2e",
+                "[log] hello from e2e {n: 1} @ http",
             ),
             (
-                "console error",
+                "ISSUE-19 console error: uncaught",
                 "get_console_logs",
                 json!({"instance_id": i}),
-                "boom-e2e",
+                "Uncaught Error: boom-e2e",
             ),
             (
                 "ISSUE-18 network: one line per request",

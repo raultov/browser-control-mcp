@@ -1732,7 +1732,8 @@ mod tests {
         let errors = fixture_resources(RDP_RESOURCES_ERROR_MESSAGE);
         rdp.emit_resources("error-message", errors);
         // Then it is listed once, as a javascript error, next to the cookie warning
-        let reply = until_contains(&handler, "get_console_logs", json!({}), "security").await;
+        let details = json!({"include_details": true});
+        let reply = until_contains(&handler, "get_console_logs", details, "security").await;
         let body: Value = serde_json::from_str(&reply).unwrap();
         let messages = body["messages"].as_array().unwrap();
         let script: Vec<&Value> = messages.iter().filter(|m| m["text"] == text).collect();

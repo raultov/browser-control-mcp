@@ -6,7 +6,7 @@ use rust_mcp_sdk::{
 
 #[macros::mcp_tool(
     name = "get_console_logs",
-    description = "Returns the tab's console messages and uncaught exceptions, oldest first: {messages, total, truncated, notes?}. Keeps the last 1000 (10000 characters each), cleared when the tab moves to another site."
+    description = "Returns the tab's console messages and uncaught exceptions, oldest first, one line each: [level] text @ url:line (lines from 1; objects previewed; repeats folded; an error's stack indented under it). include_details: true gives {messages, total, truncated, notes?} as JSON. Keeps the last 1000 (10000 characters each), cleared when the tab moves to another site."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct GetConsoleLogsTool {
@@ -25,6 +25,10 @@ pub struct GetConsoleLogsTool {
     /// Most recent messages to return, 1 to 1000. Default: 200.
     #[serde(default)]
     pub limit: Option<u32>,
+
+    /// Every field (source, timestamp...) as JSON. Default: false (one line per message).
+    #[serde(default)]
+    pub include_details: Option<bool>,
 }
 
 /// Messages returned when the agent gives no `limit`.
@@ -66,6 +70,10 @@ impl GetConsoleLogsTool {
         }
         let notes: Vec<String> = st.take_cleared_note().into_iter().chain(note).collect();
         drop(st);
+        if !self.include_details.unwrap_or(false) {
+            let text = summary(&messages, total, &notes);
+            return CallToolResult::text_content(vec![text.into()]);
+        }
         let mut reply = serde_json::json!({
             "messages": messages,
             "total": total,
@@ -99,6 +107,87 @@ impl GetConsoleLogsTool {
         }
         let log_state = session.log_state(args.tab_id.clone())?;
         Ok(args.report(&log_state, None).await)
+    }
+}
+
+/// Most lines of a message's stack (or other continuation lines) shown.
+const STACK_LINES: usize = 5;
+
+/// Most characters of one line of a message.
+const LINE_MAX_CHARS: usize = 1000;
+
+/// The default reply: a header, then one line per message (repeats in a
+/// row folded), oldest first, then the notes.
+fn summary(messages: &[super::ConsoleMessage], total: usize, notes: &[String]) -> String {
+    let shown = messages.len();
+    let header = if total > shown {
+        format!("{shown} of {total} console message(s), oldest first (raise 'limit' for more):")
+    } else {
+        format!("{shown} console message(s), oldest first:")
+    };
+    let mut lines = vec![header];
+    let mut rest = messages;
+    while let Some(first) = rest.first() {
+        let repeats = rest.iter().take_while(|m| same_message(m, first)).count();
+        lines.push(message_lines(first, repeats));
+        rest = &rest[repeats..];
+    }
+    lines.extend(notes.iter().map(|note| format!("Note: {note}")));
+    lines.join("\n")
+}
+
+/// Whether `a` and `b` are the same message (a repeat).
+fn same_message(a: &super::ConsoleMessage, b: &super::ConsoleMessage) -> bool {
+    (&a.source, &a.level, &a.text, &a.url, a.line_number)
+        == (&b.source, &b.level, &b.text, &b.url, b.line_number)
+}
+
+/// `[level] text @ url:line [xN]`, lines counted from 1, then the rest of
+/// the text (a stack) indented, bounded.
+fn message_lines(message: &super::ConsoleMessage, repeats: usize) -> String {
+    let level = super::canonical_level(&message.level);
+    let mut text = message.text.lines();
+    let first = text.next().unwrap_or_default();
+    // Uncaught: Chrome's exceptions, and Firefox's script errors (its
+    // watcher labels them `javascript`; console.error is `console-api`).
+    let thrown =
+        message.source == "exception" || (message.source == "javascript" && level == "error");
+    let uncaught = if thrown && !first.starts_with("Uncaught") {
+        "Uncaught "
+    } else {
+        ""
+    };
+    let at = match (&message.url, message.line_number) {
+        (Some(url), Some(line)) => format!(" @ {url}:{}", line + 1),
+        (Some(url), None) => format!(" @ {url}"),
+        _ => String::new(),
+    };
+    let times = if repeats > 1 {
+        format!(" [x{repeats}]")
+    } else {
+        String::new()
+    };
+    let first = cut(first, LINE_MAX_CHARS);
+    let mut out = format!("[{level}] {uncaught}{first}{at}{times}");
+    let more: Vec<&str> = text.collect();
+    for line in more.iter().take(STACK_LINES) {
+        out.push_str("\n    ");
+        out.push_str(&cut(line.trim_start(), LINE_MAX_CHARS));
+    }
+    if more.len() > STACK_LINES {
+        let hidden = more.len() - STACK_LINES;
+        out.push_str(&format!(
+            "\n    … {hidden} more line(s) (include_details: true shows them)"
+        ));
+    }
+    out
+}
+
+/// `text` cut at `max` characters with an ellipsis.
+fn cut(text: &str, max: usize) -> String {
+    match text.char_indices().nth(max) {
+        Some((at, _)) => format!("{}…", &text[..at]),
+        None => text.to_string(),
     }
 }
 
@@ -153,7 +242,8 @@ mod tests {
         Arc::new(Mutex::new(state))
     }
 
-    async fn read(state: &Arc<Mutex<LogState>>, args: Value) -> Value {
+    async fn read(state: &Arc<Mutex<LogState>>, mut args: Value) -> Value {
+        args["include_details"] = json!(true);
         let tool: GetConsoleLogsTool = serde_json::from_value(args).unwrap();
         let reply = tool.report(state, None).await;
         serde_json::from_str(&reply.content[0].as_text_content().unwrap().text).unwrap()
@@ -166,6 +256,94 @@ mod tests {
             .iter()
             .map(|m| m["text"].as_str().unwrap())
             .collect()
+    }
+
+    fn message(
+        source: &str,
+        level: &str,
+        text: &str,
+        at: Option<(&str, Option<i64>)>,
+    ) -> ConsoleMessage {
+        ConsoleMessage {
+            source: source.into(),
+            level: level.into(),
+            text: text.into(),
+            timestamp: 0.0,
+            url: at.map(|(url, _)| url.to_string()),
+            line_number: at.and_then(|(_, line)| line),
+            channel: Default::default(),
+        }
+    }
+
+    /// ISSUE-19: by default one line per message, `[level] text @
+    /// url:line` (lines from 1), repeats folded, uncaught errors marked with
+    /// their stack indented, and a header that says when older ones were
+    /// left out.
+    #[tokio::test]
+    async fn default_reply_is_one_line_per_message() {
+        // Given a log, a warning, a 404 twice and an uncaught error
+        let mut state = LogState::default();
+        let app = Some(("http://a/app.js", Some(2)));
+        state.push_message(message("console-api", "log", "hello {n: 1}", app));
+        state.push_message(message("console-api", "warning", "careful", None));
+        for _ in 0..2 {
+            let missing = Some(("http://a/x", None));
+            state.push_message(message(
+                "network",
+                "error",
+                "Failed to load resource: 404",
+                missing,
+            ));
+        }
+        let stack = "Error: boom\n    at f (http://a/app.js:3:5)\n    at g (http://a/app.js:9:1)";
+        state.push_message(message("exception", "error", stack, app));
+        let state = Arc::new(Mutex::new(state));
+        let text = |args: Value| {
+            let state = state.clone();
+            async move {
+                let tool: GetConsoleLogsTool = serde_json::from_value(args).unwrap();
+                let reply = tool.report(&state, None).await;
+                reply.content[0].as_text_content().unwrap().text.clone()
+            }
+        };
+        // When read without options
+        let all = text(json!({})).await;
+        // Then each message is one line (the stack under its error)
+        assert_eq!(
+            all,
+            "5 console message(s), oldest first:\n\
+             [log] hello {n: 1} @ http://a/app.js:3\n\
+             [warning] careful\n\
+             [error] Failed to load resource: 404 @ http://a/x [x2]\n\
+             [error] Uncaught Error: boom @ http://a/app.js:3\n\
+             \x20   at f (http://a/app.js:3:5)\n\
+             \x20   at g (http://a/app.js:9:1)"
+        );
+        // And a limit says how many were left out
+        let last = text(json!({"limit": 1})).await;
+        assert!(
+            last.starts_with("1 of 5 console message(s), oldest first (raise 'limit' for more):\n[error] Uncaught"),
+            "{last}"
+        );
+    }
+
+    /// ISSUE-19: Firefox's script errors (labelled `javascript` by its
+    /// watcher) are marked uncaught like Chrome's exceptions; its other
+    /// messages are not.
+    #[test]
+    fn firefox_script_errors_are_uncaught() {
+        let error = message(
+            "javascript",
+            "error",
+            "ReferenceError: x is not defined",
+            None,
+        );
+        assert_eq!(
+            message_lines(&error, 1),
+            "[error] Uncaught ReferenceError: x is not defined"
+        );
+        let warning = message("javascript", "warning", "unreachable code", None);
+        assert_eq!(message_lines(&warning, 1), "[warning] unreachable code");
     }
 
     /// CON-05: `limit` returns the most recent matches, oldest first, and

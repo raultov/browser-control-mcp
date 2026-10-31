@@ -1,0 +1,159 @@
+[
+  {
+    "method": "log.entryAdded",
+    "params": {
+      "type": "console",
+      "method": "log",
+      "source": {
+        "realm": "8e60325f-13d3-42cc-8a4a-de6fa0dcccd2",
+        "context": "8a8f2cca-8825-488b-b487-f9bc72bc5803",
+        "userContext": "default"
+      },
+      "args": [
+        {
+          "type": "string",
+          "value": "hello from page"
+        },
+        {
+          "type": "object",
+          "value": [
+            [
+              "n",
+              {
+                "type": "number",
+                "value": 1
+              }
+            ],
+            [
+              "s",
+              {
+                "type": "string",
+                "value": "x"
+              }
+            ],
+            [
+              "nested",
+              {
+                "type": "object",
+                "value": [
+                  [
+                    "deep",
+                    {
+                      "type": "boolean",
+                      "value": true
+                    }
+                  ]
+                ]
+              }
+            ]
+          ]
+        },
+        {
+          "type": "array",
+          "value": [
+            {
+              "type": "number",
+              "value": 1
+            },
+            {
+              "type": "number",
+              "value": 2
+            },
+            {
+              "type": "number",
+              "value": 3
+            }
+          ]
+        },
+        {
+          "type": "number",
+          "value": 42
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "level": "info",
+      "text": "hello from page Object(3) Array(3) 42 null",
+      "timestamp": 1793449061012,
+      "stackTrace": {
+        "callFrames": [
+          {
+            "columnNumber": 8,
+            "functionName": "",
+            "lineNumber": 0,
+            "url": "http://127.0.0.1:8765/form.html"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "method": "log.entryAdded",
+    "params": {
+      "type": "console",
+      "method": "warn",
+      "source": {
+        "realm": "8e60325f-13d3-42cc-8a4a-de6fa0dcccd2",
+        "context": "8a8f2cca-8825-488b-b487-f9bc72bc5803",
+        "userContext": "default"
+      },
+      "args": [
+        {
+          "type": "string",
+          "value": "careful"
+        }
+      ],
+      "level": "warn",
+      "text": "careful",
+      "timestamp": 1793449061020,
+      "stackTrace": {
+        "callFrames": [
+          {
+            "columnNumber": 99,
+            "functionName": "",
+            "lineNumber": 0,
+            "url": "http://127.0.0.1:8765/form.html"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "method": "log.entryAdded",
+    "params": {
+      "type": "console",
+      "method": "error",
+      "source": {
+        "realm": "8e60325f-13d3-42cc-8a4a-de6fa0dcccd2",
+        "context": "8a8f2cca-8825-488b-b487-f9bc72bc5803",
+        "userContext": "default"
+      },
+      "args": [
+        {
+          "type": "error",
+          "value": {}
+        }
+      ],
+      "level": "error",
+      "text": "Error: boom-error",
+      "timestamp": 1793449061020,
+      "stackTrace": {
+        "callFrames": [
+          {
+            "columnNumber": 141,
+            "functionName": "",
+            "lineNumber": 0,
+            "url": "http://127.0.0.1:8765/form.html"
+          },
+          {
+            "columnNumber": 126,
+            "functionName": "",
+            "lineNumber": 0,
+            "url": "http://127.0.0.1:8765/form.html"
+          }
+        ]
+      }
+    }
+  }
+]
