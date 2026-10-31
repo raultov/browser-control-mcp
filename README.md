@@ -1,5 +1,7 @@
 # browser-control-mcp
 
+[![Discord](https://img.shields.io/discord/1566088811354656778?label=Discord&logo=discord)](https://discord.gg/JDfcmD73A)
+
 **Browser Control MCP** lets an AI agent control **and debug** real browsers
 at runtime: breakpoints, pause on load, call frames, evaluation in a paused
 frame, stepping and script search on **Chrome (CDP)** and **Firefox
