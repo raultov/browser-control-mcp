@@ -1,4 +1,4 @@
-use crate::handler::McpHandler;
+use crate::handler::{McpHandler, insights};
 use rust_mcp_sdk::{
     macros,
     schema::{CallToolError, CallToolRequestParams, CallToolResult},
@@ -9,7 +9,7 @@ use tokio::sync::mpsc;
 
 #[macros::mcp_tool(
     name = "profile_page_performance",
-    description = "Traces the page for duration_ms and returns FCP, LCP, DCL, Load, total blocking time and the top 5 long tasks; 'action': reload with disable_cache measures a cold load. On Firefox: partial, no trace (vitals from the Web Performance APIs; blocking time and long tasks are null, with notes)."
+    description = "Traces the page for duration_ms and returns FCP, LCP, DCL, Load, total blocking time and the top 5 long tasks; 'action': reload with disable_cache measures a cold load; 'insights': true adds what explains them, with findings. On Firefox: partial, no trace (vitals from the Web Performance APIs; blocking time, long tasks, layout shifts and render-blocking requests are null, with notes)."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct ProfilePagePerformanceTool {
@@ -28,6 +28,10 @@ pub struct ProfilePagePerformanceTool {
     /// Bypass the cache while tracing. Default: false.
     #[serde(default)]
     pub disable_cache: Option<bool>,
+
+    /// Add what explains the numbers (LCP element and breakdown, layout shifts, render-blocking and slowest requests, scripts of long frames, findings). Default: false.
+    #[serde(default)]
+    pub insights: Option<bool>,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -71,40 +75,15 @@ impl ProfilePagePerformanceTool {
         let args: ProfilePagePerformanceTool = crate::handler::parse_args(params)?;
         let session = handler.session(args.instance_id.clone()).await?;
         let target = session.target(args.tab_id.clone()).await?;
-        let duration = args.duration_ms.unwrap_or(3000).clamp(500, 15000);
-        let disable_cache = args.disable_cache.unwrap_or(false);
-
-        if disable_cache {
-            set_cache_disabled(&target, true).await;
-        }
         // The completion channel lives in the tab's tracing state, matching
         // where the tracing listener pumps Tracing.tracingComplete for that tab.
-        let (tx, mut rx) = mpsc::channel(1);
         let tracing_state = session.tracing_state(args.tab_id.clone())?;
-        tracing_state.lock().await.completion_channel = Some(tx);
-
-        let reload = args.action.as_deref() == Some("reload");
-        // As a String: the error type is not `Send` across the next awaits.
-        let recorded = record(&target, &mut rx, (duration, reload, disable_cache))
+        let duration = args.duration_ms.unwrap_or(3000).clamp(500, 15000);
+        let raw_json_data = traced(&target, &tracing_state, &args, duration)
             .await
-            .map_err(|e| e.to_string());
-        let raw_json_data = match &recorded {
-            Ok(handle) => read_stream(&target, handle).await,
-            Err(_) => String::new(),
-        };
-        // Restored on every path, failures included.
-        tracing_state.lock().await.completion_channel = None;
-        if disable_cache {
-            set_cache_disabled(&target, false).await;
-        }
-        recorded.map_err(CallToolError::from_message)?;
+            .map_err(CallToolError::from_message)?;
         let summary = Self::analyze_trace(&raw_json_data, duration);
-        let result_json = serde_json::to_value(&summary).unwrap_or_default();
-        Ok(CallToolResult::text_content(vec![
-            serde_json::to_string_pretty(&result_json)
-                .unwrap_or_default()
-                .into(),
-        ]))
+        reply(&target, &summary, args.insights.unwrap_or(false)).await
     }
 
     fn analyze_trace(raw_json: &str, duration_ms: u64) -> PerformanceSummary {
@@ -146,6 +125,52 @@ impl ProfilePagePerformanceTool {
         summary.top_long_tasks = long_tasks;
         summary
     }
+}
+
+/// Traces the page for `duration` ms (reloading and bypassing the cache as
+/// `args` say) and returns the raw trace. The cache and the completion
+/// channel are restored on every path, failures included. Errors are text:
+/// the tool error type is not `Send` across the awaits.
+async fn traced(
+    target: &Target,
+    tracing_state: &std::sync::Arc<tokio::sync::Mutex<super::TracingState>>,
+    args: &ProfilePagePerformanceTool,
+    duration: u64,
+) -> Result<String, String> {
+    let disable_cache = args.disable_cache.unwrap_or(false);
+    if disable_cache {
+        set_cache_disabled(target, true).await;
+    }
+    let (tx, mut rx) = mpsc::channel(1);
+    tracing_state.lock().await.completion_channel = Some(tx);
+    let reload = args.action.as_deref() == Some("reload");
+    let recorded = record(target, &mut rx, (duration, reload, disable_cache))
+        .await
+        .map_err(|e| e.to_string());
+    let raw_json_data = match &recorded {
+        Ok(handle) => read_stream(target, handle).await,
+        Err(_) => String::new(),
+    };
+    tracing_state.lock().await.completion_channel = None;
+    if disable_cache {
+        set_cache_disabled(target, false).await;
+    }
+    recorded.map(|_| raw_json_data)
+}
+
+/// The reply: the summary, with the page's insights when asked for.
+async fn reply(
+    target: &Target,
+    summary: &PerformanceSummary,
+    with_insights: bool,
+) -> Result<CallToolResult, CallToolError> {
+    let mut result_json = serde_json::to_value(summary).unwrap_or_default();
+    if with_insights {
+        let found = crate::handler::snippet_value(target, insights::SNIPPET).await?;
+        result_json["insights"] = insights::annotate(found);
+    }
+    let text = serde_json::to_string_pretty(&result_json).unwrap_or_default();
+    Ok(CallToolResult::text_content(vec![text.into()]))
 }
 
 /// Starts tracing, optionally reloads, waits `duration` ms, stops, and

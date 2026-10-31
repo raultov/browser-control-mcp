@@ -1,0 +1,58 @@
+{
+  "cls": null,
+  "document": {
+    "decoded_body_size": 416005,
+    "encoded_body_size": 67721,
+    "redirect_ms": 0,
+    "server_ms": 29,
+    "transfer_size": 68021,
+    "ttfb_ms": 100
+  },
+  "lcp": {
+    "breakdown": {
+      "load_delay_ms": 212,
+      "load_duration_ms": 28,
+      "render_delay_ms": 27,
+      "ttfb_ms": 100
+    },
+    "element": "img#mwDQ",
+    "size": 40750,
+    "time_ms": 367,
+    "url": "https://thumb.wikimedia.org/wikipedia/commons/thumb/b/ba/Safari_15.png/250px-Safari_15.png?utm_source=en.wikipedia.org&utm_campaign=parser&utm_conten…"
+  },
+  "lcp_supported": true,
+  "long_scripts": null,
+  "render_blocking": null,
+  "slowest_resources": [
+    {
+      "duration_ms": 195,
+      "transfer_size": 1613,
+      "type": "other",
+      "url": "https://en.wikipedia.org/static/apple-touch/wikipedia.png"
+    },
+    {
+      "duration_ms": 195,
+      "transfer_size": 1335,
+      "type": "other",
+      "url": "https://en.wikipedia.org/static/favicon/wikipedia.ico"
+    },
+    {
+      "duration_ms": 169,
+      "transfer_size": 300,
+      "type": "other",
+      "url": "https://en.wikipedia.org/ins-502b/v2/events?hasty=true"
+    },
+    {
+      "duration_ms": 103,
+      "transfer_size": 0,
+      "type": "script",
+      "url": "https://en.wikipedia.org/wiki/Special:CentralAutoLogin/start?useformat=desktop&type=script&usesul3=1"
+    },
+    {
+      "duration_ms": 101,
+      "transfer_size": 300,
+      "type": "css",
+      "url": "https://upload.wikimedia.org/wikipedia/commons/d/d6/Lock-gray-alt-2.svg"
+    }
+  ]
+}

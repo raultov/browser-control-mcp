@@ -10,6 +10,19 @@ from a copy of its code: entries describe the differences from that release.
 
 ## [Unreleased]
 
+### Added
+
+- `profile_page_performance` takes `insights: true`: what explains the
+  numbers, read in the page with the Web Performance APIs on both browsers:
+  the document's TTFB, server time and compression, the LCP element with
+  its breakdown (TTFB, load delay, load, render delay), layout-shift
+  culprits, render-blocking requests, the slowest requests and the scripts
+  of long animation frames (at most 5 each), and `findings` from the web.dev
+  thresholds (LCP over 2.5 s, CLS over 0.1, a slow server, an uncompressed
+  document, render-blocking requests). Firefox reports no layout shifts,
+  render-blocking status or long frames: those are `null`, with notes. The
+  reply grows from ~60 to ~600-700 tokens on Wikipedia. (#22)
+
 ### Changed
 
 - `click_element`, `hover`, `fill_input`, `fill_form` and `press_key` wait

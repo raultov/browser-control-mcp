@@ -6,7 +6,7 @@
 use super::page;
 use crate::handler::cdp_domains::performance::get_performance_metrics::GetPerformanceMetricsTool;
 use crate::handler::cdp_domains::tracing::profile_page_performance::ProfilePagePerformanceTool;
-use crate::handler::{McpHandler, parse_args};
+use crate::handler::{McpHandler, insights, parse_args};
 use rust_mcp_sdk::schema::{CallToolError, CallToolRequestParams, CallToolResult};
 use serde_json::{Value, json};
 
@@ -55,7 +55,11 @@ pub(crate) async fn profile(params: CallToolRequestParams, handler: &McpHandler)
     }
     tokio::time::sleep(std::time::Duration::from_millis(duration)).await;
     let vitals = page::run_snippet(&tab.tab, crate::util::js::PAGE_VITALS).await?;
-    let summary = summary(&vitals, duration);
+    let mut summary = summary(&vitals, duration);
+    if args.insights.unwrap_or(false) {
+        let found = page::run_snippet(&tab.tab, insights::SNIPPET).await?;
+        summary["insights"] = insights::annotate(found);
+    }
     Ok(CallToolResult::text_content(vec![
         serde_json::to_string_pretty(&summary)
             .unwrap_or_default()
@@ -117,6 +121,49 @@ mod tests {
         assert!(note.contains("JSHeapUsedSize"), "{note}");
         let sent = &mock.bidi().commands_named("script.evaluate")[0].params;
         assert_eq!(sent["expression"], crate::util::js::PAGE_METRICS);
+        ts::stop(&handler).await;
+    }
+
+    /// ISSUE-22: `insights: true` adds the page's insights, with notes
+    /// for what Firefox does not report; without it they are not read.
+    #[tokio::test]
+    async fn firefox_profile_with_insights() {
+        // Given a page whose snippets answer vitals and insights
+        let mock = MockFirefox::start(false).await.unwrap();
+        mock.bidi().respond_with("script.evaluate", |params| {
+            let expression = params["expression"].as_str().unwrap_or_default();
+            let value: Value = if expression.contains("long-animation-frame") {
+                serde_json::from_str(include_str!(
+                    "../../../tests/fixtures/insights/firefox-wikipedia.json"
+                ))
+                .unwrap()
+            } else {
+                json!({"dom_content_loaded_ms": 120.5, "lcp_supported": true})
+            };
+            evaluate_success(ts::remote(&value))
+        });
+        let handler = ts::handler(&mock);
+        // When it profiles with insights
+        let args = json!({"duration_ms": 500, "insights": true});
+        let reply = profile(ts::call("profile_page_performance", args), &handler)
+            .await
+            .unwrap();
+        // Then the insights come with what Firefox does not report
+        let body: Value = serde_json::from_str(&ts::text(&reply)).unwrap();
+        assert_eq!(body["insights"]["lcp"]["element"], "img#mwDQ");
+        let notes = body["insights"]["notes"].as_array().unwrap();
+        assert!(
+            notes[0].as_str().unwrap().starts_with("cls is null"),
+            "{body}"
+        );
+        // And without insights the snippet is not run
+        let args = json!({"duration_ms": 500});
+        let reply = profile(ts::call("profile_page_performance", args), &handler)
+            .await
+            .unwrap();
+        let body: Value = serde_json::from_str(&ts::text(&reply)).unwrap();
+        assert!(body.get("insights").is_none(), "{body}");
+        assert_eq!(mock.bidi().commands_named("script.evaluate").len(), 3);
         ts::stop(&handler).await;
     }
 

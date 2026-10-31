@@ -954,6 +954,23 @@ mod e2e {
         ]
     }
 
+    /// ISSUE-22: insights explain the profile: Chrome lists the
+    /// render-blocking requests, Firefox notes it cannot.
+    fn insights_step(browser: &str) -> Step {
+        let args = json!({"instance_id": "e2e", "duration_ms": 500, "insights": true});
+        let expected = if browser == "chrome" {
+            "\"render_blocking\": ["
+        } else {
+            "render_blocking is null: this browser does not say"
+        };
+        (
+            "ISSUE-22 profile_page_performance insights",
+            "profile_page_performance",
+            args,
+            expected,
+        )
+    }
+
     /// Steps 13–15: tracing and pause on load (Chrome only; Firefox
     /// answers a capability error), then close.
     fn closing_steps(browser: &str) -> Vec<Step> {
@@ -974,6 +991,7 @@ mod e2e {
                     reload,
                     "first_contentful_paint_ms",
                 ),
+                insights_step(browser),
                 (
                     "pause_on_load",
                     "pause_on_load",
@@ -990,6 +1008,7 @@ mod e2e {
                 profile,
                 "profile_duration_ms",
             ),
+            insights_step(browser),
             (
                 "pause_on_load",
                 "pause_on_load",
