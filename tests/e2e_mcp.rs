@@ -999,6 +999,51 @@ mod e2e {
         ]
     }
 
+    /// ISSUE-31: navigate moves back and forward in the tab's history and
+    /// ends on the test page; past the last entry it fails without moving.
+    fn history_steps(instance: &str, base: &str) -> Vec<Step> {
+        let i = json!(instance);
+        let step = |history: &str| json!({"instance_id": i, "history": history});
+        vec![
+            (
+                "ISSUE-31 navigate to another page",
+                "navigate",
+                json!({"instance_id": i, "url": format!("{base}/frame.html")}),
+                "Navigated to",
+            ),
+            (
+                "ISSUE-31 history back",
+                "navigate",
+                step("back"),
+                "Went back to",
+            ),
+            (
+                "ISSUE-31 history forward",
+                "navigate",
+                step("forward"),
+                "Went forward to",
+            ),
+            (
+                "ISSUE-31 no next page",
+                "navigate",
+                step("forward"),
+                "!no next page",
+            ),
+            (
+                "ISSUE-31 back to the test page",
+                "navigate",
+                step("back"),
+                "Went back to",
+            ),
+            (
+                "ISSUE-31 the test page is loaded",
+                "evaluate_js",
+                json!({"instance_id": i, "expression": "!!document.getElementById('go') && document.readyState"}),
+                "complete",
+            ),
+        ]
+    }
+
     /// Breakpoint pause, frame evaluation, step, resume, script search.
     fn debugger_steps(instance: &str, base: &str) -> Vec<Step> {
         let i = json!(instance);
@@ -1211,6 +1256,7 @@ mod e2e {
             observation_steps("e2e"),
             network_steps("e2e"),
             websocket_steps("e2e", &base),
+            history_steps("e2e", &base),
             debugger_steps("e2e", &base),
             closing_steps(browser),
         ];
@@ -1298,6 +1344,7 @@ mod e2e {
             storage_steps("default"),
             emulate_steps("default", variable.contains("CHROME")),
             network_steps("default"),
+            history_steps("default", &base),
             debugger_steps("default", &base),
         ];
         mcp.steps(all.concat()).await;

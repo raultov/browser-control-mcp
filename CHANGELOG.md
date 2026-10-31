@@ -12,6 +12,13 @@ from a copy of its code: entries describe the differences from that release.
 
 ### Added
 
+- `navigate` takes `history: "back"` or `"forward"` instead of `url`: it
+  moves one entry in the tab's history and waits for that page to load,
+  answering like a URL navigation (`Went back to <url>.`). A page restored
+  from the back-forward cache, or an entry of the same document
+  (`pushState`), answers at once; at either end of the history it fails
+  without moving. Before, going back took `evaluate_js` with
+  `history.back()`, which answered before the page loaded. (#31)
 - `capture_screenshot` takes a `selector` and captures only that element
   (CSS, `host >>> inner` into shadow roots and iframes, or a snapshot ref):
   scrolled into view, clipped to its box, whole even when taller than the

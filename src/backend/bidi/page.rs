@@ -5,6 +5,7 @@ use super::remote_value;
 use crate::backend::error::BackendError;
 use crate::handler::cdp_domains::input::click_element::ClickOptions;
 use crate::handler::cdp_domains::input::keys;
+use crate::handler::cdp_domains::page::navigate::HistoryStep;
 use crate::handler::cdp_domains::page::wait_for::CheckError;
 use crate::handler::evaluation::{self, Evaluation, exception_message};
 use crate::handler::interruption::Interruption;
@@ -101,6 +102,33 @@ async fn not_loaded(tab: &Tab, requested: &str) -> NavigationOutcome {
     let mut outcome = settled(tab, json!({}), requested).await;
     outcome.notes.push(NOT_LOADED_NOTE.to_string());
     outcome
+}
+
+/// `browsingContext.traverseHistory` one entry `step`, then waits (within
+/// [`LOAD_TIMEOUT`]) for the document to finish loading: Firefox answers
+/// once the entry is committed, before `load`, and a page restored from
+/// the back-forward cache fires none.
+pub(crate) async fn traverse(
+    tab: &Tab,
+    step: HistoryStep,
+) -> Result<NavigationOutcome, BackendError> {
+    let deadline = tokio::time::Instant::now() + LOAD_TIMEOUT;
+    let method = "browsingContext.traverseHistory";
+    let params = json!({"context": tab.context_id(), "delta": step.delta()});
+    unless_prompt(tab, method, tab.send_raw_command(method, params))
+        .await?
+        .map_err(|e| match e {
+            BidiError::ProtocolError { error, .. } if error == "no such history entry" => {
+                BackendError::InvalidArgument(step.missing())
+            }
+            other => protocol_error(method, &other),
+        })?;
+    let loaded = tokio::time::timeout_at(deadline, evaluate(tab, crate::util::js::LOADED)).await;
+    let mut outcome = settled(tab, json!({}), "").await;
+    if !matches!(loaded, Ok(Ok(_))) {
+        outcome.notes.push(NOT_LOADED_NOTE.to_string());
+    }
+    Ok(outcome)
 }
 
 /// `browsingContext.reload` waiting for `load`.

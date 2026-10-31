@@ -14,7 +14,7 @@ use tokio::sync::Mutex;
 
 #[macros::mcp_tool(
     name = "navigate",
-    description = "Loads a URL in the tab and waits for load (at most 30 s). Returns {url (after redirects), tab_id, browser, status?, notes?}; a network error or a download fails with 'Navigation failed: <reason> (<url>)'. With --local only local addresses are allowed. Note: copy_cookies imports the user's real Chrome cookies: ask the user first. On a running instance it relaunches it, closing its tabs: the call first fails listing them, then re-issue it with confirm_restart: true."
+    description = "Loads a URL in the tab, or goes back or forward in its history ('history' instead of 'url'), and waits for load (at most 30 s). Returns {url (after redirects), tab_id, browser, status?, notes?}; a network error or a download fails with 'Navigation failed: <reason> (<url>)'. With --local only local addresses are allowed. Note: copy_cookies imports the user's real Chrome cookies: ask the user first. On a running instance it relaunches it, closing its tabs: the call first fails listing them, then re-issue it with confirm_restart: true."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct NavigateTool {
@@ -22,8 +22,10 @@ pub struct NavigateTool {
     pub instance_id: Option<String>,
     /// Tab id; omit for the active tab.
     pub tab_id: Option<String>,
-    /// Absolute URL (http, https or file).
-    pub url: String,
+    /// Absolute URL (http, https or file). Omit it to move in the tab's history with 'history'.
+    pub url: Option<String>,
+    /// 'back' or 'forward' in the tab's history, instead of a 'url'.
+    pub history: Option<HistoryStep>,
     /// Import cookies from the user's Chrome profile (needs --allow-cookie-import; Chrome only).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub copy_cookies: Option<bool>,
@@ -35,18 +37,80 @@ pub struct NavigateTool {
     pub confirm_restart: Option<bool>,
 }
 
+/// A move in the tab's history: one entry back or forward.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema,
+)]
+pub enum HistoryStep {
+    /// The previous entry.
+    #[serde(rename = "back")]
+    Back,
+    /// The next entry.
+    #[serde(rename = "forward")]
+    Forward,
+}
+
+impl HistoryStep {
+    /// The history offset: -1 back, 1 forward.
+    pub(crate) fn delta(self) -> i64 {
+        match self {
+            Self::Back => -1,
+            Self::Forward => 1,
+        }
+    }
+
+    /// The reply's opening words, before the URL arrived at.
+    pub(crate) fn went(self) -> &'static str {
+        match self {
+            Self::Back => "Went back to",
+            Self::Forward => "Went forward to",
+        }
+    }
+
+    /// The error when there is no entry that way.
+    pub(crate) fn missing(self) -> String {
+        let page = match self {
+            Self::Back => "previous",
+            Self::Forward => "next",
+        };
+        format!("There is no {page} page in the tab's history; nothing moved.")
+    }
+}
+
+/// Where a `navigate` call goes.
+pub(crate) enum Destination<'a> {
+    /// A URL to load.
+    Url(&'a str),
+    /// One entry back or forward in the tab's history.
+    History(HistoryStep),
+}
+
 impl NavigateTool {
+    /// The URL or the history move this call asks for (exactly one).
+    pub(crate) fn destination(&self) -> Result<Destination<'_>, CallToolError> {
+        match (self.url.as_deref(), self.history) {
+            (Some(url), None) => Ok(Destination::Url(url)),
+            (None, Some(step)) => Ok(Destination::History(step)),
+            _ => Err(CallToolError::from_message(
+                "Pass either 'url' or 'history' ('back' or 'forward'), not both.",
+            )),
+        }
+    }
+
     pub async fn handle(
         params: CallToolRequestParams,
         handler: &McpHandler,
     ) -> Result<CallToolResult, CallToolError> {
         let args: NavigateTool = crate::handler::parse_args(params)?;
+        let destination = args.destination()?;
         let session = handler.session(args.instance_id.clone()).await?;
 
-        if handler.flags.local && !is_local_address(&args.url) {
+        if let Destination::Url(url) = destination
+            && handler.flags.local
+            && !is_local_address(url)
+        {
             return Err(CallToolError::from_message(format!(
-                "Navigation to '{}' is blocked. This MCP server is running with the 'local' argument, which restricts navigation to local addresses only (localhost, 127.0.0.1, 192.168.x.x, or *.local). To allow navigation to external addresses, restart the MCP server without the 'local' argument.",
-                args.url
+                "Navigation to '{url}' is blocked. This MCP server is running with the 'local' argument, which restricts navigation to local addresses only (localhost, 127.0.0.1, 192.168.x.x, or *.local). To allow navigation to external addresses, restart the MCP server without the 'local' argument."
             )));
         }
         if args.copy_cookies == Some(true) {
@@ -54,9 +118,18 @@ impl NavigateTool {
         }
         let target = session.target(args.tab_id.clone()).await?;
         let network = session.network_state(args.tab_id.clone())?;
-        let outcome = navigate_and_wait(&target, &network, &args.url).await?;
+        let (outcome, went) = match destination {
+            Destination::Url(url) => (
+                navigate_and_wait(&target, &network, url).await?,
+                "Navigated to",
+            ),
+            Destination::History(step) => (
+                traverse_and_wait(&target, &network, step).await?,
+                step.went(),
+            ),
+        };
         let tab_id = session.tab_id_of(args.tab_id.as_deref());
-        Ok(outcome.reply(&format!("Navigated to {}.", outcome.url), tab_id.as_deref()))
+        Ok(outcome.reply(&format!("{went} {}.", outcome.url), tab_id.as_deref()))
     }
 
     /// Seeds the instance's profile with the user's cookies: on the next
@@ -149,6 +222,59 @@ pub(crate) async fn navigate_and_wait(
     let loaded = browser.get("loaderId").is_none() || wait_for_load(&mut page_events).await;
     let outcome = finish(target, url, browser, loaded).await;
     Ok(with_status(outcome, target, network).await)
+}
+
+/// Moves `target` one entry `step` in its history and waits (at most
+/// [`LOAD_TIMEOUT`]) for the entry's document to be committed, then for it
+/// to finish loading ([`crate::util::js::LOADED`]): a page restored from
+/// the back-forward cache fires no `load`, and an entry of the same
+/// document (`pushState`, a fragment) only `navigatedWithinDocument`.
+async fn traverse_and_wait(
+    target: &CdpTarget,
+    network: &Mutex<NetworkState>,
+    step: HistoryStep,
+) -> Result<NavigationOutcome, CallToolError> {
+    let failure = "CDP Error";
+    let history = crate::handler::send_or(target, "Page.getNavigationHistory", json!({}), failure)
+        .await?
+        .result
+        .unwrap_or_default();
+    let index = history["currentIndex"].as_i64().unwrap_or_default() + step.delta();
+    let entry = usize::try_from(index)
+        .ok()
+        .and_then(|index| history["entries"].get(index))
+        .ok_or_else(|| CallToolError::from_message(step.missing()))?;
+    let url = entry["url"].as_str().unwrap_or_default().to_string();
+    // Subscribed first: the commit can come before the reply is read.
+    let mut page_events = target.on_domain("Page");
+    let deadline = tokio::time::Instant::now() + LOAD_TIMEOUT;
+    let move_to = json!({"entryId": entry["id"]});
+    crate::handler::send_or(target, "Page.navigateToHistoryEntry", move_to, failure).await?;
+    let loaded = load_before(&mut page_events, deadline, is_commit).await
+        && document_loaded(target, deadline).await;
+    let outcome = finish(target, &url, json!({}), loaded).await;
+    Ok(with_status(outcome, target, network).await)
+}
+
+/// Whether `event` commits a new document in the top frame, or moves
+/// within the current one.
+fn is_commit(event: &cdp_browser_lite::CdpResult<cdp_browser_lite::WsResponse>) -> bool {
+    event.as_ref().is_ok_and(|e| match e.method.as_deref() {
+        Some("Page.navigatedWithinDocument") => true,
+        Some("Page.frameNavigated") => e
+            .params
+            .as_ref()
+            .is_some_and(|p| p.pointer("/frame/parentId").is_none()),
+        _ => false,
+    })
+}
+
+/// Whether the tab's document finished loading before `deadline`.
+async fn document_loaded(target: &CdpTarget, deadline: tokio::time::Instant) -> bool {
+    let params =
+        json!({"expression": crate::util::js::LOADED, "awaitPromise": true, "returnByValue": true});
+    let wait = target.send_raw_command("Runtime.evaluate", params);
+    matches!(tokio::time::timeout_at(deadline, wait).await, Ok(Ok(_)))
 }
 
 /// Fails on the `errorText` of a `Page.navigate` reply, saying so for a
@@ -324,7 +450,7 @@ mod tests {
             "url": "https://example.com"
         }));
         assert!(tool.is_ok());
-        assert_eq!(tool.unwrap().url, "https://example.com");
+        assert_eq!(tool.unwrap().url.as_deref(), Some("https://example.com"));
     }
 
     use crate::handler::cdp_domains::tests::{
@@ -337,6 +463,91 @@ mod tests {
     fn body(reply: &CallToolResult) -> Value {
         let text = reply_text(reply);
         serde_json::from_str(&text[text.find('{').unwrap()..]).unwrap()
+    }
+
+    /// A tab two entries long whose current entry is `current` (0 or 1);
+    /// after `Page.navigateToHistoryEntry` the entry it named is current.
+    fn two_entry_history(
+        mock: &'static cdp_browser_lite::test_support::mock_devtools::MockDevTools,
+        current: u64,
+    ) {
+        let index = Arc::new(std::sync::atomic::AtomicU64::new(current));
+        let read = index.clone();
+        mock.respond_with("Page.getNavigationHistory", move |_| {
+            let current = read.load(std::sync::atomic::Ordering::SeqCst);
+            let entries = [(7, "http://127.0.0.1:8/one"), (8, "http://127.0.0.1:8/two")]
+                .map(|(id, url)| json!({"id": id, "url": url}));
+            json!({"currentIndex": current, "entries": entries})
+        });
+        mock.respond_with("Page.navigateToHistoryEntry", move |params| {
+            let id = params["entryId"].as_u64().unwrap_or_default();
+            index.store(id - 7, std::sync::atomic::Ordering::SeqCst);
+            json!({})
+        });
+        mock.respond_with(
+            "Runtime.evaluate",
+            |_| json!({"result": {"result": {"type": "boolean", "value": true}}}),
+        );
+        let committed = json!({"frame": {"id": "F1", "loaderId": "L7", "url": "", "securityOrigin": "", "mimeType": "text/html"}, "type": "Navigation"});
+        fire_events_after(
+            mock,
+            "Page.navigateToHistoryEntry",
+            vec![("Page.frameNavigated", committed)],
+        );
+    }
+
+    /// ISSUE-31: history 'back' moves to the previous entry, waits for the
+    /// new document and answers like a URL navigation.
+    #[tokio::test]
+    async fn history_back_goes_to_the_previous_entry() {
+        // Given a tab on its second entry
+        let mock = spawn_recording_mock().await;
+        two_entry_history(mock, 1);
+        let handler = mock_handler(mock.http_port);
+        // When it goes back
+        let args = json!({"history": "back"});
+        let reply = NavigateTool::handle(call("navigate", args), &handler)
+            .await
+            .unwrap();
+        // Then the first entry is loaded and reported
+        let sent = &mock.commands_named("Page.navigateToHistoryEntry")[0].params;
+        assert_eq!(sent["entryId"], 7);
+        assert!(
+            reply_text(&reply).starts_with("Went back to http://127.0.0.1:8/one."),
+            "{}",
+            reply_text(&reply)
+        );
+        assert!(body(&reply).get("notes").is_none(), "{}", body(&reply));
+    }
+
+    /// ISSUE-31: at the last entry 'forward' fails without moving; a call
+    /// with both or neither of url and history fails too.
+    #[tokio::test]
+    async fn history_at_its_end_does_not_move() {
+        let mock = spawn_recording_mock().await;
+        two_entry_history(mock, 1);
+        let handler = mock_handler(mock.http_port);
+        let forward = json!({"history": "forward"});
+        let error = NavigateTool::handle(call("navigate", forward), &handler)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("no next page"), "{error}");
+        for args in [
+            json!({}),
+            json!({"url": "http://127.0.0.1:8/x", "history": "back"}),
+        ] {
+            let error = NavigateTool::handle(call("navigate", args), &handler)
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("either 'url' or 'history'"), "{error}");
+        }
+        assert!(
+            mock.commands_named("Page.navigateToHistoryEntry")
+                .is_empty()
+        );
+        assert!(mock.commands_named("Page.navigate").is_empty());
     }
 
     /// NAV-01 / NAV-02: navigate waits for `load` and answers the final URL

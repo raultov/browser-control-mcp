@@ -162,6 +162,12 @@ const ELEMENT_BOX: &str = "el.scrollIntoView({ behavior: 'instant', block: 'cent
     } \
     return { status: 'ok', x: x + win.scrollX, y: y + win.scrollY, width: r.width, height: r.height };";
 
+/// Resolves once the document has finished loading (`readyState`
+/// `complete`): after a move in the history the new document is committed
+/// but may still load, and one restored from the back-forward cache fires
+/// no `load` (it is already complete).
+pub const LOADED: &str = "document.readyState === 'complete' || new Promise(resolve => addEventListener('load', () => resolve(true), { once: true }))";
+
 /// What `fill_form` does with the element `selector` names:
 /// `{status: 'missing'}`, `{status: 'box', checked}` for a checkbox or
 /// radio (it is clicked when its state differs), or `{status: 'field'}`

@@ -23,7 +23,7 @@ use crate::handler::cdp_domains::log::get_console_logs::GetConsoleLogsTool;
 use crate::handler::cdp_domains::network::get_network_logs::{self, GetNetworkLogsTool};
 use crate::handler::cdp_domains::page::capture_screenshot::{self, CaptureScreenshotTool};
 use crate::handler::cdp_domains::page::emulate::EmulateTool;
-use crate::handler::cdp_domains::page::navigate::NavigateTool;
+use crate::handler::cdp_domains::page::navigate::{Destination, HistoryStep, NavigateTool};
 use crate::handler::cdp_domains::page::save_pdf::SavePdfTool;
 use crate::handler::cdp_domains::page::scroll::ScrollTool;
 use crate::handler::cdp_domains::page::wait_for::WaitForTool;
@@ -112,20 +112,41 @@ fn check_local(handler: &McpHandler, url: &str) -> Result<(), CallToolError> {
 /// `navigate`.
 pub(crate) async fn navigate(params: CallToolRequestParams, handler: &McpHandler) -> ToolResult {
     let args: NavigateTool = parse_args(params)?;
-    check_local(handler, &args.url)?;
+    // Bound first: the call's error is not Send, so it must not live across an await.
+    let destination = args.destination()?;
+    let url = match destination {
+        Destination::History(step) => return traverse_history(handler, &args, step).await,
+        Destination::Url(url) => url.to_string(),
+    };
+    check_local(handler, &url)?;
     let (session, id, tab) = target(handler, &ids(&args.instance_id, &args.tab_id)).await?;
-    let navigation = page::navigate(&tab.tab, &args.url);
+    let navigation = page::navigate(&tab.tab, &url);
     let outcome = unless_paused(&session, &id, "navigate", navigation).await?;
-    let document = navigation_document(&tab, &outcome, &args.url).await;
+    let document = navigation_document(&tab, &outcome, &url).await;
     if document.as_ref().is_some_and(NetworkRequest::is_attachment) {
         return Err(BackendError::Navigation {
             reason: crate::handler::navigation::DOWNLOAD.to_string(),
-            url: args.url,
+            url,
         }
         .into());
     }
     let outcome = outcome.with_status(document.and_then(|d| d.response_status));
     Ok(outcome.reply(&format!("Navigated to {}.", outcome.url), Some(&id)))
+}
+
+/// `navigate` with `history`: one entry back or forward, reported like a
+/// URL navigation.
+async fn traverse_history(
+    handler: &McpHandler,
+    args: &NavigateTool,
+    step: HistoryStep,
+) -> ToolResult {
+    let (session, id, tab) = target(handler, &ids(&args.instance_id, &args.tab_id)).await?;
+    let traversal = page::traverse(&tab.tab, step);
+    let outcome = unless_paused(&session, &id, "navigate", traversal).await?;
+    let document = navigation_document(&tab, &outcome, &outcome.url).await;
+    let outcome = outcome.with_status(document.and_then(|d| d.response_status));
+    Ok(outcome.reply(&format!("{} {}.", step.went(), outcome.url), Some(&id)))
 }
 
 /// The logged document request of the navigation `outcome` reports (by
@@ -1029,6 +1050,53 @@ mod tests {
             mock.bidi().commands_named("browsingContext.reload")[0].params["wait"],
             "complete"
         );
+        ts::stop(&handler).await;
+    }
+
+    /// ISSUE-31 (Firefox): history 'back' traverses one entry back, waits
+    /// for the document to finish loading and reports its URL; at the
+    /// first entry it fails without moving.
+    #[tokio::test]
+    async fn history_back_traverses_one_entry() {
+        // Given a Firefox tab with a previous page
+        let mock = MockFirefox::start(false).await.unwrap();
+        mock.bidi().respond_with(
+            "browsingContext.traverseHistory",
+            |_| json!({"type": "success", "result": {}}),
+        );
+        mock.bidi().respond_with("browsingContext.getTree", |_| {
+            json!({"contexts": [{"context": "ctx-0", "url": "http://127.0.0.1:8/one", "children": null}]})
+        });
+        page_with_point(&mock, json!(true));
+        let handler = ts::handler(&mock);
+        // When it goes back
+        let reply = navigate(call("navigate", json!({"history": "back"})), &handler)
+            .await
+            .unwrap();
+        // Then one entry back is traversed and reported
+        let sent = &mock
+            .bidi()
+            .commands_named("browsingContext.traverseHistory")[0]
+            .params;
+        assert_eq!(sent, &json!({"context": "ctx-0", "delta": -1}));
+        assert!(ts::text(&reply).starts_with("Went back to http://127.0.0.1:8/one."));
+        assert!(ts::json_of(&reply).get("notes").is_none());
+        ts::stop(&handler).await;
+    }
+
+    /// ISSUE-31 (Firefox): no entry there is a clear error.
+    #[tokio::test]
+    async fn history_without_an_entry_fails() {
+        let mock = MockFirefox::start(false).await.unwrap();
+        mock.bidi().respond_with("browsingContext.traverseHistory", |_| {
+            json!({"type": "error", "error": "no such history entry", "message": "No history entry at delta 1"})
+        });
+        let handler = ts::handler(&mock);
+        let error = navigate(call("navigate", json!({"history": "forward"})), &handler)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("no next page"), "{error}");
         ts::stop(&handler).await;
     }
 
