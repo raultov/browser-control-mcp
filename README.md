@@ -17,6 +17,56 @@ chrome-devtools-mcp with runtime JavaScript debugging on both browsers.
 > replies may change in incompatible ways before 1.0. Please report problems
 > in the [issues](https://github.com/raultov/browser-control-mcp/issues).
 
+💬 Questions, ideas or feedback: join us on [Discord](https://discord.gg/TunAHQZ8K).
+
+## Comparison with Playwright MCP and chrome-devtools-mcp
+
+Measured on 2026-10-31 with browser-control-mcp built from the current
+sources, `@playwright/mcp` 0.0.83 and `chrome-devtools-mcp` 1.12.0, driven by
+the same stdio client through the same tasks on Chrome 156 (headless,
+Linux). Every outcome was checked in the page, not taken from the reply.
+Tokens are estimated as characters / 4 for every server.
+
+**What each one can do**
+
+| | browser-control-mcp | Playwright MCP | chrome-devtools-mcp |
+| --- | --- | --- | --- |
+| JavaScript debugger (breakpoints, call frames, stepping, script search) | **✓ Chrome and Firefox** (pause on load: Chrome) | ✗ | ✗ |
+| Firefox | **✓ next to Chrome, same tools** | ✓ one browser per server | ✗ |
+| Several browsers and instances at once | **✓** | ✗ | ✗ |
+| Selectors | CSS, snapshot refs, `host >>> inner` into shadow roots and iframes | CSS, snapshot refs | snapshot refs only |
+| Snapshot of a long page | **bounded at 50 000 characters**, `find_in_snapshot` searches the rest | unbounded | unbounded |
+| Waits for the page to react after an action | ✓ ~50 ms when nothing reacts | ✓ ~500 ms | ✓ ~200 ms |
+| Clicking a covered or hidden element | **fails at once, naming the overlay** | fails after a 5 s timeout | reports success (the overlay gets the click) |
+| Mock requests, offline mode | ✓ | ✓ | offline only |
+| PDF | ✓ file or inline | ✓ file | ✗ |
+| Cookies and web storage | ✓ values hidden unless asked | ✓ values shown | ✗ |
+| Secrets masked in output (`--secrets`) | ✓ | ✓ | ✗ |
+| Performance | vitals + insights (LCP breakdown, layout shifts, render-blocking, long scripts) | trace file | trace + insights, Lighthouse |
+| Heap snapshots, CSS styles, screencast | ✗ | video, tracing | ✓ |
+| Generates Playwright test code | ✗ | ✓ | ✗ |
+| Telemetry | **none** | none found | usage statistics on by default; traced URLs sent to CrUX |
+| Single native binary (no Node.js) | **✓** | ✗ | ✗ |
+
+**Measured**
+
+| Task | browser-control-mcp | Playwright MCP | chrome-devtools-mcp |
+| --- | --- | --- | --- |
+| Tool list in context, default tools | 6 040 tokens | 5 330 tokens | 7 770 tokens |
+| Tool list in context, every opt-in tool on | 9 500 tokens | 12 040 tokens | not measured (optional categories) |
+| Snapshot of Hacker News | **4 588 tokens** | 12 356 tokens | 6 869 tokens |
+| Snapshot of Wikipedia "Web browser" | **12 643 tokens** (cut, searchable) | 34 349 tokens | 27 656 tokens |
+| Snapshot of MDN `<input>` | **12 625 tokens** (cut, searchable) | 158 077 tokens | 76 654 tokens |
+| Log in step by step (8 calls) | **298 tokens, 1.8 s** | 521 tokens, 2.4 s | 364 tokens, 2.6 s |
+| Log in with `fill_form` (5 calls) | **321 tokens, 1.6 s** | 428 tokens, 1.9 s | 352 tokens, 2.0 s |
+| Click, median | 52 ms | 531 ms | 234 ms |
+| Evaluate JavaScript, median | **0 ms** | 504 ms | 204 ms |
+| Navigate (local page), median | **13 ms** | 31 ms | 119 ms |
+| Full-page screenshot of a 31 700 px page | cut at 16 384 px, with a note | 3.3 MB image in the reply | saved to a file |
+| Navigation to an unknown host | error | error | success with the error in the text |
+| Navigate, then read the console (log, warning, errors) | 249 tokens | 191 tokens | 117 tokens |
+| Navigate, then read the network log (3 requests) | 168 tokens | 48 tokens | 54 tokens |
+
 ## Supported browsers
 
 | Browser | Protocol | Validated with |
