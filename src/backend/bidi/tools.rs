@@ -11,6 +11,9 @@ use crate::handler::cdp_domains::custom::get_custom_events::GetCustomEventsTool;
 use crate::handler::cdp_domains::input::click_element::{
     ClickElementTool, ClickOptions, HOVER_REVEAL, click_point, clicked_reply, covered_at,
 };
+use crate::handler::cdp_domains::input::drag::{
+    DRAG_STEP_PAUSE, DragTool, drag_path, dragged_reply,
+};
 use crate::handler::cdp_domains::input::fill_form::{FillFormTool, FormOps};
 use crate::handler::cdp_domains::input::fill_input::{
     FillInputTool, FillStart, fill_reply, fill_start, selected_reply,
@@ -294,12 +297,8 @@ pub(crate) async fn click_element(
     handler: &McpHandler,
 ) -> ToolResult {
     let args: ClickElementTool = parse_args(params)?;
-    let (session, id, tab) = target(handler, &ids(&args.instance_id, &args.tab_id)).await?;
-    let on = OnTab {
-        session: &session,
-        id: &id,
-        tab: &tab.tab,
-    };
+    let input = InputTab::of(handler, ids(&args.instance_id, &args.tab_id)).await?;
+    let on = input.on();
     let options = args.options()?;
     on.click(&args.selector, &options).await
 }
@@ -307,12 +306,8 @@ pub(crate) async fn click_element(
 /// `hover`: the mouse moves to the point the shared snippet checked.
 pub(crate) async fn hover(params: CallToolRequestParams, handler: &McpHandler) -> ToolResult {
     let args: HoverTool = parse_args(params)?;
-    let (session, id, tab) = target(handler, &ids(&args.instance_id, &args.tab_id)).await?;
-    let on = OnTab {
-        session: &session,
-        id: &id,
-        tab: &tab.tab,
-    };
+    let input = InputTab::of(handler, ids(&args.instance_id, &args.tab_id)).await?;
+    let on = input.on();
     on.hover(&args.selector).await
 }
 
@@ -320,12 +315,8 @@ pub(crate) async fn hover(params: CallToolRequestParams, handler: &McpHandler) -
 pub(crate) async fn press_key(params: CallToolRequestParams, handler: &McpHandler) -> ToolResult {
     let args: PressKeyTool = parse_args(params)?;
     let key = args.key()?;
-    let (session, id, tab) = target(handler, &ids(&args.instance_id, &args.tab_id)).await?;
-    let on = OnTab {
-        session: &session,
-        id: &id,
-        tab: &tab.tab,
-    };
+    let input = InputTab::of(handler, ids(&args.instance_id, &args.tab_id)).await?;
+    let on = input.on();
     on.press(args.selector.as_deref(), &key, &args.held()).await
 }
 
@@ -333,13 +324,30 @@ pub(crate) async fn press_key(params: CallToolRequestParams, handler: &McpHandle
 /// checks and replies as on Chrome.
 pub(crate) async fn fill_input(params: CallToolRequestParams, handler: &McpHandler) -> ToolResult {
     let args: FillInputTool = parse_args(params)?;
-    let (session, id, tab) = target(handler, &ids(&args.instance_id, &args.tab_id)).await?;
-    let on = OnTab {
-        session: &session,
-        id: &id,
-        tab: &tab.tab,
-    };
+    let input = InputTab::of(handler, ids(&args.instance_id, &args.tab_id)).await?;
+    let on = input.on();
     on.fill(&args.selector, &args.text, args.mode()).await
+}
+
+/// What `drag` says on Firefox when it replayed an HTML5 drag by script,
+/// and whether the target took the drop.
+fn replayed_note(dropped: bool) -> String {
+    let outcome = if dropped {
+        "the target accepted the drop"
+    } else {
+        "the target did not accept the drop (its dragover handler did not call preventDefault)"
+    };
+    format!(
+        "Firefox's WebDriver input cannot drop an HTML5 drag, so dragstart, dragenter, dragover, drop and dragend were dispatched by script along the path; {outcome}."
+    )
+}
+
+/// `drag`: see [`OnTab::drag`].
+pub(crate) async fn drag(params: CallToolRequestParams, handler: &McpHandler) -> ToolResult {
+    let args: DragTool = parse_args(params)?;
+    let input = InputTab::of(handler, ids(&args.instance_id, &args.tab_id)).await?;
+    let on = input.on();
+    on.drag(&args).await
 }
 
 /// `upload_file`: the same checks and reply as on Chrome; the files go
@@ -363,12 +371,8 @@ pub(crate) async fn upload_file(params: CallToolRequestParams, handler: &McpHand
 pub(crate) async fn fill_form(params: CallToolRequestParams, handler: &McpHandler) -> ToolResult {
     let args: FillFormTool = parse_args(params)?;
     args.check_arguments()?;
-    let (session, id, tab) = target(handler, &ids(&args.instance_id, &args.tab_id)).await?;
-    let on = OnTab {
-        session: &session,
-        id: &id,
-        tab: &tab.tab,
-    };
+    let input = InputTab::of(handler, ids(&args.instance_id, &args.tab_id)).await?;
+    let on = input.on();
     args.fill_all(&on).await
 }
 
@@ -383,6 +387,31 @@ impl FormOps for OnTab<'_> {
 
     async fn click(&self, selector: &str) -> ToolResult {
         OnTab::click(self, selector, &ClickOptions::default()).await
+    }
+}
+
+/// The Firefox tab an input tool addresses, owned: [`InputTab::on`] lends
+/// it as the [`OnTab`] the tool acts through.
+pub(crate) struct InputTab {
+    session: Arc<FirefoxSession>,
+    id: String,
+    tab: super::session::FirefoxTab,
+}
+
+impl InputTab {
+    /// The tab `ids` address (see [`target`]).
+    pub(crate) async fn of(handler: &McpHandler, ids: TargetArgs) -> Result<Self, CallToolError> {
+        let (session, id, tab) = target(handler, &ids).await?;
+        Ok(Self { session, id, tab })
+    }
+
+    /// The tab, as the input tools act on it.
+    pub(crate) fn on(&self) -> OnTab<'_> {
+        OnTab {
+            session: &self.session,
+            id: &self.id,
+            tab: &self.tab.tab,
+        }
     }
 }
 
@@ -427,6 +456,41 @@ impl OnTab<'_> {
             options,
             interrupted.as_ref(),
         ))
+    }
+
+    /// Drags `args.from` onto `args.to` (`drag`) with pointer actions. A
+    /// native HTML5 drag the press starts is cancelled and replayed by
+    /// script along the rest of the path (`util::js::DRAG_ARM`): Firefox's
+    /// WebDriver input never drops it and leaves the page mid-drag.
+    pub(crate) async fn drag(&self, args: &DragTool) -> ToolResult {
+        let settling = page::run_snippet(self.tab, crate::util::js::ANIMATIONS_DONE);
+        unless_paused(self.session, self.id, "drag", settling).await?;
+        let start = self.point(&args.from, "dragged").await?;
+        let drop = crate::util::js::drop_point(&args.to);
+        let measuring = page::run_snippet(self.tab, &drop);
+        let end =
+            args.drop_point(&unless_paused(self.session, self.id, "drag", measuring).await?)?;
+        let path = drag_path(start, end);
+        let (first, rest) = path.split_at(1);
+        let dragging = async {
+            page::run_snippet(self.tab, crate::util::js::DRAG_ARM).await?;
+            page::drag_press(self.tab, start, first).await?;
+            let replay = crate::util::js::html5_drag(rest, DRAG_STEP_PAUSE.as_millis());
+            let replayed = page::run_snippet(self.tab, &replay).await?;
+            let simulated = replayed["status"].as_str() == Some("simulated");
+            // A replayed drag only needs the button back up, at the target.
+            let release = if simulated {
+                &path[path.len() - 1..]
+            } else {
+                rest
+            };
+            page::drag_release(self.tab, release).await?;
+            Ok::<_, BackendError>(simulated.then(|| replayed["dropped"].as_bool() == Some(true)))
+        };
+        let note = unless_paused(self.session, self.id, "drag", dragging)
+            .await?
+            .map(replayed_note);
+        Ok(dragged_reply(args, start, end, note.as_deref()))
     }
 
     /// Moves the mouse over the element `selector` names (`hover`).
@@ -1098,6 +1162,95 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("no next page"), "{error}");
+        ts::stop(&handler).await;
+    }
+
+    /// A Firefox page where the element to drag is at (10, 20), the drop
+    /// target at (110, 220), and the HTML5 replay answers `html5`.
+    fn drag_page(mock: &MockFirefox, html5: Value) {
+        mock.bidi().respond_with("script.evaluate", move |params| {
+            let expression = params["expression"].as_str().unwrap_or_default();
+            let value = if expression.contains("labelOf") {
+                json!({"status": "ok", "x": 10, "y": 20})
+            } else if expression.contains("DataTransfer") {
+                html5.clone()
+            } else if expression.contains("'dragstart', stop") {
+                json!(true)
+            } else {
+                json!({"status": "ok", "x": 110, "y": 220})
+            };
+            evaluate_success(ts::remote(&value))
+        });
+    }
+
+    /// The pointer actions of every `input.performActions` the mock got.
+    fn pointer_actions(mock: &MockFirefox) -> Vec<Value> {
+        mock.bidi()
+            .commands_named("input.performActions")
+            .iter()
+            .flat_map(|c| {
+                c.params["actions"][0]["actions"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default()
+            })
+            .collect()
+    }
+
+    /// ISSUE-30 (Firefox): without an HTML5 drag the element is dragged
+    /// with pointer actions: press, moves (each after a pause) with the
+    /// button held, release on the target.
+    #[tokio::test]
+    async fn drag_uses_pointer_actions() {
+        // Given a pointer-driven element
+        let mock = MockFirefox::start(false).await.unwrap();
+        drag_page(&mock, json!({"status": "pointer"}));
+        let handler = ts::handler(&mock);
+        // When it is dragged
+        let args = json!({"from": "#knob", "to": "#zone"});
+        let reply = drag(call("drag", args), &handler).await.unwrap();
+        // Then the pointer presses, moves every step and releases
+        let actions = pointer_actions(&mock);
+        let kinds: Vec<&str> = actions.iter().filter_map(|a| a["type"].as_str()).collect();
+        assert_eq!(&kinds[..2], ["pointerMove", "pointerDown"]);
+        assert_eq!(kinds.last(), Some(&"pointerUp"));
+        assert_eq!(kinds.iter().filter(|k| **k == "pointerMove").count(), 11);
+        assert_eq!(kinds.iter().filter(|k| **k == "pause").count(), 11);
+        let last_move = actions
+            .iter()
+            .rev()
+            .find(|a| a["type"] == "pointerMove")
+            .unwrap();
+        assert_eq!(
+            (last_move["x"].clone(), last_move["y"].clone()),
+            (json!(110), json!(220))
+        );
+        assert!(ts::text(&reply).starts_with("Dragged '#knob' onto '#zone'"));
+        assert!(!ts::text(&reply).contains("Note:"));
+        ts::stop(&handler).await;
+    }
+
+    /// ISSUE-30 (Firefox): an HTML5 drag the press started is replayed by
+    /// script; the button is only moved to the target and released, and
+    /// the reply says so.
+    #[tokio::test]
+    async fn drag_replays_html5_on_firefox() {
+        let mock = MockFirefox::start(false).await.unwrap();
+        drag_page(&mock, json!({"status": "simulated", "dropped": true}));
+        let handler = ts::handler(&mock);
+        let args = json!({"from": "#card", "to": "#column"});
+        let reply = drag(call("drag", args), &handler).await.unwrap();
+        let actions = pointer_actions(&mock);
+        let moves = actions
+            .iter()
+            .filter(|a| a["type"] == "pointerMove")
+            .count();
+        assert_eq!(moves, 3, "start, first step, target: {actions:?}");
+        let text = ts::text(&reply);
+        assert!(
+            text.contains("dispatched by script along the path; the target accepted the drop"),
+            "{text}"
+        );
         ts::stop(&handler).await;
     }
 

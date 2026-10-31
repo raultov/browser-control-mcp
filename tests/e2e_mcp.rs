@@ -56,6 +56,23 @@ mod e2e {
     <script>console.log("hello from e2e", {n: 1});</script><script>throw new Error("boom-e2e");</script><script src="/app.js"></script></body></html>"#;
     const FRAME: &str = r#"<!doctype html><html><body>
     <button id="fb" onclick="parent.__pierced = (parent.__pierced || '') + 'frame;'">framed</button><input id="fq"></body></html>"#;
+    /// ISSUE-30: an HTML5 drag source and drop target, and a knob moved by
+    /// pointer events onto a zone.
+    const DRAG: &str = r#"<!doctype html><html><body style="margin:0">
+    <div id="src" draggable="true" style="position:absolute;left:20px;top:20px;width:80px;height:40px">src</div>
+    <div id="dst" style="position:absolute;left:300px;top:20px;width:120px;height:80px">dst</div>
+    <div id="knob" style="position:absolute;left:20px;top:200px;width:40px;height:40px;touch-action:none">knob</div>
+    <div id="zone" style="position:absolute;left:300px;top:180px;width:120px;height:80px">zone</div>
+    <script>
+    src.addEventListener('dragstart', e => e.dataTransfer.setData('text/plain', 'payload'));
+    dst.addEventListener('dragover', e => e.preventDefault());
+    dst.addEventListener('drop', e => { e.preventDefault(); window.__html5 = 'dropped:' + e.dataTransfer.getData('text/plain'); });
+    let grab = null;
+    knob.addEventListener('pointerdown', e => { grab = [e.clientX - knob.offsetLeft, e.clientY - knob.offsetTop]; knob.setPointerCapture(e.pointerId); });
+    knob.addEventListener('pointermove', e => { if (grab) { knob.style.left = (e.clientX - grab[0]) + 'px'; knob.style.top = (e.clientY - grab[1]) + 'px'; } });
+    knob.addEventListener('pointerup', e => { grab = null; const z = zone.getBoundingClientRect();
+      window.__pointer = e.clientX >= z.left && e.clientX <= z.right && e.clientY >= z.top && e.clientY <= z.bottom ? 'dropped' : 'missed'; });
+    </script></body></html>"#;
     const APP_JS: &str = "function appTarget(x) {\n  const y = x * 2;\n  return y + 1;\n}\nwindow.appTarget = appTarget;\nfetch('/api');\n";
 
     /// The WebSocket page: sends `hello-ws` to the echo server on `port`.
@@ -98,6 +115,7 @@ mod e2e {
             p if p.starts_with("/api") => ("application/json", "{\"ok\":true}".to_string()),
             p if p.starts_with("/ws.html") => ("text/html", ws.to_string()),
             p if p.starts_with("/frame.html") => ("text/html", FRAME.to_string()),
+            p if p.starts_with("/drag.html") => ("text/html", DRAG.to_string()),
             _ => ("text/html", INDEX.to_string()),
         }
     }
@@ -1047,6 +1065,52 @@ mod e2e {
         ]
     }
 
+    /// ISSUE-30: drag moves an HTML5 draggable onto its drop target and a
+    /// pointer-driven knob onto a zone, then the test page comes back.
+    fn drag_steps(instance: &str, base: &str) -> Vec<Step> {
+        let i = json!(instance);
+        let drag = |from: &str, to: &str| json!({"instance_id": i, "from": from, "to": to});
+        let read = |expression: &str| json!({"instance_id": i, "expression": expression});
+        vec![
+            (
+                "ISSUE-30 open the drag page",
+                "navigate",
+                json!({"instance_id": i, "url": format!("{base}/drag.html")}),
+                "Navigated to",
+            ),
+            (
+                "ISSUE-30 HTML5 drag and drop",
+                "drag",
+                drag("#src", "#dst"),
+                "Dragged '#src' onto '#dst'",
+            ),
+            (
+                "ISSUE-30 the target got the data",
+                "evaluate_js",
+                read("window.__html5"),
+                "dropped:payload",
+            ),
+            (
+                "ISSUE-30 pointer drag",
+                "drag",
+                drag("#knob", "#zone"),
+                "Dragged '#knob' onto '#zone'",
+            ),
+            (
+                "ISSUE-30 the knob landed in the zone",
+                "evaluate_js",
+                read("window.__pointer"),
+                "\"value\": \"dropped\"",
+            ),
+            (
+                "ISSUE-30 back to the test page",
+                "navigate",
+                json!({"instance_id": i, "url": format!("{base}/")}),
+                "Navigated to",
+            ),
+        ]
+    }
+
     /// ISSUE-31: navigate moves back and forward in the tab's history and
     /// ends on the test page; past the last entry it fails without moving.
     fn history_steps(instance: &str, base: &str) -> Vec<Step> {
@@ -1279,7 +1343,7 @@ mod e2e {
         // Every opt-in tool group: the suite drives them all.
         let secrets = secrets_file(browser);
         let mut mcp = Mcp::start(&["--tool-groups", "all", "--secrets", &secrets]).await;
-        mcp.list_tools(48).await;
+        mcp.list_tools(49).await;
         let all = [
             page_steps(browser, &base),
             tab_steps("e2e", &base),
@@ -1305,6 +1369,7 @@ mod e2e {
             observation_steps("e2e"),
             network_steps("e2e"),
             websocket_steps("e2e", &base),
+            drag_steps("e2e", &base),
             history_steps("e2e", &base),
             debugger_steps("e2e", &base),
             closing_steps(browser),
@@ -1394,6 +1459,7 @@ mod e2e {
             storage_steps("default"),
             emulate_steps("default", variable.contains("CHROME")),
             network_steps("default"),
+            drag_steps("default", &base),
             history_steps("default", &base),
             debugger_steps("default", &base),
         ];

@@ -162,6 +162,82 @@ const ELEMENT_BOX: &str = "el.scrollIntoView({ behavior: 'instant', block: 'cent
     } \
     return { status: 'ok', x: x + win.scrollX, y: y + win.scrollY, width: r.width, height: r.height };";
 
+/// The viewport centre of the first element matching `selector`, where
+/// `drag` drops: `{status: 'ok', x, y}` in the top window (offset by the
+/// frames it is in), or `missing`, `hidden` or `outside`. Nothing is
+/// scrolled, so the element being dragged stays where it was checked.
+pub fn drop_point(selector: &str) -> String {
+    status_of(selector, DROP_POINT)
+}
+
+const DROP_POINT: &str = "let win = el.ownerDocument.defaultView; \
+    const box = Array.from(el.getClientRects()).find(r => r.width > 0 && r.height > 0); \
+    if (!box || win.getComputedStyle(el).visibility !== 'visible') return { status: 'hidden' }; \
+    let x = (box.left + box.right) / 2, y = (box.top + box.bottom) / 2; \
+    while (win.frameElement) { \
+        const frame = win.frameElement, f = frame.getBoundingClientRect(); \
+        x += f.left + frame.clientLeft; y += f.top + frame.clientTop; \
+        win = frame.ownerDocument.defaultView; \
+    } \
+    if (x < 0 || y < 0 || x >= win.innerWidth || y >= win.innerHeight) return { status: 'outside' }; \
+    return { status: 'ok', x: Math.round(x), y: Math.round(y) };";
+
+/// Resolves once the page's finite animations that are running have
+/// finished (at most 1 s; endless ones, such as spinners, do not count),
+/// with how many there were. A drag pressed while a sortable list still
+/// animates its last reordering (CSS transitions, which change no DOM)
+/// starts no drag.
+pub const ANIMATIONS_DONE: &str = "(async () => { \
+    const running = document.getAnimations().filter(a => a.playState === 'running' && a.effect && Number.isFinite(a.effect.getComputedTiming().endTime)); \
+    if (running.length) await Promise.race([Promise.allSettled(running.map(a => a.finished)), new Promise(resolve => setTimeout(resolve, 1000))]); \
+    return running.length; })()";
+
+/// Arms the page for a drag on Firefox: the next `dragstart` is cancelled
+/// before the page sees it and its element remembered. Firefox's WebDriver
+/// input starts a native HTML5 drag but never drops it, leaving the page
+/// (and later drags) stuck mid-drag; [`html5_drag`] replays it by script.
+/// Libraries such as SortableJS make an element draggable only when it is
+/// pressed, so this cannot be decided before the press.
+pub const DRAG_ARM: &str = "(() => { const key = Symbol.for('browser-control-mcp.drag'); \
+    const state = { source: null }; \
+    const stop = e => { if (state.source) return; state.source = e.composedPath()[0] || e.target; e.preventDefault(); e.stopImmediatePropagation(); }; \
+    window.addEventListener('dragstart', stop, true); \
+    state.disarm = () => window.removeEventListener('dragstart', stop, true); \
+    window[key] = state; return true; })()";
+
+/// Disarms [`DRAG_ARM`] and, when it caught a `dragstart`, replays the
+/// HTML5 drag by script along `path` (top-window viewport points, the last
+/// one the drop point): `dragstart` on the element, `dragenter`/`dragleave`
+/// and `dragover` on the element under each point (a pause before each, as
+/// sortable lists animate), then `drop` where the last `dragover` was
+/// cancelled (else `dragleave`) and `dragend`, sharing one `DataTransfer`.
+/// Returns `{status: 'pointer'}` when no drag started (the mouse goes on),
+/// else `{status: 'simulated', dropped}`.
+pub fn html5_drag(path: &[(f64, f64)], pause_ms: u128) -> String {
+    let points: Vec<[f64; 2]> = path.iter().map(|&(x, y)| [x, y]).collect();
+    let path = serde_json::to_string(&points).unwrap_or_else(|_| "[]".to_string());
+    format!(
+        "(async () => {{ const key = Symbol.for('browser-control-mcp.drag'), state = window[key] || {{}}; \
+         if (state.disarm) state.disarm(); delete window[key]; \
+         const source = state.source, path = {path}; \
+         if (!source || !path.length) return {{ status: 'pointer' }}; \
+         const data = new DataTransfer(), wait = () => new Promise(resolve => setTimeout(resolve, {pause_ms})); \
+         const fire = (node, type, [x, y]) => node.dispatchEvent(new DragEvent(type, {{ bubbles: true, cancelable: true, composed: true, dataTransfer: data, clientX: x, clientY: y }})); \
+         fire(source, 'dragstart', path[0]); \
+         let over = null, dropped = false; \
+         for (const point of path) {{ \
+             await wait(); \
+             const node = document.elementFromPoint(point[0], point[1]) || document.body; \
+             if (node !== over) {{ if (over) fire(over, 'dragleave', point); fire(node, 'dragenter', point); over = node; }} \
+             dropped = !fire(node, 'dragover', point); \
+         }} \
+         const end = path[path.length - 1]; \
+         fire(over, dropped ? 'drop' : 'dragleave', end); \
+         fire(source, 'dragend', end); \
+         return {{ status: 'simulated', dropped }}; }})()"
+    )
+}
+
 /// Resolves once the document has finished loading (`readyState`
 /// `complete`): after a move in the history the new document is committed
 /// but may still load, and one restored from the back-forward cache fires
@@ -732,6 +808,24 @@ mod tests {
 
     /// FIX-07 / AUD-IN-08: fill_input empties the field it focused, and
     /// the text reaches JavaScript as one string literal.
+    /// ISSUE-30: the drop point is measured without scrolling; Firefox's
+    /// native dragstart is cancelled and the drag replayed along the path,
+    /// dropping only where dragover was cancelled.
+    #[test]
+    fn drop_snippets() {
+        let point = drop_point("#to");
+        assert!(!point.contains("scrollIntoView"), "{point}");
+        assert!(point.contains("return { status: 'outside' }"), "{point}");
+        assert!(DRAG_ARM.contains("e.preventDefault(); e.stopImmediatePropagation();"));
+        let html5 = html5_drag(&[(1.0, 2.0), (3.0, 4.0)], 40);
+        assert!(html5.contains("path = [[1.0,2.0],[3.0,4.0]]"), "{html5}");
+        assert!(
+            html5.contains("dropped = !fire(node, 'dragover', point)"),
+            "{html5}"
+        );
+        assert!(html5.contains("setTimeout(resolve, 40)"), "{html5}");
+    }
+
     /// ISSUE-33: the box of an element to capture is scrolled into view,
     /// offset by the frames it is in and given in document coordinates.
     #[test]

@@ -12,6 +12,16 @@ from a copy of its code: entries describe the differences from that release.
 
 ### Added
 
+- `drag` tool: drags an element onto another with the mouse. It waits for
+  running animations to end (a sortable list animating its last
+  reordering starts no drag), presses on `from` (checked like
+  `click_element`), moves in 10 steps 40 ms apart to the centre of `to` and
+  releases, so pointer-driven libraries (sortable lists, boards, sliders)
+  and HTML5 drag and drop both work. Chrome does both natively; Firefox's
+  WebDriver input starts a native HTML5 drag but never drops it, leaving the
+  page stuck mid-drag, so there the native `dragstart` is cancelled and the
+  drag replayed by script along the path (the reply says so). Checked on
+  SortableJS and the-internet's drag and drop on both browsers. (#30)
 - `fill_input` takes `append: true`: the text is typed at the end of what
   the field already holds instead of replacing it, in text fields,
   textareas and contenteditable elements, rich text editors included (the

@@ -1,4 +1,5 @@
 pub mod click_element;
+pub mod drag;
 pub mod fill_form;
 pub mod fill_input;
 pub mod hover;

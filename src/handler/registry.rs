@@ -134,6 +134,7 @@ macro_rules! firefox_only {
 const INPUT_TOOLS: &[&str] = &[
     "click_element",
     "hover",
+    "drag",
     "fill_input",
     "fill_form",
     "press_key",
@@ -174,6 +175,7 @@ fn page_tools() -> Vec<ToolEntry> {
     use crate::backend::bidi::tools as ff;
     use Capability::*;
     use Gate::Always;
+    use cdp_domains::input::drag::DragTool as Drag;
     use cdp_domains::input::fill_form::FillFormTool as Form;
     use cdp_domains::input::upload_file::UploadFileTool as Upload;
     use cdp_domains::input::{
@@ -203,6 +205,7 @@ fn page_tools() -> Vec<ToolEntry> {
         entry!(Upload, FILES, &[Input], ff::upload_file),
         entry!(Key, Always, &[Input], ff::press_key),
         entry!(Hover, Always, &[Input], ff::hover),
+        entry!(Drag, Always, &[Input], ff::drag),
         entry!(Eval, Always, &[Evaluate], ff::evaluate_js),
         entry!(Nav, Always, &[Navigation], ff::navigate),
         entry!(Dom_, Always, &[Dom], ff::inspect_dom),
@@ -938,7 +941,7 @@ The page reacted (the DOM changed) and settled after ",
         handler.flags.enable_webmcp = true;
         handler.tool_groups = vec![crate::cli::ToolGroup::All];
         let listed = names(listed_tools(&handler));
-        assert_eq!(listed.len(), 53);
+        assert_eq!(listed.len(), 54);
         assert!(listed.contains("restart_browser") && listed.contains("stop_browser"));
         assert!(!listed.contains("restart_chrome") && !listed.contains("stop_chrome"));
     }

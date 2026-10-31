@@ -4,6 +4,7 @@ use super::protocol_error;
 use super::remote_value;
 use crate::backend::error::BackendError;
 use crate::handler::cdp_domains::input::click_element::ClickOptions;
+use crate::handler::cdp_domains::input::drag::DRAG_STEP_PAUSE;
 use crate::handler::cdp_domains::input::keys;
 use crate::handler::cdp_domains::page::navigate::HistoryStep;
 use crate::handler::cdp_domains::page::wait_for::CheckError;
@@ -383,6 +384,41 @@ pub(crate) async fn click_at(
     perform(tab, Value::Array(sources)).await
 }
 
+/// Presses the left button at the viewport point `start` and moves it,
+/// held, through `path` (`drag`): the button stays down for
+/// [`drag_release`].
+pub(crate) async fn drag_press(
+    tab: &Tab,
+    start: (f64, f64),
+    path: &[(f64, f64)],
+) -> Result<Option<Interruption>, BackendError> {
+    let mut pointer = vec![
+        viewport_move(start),
+        json!({"type": "pointerDown", "button": 0}),
+    ];
+    pointer.extend(held_moves(path));
+    perform_then(tab, json!([mouse(0, pointer)]), false).await
+}
+
+/// Moves the held button through `path`, then releases it (`drag`).
+pub(crate) async fn drag_release(
+    tab: &Tab,
+    path: &[(f64, f64)],
+) -> Result<Option<Interruption>, BackendError> {
+    let mut pointer = held_moves(path);
+    pointer.push(json!({"type": "pause", "duration": DRAG_STEP_PAUSE.as_millis()}));
+    pointer.push(json!({"type": "pointerUp", "button": 0}));
+    perform(tab, json!([mouse(0, pointer)])).await
+}
+
+/// Pointer moves through `path`, each after a [`DRAG_STEP_PAUSE`].
+fn held_moves(path: &[(f64, f64)]) -> Vec<Value> {
+    let pause = json!({"type": "pause", "duration": DRAG_STEP_PAUSE.as_millis()});
+    path.iter()
+        .flat_map(|&point| [pause.clone(), viewport_move(point)])
+        .collect()
+}
+
 /// Moves the mouse to the viewport point `point` (hover).
 pub(crate) async fn hover_at(tab: &Tab, point: (f64, f64)) -> Result<(), BackendError> {
     let actions = json!([mouse(0, vec![viewport_move(point)])]);
@@ -404,6 +440,16 @@ pub(crate) async fn press_key(
 /// dialog opened, so a later action does not start with a button or a key
 /// held: then in the background, so the call does not wait for the dialog.
 async fn perform(tab: &Tab, actions: Value) -> Result<Option<Interruption>, BackendError> {
+    perform_then(tab, actions, true).await
+}
+
+/// [`perform`], keeping the input state (a held button) when the actions
+/// succeed and `release` is false: a drag goes on in a later call.
+async fn perform_then(
+    tab: &Tab,
+    actions: Value,
+    release: bool,
+) -> Result<Option<Interruption>, BackendError> {
     let context = tab.context_id();
     let method = "input.performActions";
     let sent = tab.send_raw_command(method, json!({"context": context, "actions": actions}));
@@ -411,15 +457,20 @@ async fn perform(tab: &Tab, actions: Value) -> Result<Option<Interruption>, Back
         Ok(reply) => reply.map(|_| None).map_err(|e| protocol_error(method, &e)),
         Err(dialog) => Ok(Some(dialog)),
     };
-    let release = json!({"context": context});
+    let releasing = json!({"context": context});
     if !matches!(performed, Ok(None)) {
         let tab = tab.clone();
         tokio::spawn(async move {
-            let _ = tab.send_raw_command("input.releaseActions", release).await;
+            let _ = tab
+                .send_raw_command("input.releaseActions", releasing)
+                .await;
         });
         return performed;
     }
-    command(tab, "input.releaseActions", release)
+    if !release {
+        return Ok(None);
+    }
+    command(tab, "input.releaseActions", releasing)
         .await
         .map(|_| None)
 }

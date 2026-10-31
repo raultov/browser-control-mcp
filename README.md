@@ -96,7 +96,7 @@ tools are off by default and listed only with `--tool-groups`:
 | `network` | `mock_route`, `list_routes`, `remove_route`, `set_offline` | changes what the page receives |
 
 `--tool-groups all` lists every group. The page, input, observation and
-debugger tools are always listed (33 tools), plus `enable_proxy_auth` with
+debugger tools are always listed (34 tools), plus `enable_proxy_auth` with
 `--proxy-server` and the WebMCP tools with `--enable-webmcp`. A tool of a
 group that is off fails naming the flag. The list is fixed for the server's
 life: it never changes during a session, so clients can cache it.
@@ -132,6 +132,7 @@ see the note.
 | `fill_input` | ✓ | ✓ | picks `<select>` options; fails without typing on elements that cannot take the text; `append: true` types after the content instead of replacing it (a number, email or date field, which has no caret, is retyped whole); in a contenteditable element (including rich text editors such as Slate, Lexical or ProseMirror) it selects the content and types over it, so the editor records the edit; types key by key on both (key handlers run; newlines and tabs inserted as text), about 1 ms per character; `change` on leaving the field, or at the end when the window has no focus |
 | `press_key` | ✓ | ✓ | one key (a character, Enter, Tab, Escape, arrows, F1–F12...) with Control / Shift / Alt / Meta held, in `selector` (focused first) or the focused element; a shortcut types nothing |
 | `hover` | ✓ | ✓ | moves the mouse over the element (scrolled into view; fails when hidden or covered) |
+| `drag` | ✓ | ✓ | presses on `from` (checked like `click_element`), moves in steps to the centre of `to` (which must then be in the viewport) and releases: sortable lists, boards, sliders; HTML5 drag and drop is real on Chrome and simulated with script events on Firefox (its WebDriver input starts a native drag but never drops it), and the reply says so |
 | `fill_form` | ✓ | ✓ | several fields in one call: text and `<select>` as `fill_input`, a checkbox or radio takes `true`/`false` and is clicked only when its state differs; stops at the first failing field naming what was done; never echoes values |
 | `upload_file` | ✓ | ✓ | `files` group; sets the files of an `<input type=file>` (Chrome `DOM.setFileInputFiles`, Firefox `input.setFiles`); files must be under the upload roots (`--upload-root`, default the working and temp directories) |
 | `handle_dialog` | ✓ | ✓ | accepts or dismisses the open `alert` / `confirm` / `prompt` / `beforeunload` dialog |
@@ -163,8 +164,8 @@ see the note.
 | `webmcp_get_invocation` | ✓ | ✗ | needs `--enable-webmcp` |
 | `webmcp_list_invocations` | ✓ | ✗ | needs `--enable-webmcp` |
 
-After `click_element`, `hover`, `fill_input`, `fill_form` and `press_key`
-the server waits for the page to settle before answering: until its DOM
+After `click_element`, `hover`, `drag`, `fill_input`, `fill_form` and
+`press_key` the server waits for the page to settle before answering: until its DOM
 stays unchanged for 50 ms (style changes, often animations, aside) and the
 requests the action started finished, at most 1 s, on both browsers. An
 action nothing reacts to costs those 50 ms and keeps its reply; otherwise
@@ -511,7 +512,7 @@ Chrome and Firefox take the same calls:
    with that location.
 5. `evaluate_on_call_frame` reads locals of the paused frame; `step_over`
    moves one statement; `resume` continues. While paused, the input tools
-   (`click_element`, `hover`, `fill_input`, `fill_form`, `press_key`) fail
+   (`click_element`, `hover`, `drag`, `fill_input`, `fill_form`, `press_key`) fail
    at once naming the pause and do nothing: the page would handle their
    events only after `resume`. `evaluate_js` still answers
    while paused, in the page's global scope. A promise it returns cannot
