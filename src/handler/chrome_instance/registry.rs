@@ -274,7 +274,7 @@ mod tests {
         );
         use clap::Parser;
         let args = crate::Args::parse_from(["browser-control-mcp", "--browser", "firefox"]);
-        let handler = crate::build_handler(args);
+        let handler = crate::build_handler(args, Default::default());
         assert_eq!(
             handler.browser_of(None),
             crate::backend::BrowserKind::Firefox

@@ -13,6 +13,7 @@
 pub mod backend;
 pub mod cli;
 mod handler;
+pub mod secrets;
 pub mod server_info;
 pub mod util;
 
@@ -32,7 +33,16 @@ pub async fn run(args: Args) -> std::process::ExitCode {
             return std::process::ExitCode::FAILURE;
         }
     };
-    let handler = build_handler(args);
+    let secrets = match args.secrets.secrets.as_deref().map(secrets::Secrets::load) {
+        None => secrets::Secrets::default(),
+        Some(Ok(secrets)) => secrets,
+        // The message names the file and the line, never a value.
+        Some(Err(e)) => {
+            tracing::error!(error = %e, "cannot load the secrets");
+            return std::process::ExitCode::FAILURE;
+        }
+    };
+    let handler = build_handler(args, secrets);
     let shutdown = handler.shutdown_hook();
     let server = server_runtime::create_server(mcp_server::McpServerOptions {
         server_details: server_info::initialize_result(),
@@ -97,7 +107,7 @@ fn init_logging() {
 
 /// Builds the MCP handler from the command line. Logs the arguments through
 /// their redacting `Debug` (never the raw values).
-fn build_handler(args: Args) -> McpHandler {
+fn build_handler(args: Args, secrets: secrets::Secrets) -> McpHandler {
     tracing::info!(args = ?args, "starting browser-control-mcp");
     let max_instances = args.max_instances;
     let handler = McpHandler::new_with_params(HandlerParams {
@@ -110,6 +120,7 @@ fn build_handler(args: Args) -> McpHandler {
         firefox: args.firefox,
         upload: args.upload,
         tools: args.tools,
+        secrets,
     });
     handler
         .registry
@@ -136,7 +147,7 @@ mod tests {
             "s3cr3t",
         ]);
         // When the start-up path builds the handler
-        let _handler = build_handler(args);
+        let _handler = build_handler(args, secrets::Secrets::default());
         // Then the start-up line was logged without any secret
         let text = logs.text();
         assert!(text.contains("starting browser-control-mcp"), "{text}");

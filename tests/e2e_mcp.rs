@@ -949,11 +949,51 @@ mod e2e {
         ]
     }
 
+    /// The secret the launched server masks (`--secrets`).
+    const E2E_SECRET: &str = "s3cret-e2e-value";
+
+    /// A secrets file with `E2E_PASSWORD` (under `target/`, per browser).
+    fn secrets_file(browser: &str) -> String {
+        let path = format!("{}/target/e2e-{browser}.env", env!("CARGO_MANIFEST_DIR"));
+        std::fs::write(&path, format!("E2E_PASSWORD={E2E_SECRET}\n")).unwrap();
+        path
+    }
+
+    /// ISSUE-14: fill_input types the value of `<secret:E2E_PASSWORD>`,
+    /// and reading it back shows the name, not the value.
+    fn secret_steps(instance: &str) -> Vec<Step> {
+        let i = json!(instance);
+        let read = |expression: &str| json!({"instance_id": i, "expression": expression});
+        vec![
+            (
+                "ISSUE-14 fill_input types a secret",
+                "fill_input",
+                json!({"instance_id": i, "selector": "#q", "text": "<secret:E2E_PASSWORD>"}),
+                "Successfully",
+            ),
+            (
+                "ISSUE-14 the page got the value",
+                "evaluate_js",
+                read(&format!(
+                    "document.querySelector('#q').value === '{E2E_SECRET}'"
+                )),
+                "true",
+            ),
+            (
+                "ISSUE-14 reading it back is masked",
+                "evaluate_js",
+                read("'read: ' + document.querySelector('#q').value"),
+                "read: <secret:E2E_PASSWORD>",
+            ),
+        ]
+    }
+
     /// Steps 1–15 in launched mode.
     async fn smoke(browser: &str) {
         let base = serve().await;
         // Every opt-in tool group: the suite drives them all.
-        let mut mcp = Mcp::start(&["--tool-groups", "all"]).await;
+        let secrets = secrets_file(browser);
+        let mut mcp = Mcp::start(&["--tool-groups", "all", "--secrets", &secrets]).await;
         mcp.list_tools(48).await;
         let all = [
             page_steps(browser, &base),
@@ -963,6 +1003,7 @@ mod e2e {
             pierce_steps("e2e"),
             snapshot_steps("e2e"),
             form_steps("e2e"),
+            secret_steps("e2e"),
             upload_steps("e2e"),
             pdf_steps("e2e"),
             key_and_pointer_steps("e2e"),

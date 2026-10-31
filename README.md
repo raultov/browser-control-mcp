@@ -385,6 +385,7 @@ claude mcp add browser-control-mcp -- npx -y @raultov/browser-control-mcp
 | `--enable-automation` | off | shows the automation infobar | ignored; `list_instances` shows a warning |
 | `--user-profile` | off | your default profile (no `--user-data-dir`) | only with `--firefox-port` (attach to your running Firefox) |
 | `--allow-cookie-import` | off | exposes `copy_cookies` | capability error |
+| `--secrets <FILE>` | none | dotenv file (`NAME=value`, at least 4 characters per value) whose values every tool result and error shows as `<secret:NAME>`; `fill_input` and `fill_form` type the value of a `<secret:NAME>` (see [Security notes](#security-notes)) | same |
 | `--tool-groups <GROUPS>` | none | lists the opt-in tool groups, comma separated: `storage`, `files`, `raw`, `perf`, `emulation`, `network` or `all` (see [Tool groups](#tool-groups)) | same |
 | `--upload-root <DIR>` | working + temp dir | directory `upload_file` may read files from and `save_pdf` may write PDFs to (repeatable; replaces the defaults) | same |
 | `--enable-webmcp` | off | WebMCP switches and `webmcp_*` tools | capability error |
@@ -570,6 +571,17 @@ incompatible:
   the upload roots (the server's working directory and the system temp
   directory, or the `--upload-root` directories), resolved so `..` and
   symlinks cannot leave them. Paths are never logged.
+- `--secrets <file>` keeps known values (test passwords, API keys) out of
+  what the agent reads: every tool result and error (text, embedded text,
+  structured content) shows them as `<secret:NAME>`, also when escaped
+  inside JSON, and `fill_input` / `fill_form` type the value of a
+  `<secret:NAME>` they are given, so the agent can log in without seeing
+  the password. It is a convenience, not a security boundary: the page can
+  transform a value (encode it, split it) past the masking, images
+  (screenshots, PDFs) are not masked, and the server stops at start-up if
+  the file has a malformed line, a value shorter than 4 characters or a
+  name defined twice (the error names the line, never a value). Values
+  never reach the logs.
 - `save_pdf` writes only `.pdf` files, under the same upload roots and
   resolved the same way; it overwrites an existing `.pdf` there.
 - The proxy password is never logged and is given only to proxy (407)

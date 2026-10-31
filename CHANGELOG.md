@@ -12,6 +12,12 @@ from a copy of its code: entries describe the differences from that release.
 
 ### Added
 
+- `--secrets <file>` (dotenv): every tool result and error shows the
+  file's values as `<secret:NAME>` (as is or escaped in JSON), and
+  `fill_input` / `fill_form` type the value of a `<secret:NAME>` they are
+  given, so the agent can fill a password without reading it. A
+  convenience, not a security boundary: images are not masked and a page
+  can transform a value. Values never reach the logs. (#14)
 - `save_pdf`, in the `files` tool group: prints the tab to PDF
   (`landscape`, `print_background`, `scale`, `page_ranges`) and writes it to
   `path`, an absolute `.pdf` under the upload roots, answering `{path,

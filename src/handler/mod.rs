@@ -1073,6 +1073,8 @@ pub struct HandlerParams {
     pub firefox: crate::cli::FirefoxArgs,
     pub upload: crate::cli::UploadArgs,
     pub tools: crate::cli::ToolArgs,
+    /// `--secrets`, already read.
+    pub secrets: crate::secrets::Secrets,
 }
 
 impl Default for HandlerParams {
@@ -1087,6 +1089,7 @@ impl Default for HandlerParams {
             firefox: Default::default(),
             upload: Default::default(),
             tools: Default::default(),
+            secrets: Default::default(),
         }
     }
 }
@@ -1107,6 +1110,8 @@ pub struct McpHandler {
     pub(crate) upload_roots: Vec<std::path::PathBuf>,
     /// `--tool-groups`: the opt-in groups listed and callable.
     pub(crate) tool_groups: Vec<crate::cli::ToolGroup>,
+    /// `--secrets`: masked in every tool outcome, typed by `<secret:NAME>`.
+    pub(crate) secrets: crate::secrets::Secrets,
 }
 
 impl McpHandler {
@@ -1278,6 +1283,7 @@ impl McpHandler {
             firefox_spec,
             upload_roots: options.upload.upload_roots,
             tool_groups: options.tools.tool_groups,
+            secrets: options.secrets,
         }
     }
 
@@ -1318,6 +1324,7 @@ impl McpHandler {
             firefox_spec: Default::default(),
             upload_roots: Vec::new(),
             tool_groups: Vec::new(),
+            secrets: Default::default(),
         }
     }
 }
@@ -1838,6 +1845,7 @@ mod tests {
             firefox: Default::default(),
             upload: Default::default(),
             tools: Default::default(),
+            secrets: Default::default(),
         });
         assert!(handler.flags.local);
         assert!(handler.flags.enable_webmcp);

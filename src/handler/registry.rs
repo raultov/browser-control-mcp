@@ -365,10 +365,22 @@ pub(crate) fn listed_tools(handler: &McpHandler) -> Vec<Tool> {
         .collect()
 }
 
+/// Runs the tool named in `params` with `--secrets` applied: a
+/// `<secret:NAME>` the typing tools get becomes its value, and the secrets'
+/// values are masked in the outcome.
+pub(crate) async fn call(
+    handler: &McpHandler,
+    params: CallToolRequestParams,
+) -> Result<CallToolResult, CallToolError> {
+    let params = handler.secrets.reveal(params)?;
+    let outcome = dispatch(handler, params).await;
+    handler.secrets.mask_outcome(outcome)
+}
+
 /// Runs the tool named in `params`: flag gate, then the target instance's
 /// capabilities (so a refused call sends nothing), then the implementation of
 /// that instance's browser.
-pub(crate) async fn call(
+async fn dispatch(
     handler: &McpHandler,
     params: CallToolRequestParams,
 ) -> Result<CallToolResult, CallToolError> {
@@ -513,6 +525,44 @@ mod tests {
 
     fn names(tools: Vec<Tool>) -> BTreeSet<String> {
         tools.into_iter().map(|t| t.name).collect()
+    }
+
+    /// ISSUE-14: with --secrets, a value in a tool's result or error comes
+    /// back masked, and never reaches the logs.
+    #[tokio::test]
+    async fn secrets_are_masked_in_outcomes() {
+        use crate::handler::cdp_domains::tests::{mock_handler, reply_text, spawn_recording_mock};
+        // Given a page whose evaluation answers a secret, then throws it
+        let (logs, _guard) = crate::util::log_capture::capture();
+        let mock = spawn_recording_mock().await;
+        mock.respond_with("Runtime.evaluate", |_| {
+            serde_json::json!({"result": {"result": {"type": "string", "value": "pw=hunter22"}}})
+        });
+        let mut handler = mock_handler(mock.http_port);
+        handler.secrets = crate::secrets::Secrets::parse("PASS=hunter22").unwrap();
+        // When evaluate_js reads it
+        let args = serde_json::json!({"expression": "document.cookie"});
+        let reply = call(&handler, params("evaluate_js", args.clone()))
+            .await
+            .unwrap();
+        // Then the reply has the name, not the value
+        let text = reply_text(&reply);
+        assert!(
+            text.contains("pw=<secret:PASS>") && !text.contains("hunter22"),
+            "{text}"
+        );
+        // And an error carrying it is masked too
+        mock.respond_with("Runtime.evaluate", |_| {
+            serde_json::json!({"result": {"result": {"type": "object"}, "exceptionDetails": {
+                "text": "Uncaught", "lineNumber": 0, "columnNumber": 0,
+                "exception": {"type": "string", "value": "bad hunter22"}}}})
+        });
+        let error = call(&handler, params("evaluate_js", args))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("bad <secret:PASS>"), "{error}");
+        // And the value never reached the logs
+        assert!(!logs.text().contains("hunter22"));
     }
 
     /// ISSUE-17: on a page paused in the debugger, the input tools refuse

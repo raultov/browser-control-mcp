@@ -48,6 +48,18 @@ pub struct Args {
     /// Opt-in tool groups.
     #[command(flatten)]
     pub tools: ToolArgs,
+
+    /// Values masked in tool output.
+    #[command(flatten)]
+    pub secrets: SecretArgs,
+}
+
+/// Values the agent should not read back (see `crate::secrets`).
+#[derive(clap::Args, Debug, Clone, Default, PartialEq, Eq)]
+pub struct SecretArgs {
+    /// Dotenv file (NAME=value lines) whose values every tool result and error shows as <secret:NAME>; fill_input and fill_form type the value of a <secret:NAME> they are given. A convenience, not a security boundary.
+    #[arg(long = "secrets", value_name = "FILE")]
+    pub secrets: Option<std::path::PathBuf>,
 }
 
 /// The tool groups listed on top of the default tools: each listed tool
