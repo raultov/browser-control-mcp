@@ -23,6 +23,15 @@ pub(crate) mod tests {
     /// `session`; returns the tab id. The mock must outlive the test.
     pub(crate) async fn register_mock_tab(session: &crate::handler::BrowserSession) -> String {
         let port = spawn_mock_chrome_server().await;
+        register_tab_on(session, port).await
+    }
+
+    /// Attaches to the page target of the mock on `port` and registers it
+    /// as a tab of `session`; returns the tab id.
+    pub(crate) async fn register_tab_on(
+        session: &crate::handler::BrowserSession,
+        port: u16,
+    ) -> String {
         let address = format!("127.0.0.1:{port}");
         let browser = cdp_browser_lite::BrowserClient::connect(&address, Duration::from_secs(5))
             .await
@@ -210,6 +219,7 @@ pub(crate) mod tests {
 }
 pub(crate) mod cdp_target;
 pub(crate) mod event_pump;
+pub(crate) mod frame_scope;
 pub mod log;
 pub mod performance;
 pub mod tracing;

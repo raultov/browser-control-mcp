@@ -20,9 +20,20 @@ pub fn is_ref(selector: &str) -> bool {
         && selector[1..].bytes().all(|b| b.is_ascii_digit())
 }
 
+/// Whether `selector` names something inside a frame of another origin:
+/// `f2e5`, `f2 >>> css` or `f2` (see `handler::frames`).
+pub fn is_frame_selector(selector: &str) -> bool {
+    let Some(rest) = selector.trim().strip_prefix('f') else {
+        return false;
+    };
+    let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+    let tail = rest[digits..].trim_start();
+    digits > 0 && (tail.is_empty() || tail.starts_with(PIERCE) || is_ref(tail))
+}
+
 /// The hint an error about a missing element adds for a ref.
 pub fn ref_hint(selector: &str) -> &'static str {
-    if is_ref(selector) {
+    if is_ref(selector) || is_frame_selector(selector) {
         " (a ref from 'snapshot' lasts until the page navigates or its element is removed: take a new snapshot)"
     } else {
         ""
@@ -33,10 +44,18 @@ pub fn ref_hint(selector: &str) -> &'static str {
 /// A ref from `snapshot` (`e12`) names its element while it is in the page
 /// (the map `util::outline` fills, in the top window: refs die with its
 /// document).
+/// A frame selector (`f2e5`, `f2 >>> css`) names, without its prefix, an
+/// element of the document marked as that frame ([`frame_mark`]: the
+/// server routes the call there), and nothing anywhere else.
 /// Otherwise each `>>>`-separated part is a CSS selector matched inside
 /// what the previous part matched (its open shadow root, or its document
 /// when it is a same-origin iframe); anything else there throws, naming it.
 pub(crate) const RESOLVE: &str = "const resolve = target => { \
+        const framed = /^\\s*f(\\d+)(?:\\s*>>>\\s*([\\s\\S]*\\S)|(e\\d+))?\\s*$/.exec(target); \
+        if (framed) { \
+            if (String(window[Symbol.for('browser-control-mcp.frame')]) !== framed[1] || !(framed[2] || framed[3])) return null; \
+            target = framed[2] || framed[3]; \
+        } \
         if (/^\\s*e\\d+\\s*$/.test(target)) { \
             const refs = window[Symbol.for('browser-control-mcp.refs')]; \
             const weak = refs && refs.get(target.trim()), found = weak && weak.deref(); \
@@ -55,6 +74,44 @@ pub(crate) const RESOLVE: &str = "const resolve = target => { \
         } \
         return el; \
     };";
+
+/// The `<iframe>` element whose ref is `owner` (a ref of the document it
+/// runs in), or `null`; with `scroll`, scrolled into view first (the
+/// nearest edge, so a visible frame does not move). `then` follows the
+/// element (`.contentWindow` for Firefox, which serializes a window as its
+/// browsing context).
+pub fn frame_owner(owner: &str, scroll: bool, then: &str) -> String {
+    format!(
+        "(() => {{ {RESOLVE} const el = resolve({}); if (!el) return null; \
+         if ({scroll}) el.scrollIntoView({{ behavior: 'instant', block: 'nearest', inline: 'nearest' }}); \
+         return el{then}; }})()",
+        string_literal(owner)
+    )
+}
+
+/// Where the content of the `<iframe>` whose ref is `owner` starts, in
+/// CSS pixels of the viewport of the window holding it (climbing its
+/// same-origin frames): `{status: 'ok', x, y}`, or `missing`. Input to a
+/// frame of another origin is sent there, offset by it.
+pub fn frame_origin(owner: &str) -> String {
+    status_of(owner, FRAME_ORIGIN)
+}
+
+const FRAME_ORIGIN: &str = "let win = el.ownerDocument.defaultView; \
+         const r = el.getBoundingClientRect(), style = win.getComputedStyle(el); \
+         let x = r.left + el.clientLeft + parseFloat(style.paddingLeft), y = r.top + el.clientTop + parseFloat(style.paddingTop); \
+         while (win.frameElement) { \
+             const frame = win.frameElement, f = frame.getBoundingClientRect(); \
+             x += f.left + frame.clientLeft; y += f.top + frame.clientTop; \
+             win = frame.ownerDocument.defaultView; \
+         } \
+         return { status: 'ok', x, y };";
+
+/// Marks the window it runs in as frame `number` of its tab, so frame
+/// selectors of that number resolve there (see `resolve`).
+pub fn frame_mark(number: usize) -> String {
+    format!("window[Symbol.for('browser-control-mcp.frame')] = {number}")
+}
 
 /// `(function() { const el = <selector>; if (!el) return <missing>; <body> })()`:
 /// the one shape every element snippet has (the selector may pierce, see
@@ -878,6 +935,42 @@ mod tests {
         assert!(expression.contains("el.labels"), "{expression}");
         assert!(expression.contains("aria-labelledby"), "{expression}");
         assert!(expression.contains("!labelOf(hit)"), "{expression}");
+    }
+
+    /// ISSUE-27: a frame selector (`f2e5`, `f2 >>> css`) resolves only in
+    /// the document the server marked as that frame, without its prefix;
+    /// elsewhere it names nothing. `f2-x` stays a custom element tag.
+    #[test]
+    fn frame_selectors_resolve_only_in_their_frame() {
+        assert!(
+            RESOLVE.contains(r"/^\s*f(\d+)(?:\s*>>>\s*([\s\S]*\S)|(e\d+))?\s*$/"),
+            "{RESOLVE}"
+        );
+        assert!(RESOLVE.contains("if (String(window[Symbol.for('browser-control-mcp.frame')]) !== framed[1] || !(framed[2] || framed[3])) return null;"), "{RESOLVE}");
+        assert_eq!(
+            frame_mark(3),
+            "window[Symbol.for('browser-control-mcp.frame')] = 3"
+        );
+        assert!(ref_hint("f2e5").contains("take a new snapshot"));
+        assert!(ref_hint("f2-x").is_empty());
+    }
+
+    /// ISSUE-27: the iframe of a ref is scrolled into view only when asked
+    /// (a snapshot moves nothing), and its content origin includes its
+    /// border and padding.
+    #[test]
+    fn frame_owner_and_origin() {
+        let quiet = frame_owner("e3", false, ".contentWindow");
+        assert!(quiet.contains("const el = resolve(\"e3\")"), "{quiet}");
+        assert!(quiet.contains("if (false) el.scrollIntoView("), "{quiet}");
+        assert!(quiet.ends_with("return el.contentWindow; })()"), "{quiet}");
+        assert!(frame_owner("e3", true, "").contains("if (true) el.scrollIntoView("));
+        let origin = frame_origin("e3");
+        assert!(
+            origin.contains("el.clientLeft + parseFloat(style.paddingLeft)"),
+            "{origin}"
+        );
+        assert!(origin.contains("while (win.frameElement)"), "{origin}");
     }
 
     /// ISSUE-35: before an element is focused for typing, each iframe it

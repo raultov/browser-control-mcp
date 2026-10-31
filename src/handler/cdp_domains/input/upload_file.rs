@@ -101,9 +101,13 @@ impl UploadFileTool {
     ) -> Result<CallToolResult, CallToolError> {
         let args: UploadFileTool = crate::handler::parse_args(params)?;
         let files = args.checked_paths(&handler.upload_roots)?;
-        let target =
-            crate::handler::resolve_target(handler, args.instance_id.clone(), args.tab_id.clone())
-                .await?;
+        let target = crate::handler::resolve_target_at(
+            handler,
+            args.instance_id.clone(),
+            args.tab_id.clone(),
+            Some(&args.selector),
+        )
+        .await?;
         let selector = &args.selector;
         let input = crate::util::js::file_input(selector);
         args.check_input(&crate::handler::snippet_value(&target, &input).await?)?;

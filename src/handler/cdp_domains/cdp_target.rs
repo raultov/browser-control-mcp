@@ -19,6 +19,9 @@ pub(crate) struct CdpTarget {
     /// The debugger state of the tab (its parsed scripts), to name the
     /// script a pause stopped in: Chrome leaves `callFrames[].url` empty.
     debugger: Option<Arc<Mutex<DebuggerState>>>,
+    /// The frame of another origin the call acts in, if any (see
+    /// `frame_scope`).
+    frame: Option<Arc<super::frame_scope::FrameRoute>>,
 }
 
 #[derive(Clone)]
@@ -31,7 +34,12 @@ impl std::fmt::Debug for CdpTarget {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self.connection {
             Connection::Client(_) => f.write_str("CdpTarget::Client"),
-            Connection::Tab(t) => write!(f, "CdpTarget::Tab(target_id: {})", t.target_id()),
+            Connection::Tab(t) => write!(
+                f,
+                "CdpTarget::Tab(target_id: {}, in_frame: {})",
+                t.target_id(),
+                self.frame.is_some()
+            ),
         }
     }
 }
@@ -42,6 +50,7 @@ impl CdpTarget {
         Self {
             connection: Connection::Client(client),
             debugger: None,
+            frame: None,
         }
     }
 
@@ -50,6 +59,7 @@ impl CdpTarget {
         Self {
             connection: Connection::Tab(tab),
             debugger: None,
+            frame: None,
         }
     }
 
@@ -58,6 +68,21 @@ impl CdpTarget {
     pub(crate) fn with_debugger(mut self, state: Arc<Mutex<DebuggerState>>) -> Self {
         self.debugger = Some(state);
         self
+    }
+
+    /// The target acting in a frame of another origin of its tab: script
+    /// runs there, mouse events land there (see `frame_scope`).
+    pub(crate) fn in_frame(mut self, route: super::frame_scope::FrameRoute) -> Self {
+        self.frame = Some(Arc::new(route));
+        self
+    }
+
+    /// The tab's session (`None` for the browser connection).
+    pub(crate) fn page_tab(&self) -> Option<&Tab> {
+        match &self.connection {
+            Connection::Tab(t) => Some(t),
+            Connection::Client(_) => None,
+        }
     }
 
     /// Whether the tab is paused in the debugger (a pause it keeps; the
@@ -106,9 +131,12 @@ impl CdpTarget {
         params: P,
     ) -> Result<CdpResult<WsResponse>, Interruption> {
         let send = async {
-            match &self.connection {
-                Connection::Client(c) => c.send_raw_command(method, params).await,
-                Connection::Tab(t) => t.send_raw_command(method, params).await,
+            match (&self.connection, &self.frame) {
+                (Connection::Client(c), _) => c.send_raw_command(method, params).await,
+                (Connection::Tab(t), None) => t.send_raw_command(method, params).await,
+                (Connection::Tab(t), Some(frame)) => {
+                    frame.send(t, method, serde_json::to_value(params)?).await
+                }
             }
         };
         if method == "Page.handleJavaScriptDialog" {

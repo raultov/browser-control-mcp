@@ -10,6 +10,22 @@ from a copy of its code: entries describe the differences from that release.
 
 ## [Unreleased]
 
+### Added
+
+- Frames of another origin (payment forms, embedded editors and playgrounds,
+  widgets): `snapshot` and `find_in_snapshot` read them in place, at most 20
+  and 5 deep, marking each iframe with its frame number (`[frame=f2]`) and
+  prefixing its refs (`f2e5`); `snapshot` with `selector: "f2"` outlines one
+  frame. Every selector argument takes those refs and `f2 >>> css`:
+  `click_element`, `hover`, `drag`, `fill_input`, `fill_form`, `press_key`,
+  `scroll`, `wait_for` and `upload_file` check and act in the frame. Chrome
+  reaches an out-of-process frame through its own target (attached for the
+  call) and an in-process one through its document, and sends mouse events
+  to the tab offset by where the frame shows; Firefox acts in the frame's
+  browsing context. Before, such a frame was a "not readable" line and
+  nothing inside it could be reached. `evaluate_js` still runs in the page,
+  and `capture_screenshot` refuses an element inside such a frame. (#27)
+
 ## [0.7.0-beta.11] - 2026-10-31
 
 Public **BETA**. Closes gaps with Playwright MCP and chrome-devtools-mcp and

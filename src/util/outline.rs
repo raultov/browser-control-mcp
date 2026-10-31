@@ -30,12 +30,13 @@ pub const FIND_MAX_MATCHES: usize = 20;
 /// Deepest level walked when no `depth` is given.
 const MAX_DEPTH: u32 = 1000;
 
-/// Declares `outline(root, maxDepth, maxChars)`: `{lines, truncated}` for
-/// `root` (the document, or an element and its subtree). Elements with a
-/// role get a ref, kept in the top window's map (the one `js::RESOLVE`
-/// reads); an
-/// element keeps its ref across outlines while it is in the page, and
-/// entries of removed elements are dropped.
+/// Declares `outline(root, maxDepth, maxChars)`: `{lines, truncated,
+/// foreign}` for `root` (the document, or an element and its subtree).
+/// Elements with a role get a ref, kept in the top window's map (the one
+/// `js::RESOLVE` reads); an element keeps its ref across outlines while it
+/// is in the page, and entries of removed elements are dropped. `foreign`
+/// lists the refs of the iframes of another origin it could not read, so
+/// the server can find each frame and outline it there (`handler::frames`).
 const OUTLINE: &str = r#"const outline = (root, maxDepth, maxChars) => {
     const refsKey = Symbol.for('browser-control-mcp.refs'), refKey = Symbol.for('browser-control-mcp.ref');
     const countKey = Symbol.for('browser-control-mcp.ref-count');
@@ -51,7 +52,7 @@ const OUTLINE: &str = r#"const outline = (root, maxDepth, maxChars) => {
     };
     const clean = text => (text || '').replace(/\s+/g, ' ').trim();
     const cut = (text, max) => text.length > max ? text.slice(0, max - 1) + '…' : text;
-    const lines = [];
+    const lines = [], foreign = [];
     let size = 0, truncated = false, pending = '', pendingDepth = 0;
     const push = (depth, text) => {
         if (truncated) return;
@@ -185,7 +186,10 @@ const OUTLINE: &str = r#"const outline = (root, maxDepth, maxChars) => {
         push(depth, parts.join(' ') + (value ? ': ' + JSON.stringify(cut(value, 100)) : ''));
         if (role === 'iframe') {
             let doc = null; try { doc = el.contentDocument; } catch (e) {}
-            if (!doc || !doc.body) push(depth + 1, 'text: (another origin: not readable)');
+            if (!doc || !doc.body) {
+                push(depth + 1, 'text: (another origin: not readable)');
+                if (!truncated) foreign.push(refOf(el));
+            }
             else if (depth < maxDepth) { walk(doc.body, depth + 1); flush(); }
             return;
         }
@@ -196,37 +200,56 @@ const OUTLINE: &str = r#"const outline = (root, maxDepth, maxChars) => {
     };
     if (root.nodeType === 9) walk(root.body || root.documentElement, 0); else visit(root, 0);
     flush();
-    return { lines, truncated };
+    return { lines, truncated, foreign };
 };"#;
 
 /// `snapshot`'s outline of the page, or of the element `selector` names
-/// (CSS, `>>>`, or a ref), at most `depth` levels deep and
-/// [`SNAPSHOT_MAX_CHARS`] long: `{status: 'missing'}` or
-/// `{status: 'ok', url, title, text, truncated}`.
-pub fn snapshot(selector: Option<&str>, depth: Option<u32>) -> String {
+/// (CSS, `>>>`, or a ref), at most `depth` levels deep and `max_chars`
+/// long: `{status: 'missing'}` or `{status: 'ok', url, title, text,
+/// truncated, foreign}` (`foreign`: see the outline).
+pub fn snapshot(selector: Option<&str>, depth: Option<u32>, max_chars: usize) -> String {
     let target = selector.map_or_else(|| "null".to_string(), string_literal);
     let depth = depth.unwrap_or(MAX_DEPTH);
     format!(
         "(() => {{ {RESOLVE} {OUTLINE} const target = {target}; \
          const root = target === null ? document : resolve(target); \
          if (!root) return {{ status: 'missing' }}; \
-         const result = outline(root, {depth}, {SNAPSHOT_MAX_CHARS}); \
-         return {{ status: 'ok', url: location.href, title: document.title, text: result.lines.join('\\n'), truncated: result.truncated }}; }})()"
+         const result = outline(root, {depth}, {max_chars}); \
+         return {{ status: 'ok', url: location.href, title: document.title, text: result.lines.join('\\n'), truncated: result.truncated, foreign: result.foreign }}; }})()"
     )
 }
 
 /// `find_in_snapshot`'s search of the whole page's outline: the lines that
 /// contain `text` (case-insensitive) or match `regex`, each under its
 /// ancestors, at most [`FIND_MAX_MATCHES`] of them (a `- …` line marks
-/// skipped lines): `{status: 'ok', url, matches, text}`. An invalid regex
-/// throws.
+/// skipped lines): `{status: 'ok', url, matches, text, foreign}` (the
+/// unreadable frames, see the outline). An invalid regex throws.
 pub fn find(text: Option<&str>, regex: Option<&str>) -> String {
+    format!(
+        "(() => {{ {OUTLINE} const {{ lines, foreign }} = outline(document, {MAX_DEPTH}, {FIND_MAX_CHARS}); \
+         return Object.assign({}, {{ foreign }}); }})()",
+        filter_call("lines", text, regex)
+    )
+}
+
+/// [`find`]'s search over `lines`, an outline the server put together (the
+/// page's with its frames of another origin spliced in).
+pub fn find_in_lines(lines: &[&str], text: Option<&str>, regex: Option<&str>) -> String {
+    let lines = serde_json::to_string(lines).unwrap_or_else(|_| "[]".to_string());
+    format!(
+        "(() => {{ const lines = {lines}; return {}; }})()",
+        filter_call("lines", text, regex)
+    )
+}
+
+/// The search of `find` over the outline lines `lines` (a JavaScript
+/// expression): `{status: 'ok', url, matches, text}`.
+fn filter_call(lines: &str, text: Option<&str>, regex: Option<&str>) -> String {
     let literal = |value: Option<&str>| value.map_or_else(|| "null".to_string(), string_literal);
     format!(
-        "(() => {{ {OUTLINE} const text = {}, pattern = {}; \
+        "((lines, text, pattern) => {{ \
          const re = pattern === null ? null : new RegExp(pattern); \
          const test = re ? content => re.test(content) : content => content.toLowerCase().includes(text.toLowerCase()); \
-         const {{ lines }} = outline(document, {MAX_DEPTH}, {FIND_MAX_CHARS}); \
          const depthOf = line => line.search(/\\S/) / 2; \
          const shown = new Set(); let matches = 0; \
          lines.forEach((line, i) => {{ \
@@ -240,7 +263,7 @@ pub fn find(text: Option<&str>, regex: Option<&str>) -> String {
            if (previous >= 0 && i !== previous + 1) out.push('  '.repeat(depthOf(lines[i])) + '- …'); \
            out.push(lines[i]); previous = i; \
          }} \
-         return {{ status: 'ok', url: location.href, matches, text: out.join('\\n') }}; }})()",
+         return {{ status: 'ok', url: location.href, matches, text: out.join('\\n') }}; }})({lines}, {}, {})",
         literal(text),
         literal(regex),
     )
@@ -262,7 +285,7 @@ mod tests {
     /// map the resolver reads, and never prints a password.
     #[test]
     fn outline_follows_the_rendered_tree() {
-        let expression = snapshot(None, None);
+        let expression = snapshot(None, None, SNAPSHOT_MAX_CHARS);
         for needle in [
             "node.shadowRoot",
             "assignedNodes({ flatten: true })",
@@ -340,16 +363,47 @@ mod tests {
         assert!(OUTLINE.contains("valueOf(el, role, name)"), "{OUTLINE}");
     }
 
+    /// ISSUE-27: the outline keeps the iframes it cannot read (their ref
+    /// and element) for the server, and takes a size budget; the search
+    /// runs the same filter over lines the server put together.
+    #[test]
+    fn unreadable_frames_are_kept_for_the_server() {
+        assert!(
+            OUTLINE.contains("if (!truncated) foreign.push(refOf(el));"),
+            "{OUTLINE}"
+        );
+        assert!(
+            OUTLINE.contains("return { lines, truncated, foreign };"),
+            "{OUTLINE}"
+        );
+        let budget = snapshot(None, None, 1234);
+        assert!(budget.contains("outline(root, 1000, 1234)"), "{budget}");
+        assert!(budget.contains("foreign: result.foreign"), "{budget}");
+        let lines = find_in_lines(&["- button \"a\" [ref=f2e1]"], Some("a"), None);
+        assert!(
+            lines.contains(r#"const lines = ["- button \"a\" [ref=f2e1]"]"#),
+            "{lines}"
+        );
+        let page = find(Some("a"), None);
+        assert!(
+            page.contains("const { lines, foreign } = outline(document"),
+            "{page}"
+        );
+    }
+
     /// ISSUE-4: the scope and the search reach JavaScript as one literal.
     #[test]
     fn scope_and_search_are_literals() {
         let crafted = r#"a"); window.__pwned = 1; ("#;
-        let scoped = snapshot(Some(crafted), Some(2));
+        let scoped = snapshot(Some(crafted), Some(2), SNAPSHOT_MAX_CHARS);
         assert_eq!(literal_after(&scoped, "const target = "), crafted);
         assert!(scoped.contains("outline(root, 2, "), "{scoped}");
         let found = find(Some(crafted), None);
-        assert_eq!(literal_after(&found, "const text = "), crafted);
-        assert!(found.contains(", pattern = null;"), "{found}");
-        assert!(find(None, Some("^button")).contains("pattern = \"^button\";"));
+        assert_eq!(literal_after(&found, "})(lines, "), crafted);
+        assert!(
+            found.contains(&format!("{}, null)", string_literal(crafted))),
+            "{found}"
+        );
+        assert!(find(None, Some("^button")).contains("})(lines, null, \"^button\")"));
     }
 }

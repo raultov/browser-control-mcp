@@ -188,9 +188,13 @@ impl WaitForTool {
     ) -> Result<CallToolResult, CallToolError> {
         let args: WaitForTool = crate::handler::parse_args(params)?;
         args.check_arguments()?;
-        let target =
-            crate::handler::resolve_target(handler, args.instance_id.clone(), args.tab_id.clone())
-                .await?;
+        let target = crate::handler::resolve_target_at(
+            handler,
+            args.instance_id.clone(),
+            args.tab_id.clone(),
+            args.selector.as_deref(),
+        )
+        .await?;
         let expression = args.expression();
         let waiting = args.poll(|| check(&target, &expression));
         target

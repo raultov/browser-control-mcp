@@ -25,7 +25,10 @@ impl HoverTool {
         handler: &McpHandler,
     ) -> Result<CallToolResult, CallToolError> {
         let ids = |a: &Self| (a.instance_id.clone(), a.tab_id.clone());
-        let (args, target) = crate::handler::args_and_target(params, handler, ids).await?;
+        let (args, target) = crate::handler::args_and_target(params, handler, ids, |a: &Self| {
+            Some(a.selector.clone())
+        })
+        .await?;
         let point = super::click_element::checked_point(&target, &args.selector, "hovered");
         let (x, y) = point.await?;
         let moved = json!({"type": "mouseMoved", "x": x, "y": y, "button": "none"});

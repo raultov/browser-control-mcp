@@ -65,6 +65,11 @@ pub(crate) fn dragged_reply(
 }
 
 impl DragTool {
+    /// Refuses `from` and `to` in different documents (see `frames::one_frame`).
+    pub(crate) fn check_frames(&self) -> Result<(), CallToolError> {
+        crate::handler::frames::one_frame([self.from.as_str(), self.to.as_str()]).map(|_| ())
+    }
+
     /// The viewport point to drop on, from the drop-point snippet
     /// (`util::js::drop_point`), or why there is none. The target is not
     /// scrolled: that could take the element to drag out of view.
@@ -86,7 +91,10 @@ impl DragTool {
         handler: &McpHandler,
     ) -> Result<CallToolResult, CallToolError> {
         let ids = |a: &Self| (a.instance_id.clone(), a.tab_id.clone());
-        let (args, target) = crate::handler::args_and_target(params, handler, ids).await?;
+        let (args, target) =
+            crate::handler::args_and_target(params, handler, ids, |a: &Self| Some(a.from.clone()))
+                .await?;
+        args.check_frames()?;
         let settled = json!({"expression": crate::util::js::ANIMATIONS_DONE, "awaitPromise": true, "returnByValue": true});
         crate::handler::send_or(&target, "Runtime.evaluate", settled, "CDP Error").await?;
         let start = super::click_element::checked_point(&target, &args.from, "dragged").await?;

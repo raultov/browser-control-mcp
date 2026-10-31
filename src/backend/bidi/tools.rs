@@ -66,6 +66,26 @@ pub(crate) async fn target(
     Ok((session, id, tab))
 }
 
+/// [`target`] acting on the element `at` names: in the frame of another
+/// origin it is inside (`f2e5`, `f2 >>> css`), if any (see
+/// `handler::frames`). A bare frame (`f2`) is no element.
+pub(crate) async fn target_at(
+    handler: &McpHandler,
+    ids: &TargetArgs,
+    at: Option<&str>,
+) -> Result<(Arc<FirefoxSession>, String, super::session::FirefoxTab), CallToolError> {
+    let inside = at.and_then(crate::handler::frames::in_frame);
+    if let (Some(inside), Some(selector)) = (&inside, at) {
+        inside.element(selector)?;
+    }
+    let (session, id, tab) = target(handler, ids).await?;
+    let Some(inside) = inside else {
+        return Ok((session, id, tab));
+    };
+    let tab = super::frames::enter_frame(tab, &session.frames, &id, inside.frame).await?;
+    Ok((session, id, tab))
+}
+
 /// `handle_dialog`: `browsingContext.handleUserPrompt` on the tab.
 pub(crate) async fn handle_dialog(
     params: CallToolRequestParams,
@@ -178,11 +198,11 @@ pub(crate) async fn reload(params: CallToolRequestParams, handler: &McpHandler) 
 /// at once if the page pauses in the debugger meanwhile (`unless_paused`).
 async fn on_page(
     handler: &McpHandler,
-    ids: &TargetArgs,
+    (ids, at): (&TargetArgs, Option<&str>),
     name: &str,
     call: impl AsyncFnOnce(&Tab) -> ToolResult,
 ) -> ToolResult {
-    let (session, id, tab) = target(handler, ids).await?;
+    let (session, id, tab) = target_at(handler, ids, at).await?;
     unless_paused(&session, &id, name, call(&tab.tab)).await
 }
 
@@ -190,7 +210,7 @@ async fn on_page(
 pub(crate) async fn evaluate_js(params: CallToolRequestParams, handler: &McpHandler) -> ToolResult {
     let args: EvaluateJsTool = parse_args(params)?;
     let ids = ids(&args.instance_id, &args.tab_id);
-    on_page(handler, &ids, "evaluate_js", async |tab| {
+    on_page(handler, (&ids, None), "evaluate_js", async |tab| {
         Ok(page::evaluate_js(tab, &args.expression).await?.reply())
     })
     .await
@@ -210,8 +230,16 @@ pub(crate) async fn inspect_dom(params: CallToolRequestParams, handler: &McpHand
 /// `snapshot`: the same outline and reply as on Chrome.
 pub(crate) async fn snapshot(params: CallToolRequestParams, handler: &McpHandler) -> ToolResult {
     let args: SnapshotTool = parse_args(params)?;
-    let (_, _, tab) = target(handler, &ids(&args.instance_id, &args.tab_id)).await?;
-    let outcome = page::run_snippet(&tab.tab, &args.expression()).await?;
+    let (session, id, tab) = target(handler, &ids(&args.instance_id, &args.tab_id)).await?;
+    let frames = super::frames::FirefoxFrames { page: tab.tab };
+    let (selector, depth) = (args.selector.as_deref(), args.depth);
+    let outcome = crate::handler::frames::TabFrames {
+        reader: &frames,
+        tables: &session.frames,
+        tab: &id,
+    }
+    .snapshot(selector, depth)
+    .await?;
     args.reply(&outcome)
 }
 
@@ -222,8 +250,17 @@ pub(crate) async fn find_in_snapshot(
 ) -> ToolResult {
     let args: FindInSnapshotTool = parse_args(params)?;
     args.check_arguments()?;
-    let (_, _, tab) = target(handler, &ids(&args.instance_id, &args.tab_id)).await?;
-    let outcome = page::run_snippet(&tab.tab, &args.expression()).await?;
+    let (session, id, tab) = target(handler, &ids(&args.instance_id, &args.tab_id)).await?;
+    let frames = super::frames::FirefoxFrames { page: tab.tab };
+    let search = (args.text.as_deref(), args.regex.as_deref());
+    let expression = args.expression();
+    let outcome = crate::handler::frames::TabFrames {
+        reader: &frames,
+        tables: &session.frames,
+        tab: &id,
+    }
+    .find(&expression, search)
+    .await?;
     args.reply(&outcome)
 }
 
@@ -231,10 +268,15 @@ pub(crate) async fn find_in_snapshot(
 pub(crate) async fn scroll(params: CallToolRequestParams, handler: &McpHandler) -> ToolResult {
     let args: ScrollTool = parse_args(params)?;
     let ids = ids(&args.instance_id, &args.tab_id);
-    on_page(handler, &ids, "scroll", async |tab| {
-        let outcome = page::run_snippet(tab, &args.expression()).await?;
-        args.reply(&outcome)
-    })
+    on_page(
+        handler,
+        (&ids, args.selector.as_deref()),
+        "scroll",
+        async |tab| {
+            let outcome = page::run_snippet(tab, &args.expression()).await?;
+            args.reply(&outcome)
+        },
+    )
     .await
 }
 
@@ -283,7 +325,8 @@ pub(crate) async fn save_pdf(params: CallToolRequestParams, handler: &McpHandler
 pub(crate) async fn wait_for(params: CallToolRequestParams, handler: &McpHandler) -> ToolResult {
     let args: WaitForTool = parse_args(params)?;
     args.check_arguments()?;
-    let (session, id, tab) = target(handler, &ids(&args.instance_id, &args.tab_id)).await?;
+    let ids = ids(&args.instance_id, &args.tab_id);
+    let (session, id, tab) = target_at(handler, &ids, args.selector.as_deref()).await?;
     let expression = args.expression();
     let checks = args.poll(|| page::poll_snippet(&tab.tab, &expression));
     let waiting = page::unless_prompt(&tab.tab, "wait_for", checks);
@@ -297,36 +340,57 @@ pub(crate) async fn click_element(
     handler: &McpHandler,
 ) -> ToolResult {
     let args: ClickElementTool = parse_args(params)?;
-    let input = InputTab::of(handler, ids(&args.instance_id, &args.tab_id)).await?;
-    let on = input.on();
     let options = args.options()?;
-    on.click(&args.selector, &options).await
+    let ids = ids(&args.instance_id, &args.tab_id);
+    on_input(handler, ids, Some(&args.selector), async |on| {
+        on.click(&args.selector, &options).await
+    })
+    .await
+}
+
+/// Runs `act` on the tab an input tool addresses (`ids`), in the frame
+/// `selector` is inside (see [`target_at`]).
+async fn on_input(
+    handler: &McpHandler,
+    ids: TargetArgs,
+    selector: Option<&str>,
+    act: impl AsyncFnOnce(OnTab<'_>) -> ToolResult,
+) -> ToolResult {
+    let input = InputTab::of(handler, ids, selector).await?;
+    act(input.on()).await
 }
 
 /// `hover`: the mouse moves to the point the shared snippet checked.
 pub(crate) async fn hover(params: CallToolRequestParams, handler: &McpHandler) -> ToolResult {
     let args: HoverTool = parse_args(params)?;
-    let input = InputTab::of(handler, ids(&args.instance_id, &args.tab_id)).await?;
-    let on = input.on();
-    on.hover(&args.selector).await
+    let ids = ids(&args.instance_id, &args.tab_id);
+    on_input(handler, ids, Some(&args.selector), async |on| {
+        on.hover(&args.selector).await
+    })
+    .await
 }
 
 /// `press_key`: BiDi key actions, the modifiers wrapping the key.
 pub(crate) async fn press_key(params: CallToolRequestParams, handler: &McpHandler) -> ToolResult {
     let args: PressKeyTool = parse_args(params)?;
     let key = args.key()?;
-    let input = InputTab::of(handler, ids(&args.instance_id, &args.tab_id)).await?;
-    let on = input.on();
-    on.press(args.selector.as_deref(), &key, &args.held()).await
+    let selector = args.selector.as_deref();
+    let ids = ids(&args.instance_id, &args.tab_id);
+    on_input(handler, ids, selector, async |on| {
+        on.press(selector, &key, &args.held()).await
+    })
+    .await
 }
 
 /// `fill_input`: replaces the element's content by typing, with the same
 /// checks and replies as on Chrome.
 pub(crate) async fn fill_input(params: CallToolRequestParams, handler: &McpHandler) -> ToolResult {
     let args: FillInputTool = parse_args(params)?;
-    let input = InputTab::of(handler, ids(&args.instance_id, &args.tab_id)).await?;
-    let on = input.on();
-    on.fill(&args.selector, &args.text, args.mode()).await
+    let ids = ids(&args.instance_id, &args.tab_id);
+    on_input(handler, ids, Some(&args.selector), async |on| {
+        on.fill(&args.selector, &args.text, args.mode()).await
+    })
+    .await
 }
 
 /// What `drag` says on Firefox when it replayed an HTML5 drag by script,
@@ -345,7 +409,13 @@ fn replayed_note(dropped: bool) -> String {
 /// `drag`: see [`OnTab::drag`].
 pub(crate) async fn drag(params: CallToolRequestParams, handler: &McpHandler) -> ToolResult {
     let args: DragTool = parse_args(params)?;
-    let input = InputTab::of(handler, ids(&args.instance_id, &args.tab_id)).await?;
+    args.check_frames()?;
+    let input = InputTab::of(
+        handler,
+        ids(&args.instance_id, &args.tab_id),
+        Some(&args.from),
+    )
+    .await?;
     let on = input.on();
     on.drag(&args).await
 }
@@ -355,7 +425,8 @@ pub(crate) async fn drag(params: CallToolRequestParams, handler: &McpHandler) ->
 pub(crate) async fn upload_file(params: CallToolRequestParams, handler: &McpHandler) -> ToolResult {
     let args: UploadFileTool = parse_args(params)?;
     let files = args.checked_paths(&handler.upload_roots)?;
-    let (session, id, tab) = target(handler, &ids(&args.instance_id, &args.tab_id)).await?;
+    let ids = ids(&args.instance_id, &args.tab_id);
+    let (session, id, tab) = target_at(handler, &ids, Some(&args.selector)).await?;
     let selector = &args.selector;
     let setting = async {
         let input = crate::util::js::file_input(selector);
@@ -371,7 +442,9 @@ pub(crate) async fn upload_file(params: CallToolRequestParams, handler: &McpHand
 pub(crate) async fn fill_form(params: CallToolRequestParams, handler: &McpHandler) -> ToolResult {
     let args: FillFormTool = parse_args(params)?;
     args.check_arguments()?;
-    let input = InputTab::of(handler, ids(&args.instance_id, &args.tab_id)).await?;
+    let at = crate::handler::frames::one_frame(args.fields.iter().map(|f| f.selector.as_str()))?;
+    let ids = ids(&args.instance_id, &args.tab_id);
+    let input = InputTab::of(handler, ids, at).await?;
     let on = input.on();
     args.fill_all(&on).await
 }
@@ -399,9 +472,14 @@ pub(crate) struct InputTab {
 }
 
 impl InputTab {
-    /// The tab `ids` address (see [`target`]).
-    pub(crate) async fn of(handler: &McpHandler, ids: TargetArgs) -> Result<Self, CallToolError> {
-        let (session, id, tab) = target(handler, &ids).await?;
+    /// The tab `ids` address, in the frame `at` is inside (see
+    /// [`target_at`]).
+    pub(crate) async fn of(
+        handler: &McpHandler,
+        ids: TargetArgs,
+        at: Option<&str>,
+    ) -> Result<Self, CallToolError> {
+        let (session, id, tab) = target_at(handler, &ids, at).await?;
         Ok(Self { session, id, tab })
     }
 
@@ -559,6 +637,7 @@ pub(crate) async fn capture_screenshot(
     handler: &McpHandler,
 ) -> ToolResult {
     let args: CaptureScreenshotTool = parse_args(params)?;
+    args.check_frame()?;
     let (_, _, tab) = target(handler, &ids(&args.instance_id, &args.tab_id)).await?;
     let format = capture_screenshot::image_format(args.format.as_deref())?;
     let full_page = args.full_page.unwrap_or(false);
@@ -1262,6 +1341,53 @@ mod tests {
             text.contains("dispatched by script along the path; the target accepted the drop"),
             "{text}"
         );
+        ts::stop(&handler).await;
+    }
+
+    /// ISSUE-27 (Firefox): a click on an element of a frame of another
+    /// origin is checked and performed in the frame's browsing context
+    /// (found from its iframe's window), in the frame's coordinates.
+    #[tokio::test]
+    async fn clicks_in_a_frame_go_to_its_context() {
+        // Given frame f1 of the tab, shown by the iframe e2 (context ctx-9)
+        let mock = MockFirefox::start(false).await.unwrap();
+        mock.bidi().respond_with("script.evaluate", |params| {
+            let expression = params["expression"].as_str().unwrap_or_default();
+            if expression.contains(".contentWindow") {
+                return evaluate_success(json!({"type": "window", "value": {"context": "ctx-9"}}));
+            }
+            evaluate_success(ts::remote(&json!({"status": "ok", "x": 5, "y": 7})))
+        });
+        mock.bidi().respond_with(
+            "browsingContext.getTree",
+            |_| json!({"contexts": [{"context": "ctx-9", "url": "http://b/", "children": null}]}),
+        );
+        let handler = ts::handler(&mock);
+        let session = handler.firefox(None).await.unwrap();
+        let (id, _) = session.tab(None).await.unwrap();
+        let entry = crate::handler::frames::FrameEntry {
+            key: "ctx-9".into(),
+            parent: 0,
+            owner: "e2".into(),
+        };
+        session.frames.with(&id, |table| table.register(entry));
+        // When f1e5 is clicked
+        click_element(call("click_element", json!({"selector": "f1e5"})), &handler)
+            .await
+            .unwrap();
+        // Then the frame was marked, and the click checked and sent in it
+        let evaluated = mock.bidi().commands_named("script.evaluate");
+        let last = &evaluated.last().unwrap().params;
+        assert_eq!(last["target"], json!({"context": "ctx-9"}));
+        assert!(evaluated.iter().any(|c| {
+            c.params["expression"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("browser-control-mcp.frame')] = 1")
+        }));
+        let clicked = &mock.bidi().commands_named("input.performActions")[0].params;
+        assert_eq!(clicked["context"], "ctx-9");
+        assert_eq!(clicked["actions"][0]["actions"][0]["x"], 5);
         ts::stop(&handler).await;
     }
 

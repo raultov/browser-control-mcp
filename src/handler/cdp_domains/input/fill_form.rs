@@ -95,9 +95,15 @@ impl FillFormTool {
     ) -> Result<CallToolResult, CallToolError> {
         let args: FillFormTool = crate::handler::parse_args(params)?;
         args.check_arguments()?;
-        let target =
-            crate::handler::resolve_target(handler, args.instance_id.clone(), args.tab_id.clone())
-                .await?;
+        let at =
+            crate::handler::frames::one_frame(args.fields.iter().map(|f| f.selector.as_str()))?;
+        let target = crate::handler::resolve_target_at(
+            handler,
+            args.instance_id.clone(),
+            args.tab_id.clone(),
+            at,
+        )
+        .await?;
         args.fill_all(&target).await
     }
 }

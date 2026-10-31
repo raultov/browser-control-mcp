@@ -84,6 +84,15 @@ mod e2e {
     knob.addEventListener('pointerup', e => { grab = null; const z = zone.getBoundingClientRect();
       window.__pointer = e.clientX >= z.left && e.clientX <= z.right && e.clientY >= z.top && e.clientY <= z.bottom ? 'dropped' : 'missed'; });
     </script></body></html>"#;
+    /// ISSUE-27: a page whose iframe is of another origin (`localhost`
+    /// against `127.0.0.1`, same port), and that frame's page.
+    const XO_TOP: &str = r#"<!doctype html><html><body><p>cross-origin host</p>
+    <iframe id="xo" width="400" height="160"></iframe>
+    <script>document.getElementById('xo').src = 'http://localhost:' + location.port + '/xo-inner.html';</script>
+    </body></html>"#;
+    const XO_INNER: &str = r#"<!doctype html><html><body>
+    <button id="ib" onclick="document.getElementById('out').textContent = 'xo clicked'">inner button</button>
+    <input id="iq" aria-label="inner field"><span id="out"></span></body></html>"#;
     const APP_JS: &str = "function appTarget(x) {\n  const y = x * 2;\n  return y + 1;\n}\nwindow.appTarget = appTarget;\nfetch('/api');\n";
 
     /// The WebSocket page: sends `hello-ws` to the echo server on `port`.
@@ -127,6 +136,8 @@ mod e2e {
             p if p.starts_with("/ws.html") => ("text/html", ws.to_string()),
             p if p.starts_with("/frame.html") => ("text/html", FRAME.to_string()),
             p if p.starts_with("/drag.html") => ("text/html", DRAG.to_string()),
+            p if p.starts_with("/xo-top.html") => ("text/html", XO_TOP.to_string()),
+            p if p.starts_with("/xo-inner.html") => ("text/html", XO_INNER.to_string()),
             _ => ("text/html", INDEX.to_string()),
         }
     }
@@ -1224,6 +1235,89 @@ mod e2e {
         ]
     }
 
+    /// ISSUE-27: snapshot reads a frame of another origin with frame refs,
+    /// and the input tools act in it through them.
+    fn cross_origin_steps(instance: &str, base: &str) -> Vec<Step> {
+        let i = json!(instance);
+        let at = |selector: &str| json!({"instance_id": i, "selector": selector});
+        vec![
+            (
+                "ISSUE-27 open a page with a frame of another origin",
+                "navigate",
+                json!({"instance_id": i, "url": format!("{base}/xo-top.html")}),
+                "Navigated to",
+            ),
+            (
+                "ISSUE-27 snapshot reads the frame",
+                "snapshot",
+                json!({"instance_id": i}),
+                "button \"inner button\" [ref=f1e1]",
+            ),
+            (
+                "ISSUE-27 click in the frame",
+                "click_element",
+                at("f1e1"),
+                "Successfully clicked",
+            ),
+            (
+                "ISSUE-27 fill a field in the frame",
+                "fill_input",
+                json!({"instance_id": i, "selector": "f1 >>> #iq", "text": "xo-typed"}),
+                "Successfully filled",
+            ),
+            (
+                "ISSUE-27 press a key in the frame",
+                "press_key",
+                json!({"instance_id": i, "selector": "f1e2", "key": "!"}),
+                "Pressed !",
+            ),
+        ]
+    }
+
+    /// ISSUE-27: what the cross-origin steps did shows in the frame's
+    /// outline and in a search; then the test page comes back.
+    fn cross_origin_result_steps(instance: &str, base: &str) -> Vec<Step> {
+        let i = json!(instance);
+        let at = |selector: &str| json!({"instance_id": i, "selector": selector});
+        vec![
+            (
+                "ISSUE-27 the frame holds the text",
+                "snapshot",
+                at("f1"),
+                "textbox \"inner field\" [ref=f1e2]: \"xo-typed!\"",
+            ),
+            (
+                "ISSUE-27 find_in_snapshot searches the frame",
+                "find_in_snapshot",
+                json!({"instance_id": i, "text": "xo clicked"}),
+                "1 matches",
+            ),
+            (
+                "ISSUE-27 a bare frame is no element",
+                "click_element",
+                at("f1"),
+                "!names a frame, not an element",
+            ),
+            (
+                "ISSUE-27 back to the test page",
+                "navigate",
+                json!({"instance_id": i, "url": format!("{base}/")}),
+                "Navigated to",
+            ),
+        ]
+    }
+
+    /// The steps that leave the test page and come back to it.
+    fn other_page_steps(instance: &str, base: &str) -> Vec<Step> {
+        [
+            drag_steps(instance, base),
+            cross_origin_steps(instance, base),
+            cross_origin_result_steps(instance, base),
+            history_steps(instance, base),
+        ]
+        .concat()
+    }
+
     /// ISSUE-31: navigate moves back and forward in the tab's history and
     /// ends on the test page; past the last entry it fails without moving.
     fn history_steps(instance: &str, base: &str) -> Vec<Step> {
@@ -1485,8 +1579,7 @@ mod e2e {
             observation_steps("e2e"),
             network_steps("e2e"),
             websocket_steps("e2e", &base),
-            drag_steps("e2e", &base),
-            history_steps("e2e", &base),
+            other_page_steps("e2e", &base),
             debugger_steps("e2e", &base),
             closing_steps(browser),
         ];
@@ -1578,8 +1671,7 @@ mod e2e {
             storage_steps("default"),
             emulate_steps("default", variable.contains("CHROME")),
             network_steps("default"),
-            drag_steps("default", &base),
-            history_steps("default", &base),
+            other_page_steps("default", &base),
             debugger_steps("default", &base),
         ];
         mcp.steps(all.concat()).await;

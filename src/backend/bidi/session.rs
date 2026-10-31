@@ -220,6 +220,9 @@ pub(crate) struct FirefoxSession {
     /// Set when Firefox died under the session: calls report it instead of
     /// launching a new one, until `stop` (restart_browser, stop_browser).
     pub(crate) crashed: std::sync::atomic::AtomicBool,
+    /// The frames of another origin `snapshot` read, per tab (see
+    /// `handler::frames`).
+    pub(crate) frames: crate::handler::frames::FrameTables,
 }
 
 impl FirefoxSession {
@@ -238,6 +241,7 @@ impl FirefoxSession {
             proxy_intercept: Mutex::new(None),
             pump_client: RwLock::new(None),
             crashed: Default::default(),
+            frames: Default::default(),
         }
     }
 

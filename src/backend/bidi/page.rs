@@ -285,6 +285,22 @@ async fn measured(tab: &Tab, remote: &Value) -> Result<Evaluation, BackendError>
 }
 
 /// The value of a `script.evaluate` reply, or its exception as an error.
+/// The browsing context of the window `expression` evaluates to (an
+/// iframe's `contentWindow`: BiDi serializes a window as its context), or
+/// `None` when it is no window.
+pub(crate) async fn window_context(
+    tab: &Tab,
+    expression: &str,
+) -> Result<Option<String>, BackendError> {
+    let reply = evaluate_raw(tab, expression, "none").await?;
+    thrown(&reply)?;
+    let window = &reply["result"];
+    Ok((window["type"] == "window")
+        .then(|| window.pointer("/value/context").and_then(Value::as_str))
+        .flatten()
+        .map(str::to_string))
+}
+
 pub(crate) fn outcome(reply: &Value) -> Result<Value, BackendError> {
     thrown(reply)?;
     Ok(remote_value::to_json(&reply["result"]))

@@ -8,7 +8,7 @@ use serde_json::Value;
 
 #[macros::mcp_tool(
     name = "snapshot",
-    description = "Outlines the page for acting on it: one line per element with a role (button, link, textbox, heading...), its name, states, value and a ref ([ref=e12]), indented under its parent; through open shadow roots and same-origin iframes, hidden elements left out, password values never shown; at most 50000 characters. Pass a ref as the selector of the input tools; refs last until the page navigates. Computed in the page, the same on Chrome and Firefox."
+    description = "Outlines the page for acting on it: one line per element with a role (button, link, textbox, heading...), its name, states, value and a ref ([ref=e12]), indented under its parent; through open shadow roots and iframes (a frame of another origin is marked [frame=f2], its refs are f2e5; selector 'f2' outlines it alone), hidden elements left out, password values never shown; at most 50000 characters. Pass a ref as the selector of the input tools; refs last until the page navigates. Computed in the page, the same on Chrome and Firefox."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct SnapshotTool {
@@ -25,7 +25,7 @@ pub struct SnapshotTool {
 impl SnapshotTool {
     /// The JavaScript that outlines the page (shared by every browser).
     pub(crate) fn expression(&self) -> String {
-        crate::util::outline::snapshot(self.selector.as_deref(), self.depth)
+        crate::util::outline::snapshot(self.selector.as_deref(), self.depth, SNAPSHOT_MAX_CHARS)
     }
 
     /// The reply from the outline (shared by every browser).
@@ -52,28 +52,30 @@ impl SnapshotTool {
         Ok(CallToolResult::text_content(vec![reply.into()]))
     }
 
+    /// The outline of the page with its frames of another origin in place
+    /// (see `handler::frames`).
     pub async fn handle(
         params: CallToolRequestParams,
         handler: &McpHandler,
     ) -> Result<CallToolResult, CallToolError> {
-        crate::handler::handle_snippet_tool::<Self>(params, handler).await
-    }
-}
-
-impl crate::handler::SnippetTool for SnapshotTool {
-    fn target_args(&self) -> crate::handler::TargetArgs {
-        crate::handler::TargetArgs {
-            instance_id: self.instance_id.clone(),
-            tab_id: self.tab_id.clone(),
-        }
-    }
-
-    fn snippet(&self) -> String {
-        self.expression()
-    }
-
-    fn answer(&self, outcome: &Value) -> Result<CallToolResult, CallToolError> {
-        self.reply(outcome)
+        use crate::handler::cdp_domains::frame_scope::frames_of;
+        let args: SnapshotTool = crate::handler::parse_args(params)?;
+        let session = handler.session(args.instance_id.clone()).await?;
+        let target = session.target(args.tab_id.clone()).await?;
+        let outcome = match frames_of(&target) {
+            Some((frames, tab)) => {
+                let (selector, depth) = (args.selector.as_deref(), args.depth);
+                crate::handler::frames::TabFrames {
+                    reader: &frames,
+                    tables: &session.frames,
+                    tab: &tab,
+                }
+                .snapshot(selector, depth)
+                .await?
+            }
+            None => crate::handler::snippet_value(&target, &args.expression()).await?,
+        };
+        args.reply(&outcome)
     }
 }
 

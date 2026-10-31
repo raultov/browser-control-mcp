@@ -43,9 +43,13 @@ impl PressKeyTool {
     ) -> Result<CallToolResult, CallToolError> {
         let args: PressKeyTool = crate::handler::parse_args(params)?;
         let key = args.key()?;
-        let target =
-            crate::handler::resolve_target(handler, args.instance_id.clone(), args.tab_id.clone())
-                .await?;
+        let target = crate::handler::resolve_target_at(
+            handler,
+            args.instance_id.clone(),
+            args.tab_id.clone(),
+            args.selector.as_deref(),
+        )
+        .await?;
         let selector = args.selector.as_deref();
         if let Some(selector) = selector {
             let focus = crate::util::js::focus(selector);

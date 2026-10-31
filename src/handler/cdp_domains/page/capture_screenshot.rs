@@ -31,6 +31,7 @@ impl CaptureScreenshotTool {
         handler: &McpHandler,
     ) -> Result<CallToolResult, CallToolError> {
         let args: CaptureScreenshotTool = crate::handler::parse_args(params)?;
+        args.check_frame()?;
         let target =
             crate::handler::resolve_target(handler, args.instance_id.clone(), args.tab_id.clone())
                 .await?;
@@ -69,6 +70,21 @@ impl CaptureScreenshotTool {
             CallToolError::from_message("No data returned from Page.captureScreenshot")
         })?;
         Ok(image_reply(base64_data.to_string(), format, note))
+    }
+}
+
+impl CaptureScreenshotTool {
+    /// Refuses an element inside a frame of another origin: its box is
+    /// measured in the frame, not in the page the capture is taken of.
+    pub(crate) fn check_frame(&self) -> Result<(), CallToolError> {
+        match self.selector.as_deref() {
+            Some(selector) if crate::util::js::is_frame_selector(selector) => {
+                Err(CallToolError::from_message(format!(
+                    "'{selector}' is inside a frame of another origin, which capture_screenshot cannot clip to: pass the ref of its iframe element instead."
+                )))
+            }
+            _ => Ok(()),
+        }
     }
 }
 

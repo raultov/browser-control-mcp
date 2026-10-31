@@ -37,6 +37,7 @@ Tokens are estimated as characters / 4 for every server.
 | Firefox | **✓ next to Chrome, same tools** | ✓ one browser per server | ✗ |
 | Several browsers and instances at once | **✓** | ✗ | ✗ |
 | Selectors | CSS, snapshot refs, `host >>> inner` into shadow roots and iframes | CSS, snapshot refs | snapshot refs only |
+| Frames of another origin (payment forms, embedded editors) | ✓ in the snapshot, refs `f2e5` for every input tool | ✓ refs `f1e5` | ✗ |
 | Snapshot of a long page | **bounded at 50 000 characters**, `find_in_snapshot` searches the rest | unbounded | unbounded |
 | Waits for the page to react after an action | ✓ ~50 ms when nothing reacts | ✓ ~500 ms | ✓ ~200 ms |
 | Clicking a covered or hidden element | **fails at once, naming the overlay** | fails after a 5 s timeout | reports success (the overlay gets the click) |
@@ -54,8 +55,8 @@ Tokens are estimated as characters / 4 for every server.
 
 | Task | browser-control-mcp | Playwright MCP | chrome-devtools-mcp |
 | --- | --- | --- | --- |
-| Tool list in context, default tools | 6 430 tokens | 5 330 tokens | 7 770 tokens |
-| Tool list in context, every opt-in tool on | 9 880 tokens | 12 040 tokens | not measured (optional categories) |
+| Tool list in context, default tools | 6 450 tokens | 5 330 tokens | 7 770 tokens |
+| Tool list in context, every opt-in tool on | 9 910 tokens | 12 040 tokens | not measured (optional categories) |
 | Snapshot of Hacker News | **4 588 tokens** | 12 356 tokens | 6 869 tokens |
 | Snapshot of Wikipedia "Web browser" | **12 643 tokens** (cut, searchable) | 34 349 tokens | 27 656 tokens |
 | Snapshot of MDN `<input>` | **12 625 tokens** (cut, searchable) | 158 077 tokens | 76 654 tokens |
@@ -124,7 +125,7 @@ see the note.
 | `emulate` | ✓ | partial | `emulation` group; `width`/`height`, `device_scale_factor`, `mobile` (touch), `color_scheme`, `reduced_motion`, `forced_colors`, `media` (`print`), `reset`; answers what the page now sees; Firefox: viewport and device pixel ratio only (BiDi has no media or touch emulation yet; those options fail naming them) |
 | `wait_for` | ✓ | ✓ | waits (checking every 100 ms, at most 30 s) until a visible text appears or is gone, a selector is `visible` / `hidden` / `attached` / `detached`, or the URL contains a text; a dialog or debugger pause ends the wait at once |
 | `inspect_dom` | ✓ | ✓ | includes open shadow roots and same-origin iframes (cross-origin ones are noted); at most 100 000 characters without `query` (cut in the page) |
-| `snapshot` | ✓ | ✓ | outline of the page: role, name, states, value and a ref (`e12`) per element, through open shadow roots and same-origin iframes; tables without headers (`th`, `thead`, `caption`) are layout and leave only their content, and a cell is named by its text only when it holds nothing else; comboboxes, spinbuttons and sliders built with ARIA show their value (the field's text, `aria-valuetext` or `aria-valuenow`, the option a button-like combobox shows); an element that is only clickable (a handler or a pointer cursor) is one named line, unless it holds links, buttons or fields, which are listed under it; at most 50 000 characters (`selector` and `depth` narrow it); the same JavaScript on both browsers |
+| `snapshot` | ✓ | ✓ | outline of the page: role, name, states, value and a ref (`e12`) per element, through open shadow roots and same-origin iframes; frames of another origin are read too (at most 20, 5 deep), their iframe marked `[frame=f2]` and their refs prefixed (`f2e5`), and `selector: "f2"` outlines one; tables without headers (`th`, `thead`, `caption`) are layout and leave only their content, and a cell is named by its text only when it holds nothing else; comboboxes, spinbuttons and sliders built with ARIA show their value (the field's text, `aria-valuetext` or `aria-valuenow`, the option a button-like combobox shows); an element that is only clickable (a handler or a pointer cursor) is one named line, unless it holds links, buttons or fields, which are listed under it; at most 50 000 characters (`selector` and `depth` narrow it); the same JavaScript on both browsers |
 | `find_in_snapshot` | ✓ | ✓ | `text` (case-insensitive) or `regex` over the whole outline; matching lines under their ancestors, at most 20 |
 | `save_pdf` | ✓ | ✓ | `files` group; prints the tab as the browser's print does (`landscape`, `print_background`, `scale` 0.1–2, `page_ranges` like `1-3, 5`); with `path` (an absolute `.pdf` under the upload roots) writes the file and answers `{path, bytes, pages}`, else returns the PDF as an embedded `application/pdf` resource (at most 5 MB); Chrome `Page.printToPDF`, Firefox `browsingContext.print` |
 | `capture_screenshot` | ✓ | ✓ | `format` `png`, `jpeg` (or `jpg`) or `webp`; `full_page` at most 16 384 px per side (a text note says when cut); `selector` captures one element (CSS, `host >>> inner` or a snapshot ref), scrolled into view, whole even when taller than the viewport |
@@ -410,7 +411,13 @@ claude mcp add browser-control-mcp -- npx -y @raultov/browser-control-mcp
   their ancestors. The `selector` of `click_element`, `fill_input`,
   `scroll` and `wait_for` takes such a ref, a CSS selector, or
   `host >>> inner` to reach into an open shadow root or a same-origin
-  iframe (`#checkout >>> #card-number`, chainable). An element keeps its ref
+  iframe (`#checkout >>> #card-number`, chainable). A frame of another
+  origin (a payment form, an embedded editor) is read as well, through its
+  own target on Chrome and its own browsing context on Firefox: its iframe
+  line says `[frame=f2]` and its elements have refs such as `f2e5`, which
+  every selector argument takes, as does `f2 >>> css`; the input tools then
+  check and act in that frame (one call acts in one document: `fill_form`
+  and `drag` refuse selectors of two frames). An element keeps its ref
   in later snapshots while it is in the page; refs end when the page
   navigates (a stale ref fails saying so). Roles and names are computed in
   the page, an approximation of the browser's accessibility tree that is
@@ -613,6 +620,10 @@ incompatible:
 - `get_network_logs` with `include_details: true` has no total size limit (each
   Firefox body is capped at 2 MB): use `url_filter` on busy pages.
 - The Docker image is amd64 only.
+- Frames of another origin: `evaluate_js` runs in the page only, and
+  `capture_screenshot` cannot clip to an element inside such a frame (pass
+  the iframe's ref instead); `snapshot` reads at most 20 of them, 5 deep;
+  the coordinates in the replies of the input tools are the frame's.
 
 ## Untested
 

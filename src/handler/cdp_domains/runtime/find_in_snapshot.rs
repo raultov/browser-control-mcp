@@ -65,12 +65,25 @@ impl FindInSnapshotTool {
         params: CallToolRequestParams,
         handler: &McpHandler,
     ) -> Result<CallToolResult, CallToolError> {
+        use crate::handler::cdp_domains::frame_scope::frames_of;
         let args: FindInSnapshotTool = crate::handler::parse_args(params)?;
         args.check_arguments()?;
-        let target =
-            crate::handler::resolve_target(handler, args.instance_id.clone(), args.tab_id.clone())
-                .await?;
-        let outcome = crate::handler::snippet_value(&target, &args.expression()).await?;
+        let session = handler.session(args.instance_id.clone()).await?;
+        let target = session.target(args.tab_id.clone()).await?;
+        let outcome = match frames_of(&target) {
+            Some((frames, tab)) => {
+                let search = (args.text.as_deref(), args.regex.as_deref());
+                let expression = args.expression();
+                crate::handler::frames::TabFrames {
+                    reader: &frames,
+                    tables: &session.frames,
+                    tab: &tab,
+                }
+                .find(&expression, search)
+                .await?
+            }
+            None => crate::handler::snippet_value(&target, &args.expression()).await?,
+        };
         args.reply(&outcome)
     }
 }

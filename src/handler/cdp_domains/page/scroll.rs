@@ -92,6 +92,10 @@ impl ScrollTool {
 }
 
 impl crate::handler::SnippetTool for ScrollTool {
+    fn at(&self) -> Option<&str> {
+        self.selector.as_deref()
+    }
+
     fn target_args(&self) -> crate::handler::TargetArgs {
         crate::handler::TargetArgs {
             instance_id: self.instance_id.clone(),

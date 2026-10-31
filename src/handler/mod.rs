@@ -3,6 +3,7 @@ pub mod chrome_instance;
 pub(crate) mod debugging;
 pub(crate) mod dialogs;
 pub(crate) mod evaluation;
+pub(crate) mod frames;
 pub(crate) mod insights;
 pub(crate) mod interruption;
 pub(crate) mod navigation;
@@ -530,16 +531,53 @@ pub(crate) async fn snippet_value(
 }
 
 /// A tool's arguments and the Chrome target they address (`ids` reads its
-/// `instance_id` and `tab_id`).
+/// `instance_id` and `tab_id`, `at` the selector that decides the frame it
+/// acts in, see [`resolve_target_at`]).
 pub(crate) async fn args_and_target<T: serde::de::DeserializeOwned>(
     params: CallToolRequestParams,
     handler: &McpHandler,
     ids: impl Fn(&T) -> (Option<String>, Option<String>),
+    at: impl Fn(&T) -> Option<String>,
 ) -> std::result::Result<(T, cdp_domains::cdp_target::CdpTarget), CallToolError> {
     let args: T = parse_args(params)?;
     let (instance_id, tab_id) = ids(&args);
-    let target = resolve_target(handler, instance_id, tab_id).await?;
+    let selector = at(&args);
+    let target = resolve_target_at(handler, instance_id, tab_id, selector.as_deref()).await?;
     Ok((args, target))
+}
+
+/// The target of a call acting on the element `at` names: the tab's, or,
+/// when `at` is inside a frame of another origin (`f2e5`, `f2 >>> css`),
+/// the tab entered into that frame. A bare frame (`f2`) is no element.
+pub(crate) async fn resolve_target_at(
+    handler: &McpHandler,
+    instance_id: Option<String>,
+    tab_id: Option<String>,
+    at: Option<&str>,
+) -> std::result::Result<cdp_domains::cdp_target::CdpTarget, CallToolError> {
+    let inside = at.and_then(frames::in_frame);
+    if let (Some(inside), Some(selector)) = (&inside, at) {
+        inside.element(selector)?;
+    }
+    resolve_target_in(handler, instance_id, tab_id, inside.map(|i| i.frame)).await
+}
+
+/// The target of a call in frame `frame` of the tab (`None`: its page).
+pub(crate) async fn resolve_target_in(
+    handler: &McpHandler,
+    instance_id: Option<String>,
+    tab_id: Option<String>,
+    frame: Option<usize>,
+) -> std::result::Result<cdp_domains::cdp_target::CdpTarget, CallToolError> {
+    // Two statements: the error type is not `Send` across an await.
+    let session = handler.session(instance_id).await?;
+    let target = session.target(tab_id).await?;
+    match frame {
+        None => Ok(target),
+        Some(number) => {
+            cdp_domains::frame_scope::enter_frame(target, &session.frames, number).await
+        }
+    }
 }
 
 /// A tool that evaluates one shared `util::js` snippet in the page and
@@ -551,6 +589,11 @@ pub(crate) trait SnippetTool: serde::de::DeserializeOwned {
     /// Why the arguments make no sense, checked before any browser work.
     fn check(&self) -> std::result::Result<(), CallToolError> {
         Ok(())
+    }
+    /// The selector that decides the frame it runs in (see
+    /// [`resolve_target_at`]).
+    fn at(&self) -> Option<&str> {
+        None
     }
     /// The snippet.
     fn snippet(&self) -> String;
@@ -569,7 +612,7 @@ pub(crate) async fn handle_snippet_tool<T: SnippetTool>(
     let args: T = parse_args(params)?;
     args.check()?;
     let ids = args.target_args();
-    let target = resolve_target(handler, ids.instance_id, ids.tab_id).await?;
+    let target = resolve_target_at(handler, ids.instance_id, ids.tab_id, args.at()).await?;
     let outcome = snippet_value(&target, &args.snippet()).await?;
     args.answer(&outcome)
 }
@@ -693,6 +736,8 @@ pub(crate) struct BrowserSession {
     /// Set while the session-level connection has its debugger enabled;
     /// turned off once a tab is registered (see `retire_fallback_debugger`).
     fallback_debugger: std::sync::atomic::AtomicBool,
+    /// The frames of another origin `snapshot` read, per tab (`frames`).
+    pub(crate) frames: frames::FrameTables,
 }
 
 impl BrowserSession {
@@ -735,6 +780,7 @@ impl BrowserSession {
             enable_webmcp,
             first_tab_pending: Default::default(),
             fallback_debugger: Default::default(),
+            frames: Default::default(),
         }
     }
 

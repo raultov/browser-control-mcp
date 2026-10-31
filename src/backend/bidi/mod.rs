@@ -6,6 +6,7 @@
 //! and routes them by browsing context into per-tab state (the pump).
 
 pub(crate) mod debugger;
+pub(crate) mod frames;
 pub(crate) mod grip;
 pub(crate) mod launch;
 pub(crate) mod page;
