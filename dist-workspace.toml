@@ -23,6 +23,8 @@ tap = "raultov/homebrew-tap"
 # (the plain "browser-control-mcp" name on npm is taken by a third party)
 npm-scope = "@raultov"
 publish-jobs = ["homebrew", "npm"]
+# Post each release to the Discord server's #announcements channel
+post-announce-jobs = ["./announce-discord"]
 # Beta versions (0.1.1-beta.1) are published to npm and Homebrew too
 publish-prereleases = true
 # Pin the actions dist uses by commit SHA

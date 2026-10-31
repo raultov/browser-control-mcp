@@ -1,0 +1,76 @@
+# Posts each release to the Discord server's #announcements channel. Run by
+# release.yml after its announce job (dist's post-announce-jobs), so only a
+# release that was built, hosted and published is announced. A separate
+# workflow `on: release` would never run: dist creates the release with
+# GITHUB_TOKEN, whose events start no other workflow. GitHub's own webhook
+# to Discord's /github endpoint does not work either: Discord answers
+# release events with 400 "Cannot send an empty message". Run by hand
+# (workflow_dispatch) it announces an existing release again, from the
+# dist-manifest.json the release carries (the same data as the plan).
+name: Announce on Discord
+
+on:
+  workflow_call:
+    inputs:
+      plan:
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to announce (e.g. v0.6.0-beta.10)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  discord:
+    runs-on: ubuntu-22.04
+    env:
+      PLAN: ${{ inputs.plan }}
+      TAG: ${{ inputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+    steps:
+      - name: Post the release to #announcements
+        run: |
+          if [ -z "$DISCORD_WEBHOOK_URL" ]; then
+            echo "::notice::DISCORD_WEBHOOK_URL is not set: nothing announced"
+            exit 0
+          fi
+          if [ -z "$PLAN" ]; then
+            PLAN=$(gh release download "$TAG" -R "$GITHUB_REPOSITORY" -p dist-manifest.json -O -)
+          fi
+          # The summary paragraph above the first "###" of the CHANGELOG
+          # section, unwrapped; an embed description holds up to 4096 chars.
+          echo "$PLAN" | jq '
+            (.releases[0].hosting.github) as $gh
+            | ("\n" + (.announcement_changelog // "") | split("\n### ")[0]
+               | sub("^\\s+"; "") | sub("\\s+$"; "")
+               | split("\n\n") | map(gsub("\n"; " ")) | join("\n\n")) as $summary
+            | (if ($summary | length) > 3000 then $summary[:3000] + "…" else $summary end) as $summary
+            | {
+                username: "browser-control-mcp releases",
+                allowed_mentions: { parse: [] },
+                embeds: [{
+                  title: ("browser-control-mcp " + .announcement_title),
+                  url: ("https://github.com/" + $gh.owner + "/" + $gh.repo + "/releases/tag/" + .announcement_tag),
+                  color: 2201331,
+                  description: ((if $summary == "" then "" else $summary + "\n\n" end)
+                    + "**Install or upgrade**\n"
+                    + "```\nbrew install raultov/tap/browser-control-mcp\n"
+                    + "npm install -g @raultov/browser-control-mcp\n"
+                    + "cargo install browser-control-mcp --version " + .releases[0].app_version + "\n```")
+                }]
+              }' > payload.json
+          # The webhook URL is a secret: never echoed; curl's errors do not
+          # print it, and Discord's error body does not hold it.
+          status=$(curl -sS --retry 3 -o response.json -w '%{http_code}' \
+            -H 'Content-Type: application/json' --data @payload.json "$DISCORD_WEBHOOK_URL")
+          if [ "$status" -ge 300 ]; then
+            echo "::error::Discord answered HTTP $status: $(cat response.json)"
+            exit 1
+          fi
+          echo "Announced $(jq -r '.embeds[0].title' payload.json) on Discord (HTTP $status)"

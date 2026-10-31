@@ -404,3 +404,12 @@ jobs:
         with:
           persist-credentials: false
           submodules: recursive
+
+  custom-announce-discord:
+    needs:
+      - plan
+      - announce
+    uses: ./.github/workflows/announce-discord.yml
+    with:
+      plan: ${{ needs.plan.outputs.val }}
+    secrets: inherit

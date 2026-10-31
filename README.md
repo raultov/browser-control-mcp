@@ -19,7 +19,7 @@ chrome-devtools-mcp with runtime JavaScript debugging on both browsers.
 > replies may change in incompatible ways before 1.0. Please report problems
 > in the [issues](https://github.com/raultov/browser-control-mcp/issues).
 
-💬 Questions, ideas or feedback: join us on [Discord](https://discord.gg/JDfcmD73A).
+💬 Questions, ideas or feedback: join us on [Discord](https://discord.gg/JDfcmD73A), where every release is announced in #announcements.
 
 ## Comparison with Playwright MCP and chrome-devtools-mcp
 
