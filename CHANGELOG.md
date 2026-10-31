@@ -12,6 +12,12 @@ from a copy of its code: entries describe the differences from that release.
 
 ### Fixed
 
+- On Chrome `evaluate_js` answers at once while the page is paused in the
+  debugger: it waited 10 s and failed with "no result after 10 s", even
+  for `1 + 1`, because Chrome cannot await an evaluation while no
+  microtask runs. It now evaluates without awaiting, reads a settled promise from
+  its state, and fails at once on a pending one, saying to `resume` or use
+  `evaluate_on_call_frame`. (#16)
 - On Chrome a pause's location names its script: `resume`, `step_over`,
   the `{paused, location}` of `click_element` and `press_key`, and the
   "The page paused in the debugger at ..." message of an interrupted call

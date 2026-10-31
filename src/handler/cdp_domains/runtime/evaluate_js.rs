@@ -24,6 +24,9 @@ pub struct EvaluateJsTool {
 /// The object group of `evaluate_js`'s remote objects, released after each call.
 const GROUP: &str = "browser-control-evaluate";
 
+/// Why a promise evaluated while the page is paused has no value.
+const PENDING_WHILE_PAUSED: &str = "the expression returned a promise that cannot settle while the page is paused in the debugger: call 'resume' first, or read the paused frame with 'evaluate_on_call_frame'";
+
 impl EvaluateJsTool {
     pub async fn handle(
         params: CallToolRequestParams,
@@ -31,7 +34,10 @@ impl EvaluateJsTool {
     ) -> Result<CallToolResult, CallToolError> {
         let args: EvaluateJsTool = crate::handler::parse_args(params)?;
         let target = crate::handler::resolve_target(handler, args.instance_id, args.tab_id).await?;
-        let params = json!({"expression": args.expression, "awaitPromise": true});
+        // Chrome cannot await a promise while the page is paused in the
+        // debugger (no microtask runs): the call would wait for the timeout.
+        let paused = target.is_paused().await;
+        let params = json!({"expression": args.expression, "awaitPromise": !paused});
         let evaluated = evaluate_remote(
             &target,
             "Runtime.evaluate",
@@ -49,20 +55,25 @@ impl EvaluateJsTool {
 /// `Debugger.evaluateOnCallFrame`) by reference, so functions, nodes and
 /// symbols keep their description, then reads objects that have a JSON form
 /// by value; the remote objects are released afterwards. A thrown exception
-/// is an error worded by `thrown`. Errors are text: the tool error type is
-/// not `Send` across the release.
+/// is an error worded by `thrown`. A promise not awaited (`awaitPromise:
+/// false`, the page being paused) is read from its state. Errors are text:
+/// the tool error type is not `Send` across the release.
 pub(crate) async fn evaluate_remote(
     target: &CdpTarget,
     method: &str,
     mut params: Value,
     thrown: fn(&Value) -> String,
 ) -> Result<Evaluation, String> {
+    let unawaited = params["awaitPromise"] == json!(false);
     params["returnByValue"] = json!(false);
     params["objectGroup"] = json!(GROUP);
     params["timeout"] = json!(evaluation::EVAL_TIMEOUT_MS);
     let started = tokio::time::Instant::now();
     let outcome = match target.send_raw_command(method, params).await {
-        Ok(reply) => read_outcome(target, reply.result.unwrap_or_default(), thrown).await,
+        Ok(reply) => {
+            let result = reply.result.unwrap_or_default();
+            read_outcome(target, result, thrown, unawaited).await
+        }
         // A dialog blocks the page: releasing would wait for a timeout.
         Err(e) if crate::handler::dialogs::interrupted(&e) => {
             return Err(crate::handler::cdp_failure("CDP Error", &e));
@@ -94,16 +105,22 @@ fn evaluation_failure(error: &cdp_browser_lite::CdpError, elapsed: std::time::Du
     }
 }
 
-/// The evaluation of a reply, or its exception as an error.
+/// The evaluation of a reply, or its exception as an error; an `unawaited`
+/// promise stands for its value.
 async fn read_outcome(
     target: &CdpTarget,
-    result: Value,
+    mut result: Value,
     thrown: fn(&Value) -> String,
+    unawaited: bool,
 ) -> Result<Evaluation, String> {
     if let Some(details) = result.get("exceptionDetails") {
         return Err(thrown(details));
     }
-    let remote = &result["result"];
+    let mut remote = result["result"].take();
+    if unawaited && remote["subtype"] == "promise" {
+        remote = settled(target, &remote).await?;
+    }
+    let remote = &remote;
     let by_value = match remote.get("objectId").and_then(Value::as_str) {
         Some(id) if evaluation::has_json_form(remote) => by_value(target, id).await,
         _ => None,
@@ -114,6 +131,35 @@ async fn read_outcome(
     let text = |key: &str| remote.get(key).and_then(Value::as_str);
     let kind = text("type").unwrap_or("object");
     Ok(evaluation::from_measured(kind, text("subtype"), read))
+}
+
+/// The value of a promise that was not awaited, read from its internal
+/// state: a rejection fails with its reason, and a pending promise fails
+/// because it cannot settle while the page is paused.
+async fn settled(target: &CdpTarget, promise: &Value) -> Result<Value, String> {
+    let params = json!({"objectId": promise["objectId"], "ownProperties": true});
+    let reply = target
+        .send_raw_command("Runtime.getProperties", params)
+        .await
+        .map_err(|e| crate::handler::cdp_failure("CDP Error", &e))?
+        .result
+        .unwrap_or_default();
+    let internal = |name: &str| {
+        reply["internalProperties"]
+            .as_array()
+            .and_then(|slots| slots.iter().find(|slot| slot["name"] == name))
+            .map(|slot| slot["value"].clone())
+            .unwrap_or_default()
+    };
+    let value = internal("[[PromiseResult]]");
+    match internal("[[PromiseState]]")["value"].as_str() {
+        Some("fulfilled") => Ok(value),
+        Some("rejected") => {
+            let reason = evaluation::cdp_thrown(&json!({"exception": value}));
+            Err(format!("{reason} (the promise rejected)"))
+        }
+        _ => Err(PENDING_WHILE_PAUSED.to_string()),
+    }
 }
 
 /// The by-value form of a remote object, or `None` when Chrome cannot
@@ -254,6 +300,7 @@ mod tests {
         // And the wire params were by reference, then by value, then released
         let evaluate = &mock.commands_named("Runtime.evaluate")[0].params;
         assert_eq!(evaluate["returnByValue"], false);
+        assert_eq!(evaluate["awaitPromise"], true);
         assert_eq!(evaluate["objectGroup"], GROUP);
         let read = &mock.commands_named("Runtime.callFunctionOn")[0].params;
         assert_eq!(
@@ -262,6 +309,85 @@ mod tests {
         );
         let released = &mock.commands_named("Runtime.releaseObjectGroup")[0].params;
         assert_eq!(released["objectGroup"], GROUP);
+    }
+
+    /// The promise states Chrome 156 reported while paused (fixture).
+    fn promise_states() -> Value {
+        serde_json::from_str(include_str!(
+            "../../../../tests/fixtures/cdp/runtime-promise-states.json"
+        ))
+        .unwrap()
+    }
+
+    /// A mock tab paused in the debugger whose `Runtime.evaluate` returns
+    /// the promise `state` of the fixture.
+    async fn paused_on(state: &str) -> (crate::handler::McpHandler, impl Fn(&str) -> Vec<Value>) {
+        let mock = spawn_recording_mock().await;
+        let case = promise_states()[state].clone();
+        let evaluated = json!({"result": case["evaluate"].clone()});
+        mock.respond_with("Runtime.evaluate", move |_| evaluated.clone());
+        let properties = json!({"result": case["getProperties"].clone()});
+        mock.respond_with("Runtime.getProperties", move |_| properties.clone());
+        mock.respond_with(
+            "Runtime.callFunctionOn",
+            |_| json!({"result": {"result": {"type": "object", "value": {"a": 5}}}}),
+        );
+        let handler = mock_handler(mock.http_port);
+        let session = handler.session(None).await.unwrap();
+        let debugger = session.debugger_state(None).unwrap();
+        debugger.lock().await.paused_call_frame_id = Some("f1".into());
+        let sent = move |method: &str| {
+            mock.commands_named(method)
+                .into_iter()
+                .map(|c| c.params)
+                .collect()
+        };
+        (handler, sent)
+    }
+
+    /// ISSUE-16: while the page is paused in the debugger Chrome cannot
+    /// await a promise (no microtask runs), so the evaluation does not
+    /// await, and a settled promise is read from its state.
+    #[tokio::test]
+    async fn paused_page_evaluates_without_awaiting() {
+        // Given a tab paused in the debugger, and an expression giving a fulfilled promise
+        let (handler, sent) = paused_on("fulfilled").await;
+        // When evaluate_js runs it
+        let args = json!({"expression": "Promise.resolve({a: 5})"});
+        let reply = EvaluateJsTool::handle(call("evaluate_js", args), &handler)
+            .await
+            .unwrap();
+        // Then it was not awaited, and the reply is the promise's value
+        assert_eq!(sent("Runtime.evaluate")[0]["awaitPromise"], false);
+        let body: Value = serde_json::from_str(&reply_text(&reply)).unwrap();
+        assert_eq!(body, json!({"value": {"a": 5}, "type": "object"}));
+        // And the value was read from the promise's result
+        let read = &sent("Runtime.callFunctionOn")[0];
+        let result = &promise_states()["fulfilled"]["getProperties"]["internalProperties"][2];
+        assert_eq!(read["objectId"], result["value"]["objectId"]);
+    }
+
+    /// ISSUE-16: while paused, a rejected promise fails with its reason and
+    /// a pending one fails at once saying why it cannot settle.
+    #[tokio::test]
+    async fn paused_page_explains_unsettled_promises() {
+        // Given a tab paused in the debugger, and a rejected promise
+        let (handler, _) = paused_on("rejected").await;
+        // When evaluate_js runs it, then it fails with the rejection
+        let args = json!({"expression": "Promise.reject(new Error('no'))"});
+        let error = EvaluateJsTool::handle(call("evaluate_js", args), &handler)
+            .await
+            .unwrap_err();
+        assert_eq!(error.to_string(), "Error: no (the promise rejected)");
+        // Given a pending promise instead
+        let (handler, _) = paused_on("pending").await;
+        // When evaluate_js runs it, then it fails at once saying why
+        let args = json!({"expression": "new Promise(() => {})"});
+        let run = EvaluateJsTool::handle(call("evaluate_js", args), &handler);
+        let outcome = tokio::time::timeout(std::time::Duration::from_secs(2), run).await;
+        let error = outcome.expect("answers at once").unwrap_err().to_string();
+        assert!(error.contains("paused in the debugger"), "{error}");
+        assert!(error.contains("'resume'"), "{error}");
     }
 
     /// AUD-EV-06: Chrome stops a script that runs too long (an endless loop

@@ -441,7 +441,10 @@ Chrome and Firefox take the same calls:
    unfinished (`evaluate_js`, `fill_input`, `navigate`...) fails at once
    with that location.
 5. `evaluate_on_call_frame` reads locals of the paused frame; `step_over`
-   moves one statement; `resume` continues.
+   moves one statement; `resume` continues. `evaluate_js` still answers
+   while paused, in the page's global scope. A promise it returns cannot
+   always settle meanwhile: Chrome reads a settled one and fails at once on
+   a pending one; Firefox settles it when its microtasks can run.
 6. `remove_breakpoint` with the id `set_breakpoint` returned.
 
 Both browsers answer the same replies, with 0-based lines everywhere:

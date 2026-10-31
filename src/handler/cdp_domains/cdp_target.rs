@@ -60,6 +60,15 @@ impl CdpTarget {
         self
     }
 
+    /// Whether the tab is paused in the debugger (a pause it keeps; the
+    /// ones the debugger listener skips are never recorded).
+    pub(crate) async fn is_paused(&self) -> bool {
+        match &self.debugger {
+            Some(state) => state.lock().await.paused_call_frame_id.is_some(),
+            None => false,
+        }
+    }
+
     /// The tab's CDP target id (`None` for the browser connection).
     #[cfg(test)]
     pub(crate) fn tab_target_id(&self) -> Option<&str> {

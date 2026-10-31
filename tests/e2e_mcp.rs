@@ -742,7 +742,7 @@ mod e2e {
         let bp = json!({"instance_id": i, "url": format!("{base}/app.js"), "line_number": 1});
         let trigger =
             json!({"instance_id": i, "expression": "setTimeout(() => appTarget(5), 50); 1"});
-        vec![
+        let mut steps = vec![
             (
                 "search_scripts",
                 "search_scripts",
@@ -759,12 +759,26 @@ mod e2e {
                 "35",
             ),
             (
+                "ISSUE-16 evaluate_js while paused answers at once",
+                "evaluate_js",
+                json!({"instance_id": i, "expression": "Promise.resolve(6 * 7)"}),
+                "42",
+            ),
+            (
                 "step_over",
                 "step_over",
                 json!({"instance_id": i}),
                 "Stepped",
             ),
             ("resume", "resume", json!({"instance_id": i}), "resumed"),
+        ];
+        steps.extend(click_into_breakpoint_steps(&i));
+        steps
+    }
+
+    /// A click whose handler hits the breakpoint, then the paused frame.
+    fn click_into_breakpoint_steps(i: &Value) -> Vec<Step> {
+        vec![
             (
                 "ISSUE-1/11 click into a breakpoint answers at once, noting the pause",
                 "click_element",

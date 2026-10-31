@@ -1,0 +1,123 @@
+{
+  "fulfilled": {
+    "evaluate": {
+      "result": {
+        "className": "Promise",
+        "description": "Promise",
+        "objectId": "2594205957815184963.1.12",
+        "subtype": "promise",
+        "type": "object"
+      }
+    },
+    "getProperties": {
+      "internalProperties": [
+        {
+          "name": "[[Prototype]]",
+          "value": {
+            "className": "Promise",
+            "description": "Promise",
+            "objectId": "2594205957815184963.1.13",
+            "type": "object"
+          }
+        },
+        {
+          "name": "[[PromiseState]]",
+          "value": {
+            "type": "string",
+            "value": "fulfilled"
+          }
+        },
+        {
+          "name": "[[PromiseResult]]",
+          "value": {
+            "className": "Object",
+            "description": "Object",
+            "objectId": "2594205957815184963.1.14",
+            "type": "object"
+          }
+        }
+      ],
+      "result": []
+    }
+  },
+  "rejected": {
+    "evaluate": {
+      "result": {
+        "className": "Promise",
+        "description": "Promise",
+        "objectId": "2594205957815184963.1.15",
+        "subtype": "promise",
+        "type": "object"
+      }
+    },
+    "getProperties": {
+      "internalProperties": [
+        {
+          "name": "[[Prototype]]",
+          "value": {
+            "className": "Promise",
+            "description": "Promise",
+            "objectId": "2594205957815184963.1.16",
+            "type": "object"
+          }
+        },
+        {
+          "name": "[[PromiseState]]",
+          "value": {
+            "type": "string",
+            "value": "rejected"
+          }
+        },
+        {
+          "name": "[[PromiseResult]]",
+          "value": {
+            "className": "Error",
+            "description": "Error: no\n    at <anonymous>:1:16",
+            "objectId": "2594205957815184963.1.17",
+            "subtype": "error",
+            "type": "object"
+          }
+        }
+      ],
+      "result": []
+    }
+  },
+  "pending": {
+    "evaluate": {
+      "result": {
+        "className": "Promise",
+        "description": "Promise",
+        "objectId": "2594205957815184963.1.18",
+        "subtype": "promise",
+        "type": "object"
+      }
+    },
+    "getProperties": {
+      "internalProperties": [
+        {
+          "name": "[[Prototype]]",
+          "value": {
+            "className": "Promise",
+            "description": "Promise",
+            "objectId": "2594205957815184963.1.19",
+            "type": "object"
+          }
+        },
+        {
+          "name": "[[PromiseState]]",
+          "value": {
+            "type": "string",
+            "value": "pending"
+          }
+        },
+        {
+          "name": "[[PromiseResult]]",
+          "value": {
+            "type": "undefined"
+          }
+        }
+      ],
+      "result": []
+    }
+  }
+}
