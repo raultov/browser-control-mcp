@@ -34,6 +34,8 @@ mod e2e {
     <label style="position:relative;display:inline-block;width:60px;height:24px"><input type="checkbox" id="sw" style="position:absolute;left:0;top:0;width:60px;height:24px;margin:0"><span style="position:absolute;inset:0;background:#ccc"></span></label>
     <div style="position:relative;display:inline-block"><button id="covered">covered</button><div style="position:absolute;inset:0;background:#fff"></div></div>
     <div id="shot" style="width:123px;height:45px;background:#c00">shot</div>
+    <button id="arm" onclick="setTimeout(() => { const b = document.createElement('button'); b.id = 'appear'; b.textContent = 'appear'; b.onclick = () => window.__late = (window.__late || 0) + 1; document.getElementById('arm').after(b); document.getElementById('soon').disabled = false; }, 700)">arm</button>
+    <button id="soon" disabled onclick="window.__late = (window.__late || 0) + 1">soon</button><button id="never" disabled onclick="window.__never = 1">never</button>
     <div id="custom" role="textbox" tabindex="0" aria-label="custom editor">old</div>
     <script>(() => { const ed = document.getElementById('custom'); let model = 'old', all = false; window.__custom = model;
       ed.addEventListener('keydown', e => { const mod = e.ctrlKey || e.metaKey;
@@ -642,6 +644,53 @@ mod e2e {
                 "evaluate_js",
                 model,
                 "\"value\": \"new text more\"",
+            ),
+        ]
+    }
+
+    /// ISSUE-37: a click waits for an element about to appear and for a
+    /// control about to be enabled; one that stays disabled is refused and
+    /// its handler never runs.
+    fn late_element_steps(instance: &str) -> Vec<Step> {
+        let i = json!(instance);
+        let click = |selector: &str| json!({"instance_id": i, "selector": selector});
+        let read = |expression: &str| json!({"instance_id": i, "expression": expression});
+        vec![
+            (
+                "ISSUE-37 arm the late elements",
+                "click_element",
+                click("#arm"),
+                "Successfully clicked",
+            ),
+            (
+                "ISSUE-37 click an element about to appear",
+                "click_element",
+                click("#appear"),
+                "Successfully clicked",
+            ),
+            (
+                "ISSUE-37 click a control about to be enabled",
+                "click_element",
+                click("#soon"),
+                "Successfully clicked",
+            ),
+            (
+                "ISSUE-37 both handlers ran",
+                "evaluate_js",
+                read("window.__late"),
+                "\"value\": 2",
+            ),
+            (
+                "ISSUE-37 a disabled control is refused",
+                "click_element",
+                click("#never"),
+                "!is disabled; nothing was clicked",
+            ),
+            (
+                "ISSUE-37 its handler did not run",
+                "evaluate_js",
+                read("window.__never === undefined"),
+                "true",
             ),
         ]
     }
@@ -1566,6 +1615,7 @@ mod e2e {
             hover_reveal_steps("e2e"),
             element_shot_steps("e2e"),
             aria_value_steps("e2e"),
+            late_element_steps("e2e"),
             custom_editor_steps("e2e"),
             frame_focus_steps("e2e"),
             append_steps("e2e"),
@@ -1661,6 +1711,7 @@ mod e2e {
             hover_reveal_steps("default"),
             element_shot_steps("default"),
             aria_value_steps("default"),
+            late_element_steps("default"),
             custom_editor_steps("default"),
             frame_focus_steps("default"),
             append_steps("default"),

@@ -10,6 +10,17 @@ from a copy of its code: entries describe the differences from that release.
 
 ## [Unreleased]
 
+### Fixed
+
+- `click_element`, `drag` and the checkboxes of `fill_form` no longer
+  report success on a disabled control: its click handler never runs, so
+  they now fail with "is disabled; nothing was clicked" and send no input.
+  They also wait up to 2 s for an element a CSS selector does not find yet,
+  or a control that is disabled, as pages add elements and enable buttons a
+  moment after the previous action; the error says how long it waited. A
+  ref that names nothing, a hidden or a covered element still fail at once,
+  and `hover` on a disabled control works as before. (#37)
+
 ## [0.8.0-beta.12] - 2026-10-31
 
 Public **BETA**. Reaches into frames of another origin (payment forms,

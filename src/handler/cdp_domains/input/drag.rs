@@ -8,7 +8,7 @@ use serde_json::json;
 
 #[macros::mcp_tool(
     name = "drag",
-    description = "Drags an element onto another with the mouse: presses on 'from' (scrolled into view; fails when hidden or covered), moves in steps to the centre of 'to' (which must then be in the viewport) and releases. For sortable lists, boards, sliders and HTML5 drag and drop (on Firefox, HTML5 drag and drop is simulated with script events)."
+    description = "Drags an element onto another with the mouse: presses on 'from' (scrolled into view; fails when hidden, covered or disabled, after waiting up to 2 s for it to appear or be enabled), moves in steps to the centre of 'to' (which must then be in the viewport) and releases. For sortable lists, boards, sliders and HTML5 drag and drop (on Firefox, HTML5 drag and drop is simulated with script events)."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct DragTool {

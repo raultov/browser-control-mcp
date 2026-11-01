@@ -9,7 +9,7 @@ use crate::backend::BackendError;
 use crate::backend::BrowserKind;
 use crate::handler::cdp_domains::custom::get_custom_events::GetCustomEventsTool;
 use crate::handler::cdp_domains::input::click_element::{
-    ClickElementTool, ClickOptions, HOVER_REVEAL, click_point, clicked_reply, covered_at,
+    ClickElementTool, ClickOptions, PointCheck, clicked_reply, ready_point,
 };
 use crate::handler::cdp_domains::input::drag::{
     DRAG_STEP_PAUSE, DragTool, drag_path, dragged_reply,
@@ -493,6 +493,25 @@ impl InputTab {
     }
 }
 
+/// A Firefox tab and its click check for `action` (named if a debugger
+/// pause interrupts it).
+struct PointOnTab<'a> {
+    on: &'a OnTab<'a>,
+    expression: String,
+    action: &'a str,
+}
+
+impl PointCheck for PointOnTab<'_> {
+    async fn check(&self) -> Result<Value, CallToolError> {
+        let checked = page::run_snippet(self.on.tab, &self.expression);
+        Ok(unless_paused(self.on.session, self.on.id, self.action, checked).await?)
+    }
+
+    async fn reveal(&self, at: (f64, f64)) -> Result<(), CallToolError> {
+        Ok(page::hover_at(self.on.tab, at).await?)
+    }
+}
+
 /// A Firefox tab the input tools act on, with what the pause race needs.
 pub(crate) struct OnTab<'a> {
     pub(crate) session: &'a FirefoxSession,
@@ -502,20 +521,15 @@ pub(crate) struct OnTab<'a> {
 
 impl OnTab<'_> {
     /// The viewport point where `selector`'s element can be `action`
-    /// (clicked, hovered), checked by the shared snippet.
+    /// (clicked, hovered, dragged), checked as on Chrome (`ready_point`).
     async fn point(&self, selector: &str, action: &str) -> Result<(f64, f64), CallToolError> {
         let expression = crate::util::js::click_point(selector);
-        let checked = page::run_snippet(self.tab, &expression);
-        let mut point = unless_paused(self.session, self.id, action, checked).await?;
-        // Covered: the mouse goes there first, then the check runs again
-        // (controls shown only on hover), as on Chrome.
-        if let Some(at) = covered_at(&point) {
-            page::hover_at(self.tab, at).await?;
-            tokio::time::sleep(HOVER_REVEAL).await;
-            let checked = page::run_snippet(self.tab, &expression);
-            point = unless_paused(self.session, self.id, action, checked).await?;
-        }
-        click_point(&point, selector, action)
+        let check = PointOnTab {
+            on: self,
+            expression,
+            action,
+        };
+        ready_point(&check, selector, action).await
     }
 
     /// Clicks the element `selector` names as `options` say, at the point
@@ -1549,6 +1563,29 @@ mod tests {
         ts::stop(&handler).await;
     }
 
+    /// ISSUE-37 (Firefox): a control that stays disabled is waited for,
+    /// then refused without a pointer action.
+    #[tokio::test]
+    async fn disabled_controls_are_refused() {
+        let mock = MockFirefox::start(false).await.unwrap();
+        page_with_point(
+            &mock,
+            json!({"status": "ok", "x": 5, "y": 7, "disabled": true}),
+        );
+        let handler = ts::handler(&mock);
+        let error = click_element(call("click_element", json!({"selector": "#b"})), &handler)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.starts_with("Element '#b' is disabled"), "{error}");
+        assert!(
+            mock.bidi()
+                .commands_named("input.performActions")
+                .is_empty()
+        );
+        ts::stop(&handler).await;
+    }
+
     /// AUD-IN-03: on Firefox too, a covered element is not clicked.
     #[tokio::test]
     async fn click_on_covered_element_sends_no_input() {
@@ -1598,9 +1635,14 @@ mod tests {
         let error = click_element(call("click_element", json!({"selector": "#go"})), &handler)
             .await
             .unwrap_err();
-        // Then it names the selector and no input action was sent
+        // Then it names the selector and no input action was sent (it was
+        // checked again meanwhile, in case it appears: ISSUE-37)
         assert!(error.to_string().contains("#go"), "{error}");
-        assert_eq!(script_and_input(&mock), ["script.evaluate"]);
+        assert!(
+            script_and_input(&mock)
+                .iter()
+                .all(|m| m == "script.evaluate")
+        );
         ts::stop(&handler).await;
     }
 

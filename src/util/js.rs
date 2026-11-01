@@ -157,7 +157,8 @@ pub fn scroll_by(left: &str, top: &str) -> String {
 
 /// Scrolls the first element matching `selector` into view and returns the
 /// viewport point a click should use, once checked that a click there
-/// reaches the element: `{status: 'ok', x, y}`, or `missing`, `hidden` (no
+/// reaches the element: `{status: 'ok', x, y, disabled}` (`disabled`: a
+/// disabled control, whose click handler never runs), or `missing`, `hidden` (no
 /// visible box), `outside` (not in the viewport even after scrolling) or
 /// `covered` (with `by`, the element on top, and `x`, `y`). A pointer click
 /// lands on whatever is at the point, so without the check an overlay, or
@@ -175,6 +176,7 @@ const CLICK_POINT: &str = "el.scrollIntoView({ behavior: 'instant', block: 'cent
     let win = el.ownerDocument.defaultView; \
     const box = Array.from(el.getClientRects()).find(r => r.width > 0 && r.height > 0); \
     if (!box || win.getComputedStyle(el).visibility !== 'visible') return { status: 'hidden' }; \
+    const disabled = el.matches(':disabled') || !!el.closest('button:disabled'); \
     const left = Math.max(box.left, 0), right = Math.min(box.right, win.innerWidth); \
     const top = Math.max(box.top, 0), bottom = Math.min(box.bottom, win.innerHeight); \
     if (right <= left || bottom <= top) return { status: 'outside' }; \
@@ -196,7 +198,7 @@ const CLICK_POINT: &str = "el.scrollIntoView({ behavior: 'instant', block: 'cent
         const over = frame.getRootNode().elementFromPoint(x, y); \
         if (over && over !== frame) return covered(over); \
     } \
-    return { status: 'ok', x, y };";
+    return { status: 'ok', x, y, disabled };";
 
 /// Scrolls the first element matching `selector` into view and measures
 /// its box for `capture_screenshot`: `{status: 'ok', x, y, width, height}`
@@ -924,6 +926,24 @@ mod tests {
             "{expression}"
         );
         assert!(expression.contains("x + win.scrollX"), "{expression}");
+    }
+
+    /// ISSUE-37: the click check says whether the control is disabled
+    /// (natively, through a disabled fieldset, or inside a disabled button):
+    /// its click handler would never run.
+    #[test]
+    fn click_check_reports_disabled_controls() {
+        let expression = click_point("#b");
+        assert!(
+            expression.contains(
+                "const disabled = el.matches(':disabled') || !!el.closest('button:disabled');"
+            ),
+            "{expression}"
+        );
+        assert!(
+            expression.contains("return { status: 'ok', x, y, disabled };"),
+            "{expression}"
+        );
     }
 
     /// ISSUE-24: the click check accepts the control's own label (or the

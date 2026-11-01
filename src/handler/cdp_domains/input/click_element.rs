@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 
 #[macros::mcp_tool(
     name = "click_element",
-    description = "Clicks an element with real mouse input after scrolling it into view; fails without clicking when it is hidden or covered (naming the overlay). A dialog the click opens or a breakpoint its handler hits does not fail it: the reply notes it with {dialog} or {paused, location} (see 'handle_dialog', 'evaluate_on_call_frame', 'resume')."
+    description = "Clicks an element with real mouse input after scrolling it into view; fails without clicking when it is hidden, covered (naming the overlay) or a disabled control; waits up to 2 s for a CSS selector's element to appear or be enabled. A dialog the click opens or a breakpoint its handler hits does not fail it: the reply notes it with {dialog} or {paused, location} (see 'handle_dialog', 'evaluate_on_call_frame', 'resume')."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct ClickElementTool {
@@ -176,6 +176,83 @@ pub(crate) fn clicked_reply(
     CallToolResult::text_content(vec![text.into()])
 }
 
+/// How long a pointer action waits for its element to appear or to be
+/// enabled: pages add elements and enable buttons a moment after the
+/// previous action. A hidden, covered or out-of-view element fails at once.
+pub(crate) const APPEAR_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// How often the element is checked again meanwhile.
+const APPEAR_POLL: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// Whether the element the click check (`util::js::click_point`) answered
+/// `value` for may still become what `action` needs: not there yet (named
+/// by CSS: a ref's element never comes back), or a disabled control
+/// (hovering one is fine).
+fn not_ready(value: &Value, selector: &str, action: &str) -> bool {
+    match value["status"].as_str() {
+        None | Some("missing") => may_appear(selector),
+        Some("ok") => is_disabled(value, action),
+        _ => false,
+    }
+}
+
+/// Whether an element `selector` does not find yet may appear later: CSS
+/// may match an element added later; a ref (`e12`, `f2e5`) names one that
+/// was there and is gone.
+fn may_appear(selector: &str) -> bool {
+    use crate::util::js::{PIERCE, is_frame_selector, is_ref};
+    !is_ref(selector) && !(is_frame_selector(selector) && !selector.contains(PIERCE))
+}
+
+/// Whether a checked element is a disabled control `action` must not use.
+fn is_disabled(value: &Value, action: &str) -> bool {
+    action != "hovered" && value["disabled"] == true
+}
+
+/// How a browser checks where a pointer action can land.
+pub(crate) trait PointCheck {
+    /// The click check (`util::js::click_point`) of the element.
+    async fn check(&self) -> Result<Value, CallToolError>;
+    /// Moves the mouse to the viewport point `at`.
+    async fn reveal(&self, at: (f64, f64)) -> Result<(), CallToolError>;
+}
+
+/// The point where `selector`'s element can be `action` (clicked, hovered,
+/// dragged), on any browser (`page` checks and moves the mouse). A covered
+/// element gets the mouse first and is checked again ([`covered_at`]); one
+/// not there yet or disabled is checked again for up to [`APPEAR_WAIT`]
+/// ([`not_ready`]); then [`click_point`] says whether it can be used, and a
+/// failure after a wait says so.
+pub(crate) async fn ready_point(
+    page: &impl PointCheck,
+    selector: &str,
+    action: &str,
+) -> Result<(f64, f64), CallToolError> {
+    let started = tokio::time::Instant::now();
+    let mut polled = false;
+    loop {
+        let mut point = page.check().await?;
+        if let Some(at) = covered_at(&point) {
+            page.reveal(at).await?;
+            tokio::time::sleep(HOVER_REVEAL).await;
+            point = page.check().await?;
+        }
+        let waited = started.elapsed();
+        if waited < APPEAR_WAIT && not_ready(&point, selector, action) {
+            tokio::time::sleep(APPEAR_POLL).await;
+            polled = true;
+            continue;
+        }
+        return click_point(&point, selector, action).map_err(|error| {
+            if !polled {
+                return error;
+            }
+            let secs = waited.as_secs_f64();
+            CallToolError::from_message(format!("{error} (waited {secs:.1} s for it)"))
+        });
+    }
+}
+
 /// How long the page gets to show what a pointer over a covered element
 /// reveals (hover toolbars, menus) before the point is checked again.
 pub(crate) const HOVER_REVEAL: std::time::Duration = std::time::Duration::from_millis(100);
@@ -190,22 +267,27 @@ pub(crate) fn covered_at(value: &Value) -> Option<(f64, f64)> {
 }
 
 /// The point where `selector`'s element can be `action` on Chrome (clicked,
-/// hovered): checked by the shared snippet, and when covered checked again
-/// with the mouse over it ([`covered_at`]).
+/// hovered, dragged), see [`ready_point`].
 pub(crate) async fn checked_point(
     target: &CdpTarget,
     selector: &str,
     action: &str,
 ) -> Result<(f64, f64), CallToolError> {
     let expression = crate::util::js::click_point(selector);
-    let mut point = crate::handler::snippet_value(target, &expression).await?;
-    if let Some((x, y)) = covered_at(&point) {
-        let moved = json!({"type": "mouseMoved", "x": x, "y": y, "button": "none"});
-        crate::handler::send_or(target, "Input.dispatchMouseEvent", moved, "CDP Error").await?;
-        tokio::time::sleep(HOVER_REVEAL).await;
-        point = crate::handler::snippet_value(target, &expression).await?;
+    ready_point(&(target, expression), selector, action).await
+}
+
+/// A Chrome tab and its click check.
+impl PointCheck for (&CdpTarget, String) {
+    async fn check(&self) -> Result<Value, CallToolError> {
+        crate::handler::snippet_value(self.0, &self.1).await
     }
-    click_point(&point, selector, action)
+
+    async fn reveal(&self, (x, y): (f64, f64)) -> Result<(), CallToolError> {
+        let moved = json!({"type": "mouseMoved", "x": x, "y": y, "button": "none"});
+        crate::handler::send_or(self.0, "Input.dispatchMouseEvent", moved, "CDP Error").await?;
+        Ok(())
+    }
 }
 
 /// The point the click snippet (`util::js::click_point`) checked, or why
@@ -218,6 +300,9 @@ pub(crate) fn click_point(
     let fail = |message: String| Err(CallToolError::from_message(message));
     let point = (value["x"].as_f64(), value["y"].as_f64());
     match (value["status"].as_str(), point) {
+        (Some("ok"), _) if is_disabled(value, action) => fail(format!(
+            "Element '{selector}' is disabled; nothing was {action}. The page enables it once whatever it waits for is done (often a required field): do that first."
+        )),
         (Some("ok"), (Some(x), Some(y))) => Ok((x, y)),
         (None | Some("missing"), _) => fail(format!(
             "Element not found for selector: {selector}{}",
@@ -329,6 +414,87 @@ mod tests {
             );
             assert_eq!(outcome.is_ok(), revealed);
         }
+    }
+
+    /// A Chrome mock whose click check answers `answers[n]` on its n-th
+    /// call (the last one from then on); returns how many checks ran.
+    async fn page_answering_in_turn(
+        answers: Vec<Value>,
+    ) -> (
+        &'static cdp_browser_lite::test_support::mock_devtools::MockDevTools,
+        std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    ) {
+        let mock = crate::handler::cdp_domains::tests::spawn_recording_mock().await;
+        let checks = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = checks.clone();
+        mock.respond_with("Runtime.evaluate", move |_| {
+            let n = counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let value = answers[n.min(answers.len() - 1)].clone();
+            json!({"result": {"result": {"type": "object", "value": value}}})
+        });
+        (mock, checks)
+    }
+
+    /// The types of the mouse events the mock received.
+    fn mouse_events(
+        mock: &cdp_browser_lite::test_support::mock_devtools::MockDevTools,
+    ) -> Vec<String> {
+        mock.commands_named("Input.dispatchMouseEvent")
+            .iter()
+            .map(|c| c.params["type"].as_str().unwrap_or_default().to_string())
+            .collect()
+    }
+
+    /// ISSUE-37: a disabled control is not clicked: the click waits for it
+    /// to be enabled, and fails without input when it stays disabled.
+    #[tokio::test]
+    async fn disabled_controls_are_waited_for_then_refused() {
+        // Given a button enabled after two checks
+        let disabled = json!({"status": "ok", "x": 5, "y": 6, "disabled": true});
+        let enabled = json!({"status": "ok", "x": 5, "y": 6, "disabled": false});
+        let (mock, checks) =
+            page_answering_in_turn(vec![disabled.clone(), disabled.clone(), enabled]).await;
+        // When it is clicked, Then it is clicked once enabled
+        click(mock).await.unwrap();
+        assert_eq!(checks.load(std::sync::atomic::Ordering::SeqCst), 3);
+        assert!(mouse_events(mock).contains(&"mousePressed".to_string()));
+        // Given a button that stays disabled, When it is clicked
+        let (mock, _) = page_answering_in_turn(vec![disabled]).await;
+        let started = std::time::Instant::now();
+        let error = click(mock).await.unwrap_err().to_string();
+        // Then it fails after the wait, without a click
+        assert!(started.elapsed() >= APPEAR_WAIT, "{:?}", started.elapsed());
+        assert!(
+            error.starts_with("Element '#b' is disabled; nothing was clicked"),
+            "{error}"
+        );
+        assert!(error.contains("waited 2.0 s"), "{error}");
+        assert!(mouse_events(mock).is_empty());
+    }
+
+    /// ISSUE-37: an element added a moment later is clicked once it is
+    /// there; a missing ref fails at once (a removed element never comes
+    /// back under its ref).
+    #[tokio::test]
+    async fn missing_elements_are_waited_for() {
+        let missing = json!({"status": "missing"});
+        let found = json!({"status": "ok", "x": 5, "y": 6});
+        let (mock, checks) = page_answering_in_turn(vec![missing.clone(), found]).await;
+        click(mock).await.unwrap();
+        assert_eq!(checks.load(std::sync::atomic::Ordering::SeqCst), 2);
+        let (mock, checks) = page_answering_in_turn(vec![missing]).await;
+        let handler = crate::handler::cdp_domains::tests::mock_handler(mock.http_port);
+        let params =
+            crate::handler::cdp_domains::tests::call("click_element", json!({"selector": "e7"}));
+        let error = ClickElementTool::handle(params, &handler)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.starts_with("Element not found for selector: e7"),
+            "{error}"
+        );
+        assert_eq!(checks.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
     /// AUD-IN-03: a covered element fails naming what covers it, and no

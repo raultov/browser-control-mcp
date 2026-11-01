@@ -46,6 +46,26 @@ pub(crate) fn hovered_reply(selector: &str, (x, y): (f64, f64)) -> CallToolResul
 
 #[cfg(test)]
 mod tests {
+    /// ISSUE-37: hovering a disabled control is fine (tooltips explain why
+    /// it is disabled): it is not refused nor waited for.
+    #[tokio::test]
+    async fn disabled_controls_can_be_hovered() {
+        let mock = crate::handler::cdp_domains::tests::spawn_recording_mock().await;
+        mock.respond_with("Runtime.evaluate", |_| {
+            let value = serde_json::json!({"status": "ok", "x": 3, "y": 4, "disabled": true});
+            serde_json::json!({"result": {"result": {"type": "object", "value": value}}})
+        });
+        let handler = crate::handler::cdp_domains::tests::mock_handler(mock.http_port);
+        let params = crate::handler::cdp_domains::tests::call(
+            "hover",
+            serde_json::json!({"selector": "#d"}),
+        );
+        let started = std::time::Instant::now();
+        super::HoverTool::handle(params, &handler).await.unwrap();
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+        assert_eq!(mock.commands_named("Runtime.evaluate").len(), 1);
+    }
+
     use super::*;
 
     /// ISSUE-7 (Chrome): the mouse moves to the point the click snippet
