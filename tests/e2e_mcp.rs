@@ -1400,7 +1400,7 @@ mod e2e {
         ]
     }
 
-    /// ISSUE-36 (Chrome): the debugger reaches the script of a frame of
+    /// ISSUE-36: the debugger reaches the script of a frame of
     /// another origin: found, a breakpoint by URL binds in it, a click in
     /// the frame pauses there, and evaluate, step and resume act there.
     fn frame_debugger_steps(instance: &str, base: &str) -> Vec<Step> {
@@ -1503,18 +1503,13 @@ mod e2e {
         .concat()
     }
 
-    /// The steps that leave the test page and come back to it; some only
-    /// on `chrome`.
-    fn other_page_steps(instance: &str, base: &str, chrome: bool) -> Vec<Step> {
-        let frame_debugger = match chrome {
-            true => frame_debugger_steps(instance, base),
-            false => Vec::new(),
-        };
+    /// The steps that leave the test page and come back to it.
+    fn other_page_steps(instance: &str, base: &str) -> Vec<Step> {
         [
             drag_steps(instance, base),
             cross_origin_steps(instance, base),
             frame_observation_steps(instance),
-            frame_debugger,
+            frame_debugger_steps(instance, base),
             cross_origin_result_steps(instance, base),
             history_steps(instance, base),
         ]
@@ -1779,7 +1774,7 @@ mod e2e {
             observation_steps("e2e"),
             network_steps("e2e"),
             websocket_steps("e2e", &base),
-            other_page_steps("e2e", &base, browser == "chrome"),
+            other_page_steps("e2e", &base),
             debugger_steps("e2e", &base),
             closing_steps(browser),
         ];
@@ -1868,7 +1863,7 @@ mod e2e {
             storage_steps("default"),
             emulate_steps("default", variable.contains("CHROME")),
             network_steps("default"),
-            other_page_steps("default", &base, variable.contains("CHROME")),
+            other_page_steps("default", &base),
             debugger_steps("default", &base),
         ];
         mcp.steps(all.concat()).await;

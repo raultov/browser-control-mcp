@@ -7,7 +7,7 @@ use serde_json::json;
 
 #[macros::mcp_tool(
     name = "search_scripts",
-    description = "Searches the tab's loaded scripts for a text and returns each match's script id, hash, 0-based line and column and a preview, to find where to set a breakpoint. On Chrome, scripts of frames of another origin are searched too (ids such as '2.17': frame 2's script 17)."
+    description = "Searches the tab's loaded scripts for a text and returns each match's script id, hash, 0-based line and column and a preview, to find where to set a breakpoint. Scripts of frames of another origin are searched too (on Chrome their ids name the frame: '2.17' is frame 2's script 17)."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct SearchScriptsTool {

@@ -26,7 +26,12 @@ from a copy of its code: entries describe the differences from that release.
   scripts run) and by script id in its frame, and a pause in a frame is
   reported to the call that caused it, inspected, stepped and resumed
   there. A frame's own `debugger;` statements are skipped without
-  breakpoints, as the page's. Not yet on Firefox. (#36)
+  breakpoints, as the page's. (#36)
+- Firefox: the debugger reaches the scripts of frames of another origin too
+  (Firefox runs them in their own process, with their own thread):
+  `search_scripts` finds them, `set_breakpoint` by URL binds in them, and a
+  pause in a frame is inspected, stepped and resumed in its thread. Needs
+  `bidi-lite` 0.1.5 through `bidi-browser-lite` 0.1.6. (#36)
 - Chrome: a click (or any mouse action) into a frame of another origin
   right after the page loaded was sometimes lost while reported as done:
   Chrome routes input to such an out-of-process frame only once it has

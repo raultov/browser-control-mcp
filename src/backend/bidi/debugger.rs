@@ -5,7 +5,11 @@
 //! `watch.rs`) through Firefox's own mapping of the BiDi context to its RDP
 //! tab (`Debugger::attach_to_context`), never activating it. A background
 //! task follows its thread state, so the tools know whether and where the
-//! page is paused (each pause is announced twice: tracked once).
+//! page is paused (each pause is announced twice: tracked once). Frames of
+//! another origin, which Firefox runs in their own process, have their own
+//! thread and sources (bidi-lite 0.1.5): their scripts are searched and break
+//! like the page's (the watcher's breakpoints cover them), and a pause in one
+//! is evaluated, stepped and resumed in its thread.
 
 use super::session::{FirefoxSession, FirefoxTab};
 use crate::backend::error::BackendError;
@@ -21,7 +25,7 @@ use crate::handler::interruption::Interruption;
 use crate::handler::{McpHandler, TargetArgs, parse_args};
 use bidi_browser_lite::bidi_lite::error::codes;
 use bidi_browser_lite::bidi_lite::rdp::debugger::{
-    BreakpointLocation, ThreadState, parse_thread_states,
+    BreakpointLocation, SourceInfo, TargetThread, ThreadState, parse_thread_states,
 };
 use bidi_browser_lite::{BidiError, Browser, Debugger};
 use rust_mcp_sdk::schema::{CallToolError, CallToolRequestParams, CallToolResult};
@@ -32,9 +36,12 @@ use tokio_stream::StreamExt;
 
 type ToolResult = Result<CallToolResult, CallToolError>;
 
-/// Where the thread is stopped.
+/// Where a thread is stopped.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct PauseInfo {
+    /// The target actor whose thread paused: the tab's top-level document,
+    /// or one of its frames of another origin.
+    pub(crate) target: Option<String>,
     /// Frame actor of the top frame.
     pub(crate) frame: Option<String>,
     /// Why (`breakpoint`, `resumeLimit`, `debuggerStatement`...).
@@ -60,9 +67,14 @@ pub(crate) struct TabDebugger {
 /// the other tabs' tools.
 pub(crate) type SharedDebugger = Arc<tokio::sync::Mutex<TabDebugger>>;
 
-/// Applies thread states to the tracked pause (latest wins: after a step
-/// `resumed` and the new `paused` arrive in one packet).
-pub(crate) fn apply_states(pause: &StdMutex<Option<PauseInfo>>, states: Vec<ThreadState>) {
+/// Applies thread states of `target`'s thread to the tracked pause (latest
+/// wins: after a step `resumed` and the new `paused` arrive in one packet;
+/// a thread resuming ends only its own pause).
+pub(crate) fn apply_states(
+    pause: &StdMutex<Option<PauseInfo>>,
+    target: Option<&str>,
+    states: Vec<ThreadState>,
+) {
     let mut slot = pause
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -70,6 +82,7 @@ pub(crate) fn apply_states(pause: &StdMutex<Option<PauseInfo>>, states: Vec<Thre
         match state {
             ThreadState::Paused { why, frame } => {
                 *slot = Some(PauseInfo {
+                    target: target.map(str::to_string),
                     frame: frame.as_ref().map(|f| f.actor.clone()),
                     why: why
                         .get("type")
@@ -81,7 +94,11 @@ pub(crate) fn apply_states(pause: &StdMutex<Option<PauseInfo>>, states: Vec<Thre
                         .map(|l| (l.actor, l.line, l.column)),
                 });
             }
-            ThreadState::Resumed => *slot = None,
+            ThreadState::Resumed => {
+                if slot.as_ref().is_some_and(|p| p.target.as_deref() == target) {
+                    *slot = None;
+                }
+            }
         }
     }
 }
@@ -90,12 +107,14 @@ fn spawn_state_task(
     debugger: &Debugger,
     pause: Arc<StdMutex<Option<PauseInfo>>>,
 ) -> ListenerHandles {
-    let mut states = debugger.on_thread_state();
+    // The frames' threads too: each packet comes from its target.
+    let mut states = debugger.on_any_thread_state();
     let mut handles = ListenerHandles::default();
     handles.push(tokio::spawn(async move {
         while let Some(packet) = states.next().await {
             if let Ok(packet) = packet {
-                apply_states(&pause, parse_thread_states(&packet));
+                let target = packet.from.as_deref();
+                apply_states(&pause, target, parse_thread_states(&packet));
             }
         }
     }));
@@ -281,12 +300,27 @@ fn not_paused() -> BackendError {
     BackendError::InvalidArgument(debugging::NOT_PAUSED.into())
 }
 
+/// The sources of the tab's document and of its frames of another origin.
+fn every_source(debugger: &Debugger) -> Vec<SourceInfo> {
+    let frames = debugger.frame_targets();
+    let in_frames = frames.iter().flat_map(|f| debugger.frame_sources(&f.actor));
+    debugger.sources().into_iter().chain(in_frames).collect()
+}
+
+/// The thread a pause is in: its frame's, or the tab's (also when the tab
+/// is not paused: the tools then fail as they did).
+fn paused_thread(debugger: &Debugger, pause: Option<&PauseInfo>) -> TargetThread {
+    pause
+        .and_then(|p| p.target.as_deref())
+        .and_then(|target| debugger.thread_of(target))
+        .unwrap_or_else(|| debugger.thread())
+}
+
 /// Where a pause stopped, 0-based as every tool reports it, with the URL of
 /// its source.
 fn pause_location(debugger: &Debugger, pause: &PauseInfo) -> Option<PauseLocation> {
     let (actor, line, column) = pause.location.clone()?;
-    let url = debugger
-        .sources()
+    let url = every_source(debugger)
         .into_iter()
         .find(|s| s.actor == actor)
         .and_then(|s| s.url);
@@ -482,8 +516,7 @@ async fn breakable_columns(
     url: &str,
     line: u32,
 ) -> Result<Option<Vec<u32>>, BackendError> {
-    let sources: Vec<_> = debugger
-        .sources()
+    let sources: Vec<_> = every_source(debugger)
         .into_iter()
         .filter(|source| source.url.as_deref() == Some(url))
         .collect();
@@ -565,8 +598,7 @@ pub(crate) async fn resume(params: CallToolRequestParams, handler: &McpHandler) 
     let session = handler.firefox(ids.instance_id.as_deref()).await?;
     let location = with_debugger(&session, ids.tab_id.as_deref(), async |entry| {
         let before = current_pause(entry);
-        entry
-            .debugger
+        paused_thread(&entry.debugger, before.as_ref())
             .resume()
             .await
             .map_err(|e| rdp_error("resume", &e))?;
@@ -582,8 +614,7 @@ pub(crate) async fn step_over(params: CallToolRequestParams, handler: &McpHandle
     let session = handler.firefox(ids.instance_id.as_deref()).await?;
     let location = with_debugger(&session, ids.tab_id.as_deref(), async |entry| {
         let before = current_pause(entry).ok_or_else(not_paused)?;
-        entry
-            .debugger
+        paused_thread(&entry.debugger, Some(&before))
             .step_over()
             .await
             .map_err(|e| rdp_error("resume next", &e))?;
@@ -601,15 +632,14 @@ pub(crate) async fn evaluate_on_call_frame(
     let args: EvaluateOnCallFrameTool = parse_args(params)?;
     let session = handler.firefox(args.instance_id.as_deref()).await?;
     let value = with_debugger(&session, args.tab_id.as_deref(), async |entry| {
-        current_pause(entry).ok_or_else(not_paused)?;
-        let frames = entry
-            .debugger
+        let pause = current_pause(entry).ok_or_else(not_paused)?;
+        let thread = paused_thread(&entry.debugger, Some(&pause));
+        let frames = thread
             .frames(0, 1)
             .await
             .map_err(|e| rdp_error("frames", &e))?;
         let top = frames.first().ok_or_else(not_paused)?;
-        let evaluation = entry
-            .debugger
+        let evaluation = thread
             .evaluate_on_frame(&top.actor, &args.expression)
             .await
             .map_err(|e| rdp_error("evaluateJSAsync", &e))?;
@@ -633,9 +663,8 @@ pub(crate) async fn search_scripts(
     let args: SearchScriptsTool = parse_args(params)?;
     let session = handler.firefox(args.instance_id.as_deref()).await?;
     let report = with_debugger(&session, args.tab_id.as_deref(), async |entry| {
-        let sources: Vec<_> = entry
-            .debugger
-            .sources()
+        // Source actors name their process: frames' never collide.
+        let sources: Vec<_> = every_source(&entry.debugger)
             .into_iter()
             .filter(|s| s.url.is_some())
             .collect();
@@ -748,9 +777,17 @@ mod tests {
         let resource = packet(include_str!(
             "../../../tests/fixtures/rdp/resources-thread-state-paused.json"
         ));
-        apply_states(&pause, parse_thread_states(&resource));
+        apply_states(
+            &pause,
+            resource.from.as_deref(),
+            parse_thread_states(&resource),
+        );
         let first = pause.lock().unwrap().clone();
-        apply_states(&pause, parse_thread_states(&resource));
+        apply_states(
+            &pause,
+            resource.from.as_deref(),
+            parse_thread_states(&resource),
+        );
         assert!(first.is_some(), "the pause is tracked");
         assert_eq!(
             *pause.lock().unwrap(),
@@ -760,7 +797,11 @@ mod tests {
         let resumed = packet(include_str!(
             "../../../tests/fixtures/rdp/resources-thread-state-resumed.json"
         ));
-        apply_states(&pause, parse_thread_states(&resumed));
+        apply_states(
+            &pause,
+            resumed.from.as_deref(),
+            parse_thread_states(&resumed),
+        );
         assert!(pause.lock().unwrap().is_none());
     }
 
@@ -1365,5 +1406,106 @@ mod tests {
         .unwrap();
         let err = set_breakpoint(params, &handler).await.unwrap_err();
         assert!(format!("{err:?}").contains("by `url`"));
+    }
+
+    /// The script of the mock tab's iframe of another origin.
+    const FRAME_SCRIPT: &str = "http://localhost:8765/inner.js";
+
+    /// The mock tab's iframe of another origin, with `inner.js` (line 2,
+    /// RDP's, breakable at column 16): its target actor and its source's,
+    /// once the tab's debugger knows them.
+    async fn tab_with_a_frame(
+        mock: &bidi_browser_lite::test_support::MockFirefox,
+        handler: &McpHandler,
+    ) -> (String, String) {
+        let rdp = mock.rdp().unwrap();
+        let frame = rdp.add_frame("http://localhost:8765/inner.html");
+        let source = rdp.add_frame_source(&frame, FRAME_SCRIPT, json!({ "2": [16] }));
+        search_scripts(ts::call("search_scripts", json!({"query": ""})), handler)
+            .await
+            .unwrap();
+        let session = handler.firefox(None).await.unwrap();
+        for _ in 0..100 {
+            let entry = session.debuggers.lock().await["tab-1"].clone();
+            if !entry.lock().await.debugger.frame_sources(&frame).is_empty() {
+                return (frame, source);
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        panic!("the frame's source was not announced");
+    }
+
+    /// ISSUE-36 (Firefox): the scripts of a frame of another origin are
+    /// searched, and a breakpoint by its URL binds at its source's column.
+    #[tokio::test]
+    async fn frame_scripts_are_searched_and_break() {
+        // Given a tab with a frame of another origin
+        let mock = ts::firefox_with_debugger().await;
+        let handler = ts::handler(&mock);
+        let (_, source) = tab_with_a_frame(&mock, &handler).await;
+        // When its scripts are searched, Then the frame's is found
+        let search = ts::call("search_scripts", json!({"query": "function test"}));
+        let found = ts::text(&search_scripts(search, &handler).await.unwrap());
+        assert!(found.contains(&source), "{found}");
+        // When a breakpoint is set on its line 1 (0-based) without a column
+        let args = json!({"url": FRAME_SCRIPT, "line_number": 1});
+        let reply = set_breakpoint(ts::call("set_breakpoint", args), &handler)
+            .await
+            .unwrap();
+        // Then it binds at the frame source's column
+        let reply = ts::json_of(&reply);
+        assert_eq!(
+            (reply["column_number"].clone(), reply["resolved"].clone()),
+            (json!(16), json!(true))
+        );
+        ts::stop(&handler).await;
+    }
+
+    /// ISSUE-36 (Firefox): a pause in a frame of another origin names the
+    /// frame's script, and is evaluated, stepped and resumed in the
+    /// frame's thread.
+    #[tokio::test]
+    async fn frame_pauses_are_handled_in_the_frame() {
+        // Given a frame paused at its inner.js, line 2 column 16 (RDP's)
+        let mock = ts::firefox_with_debugger().await;
+        let rdp = mock.rdp().unwrap();
+        let handler = ts::handler(&mock);
+        let (frame, source) = tab_with_a_frame(&mock, &handler).await;
+        let process = frame.split("//").next().unwrap().to_string();
+        let top = json!({"actor": format!("{process}//frame1"), "type": "call", "where": {"actor": source, "line": 2, "column": 16}});
+        rdp.pause_frame(&frame, "breakpoint", Some(top));
+        let session = handler.firefox(None).await.unwrap();
+        wait_paused(&session, "tab-1").await;
+        // Then the pause names the frame's script
+        let Some(Paused(Some(at))) = paused(&session, None).await else {
+            panic!("no pause location");
+        };
+        assert_eq!(
+            (at.url.as_deref(), at.line, at.column),
+            (Some(FRAME_SCRIPT), 1, 16)
+        );
+        // When evaluate_on_call_frame, step_over and resume run
+        let evaluate = ts::call("evaluate_on_call_frame", json!({"expression": "n"}));
+        evaluate_on_call_frame(evaluate, &handler).await.unwrap();
+        step_over(ts::call("step_over", json!({})), &handler)
+            .await
+            .unwrap();
+        resume(ts::call("resume", json!({})), &handler)
+            .await
+            .unwrap();
+        // Then each went to the frame's thread or console
+        let thread = format!("{process}//thread1");
+        let console = format!("{process}//consoleActor3");
+        let to = |kind: &str| -> Vec<String> {
+            rdp.requests()
+                .into_iter()
+                .filter(|r| r.request_type == kind)
+                .map(|r| r.to)
+                .collect()
+        };
+        assert_eq!(to("frames"), std::slice::from_ref(&thread));
+        assert_eq!(to("evaluateJSAsync").last(), Some(&console));
+        assert_eq!(to("resume"), [thread.clone(), thread]);
+        ts::stop(&handler).await;
     }
 }
