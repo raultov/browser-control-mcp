@@ -12,6 +12,12 @@ from a copy of its code: entries describe the differences from that release.
 
 ### Fixed
 
+- Chrome: a click (or any mouse action) into a frame of another origin
+  right after the page loaded was sometimes lost while reported as done:
+  Chrome routes input to such an out-of-process frame only once it has
+  registered it, and until then the parent page got the event on the
+  `<iframe>`. Before the first mouse event into such a frame, the mouse now
+  moves to the point until the frame sees it (at most about 1 s). (#44)
 - `fill_input` and `fill_form` set `date`, `time`, `datetime-local`,
   `month`, `week`, `range` and `color` inputs: the text was typed into the
   date's segments (Chrome held `61031-02-02` for `2026-10-31`; Firefox left

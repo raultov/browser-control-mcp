@@ -181,7 +181,16 @@ pub(crate) struct FrameRoute {
     /// Where the frame's content shows in the page's viewport, measured at
     /// the first mouse event (after the tool scrolled its element into view).
     offset: tokio::sync::Mutex<Option<(f64, f64)>>,
+    /// Set once mouse input is known to reach the frame ([`Self::reach`]).
+    reached: std::sync::atomic::AtomicBool,
 }
+
+/// Most `mouseMoved` probes [`FrameRoute::reach`] sends, [`PROBE_PAUSE`]
+/// apart (about 1 s).
+const PROBES: u32 = 20;
+
+/// The pause between two probes.
+const PROBE_PAUSE: std::time::Duration = std::time::Duration::from_millis(50);
 
 impl FrameRoute {
     fn new(route: Route<FrameScope>, page: &FrameScope) -> Self {
@@ -194,7 +203,45 @@ impl FrameRoute {
             scope: route.frame,
             levels,
             offset: tokio::sync::Mutex::default(),
+            reached: std::sync::atomic::AtomicBool::default(),
         }
+    }
+
+    /// Waits until mouse input at the page point `(x, y)` reaches the
+    /// frame, when it runs in another process than the tab: Chrome routes
+    /// input to such a frame only once it has registered it for hit
+    /// testing, a moment after it loaded; until then the parent page gets
+    /// the event, on the `<iframe>` element, and a click is lost. Harmless
+    /// `mouseMoved` events go to the point (one pixel apart, so each is a
+    /// move) until the frame sees a `pointermove`, at most [`PROBES`].
+    async fn reach(&self, tab: &Tab, (x, y): (f64, f64)) {
+        use std::sync::atomic::Ordering;
+        if self.reached.load(Ordering::Relaxed)
+            || self.scope.session.session_id() == tab.session_id()
+        {
+            return;
+        }
+        if self
+            .scope
+            .value(crate::util::js::POINTER_ARM)
+            .await
+            .is_err()
+        {
+            return;
+        }
+        for probe in 0..PROBES {
+            let at = x + f64::from(probe % 2);
+            let moved = json!({"type": "mouseMoved", "x": at, "y": y, "button": "none"});
+            let _ = tab
+                .send_raw_command("Input.dispatchMouseEvent", moved)
+                .await;
+            let seen = self.scope.value(crate::util::js::POINTER_SEEN).await;
+            if seen.is_ok_and(|seen| seen == true) {
+                break;
+            }
+            tokio::time::sleep(PROBE_PAUSE).await;
+        }
+        self.reached.store(true, Ordering::Relaxed);
     }
 
     /// Where the frame's content starts in the page's viewport: the sum of
@@ -243,6 +290,9 @@ impl FrameRoute {
                 let (x, y) = self.offset().await?;
                 shift(&mut params, "x", x);
                 shift(&mut params, "y", y);
+                if let (Some(x), Some(y)) = (params["x"].as_f64(), params["y"].as_f64()) {
+                    self.reach(tab, (x, y)).await;
+                }
                 tab.send_raw_command(method, params).await
             }
             _ => tab.send_raw_command(method, params).await,
@@ -323,25 +373,99 @@ mod tests {
         mock
     }
 
-    /// ISSUE-27: a target entered into an in-process frame (found from its
-    /// iframe's node) runs script on the frame's document, and its mouse
-    /// events go to the tab offset by where the frame's content starts.
-    #[tokio::test]
-    async fn an_in_process_frame_gets_script_and_offset_mouse_events() {
-        use crate::handler::frames::FrameEntry;
-        // Given frame f1 of the page, shown by the iframe e2 at (100, 200)
-        let mock = page_with_a_frame().await;
+    /// A Chrome page whose iframe `e2` (at (100, 200)) shows `FRAME1`, out
+    /// of process (no content document in its node), whose page sees the
+    /// mouse from the second probe on (`seen` counts the probes' checks).
+    async fn page_with_an_out_of_process_frame(
+        seen: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    ) -> &'static cdp_browser_lite::test_support::mock_devtools::MockDevTools {
+        let mock = crate::handler::cdp_domains::tests::spawn_recording_mock().await;
+
+        mock.respond_with("Runtime.evaluate", move |params| {
+            let expression = params["expression"].as_str().unwrap_or_default();
+            let value = if params.get("returnByValue").is_none() {
+                json!({"type": "object", "objectId": "IFRAME"})
+            } else if expression == crate::util::js::POINTER_SEEN {
+                let probes = seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                json!({"type": "boolean", "value": probes >= 1})
+            } else {
+                json!({"type": "object", "value": {"status": "ok", "x": 100, "y": 200}})
+            };
+            json!({"result": {"result": value}})
+        });
+        mock.respond_with(
+            "DOM.describeNode",
+            |_| json!({"node": {"frameId": "FRAME1"}}),
+        );
+        mock
+    }
+
+    /// A handler on the mock's page whose tab knows `FRAME1`, shown by its
+    /// iframe `e2`, as frame f1.
+    async fn with_frame_one(
+        mock: &'static cdp_browser_lite::test_support::mock_devtools::MockDevTools,
+    ) -> crate::handler::McpHandler {
         let handler = crate::handler::cdp_domains::tests::mock_handler(mock.http_port);
         let session = handler.session(None).await.unwrap();
         crate::handler::cdp_domains::tests::register_tab_on(&session, mock.http_port).await;
         let page = session.target(None).await.unwrap();
         let key = page.page_tab().unwrap().target_id().to_string();
-        let entry = FrameEntry {
+        let entry = crate::handler::frames::FrameEntry {
             key: "FRAME1".into(),
             parent: 0,
             owner: "e2".into(),
         };
         session.frames.with(&key, |table| table.register(entry));
+        handler
+    }
+
+    /// ISSUE-27: before the first mouse event into an out-of-process frame,
+    /// the mouse moves to the point until the frame sees it (Chrome hands
+    /// the frame its input only once registered, a moment after it
+    /// loaded); then the event is sent, once.
+    #[tokio::test]
+    async fn out_of_process_frames_are_reached_before_input() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        // Given an out-of-process frame f1 that sees the second probe
+        let seen = std::sync::Arc::new(AtomicUsize::new(0));
+        let mock = page_with_an_out_of_process_frame(seen.clone()).await;
+        let handler = with_frame_one(mock).await;
+        // When an element of it is pressed
+        let target = crate::handler::resolve_target_at(&handler, None, None, Some("f1e5"))
+            .await
+            .unwrap();
+        let press = json!({"type": "mousePressed", "x": 5, "y": 6, "button": "left"});
+        crate::handler::send_or(&target, "Input.dispatchMouseEvent", press, "CDP Error")
+            .await
+            .unwrap();
+        // Then two probes moved the mouse there before the one press
+        let events: Vec<(String, Value)> = mock
+            .commands_named("Input.dispatchMouseEvent")
+            .into_iter()
+            .map(|c| {
+                (
+                    c.params["type"].as_str().unwrap_or_default().into(),
+                    c.params["x"].clone(),
+                )
+            })
+            .collect();
+        let expected = [
+            ("mouseMoved".to_string(), json!(105.0)),
+            ("mouseMoved".to_string(), json!(106.0)),
+            ("mousePressed".to_string(), json!(105.0)),
+        ];
+        assert_eq!(events, expected);
+        assert_eq!(seen.load(Ordering::SeqCst), 2);
+    }
+
+    /// ISSUE-27: a target entered into an in-process frame (found from its
+    /// iframe's node) runs script on the frame's document, and its mouse
+    /// events go to the tab offset by where the frame's content starts.
+    #[tokio::test]
+    async fn an_in_process_frame_gets_script_and_offset_mouse_events() {
+        // Given frame f1 of the page, shown by the iframe e2 at (100, 200)
+        let mock = page_with_a_frame().await;
+        let handler = with_frame_one(mock).await;
         // When a call acts on f1e5
         let target = crate::handler::resolve_target_at(&handler, None, None, Some("f1e5"))
             .await

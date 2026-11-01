@@ -107,6 +107,14 @@ const FRAME_ORIGIN: &str = "let win = el.ownerDocument.defaultView; \
          } \
          return { status: 'ok', x, y };";
 
+/// Arms the window it runs in to note the next `pointermove` it gets
+/// ([`POINTER_SEEN`]): whether mouse input sent to the page reaches it.
+pub const POINTER_ARM: &str = "(() => { const key = Symbol.for('browser-control-mcp.pointer'); window[key] = false; \
+    addEventListener('pointermove', () => { window[key] = true; }, { capture: true, once: true }); return true; })()";
+
+/// Whether the window armed by [`POINTER_ARM`] got a `pointermove` since.
+pub const POINTER_SEEN: &str = "window[Symbol.for('browser-control-mcp.pointer')] === true";
+
 /// Marks the window it runs in as frame `number` of its tab, so frame
 /// selectors of that number resolve there (see `resolve`).
 pub fn frame_mark(number: usize) -> String {
