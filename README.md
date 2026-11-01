@@ -119,7 +119,7 @@ see the note.
 | `close_tab` | ✓ | ✓ | |
 | `list_tabs` | ✓ | ✓ | |
 | `switch_tab` | ✓ | ✓ | |
-| `navigate` | ✓ | ✓ | `history: "back"` or `"forward"` instead of `url` moves one entry in the tab's history and waits for the page to load (also when it comes from the back-forward cache, which fires no `load`); at either end it fails without moving; a page that pauses at a breakpoint or opens a dialog while loading fails at once naming it (see `resume`, `handle_dialog`) |
+| `navigate` | ✓ | ✓ | `history: "back"` or `"forward"` instead of `url` moves one entry in the tab's history and waits for the page to load (also when it comes from the back-forward cache, which fires no `load`); at either end it fails without moving; a URL the browser saves instead of opening (a download: `Content-Disposition: attachment`, or a type such as CSV) fails saying so, and the tab stays where it was; a page that pauses at a breakpoint or opens a dialog while loading fails at once naming it (see `resume`, `handle_dialog`) |
 | `reload` | ✓ | ✓ | a pause or a dialog while loading fails at once, as with `navigate` |
 | `scroll` | ✓ | ✓ | reports the window positions before and after |
 | `emulate` | ✓ | partial | `emulation` group; `width`/`height`, `device_scale_factor`, `mobile` (touch), `color_scheme`, `reduced_motion`, `forced_colors`, `media` (`print`), `user_agent`, `locale`, `timezone` (checked by the page's `Intl` first), `geolocation` (the page is granted the permission to read it), `reset`; each call adds to the earlier ones; answers what the page now sees (with the position it reads); Firefox: no `mobile` or media options (BiDi has no media or touch emulation yet; they fail naming them) |

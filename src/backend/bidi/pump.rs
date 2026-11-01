@@ -29,6 +29,10 @@ pub(crate) const EVENTS: &[&str] = &[
     "network.fetchError",
 ];
 
+/// Events subscribed when Firefox knows them: an older one refuses the
+/// whole subscription that names them, which is then made without.
+pub(crate) const OPTIONAL_EVENTS: &[&str] = &["browsingContext.downloadWillBegin"];
+
 /// What the pump shares with its session.
 #[derive(Clone)]
 pub(crate) struct PumpState {
@@ -82,17 +86,31 @@ pub(crate) async fn route(event: &WsResponse, client: &BrowserClient, state: &Pu
         "browsingContext.userPromptOpened" | "browsingContext.userPromptClosed" => {
             on_prompt(method, params, state).await;
         }
-        "log.entryAdded" => {
-            if let Some(log) = tab_part(state, params, |t| t.log.clone()) {
-                log.lock().await.push_deduplicated(console_message(params));
-            }
-        }
+        "browsingContext.downloadWillBegin" => on_download(params, state).await,
+        "log.entryAdded" => on_log(params, state).await,
         _ if method.starts_with("network.") => {
             if let Some(network) = tab_part(state, params, |t| t.network.clone()) {
                 on_network(method, params, &mut *network.lock().await);
             }
         }
         _ => on_custom(method, params, state).await,
+    }
+}
+
+/// Keeps a console message in the tab owning the event's context.
+async fn on_log(params: &Value, state: &PumpState) {
+    if let Some(log) = tab_part(state, params, |t| t.log.clone()) {
+        log.lock().await.push_deduplicated(console_message(params));
+    }
+}
+
+/// Notes in the tab owning the event's context that a navigation became a
+/// download (`navigate` then fails saying so).
+async fn on_download(params: &Value, state: &PumpState) {
+    let url = string_or_empty(params, "url");
+    let network = tab_part(state, params, |t| t.network.clone());
+    if let (Some(navigation), Some(network)) = (str_field(params, "navigation"), network) {
+        network.lock().await.note_download(navigation, &url);
     }
 }
 
@@ -561,6 +579,25 @@ mod tests {
         let entry = network.find_request_mut("R1").unwrap();
         assert_eq!(entry.error.as_deref(), Some("NS_ERROR_UNKNOWN_HOST"));
         assert_eq!(entry.response_status_text, None);
+    }
+
+    /// ISSUE-39: a navigation Firefox turned into a download is noted in
+    /// its tab's network state, by navigation id.
+    #[tokio::test]
+    async fn downloads_are_noted_by_navigation() {
+        let mock = MockBidi::start(MockBidiBehavior::Ready).await.unwrap();
+        let (client, state) = one_tab(&mock).await;
+        let download = json!({"context": "ctx-0", "navigation": "n7", "url": "http://a/file.csv", "suggestedFilename": "file.csv"});
+        route(
+            &event("browsingContext.downloadWillBegin", download),
+            &client,
+            &state,
+        )
+        .await;
+        let tab = read(&state.tabs).tabs["tab-1"].clone();
+        let network = tab.network.lock().await;
+        assert!(network.is_download("n7"));
+        assert!(!network.is_download("n8"));
     }
 
     /// BID-11: A top-level navigation starts a new bucket and updates the URL.

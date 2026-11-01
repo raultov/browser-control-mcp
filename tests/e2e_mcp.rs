@@ -140,6 +140,7 @@ mod e2e {
     fn page(path: &str, ws: &str) -> (&'static str, String) {
         match path {
             p if p.starts_with("/app.js") => ("application/javascript", APP_JS.to_string()),
+            p if p.starts_with("/data.csv") => ("text/csv", "a,b\n1,2\n".to_string()),
             p if p.starts_with("/self-close.html") => (
                 "text/html",
                 "<!doctype html><title>closing</title><script>setTimeout(() => window.close(), 2000)</script>".to_string(),
@@ -1653,9 +1654,22 @@ mod e2e {
         .concat()
     }
 
+    /// ISSUE-39: a URL the browser saves (a CSV, without
+    /// Content-Disposition) fails as a download on both browsers.
+    fn download_steps(instance: &str, base: &str) -> Vec<Step> {
+        let to = json!({"instance_id": instance, "url": format!("{base}/data.csv")});
+        vec![(
+            "ISSUE-39 a saved type is a download",
+            "navigate",
+            to,
+            "!the URL is a download",
+        )]
+    }
+
     /// The steps that leave the test page and come back to it.
     fn other_page_steps(instance: &str, base: &str) -> Vec<Step> {
         [
+            download_steps(instance, base),
             drag_steps(instance, base),
             cross_origin_steps(instance, base),
             frame_observation_steps(instance),

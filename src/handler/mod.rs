@@ -173,6 +173,9 @@ pub(crate) struct NetworkState {
     /// Set-Cookie...), per request id: they may come before or after the
     /// request and its response, so they are kept and merged each time.
     pub extra_headers: crate::util::bounded::BoundedMap<String, ExtraHeaders, MAX_EXTRA_HEADERS>,
+    /// The navigations the browser turned into downloads (Firefox's
+    /// `browsingContext.downloadWillBegin`), with the URL saved.
+    pub downloads: crate::util::bounded::BoundedMap<String, String, MAX_DOCUMENTS>,
 }
 
 /// URL schemes of the browser's own requests (the new-tab page, DevTools,
@@ -236,6 +239,7 @@ impl Default for NetworkState {
             ws_frames: Default::default(),
             documents: Default::default(),
             extra_headers: Default::default(),
+            downloads: Default::default(),
         }
     }
 }
@@ -264,6 +268,17 @@ impl NetworkState {
                 bucket.requests.remove(&oldest_id);
             }
         }
+    }
+
+    /// Notes that navigation `navigation` became a download of `url`.
+    pub(crate) fn note_download(&mut self, navigation: &str, url: &str) {
+        self.downloads
+            .insert(navigation.to_string(), url.to_string());
+    }
+
+    /// Whether navigation `navigation` became a download.
+    pub(crate) fn is_download(&self, navigation: &str) -> bool {
+        self.downloads.contains_key(navigation)
     }
 
     /// Keeps ExtraInfo headers of `id` (`response` false: the request's)

@@ -147,7 +147,8 @@ pub(crate) async fn navigate(params: CallToolRequestParams, handler: &McpHandler
     let navigation = page::navigate(&tab.tab, &url);
     let outcome = unless_paused(&session, &id, "navigate", navigation).await?;
     let document = navigation_document(&tab, &outcome, &url).await;
-    if document.as_ref().is_some_and(NetworkRequest::is_attachment) {
+    let attachment = document.as_ref().is_some_and(NetworkRequest::is_attachment);
+    if attachment || became_download(&tab, &outcome, &url).await {
         return Err(BackendError::Navigation {
             reason: crate::handler::navigation::DOWNLOAD.to_string(),
             url,
@@ -175,6 +176,33 @@ async fn traverse_history(
 
 /// The logged document request of the navigation `outcome` reports (by
 /// its BiDi `navigation` id), when `url` is http(s).
+/// How long a navigation that did not reach its URL waits for Firefox to
+/// say it became a download.
+const DOWNLOAD_WAIT: std::time::Duration = std::time::Duration::from_millis(300);
+
+/// Whether Firefox turned the navigation into a download (a type it saves,
+/// with or without Content-Disposition): its `downloadWillBegin` names the
+/// navigation. Waited for a moment only when the tab is not on `url`.
+async fn became_download(
+    tab: &super::session::FirefoxTab,
+    outcome: &NavigationOutcome,
+    url: &str,
+) -> bool {
+    let Some(navigation) = outcome.browser.get("navigation").and_then(Value::as_str) else {
+        return false;
+    };
+    let deadline = tokio::time::Instant::now() + DOWNLOAD_WAIT;
+    loop {
+        if tab.network.lock().await.is_download(navigation) {
+            return true;
+        }
+        if outcome.url == url || tokio::time::Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+}
+
 async fn navigation_document(
     tab: &super::session::FirefoxTab,
     outcome: &NavigationOutcome,
@@ -1116,6 +1144,28 @@ mod tests {
         assert_eq!(
             error,
             format!("Navigation failed: {download} (http://127.0.0.1:8/page)")
+        );
+        ts::stop(&handler).await;
+    }
+
+    /// ISSUE-39 (Firefox): a navigation Firefox turns into a download (a
+    /// type it saves, without Content-Disposition) fails as on Chrome; it
+    /// answered "Navigated to <previous URL>".
+    #[tokio::test]
+    async fn saved_types_fail_as_downloads() {
+        let (mock, handler) = navigation_answered(200, json!([])).await;
+        let download = json!({"context": "ctx-0", "navigation": "n1", "url": "http://127.0.0.1:8/file.csv", "suggestedFilename": "file.csv"});
+        mock.bidi()
+            .emit("browsingContext.downloadWillBegin", download);
+        let args = json!({"url": "http://127.0.0.1:8/file.csv"});
+        let error = navigate(call("navigate", args), &handler)
+            .await
+            .unwrap_err()
+            .to_string();
+        let expected = crate::handler::navigation::DOWNLOAD;
+        assert_eq!(
+            error,
+            format!("Navigation failed: {expected} (http://127.0.0.1:8/file.csv)")
         );
         ts::stop(&handler).await;
     }

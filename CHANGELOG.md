@@ -12,6 +12,10 @@ from a copy of its code: entries describe the differences from that release.
 
 ### Fixed
 
+- Firefox: `navigate` to a URL Firefox saves rather than opens (a type such
+  as CSV, without `Content-Disposition: attachment`) answered "Navigated
+  to" the previous page; it now fails as a download, as on Chrome, from
+  Firefox's `browsingContext.downloadWillBegin`. (#39)
 - `evaluate_js` takes `await` at the top level (`const r = await
   fetch(u); r.json()`), answering the last statement's value as a console
   does: it failed with a SyntaxError on both browsers. A symbol is described

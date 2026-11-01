@@ -78,9 +78,10 @@ pub(crate) fn refusal(session: &FirefoxSession, method: &str, params: &Value) ->
     // By name, BiDi strips the events from every subscription, ours too.
     let names = params["events"].as_array().cloned().unwrap_or_default();
     let removes_pump_events = names.iter().filter_map(Value::as_str).any(|name| {
-        super::pump::EVENTS
+        let pump = super::pump::EVENTS
             .iter()
-            .any(|e| pump_event_matches(e, name))
+            .chain(super::pump::OPTIONAL_EVENTS);
+        pump.clone().any(|e| pump_event_matches(e, name))
     });
     (removes_own || removes_pump_events).then(|| {
         "`session.unsubscribe` of the server's own subscription or events is refused".to_string()

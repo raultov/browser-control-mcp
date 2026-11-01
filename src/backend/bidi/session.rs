@@ -308,10 +308,20 @@ impl FirefoxSession {
     async fn start(&self, browser: &Browser) -> Result<(), BackendError> {
         let client = browser.client().await.map_err(lifecycle_error)?;
         let events = client.subscribe();
-        let id = client
-            .subscribe_events(super::pump::EVENTS, None)
-            .await
-            .map_err(|e| protocol_error("session.subscribe", &e))?;
+        let all: Vec<&str> = super::pump::EVENTS
+            .iter()
+            .chain(super::pump::OPTIONAL_EVENTS)
+            .copied()
+            .collect();
+        // An older Firefox refuses an event it does not know, and with it the
+        // whole subscription: then the required ones only.
+        let id = match client.subscribe_events(&all, None).await {
+            Ok(id) => id,
+            Err(_) => client
+                .subscribe_events(super::pump::EVENTS, None)
+                .await
+                .map_err(|e| protocol_error("session.subscribe", &e))?,
+        };
         *write(&self.own_subscription) = Some(id);
         *write(&self.pump_client) = Some(client.clone());
         let state = super::pump::PumpState {
