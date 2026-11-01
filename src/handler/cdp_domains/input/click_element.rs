@@ -468,7 +468,8 @@ mod tests {
             error.starts_with("Element '#b' is disabled; nothing was clicked"),
             "{error}"
         );
-        assert!(error.contains("waited 2.0 s"), "{error}");
+        // (how long, as measured: timers are coarser on some systems)
+        assert!(error.contains("(waited 2."), "{error}");
         assert!(mouse_events(mock).is_empty());
     }
 
