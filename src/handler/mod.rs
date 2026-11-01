@@ -85,6 +85,10 @@ pub struct NetworkRequest {
     /// asked for (an open stream never finishes).
     #[serde(skip)]
     pub finished: bool,
+    /// On Chrome, the session of the frame of another origin that made the
+    /// request: its body is only known there.
+    #[serde(skip)]
+    pub session: Option<String>,
 }
 
 #[derive(Clone, Debug, ::serde::Serialize, ::serde::Deserialize)]

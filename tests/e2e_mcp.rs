@@ -95,7 +95,8 @@ mod e2e {
     </body></html>"#;
     const XO_INNER: &str = r#"<!doctype html><html><body>
     <button id="ib" onclick="document.getElementById('out').textContent = 'xo clicked'">inner button</button>
-    <input id="iq" aria-label="inner field"><span id="out"></span></body></html>"#;
+    <input id="iq" aria-label="inner field"><span id="out"></span>
+    <script>console.log('xo inner log'); fetch('/api?from-frame');</script></body></html>"#;
     const APP_JS: &str = "function appTarget(x) {\n  const y = x * 2;\n  return y + 1;\n}\nwindow.appTarget = appTarget;\nfetch('/api');\n";
 
     /// The WebSocket page: sends `hello-ws` to the echo server on `port`.
@@ -1371,6 +1372,27 @@ mod e2e {
         ]
     }
 
+    /// ISSUE-36: the console and requests of a frame of another origin
+    /// (out of process on Chrome) are the tab's, response bodies included.
+    fn frame_observation_steps(instance: &str) -> Vec<Step> {
+        let i = json!(instance);
+        let framed = json!({"instance_id": i, "url_filter": "from-frame", "include_details": true});
+        vec![
+            (
+                "ISSUE-36 the frame's console message",
+                "get_console_logs",
+                json!({"instance_id": i}),
+                "xo inner log",
+            ),
+            (
+                "ISSUE-36 the frame's request and its body",
+                "get_network_logs",
+                framed,
+                r#""response_body": "{\"ok\":true}""#,
+            ),
+        ]
+    }
+
     /// ISSUE-27: what the cross-origin steps did shows in the frame's
     /// outline and in a search; then the test page comes back.
     fn cross_origin_result_steps(instance: &str, base: &str) -> Vec<Step> {
@@ -1424,6 +1446,7 @@ mod e2e {
         [
             drag_steps(instance, base),
             cross_origin_steps(instance, base),
+            frame_observation_steps(instance),
             cross_origin_result_steps(instance, base),
             history_steps(instance, base),
         ]

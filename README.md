@@ -37,7 +37,7 @@ Tokens are estimated as characters / 4 for every server.
 | Firefox | **✓ next to Chrome, same tools** | ✓ one browser per server | ✗ |
 | Several browsers and instances at once | **✓** | ✗ | ✗ |
 | Selectors | CSS, snapshot refs, `host >>> inner` into shadow roots and iframes | CSS, snapshot refs | snapshot refs only |
-| Frames of another origin (payment forms, embedded editors) | ✓ in the snapshot, refs `f2e5` for every input tool | ✓ refs `f1e5` | ✗ |
+| Frames of another origin (payment forms, embedded editors) | ✓ in the snapshot, refs `f2e5` for every input tool, their console and network in the tab's logs | ✓ refs `f1e5` | ✗ |
 | Snapshot of a long page | **bounded at 50 000 characters**, `find_in_snapshot` searches the rest | unbounded | unbounded |
 | Waits for the page to react after an action | ✓ ~50 ms when nothing reacts | ✓ ~500 ms | ✓ ~200 ms |
 | Clicking a covered or hidden element | **fails at once, naming the overlay** | fails after a 5 s timeout | reports success (the overlay gets the click) |
@@ -623,7 +623,10 @@ incompatible:
 - Frames of another origin: `evaluate_js` runs in the page only, and
   `capture_screenshot` cannot clip to an element inside such a frame (pass
   the iframe's ref instead); `snapshot` reads at most 20 of them, 5 deep;
-  the coordinates in the replies of the input tools are the frame's.
+  the coordinates in the replies of the input tools are the frame's. On
+  Chrome, the console and network of at most 50 of them per tab are
+  logged. The debugger does not see their scripts yet, on either browser
+  (`search_scripts` and breakpoints cover the page's own).
 
 ## Untested
 

@@ -396,7 +396,9 @@ pub(crate) fn still_loading_note(count: usize) -> Option<String> {
 }
 
 /// `Network.getResponseBody` for the requests [`wants_body`] picks (bodies
-/// are only kept in the returned copy); how many are still loading.
+/// are only kept in the returned copy), on the session of the frame that
+/// made it when it was a frame of another origin; how many are still
+/// loading.
 async fn fetch_bodies(
     target: &CdpTarget,
     requests: &mut Requests,
@@ -407,7 +409,22 @@ async fn fetch_bodies(
         if !wants_body(req_id, req, current) {
             continue;
         }
-        let ask = target.send_raw_command("Network.getResponseBody", json!({"requestId": req_id}));
+        let params = json!({"requestId": req_id});
+        let ask = async {
+            match (&req.session, target.page_tab()) {
+                (Some(session), Some(tab)) => {
+                    let client = tab.client();
+                    client
+                        .send_raw_command_to_session(session, "Network.getResponseBody", params)
+                        .await
+                }
+                _ => {
+                    target
+                        .send_raw_command("Network.getResponseBody", params)
+                        .await
+                }
+            }
+        };
         let reply = tokio::time::timeout(BODY_WAIT, ask).await;
         if let Ok(Ok(reply)) = reply
             && let Some(result) = reply.result.as_ref()
@@ -626,6 +643,48 @@ mod tests {
         assert_eq!(request.response_body_encoding.as_deref(), Some("base64"));
         let row = serde_json::to_value(request).unwrap();
         assert_eq!(row["response_body_encoding"], "base64");
+    }
+
+    /// ISSUE-36: the body of a request made by a frame of another origin
+    /// is asked on that frame's session (the tab's does not know it).
+    #[tokio::test]
+    async fn frame_bodies_are_asked_on_the_frame_session() {
+        use crate::handler::cdp_domains::tests::{mock_handler, spawn_recording_mock};
+        // Given a request of the tab and one of a frame
+        let mock = spawn_recording_mock().await;
+        let handler = mock_handler(mock.http_port);
+        let session = handler.session(None).await.unwrap();
+        crate::handler::cdp_domains::tests::register_tab_on(&session, mock.http_port).await;
+        let target = session.target(None).await.unwrap();
+        let framed = NetworkRequest {
+            session: Some("FRAME-S".to_string()),
+            ..answered(json!({}), None)
+        };
+        let mut requests = HashMap::from([
+            ("tab".to_string(), answered(json!({}), None)),
+            ("frame".to_string(), framed),
+        ]);
+        let current = HashSet::from(["tab".to_string(), "frame".to_string()]);
+        // When their bodies are fetched
+        fetch_bodies(&target, &mut requests, &current).await;
+        // Then each is asked on its own session
+        let tab = target.page_tab().unwrap().session_id().to_string();
+        let mut asked: Vec<(String, Option<String>)> = mock
+            .commands_named("Network.getResponseBody")
+            .into_iter()
+            .map(|c| {
+                (
+                    c.params["requestId"].as_str().unwrap().to_string(),
+                    c.session_id,
+                )
+            })
+            .collect();
+        asked.sort();
+        let expected = [
+            ("frame".to_string(), Some("FRAME-S".to_string())),
+            ("tab".to_string(), Some(tab)),
+        ];
+        assert_eq!(asked, expected);
     }
 
     /// ISSUE-18: by default the reply is one line per request, oldest

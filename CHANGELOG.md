@@ -12,6 +12,14 @@ from a copy of its code: entries describe the differences from that release.
 
 ### Fixed
 
+- Chrome: `get_console_logs` and `get_network_logs` now include the
+  console messages and requests of frames of another origin (payment forms,
+  widgets, ads), which run in a process of their own and were missing:
+  each tab attaches to its frames as they appear, before their scripts run,
+  and feeds their messages and requests to the tab's logs (at most 50
+  frames per tab). Their response bodies are read from the frame. Firefox
+  already reported them. The debugger does not see these frames' scripts
+  yet, on either browser. (#36)
 - Chrome: a click (or any mouse action) into a frame of another origin
   right after the page loaded was sometimes lost while reported as done:
   Chrome routes input to such an out-of-process frame only once it has

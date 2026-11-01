@@ -111,6 +111,35 @@ pub(crate) fn start_network_listener(
     crate::handler::cdp_domains::event_pump::spawn_state_listener(target, "Network", state, process)
 }
 
+/// [`start_network_listener`] for a frame of another origin on Chrome,
+/// whose session is `session`: its requests note it, so their bodies are
+/// asked there. Any event of a request counts: the frame's own document is
+/// requested by its parent, before the frame's session exists, and only
+/// its response reaches the frame's session.
+pub(crate) fn start_frame_network_listener(
+    target: &crate::handler::cdp_domains::cdp_target::CdpTarget,
+    state: Arc<Mutex<NetworkState>>,
+    session: String,
+) -> tokio::task::JoinHandle<()> {
+    let process = move |event, state| process_frame_event(event, state, session.clone());
+    crate::handler::cdp_domains::event_pump::spawn_state_listener(target, "Network", state, process)
+}
+
+/// [`process_network_event`] for an event of the frame whose session is
+/// `session`, then notes that session on the request.
+async fn process_frame_event(event: WsResponse, state: Arc<Mutex<NetworkState>>, session: String) {
+    process_network_event(&event, &state).await;
+    let id = event
+        .params
+        .as_ref()
+        .and_then(|p| str_field(p, "requestId"));
+    if let Some(id) = id
+        && let Some(request) = state.lock().await.find_request_mut(id)
+    {
+        request.session = Some(session);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

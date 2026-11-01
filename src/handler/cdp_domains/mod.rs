@@ -220,6 +220,7 @@ pub(crate) mod tests {
 pub(crate) mod cdp_target;
 pub(crate) mod event_pump;
 pub(crate) mod frame_scope;
+pub(crate) mod frame_watch;
 pub mod log;
 pub mod performance;
 pub mod tracing;
@@ -272,6 +273,8 @@ pub(crate) fn start_tab_listeners(
     handles.push(debugger::start_debugger_listener(&target, dbg));
     handles.push(page::start_dialog_listener(&target, dialog));
     handles.push(network::start_network_listener(&target, net.clone()));
+    let sinks = frame_watch::FrameSinks::new(log.clone(), net.clone());
+    handles.push(frame_watch::start_frame_watcher(tab, sinks));
     handles.push(page::start_page_listener(
         &target,
         net,
