@@ -27,17 +27,23 @@ impl RemoveBreakpointTool {
         let args: RemoveBreakpointTool = crate::handler::parse_args(params)?;
         let session = handler.session(args.instance_id.clone()).await?;
         let state = session.debugger_state(args.tab_id.clone())?;
-        let native = state
-            .lock()
-            .await
-            .breakpoints
-            .get(&args.breakpoint_id)
-            .map_err(CallToolError::from_message)?
-            .clone();
+        let (breakpoint, frames) = {
+            let state = state.lock().await;
+            let breakpoint = state.breakpoints.get(&args.breakpoint_id);
+            let breakpoint = breakpoint.map_err(CallToolError::from_message)?.clone();
+            (breakpoint, state.debugged_frames())
+        };
         let target = session.target(args.tab_id.clone()).await?;
-        let params = json!({ "breakpointId": native });
-        let failure = "Failed to remove breakpoint";
-        crate::handler::send_or(&target, "Debugger.removeBreakpoint", params, failure).await?;
+        let on_tab = breakpoint
+            .natives
+            .iter()
+            .filter(|(frame, _)| frame.is_none());
+        for (_, native) in on_tab {
+            let params = json!({ "breakpointId": native });
+            let failure = "Failed to remove breakpoint";
+            crate::handler::send_or(&target, "Debugger.removeBreakpoint", params, failure).await?;
+        }
+        super::frames::remove_from_frames(&breakpoint, &frames).await;
         let paused = {
             let mut state = state.lock().await;
             state.breakpoints.remove(&args.breakpoint_id);

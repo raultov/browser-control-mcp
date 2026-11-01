@@ -1,4 +1,5 @@
 pub mod evaluate_on_call_frame;
+pub(crate) mod frames;
 pub mod pause_on_load;
 pub mod remove_breakpoint;
 pub mod resume;
@@ -23,60 +24,104 @@ fn position(params: &Option<serde_json::Value>, key: &str) -> i32 {
     number.or(text).unwrap_or(0)
 }
 
-/// Processes a single CDP debugger event, updating the shared state accordingly.
-/// This function is extracted from the listener loop to enable isolated unit testing.
-/// Returns `true` for a pause the tab must not keep (`DebuggerState::
-/// skips_pauses`): it is not recorded, and the listener resumes it.
+/// [`process_debugger_event_in`] for an event of the tab.
+#[cfg(test)]
 pub(crate) async fn process_debugger_event(
     event: &WsResponse,
     state: &Arc<Mutex<DebuggerState>>,
 ) -> bool {
-    if event.method.as_deref() == Some("Debugger.paused") && state.lock().await.skips_pauses() {
+    process_debugger_event_in(event, state, None).await
+}
+
+/// Processes a single CDP debugger event of the tab (`frame` `None`) or of
+/// its frame of another origin attached as session `frame`, updating the
+/// shared state accordingly (extracted from the listener loop to enable
+/// isolated unit testing). A frame's scripts and pause are recorded under
+/// their tab's script ids (`frames::frame_script_id`), and its pauses and
+/// resumes announced (`frames::FrameEvents`); events of a frame no longer
+/// debugged are ignored. Returns `true` for a pause the tab must not keep
+/// (`DebuggerState::skips_pauses`): it is not recorded, and the listener
+/// resumes it.
+pub(crate) async fn process_debugger_event_in(
+    event: &WsResponse,
+    state: &Arc<Mutex<DebuggerState>>,
+    frame: Option<&str>,
+) -> bool {
+    let method = event.method.as_deref();
+    let mut st = state.lock().await;
+    if method == Some("Debugger.paused") && st.skips_pauses() {
         return true;
     }
-    if let Some(method) = event.method.as_deref() {
-        if method == "Debugger.scriptParsed" {
-            if let (Some(script_id), Some(hash)) = (
-                extract_from_value(&event.params, "scriptId"),
-                extract_from_value(&event.params, "hash"),
-            ) {
-                let start_line = position(&event.params, "startLine");
-                let start_column = position(&event.params, "startColumn");
-                let end_line = position(&event.params, "endLine");
-                let url = extract_from_value(&event.params, "url").unwrap_or_default();
-
-                let mut st = state.lock().await;
-                st.scripts.insert(
-                    script_id.to_string(),
-                    ScriptInfo {
-                        hash: hash.to_string(),
-                        start_line,
-                        start_column,
-                        end_line,
-                        url: url.to_string(),
-                    },
-                );
-            }
-        } else if method == "Debugger.paused"
-            && let Some(call_first_frame_id) = event
-                .params
-                .as_ref()
-                .and_then(|p: &serde_json::Value| p.get("callFrames"))
-                .and_then(|frames: &serde_json::Value| frames.as_array())
-                .and_then(|frames: &Vec<serde_json::Value>| frames.first())
-                .and_then(|first_frame: &serde_json::Value| first_frame.get("callFrameId"))
-                .and_then(|id: &serde_json::Value| id.as_str())
-        {
-            let mut st = state.lock().await;
-            st.paused_call_frame_id = Some(call_first_frame_id.to_string());
-            st.paused_at = event.params.as_ref().and_then(pause_location);
-        } else if method == "Debugger.resumed" {
-            let mut st = state.lock().await;
+    let number = match frame.map(|session| st.frame_number(session)) {
+        Some(None) => return false,
+        Some(number) => number,
+        None => None,
+    };
+    let event = match number {
+        Some(number) => &frames::in_frame(event.clone(), number),
+        None => event,
+    };
+    match method {
+        Some("Debugger.scriptParsed") => on_script_parsed(&event.params, &mut st, number),
+        Some("Debugger.paused") => on_paused(&event.params, &mut st, frame),
+        Some("Debugger.resumed") if st.paused_frame.as_deref() == frame => {
             st.paused_call_frame_id = None;
             st.paused_at = None;
+            st.paused_frame = None;
         }
+        _ => {}
+    }
+    let paused_or_resumed = matches!(method, Some("Debugger.paused" | "Debugger.resumed"));
+    if number.is_some() && paused_or_resumed {
+        st.frame_events.announce(event.clone());
     }
     false
+}
+
+/// Records the script a `Debugger.scriptParsed` announces, of frame
+/// `number` (`None`: the tab).
+fn on_script_parsed(
+    params: &Option<serde_json::Value>,
+    st: &mut DebuggerState,
+    number: Option<u32>,
+) {
+    let (Some(script_id), Some(hash)) = (
+        extract_from_value(params, "scriptId"),
+        extract_from_value(params, "hash"),
+    ) else {
+        return;
+    };
+    let id = number.map_or_else(
+        || script_id.to_string(),
+        |number| frames::frame_script_id(number, script_id),
+    );
+    let info = ScriptInfo {
+        hash: hash.to_string(),
+        start_line: position(params, "startLine"),
+        start_column: position(params, "startColumn"),
+        end_line: position(params, "endLine"),
+        url: extract_from_value(params, "url")
+            .unwrap_or_default()
+            .to_string(),
+    };
+    st.scripts.insert(id, info);
+}
+
+/// Records the pause a `Debugger.paused` announces, in `frame` (`None`:
+/// the tab).
+fn on_paused(params: &Option<serde_json::Value>, st: &mut DebuggerState, frame: Option<&str>) {
+    let first = params
+        .as_ref()
+        .and_then(|p| p.get("callFrames"))
+        .and_then(|frames| frames.as_array())
+        .and_then(|frames| frames.first())
+        .and_then(|first| first.get("callFrameId"))
+        .and_then(|id| id.as_str());
+    if let Some(call_frame_id) = first {
+        st.paused_call_frame_id = Some(call_frame_id.to_string());
+        st.paused_at = params.as_ref().and_then(pause_location);
+        st.paused_frame = frame.map(str::to_string);
+    }
 }
 
 /// Where a `Debugger.paused` event stopped (top frame), 0-based as CDP.
@@ -122,10 +167,11 @@ pub(crate) fn with_script_url(mut location: PauseLocation, state: &DebuggerState
     location
 }
 
-/// Waits up to `limit` for the next `Debugger.paused` on `events`; its
-/// script is named from `state`'s parsed scripts.
+/// Waits up to `limit` for the next `Debugger.paused` on `events` (see
+/// `frames::debugger_events`); its script is named from `state`'s parsed
+/// scripts.
 pub(crate) async fn wait_for_pause(
-    events: &mut cdp_browser_lite::EventFilter,
+    events: &mut (impl tokio_stream::Stream<Item = cdp_browser_lite::CdpResult<WsResponse>> + Unpin),
     limit: std::time::Duration,
     state: &Arc<Mutex<DebuggerState>>,
 ) -> Option<PauseLocation> {
@@ -135,7 +181,7 @@ pub(crate) async fn wait_for_pause(
 
 /// The next `Debugger.paused` on `events` within `limit`.
 async fn next_pause(
-    events: &mut cdp_browser_lite::EventFilter,
+    events: &mut (impl tokio_stream::Stream<Item = cdp_browser_lite::CdpResult<WsResponse>> + Unpin),
     limit: std::time::Duration,
 ) -> Option<PauseLocation> {
     use tokio_stream::StreamExt;
@@ -152,16 +198,24 @@ async fn next_pause(
 }
 
 /// Tells Chrome whether to skip every pause (`Debugger.setSkipAllPauses`)
-/// from the tab's state (see `DebuggerState::skips_pauses`). Best effort: an
-/// older Chrome without the command keeps pausing.
+/// from the tab's state (see `DebuggerState::skips_pauses`), in the tab and
+/// its debugged frames. Best effort: an older Chrome without the command
+/// keeps pausing.
 pub(crate) async fn sync_pauses(target: &CdpTarget, state: &Arc<Mutex<DebuggerState>>) {
-    let skip = state.lock().await.skips_pauses();
+    let (skip, frames) = {
+        let state = state.lock().await;
+        (state.skips_pauses(), state.debugged_frames())
+    };
+    let skip = serde_json::json!({ "skip": skip });
     let _ = target
-        .send_raw_command(
-            "Debugger.setSkipAllPauses",
-            serde_json::json!({ "skip": skip }),
-        )
+        .send_raw_command("Debugger.setSkipAllPauses", skip.clone())
         .await;
+    for frame in frames {
+        let _ = frame
+            .tab
+            .send_raw_command("Debugger.setSkipAllPauses", skip.clone())
+            .await;
+    }
 }
 
 /// Keeps the tab's debugger state from its `Debugger` events. A pause with
@@ -172,11 +226,22 @@ pub(crate) fn start_debugger_listener(
     target: &crate::handler::cdp_domains::cdp_target::CdpTarget,
     state: Arc<Mutex<DebuggerState>>,
 ) -> tokio::task::JoinHandle<()> {
+    start_debugger_listener_in(target, state, None)
+}
+
+/// [`start_debugger_listener`] for the tab (`frame` `None`) or its frame of
+/// another origin attached as session `frame` (`target` is that session).
+pub(crate) fn start_debugger_listener_in(
+    target: &crate::handler::cdp_domains::cdp_target::CdpTarget,
+    state: Arc<Mutex<DebuggerState>>,
+    frame: Option<String>,
+) -> tokio::task::JoinHandle<()> {
     let page = target.clone();
     let process = move |event, state| {
         let page = page.clone();
+        let frame = frame.clone();
         async move {
-            if process_debugger_event(&event, &state).await {
+            if process_debugger_event_in(&event, &state, frame.as_deref()).await {
                 let skip = serde_json::json!({ "skip": true });
                 let _ = page
                     .send_raw_command("Debugger.setSkipAllPauses", skip)
@@ -421,7 +486,11 @@ pub(crate) mod tests {
     /// A tab state with one breakpoint, so its pauses are kept.
     pub(crate) fn with_breakpoint() -> Arc<Mutex<DebuggerState>> {
         let mut state = DebuggerState::default();
-        state.breakpoints.add("1:3:0:http://a/app.js".into());
+        state.breakpoints.add(
+            crate::handler::cdp_domains::debugger::frames::ChromeBreakpoint::on_tab(
+                "1:3:0:http://a/app.js",
+            ),
+        );
         Arc::new(Mutex::new(state))
     }
 

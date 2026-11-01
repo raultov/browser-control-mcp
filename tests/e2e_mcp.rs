@@ -96,7 +96,11 @@ mod e2e {
     const XO_INNER: &str = r#"<!doctype html><html><body>
     <button id="ib" onclick="document.getElementById('out').textContent = 'xo clicked'">inner button</button>
     <input id="iq" aria-label="inner field"><span id="out"></span>
+    <script src="/xo-inner.js"></script><button id="ibp" onclick="document.getElementById('pout').textContent = 'xo ' + xoInner(21)">inner pause</button><span id="pout"></span>
     <script>console.log('xo inner log'); fetch('/api?from-frame');</script></body></html>"#;
+    /// ISSUE-36: the script of the frame of another origin, to debug.
+    const XO_INNER_JS: &str =
+        "function xoInner(n) {\n  const doubled = n * 2;\n  return doubled;\n}\n";
     const APP_JS: &str = "function appTarget(x) {\n  const y = x * 2;\n  return y + 1;\n}\nwindow.appTarget = appTarget;\nfetch('/api');\n";
 
     /// The WebSocket page: sends `hello-ws` to the echo server on `port`.
@@ -136,6 +140,9 @@ mod e2e {
     fn page(path: &str, ws: &str) -> (&'static str, String) {
         match path {
             p if p.starts_with("/app.js") => ("application/javascript", APP_JS.to_string()),
+            p if p.starts_with("/xo-inner.js") => {
+                ("application/javascript", XO_INNER_JS.to_string())
+            }
             p if p.starts_with("/api") => ("application/json", "{\"ok\":true}".to_string()),
             p if p.starts_with("/ws.html") => ("text/html", ws.to_string()),
             p if p.starts_with("/frame.html") => ("text/html", FRAME.to_string()),
@@ -1393,6 +1400,61 @@ mod e2e {
         ]
     }
 
+    /// ISSUE-36 (Chrome): the debugger reaches the script of a frame of
+    /// another origin: found, a breakpoint by URL binds in it, a click in
+    /// the frame pauses there, and evaluate, step and resume act there.
+    fn frame_debugger_steps(instance: &str, base: &str) -> Vec<Step> {
+        let i = json!(instance);
+        let script = format!("{}/xo-inner.js", base.replace("127.0.0.1", "localhost"));
+        let bp = json!({"instance_id": i, "url": script, "line_number": 1});
+        let id = json!({"instance_id": i});
+        vec![
+            (
+                "ISSUE-36 search the frame's script",
+                "search_scripts",
+                json!({"instance_id": i, "query": "const doubled"}),
+                "const doubled = n * 2",
+            ),
+            (
+                "ISSUE-36 a breakpoint binds in the frame",
+                "set_breakpoint",
+                bp,
+                "\"resolved\": true",
+            ),
+            (
+                "ISSUE-36 a click pauses in the frame",
+                "click_element",
+                json!({"instance_id": i, "selector": "f1 >>> #ibp"}),
+                "paused in the debugger",
+            ),
+            (
+                "ISSUE-36 evaluate in the frame's pause",
+                "evaluate_on_call_frame",
+                json!({"instance_id": i, "expression": "n * 2"}),
+                "42",
+            ),
+            (
+                "ISSUE-36 step in the frame",
+                "step_over",
+                id.clone(),
+                "Stepped",
+            ),
+            ("ISSUE-36 resume the frame", "resume", id.clone(), "resumed"),
+            (
+                "ISSUE-36 remove the frame's breakpoint",
+                "remove_breakpoint",
+                json!({"instance_id": i, "breakpoint_id": "bp-1"}),
+                "removed",
+            ),
+            (
+                "ISSUE-36 the handler finished",
+                "find_in_snapshot",
+                json!({"instance_id": i, "text": "xo 42"}),
+                "1 matches",
+            ),
+        ]
+    }
+
     /// ISSUE-27: what the cross-origin steps did shows in the frame's
     /// outline and in a search; then the test page comes back.
     fn cross_origin_result_steps(instance: &str, base: &str) -> Vec<Step> {
@@ -1441,12 +1503,18 @@ mod e2e {
         .concat()
     }
 
-    /// The steps that leave the test page and come back to it.
-    fn other_page_steps(instance: &str, base: &str) -> Vec<Step> {
+    /// The steps that leave the test page and come back to it; some only
+    /// on `chrome`.
+    fn other_page_steps(instance: &str, base: &str, chrome: bool) -> Vec<Step> {
+        let frame_debugger = match chrome {
+            true => frame_debugger_steps(instance, base),
+            false => Vec::new(),
+        };
         [
             drag_steps(instance, base),
             cross_origin_steps(instance, base),
             frame_observation_steps(instance),
+            frame_debugger,
             cross_origin_result_steps(instance, base),
             history_steps(instance, base),
         ]
@@ -1711,7 +1779,7 @@ mod e2e {
             observation_steps("e2e"),
             network_steps("e2e"),
             websocket_steps("e2e", &base),
-            other_page_steps("e2e", &base),
+            other_page_steps("e2e", &base, browser == "chrome"),
             debugger_steps("e2e", &base),
             closing_steps(browser),
         ];
@@ -1800,7 +1868,7 @@ mod e2e {
             storage_steps("default"),
             emulate_steps("default", variable.contains("CHROME")),
             network_steps("default"),
-            other_page_steps("default", &base),
+            other_page_steps("default", &base, variable.contains("CHROME")),
             debugger_steps("default", &base),
         ];
         mcp.steps(all.concat()).await;

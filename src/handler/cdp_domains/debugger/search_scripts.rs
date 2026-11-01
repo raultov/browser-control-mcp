@@ -7,7 +7,7 @@ use serde_json::json;
 
 #[macros::mcp_tool(
     name = "search_scripts",
-    description = "Searches the tab's loaded scripts for a text and returns each match's script id, hash, 0-based line and column and a preview, to find where to set a breakpoint."
+    description = "Searches the tab's loaded scripts for a text and returns each match's script id, hash, 0-based line and column and a preview, to find where to set a breakpoint. On Chrome, scripts of frames of another origin are searched too (ids such as '2.17': frame 2's script 17)."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct SearchScriptsTool {
@@ -37,11 +37,18 @@ impl SearchScriptsTool {
         }
 
         let target = session.target(args.tab_id.clone()).await?;
-        let scripts = debugger_state.lock().await.scripts.clone();
+        // Each script is read in its session: the tab's, or its frame's.
+        let scripts: Vec<_> = {
+            let state = debugger_state.lock().await;
+            let scripts = state.scripts.clone().into_iter();
+            scripts
+                .filter_map(|(id, script)| Some((state.script_target(&id, &target)?, id, script)))
+                .collect()
+        };
         let mut report = SearchReport::default();
-        for (script_id, script) in scripts {
-            let reply = target
-                .send_raw_command("Debugger.getScriptSource", json!({"scriptId": script_id}))
+        for ((on, raw), script_id, script) in scripts {
+            let reply = on
+                .send_raw_command("Debugger.getScriptSource", json!({"scriptId": raw}))
                 .await;
             match reply {
                 Ok(reply) => match extract_from_value(&reply.result, "scriptSource") {

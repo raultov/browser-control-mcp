@@ -43,11 +43,21 @@ pub(crate) struct DebuggerState {
     pub paused_call_frame_id: Option<String>,
     /// Where the kept pause stopped (`Debugger.paused`'s top frame).
     pub paused_at: Option<debugging::PauseLocation>,
+    /// The session of the frame of another origin the kept pause is in;
+    /// `None` for the tab.
+    pub paused_frame: Option<String>,
     /// Identifier of the `debugger;` script `pause_on_load` installed, removed
     /// on the next `resume` so later navigations do not pause again.
     pub pause_on_load_script: Option<String>,
-    /// Breakpoints by MCP id (`bp-N`) → CDP breakpoint id.
-    pub breakpoints: debugging::BreakpointIds<String>,
+    /// Breakpoints by MCP id (`bp-N`) → CDP breakpoint ids.
+    pub breakpoints: debugging::BreakpointIds<cdp_domains::debugger::frames::ChromeBreakpoint>,
+    /// The tab's frames of another origin whose debugger feeds this state,
+    /// by session id (see `cdp_domains::debugger::frames`).
+    pub frames: std::collections::BTreeMap<String, cdp_domains::debugger::frames::DebuggedFrame>,
+    /// How many frames were registered: the next one's number.
+    frame_count: u32,
+    /// The pauses and resumes of those frames, for the calls waiting.
+    pub frame_events: cdp_domains::debugger::frames::FrameEvents,
 }
 
 impl DebuggerState {

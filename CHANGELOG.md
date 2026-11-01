@@ -18,8 +18,15 @@ from a copy of its code: entries describe the differences from that release.
   each tab attaches to its frames as they appear, before their scripts run,
   and feeds their messages and requests to the tab's logs (at most 50
   frames per tab). Their response bodies are read from the frame. Firefox
-  already reported them. The debugger does not see these frames' scripts
-  yet, on either browser. (#36)
+  already reported them. (#36)
+- Chrome: the debugger now reaches the scripts of frames of another
+  origin. `search_scripts` finds them (their ids name the frame, `2.17`,
+  as each frame numbers its scripts like the page), `set_breakpoint` by URL
+  or hash binds in every frame (also frames that load later, before their
+  scripts run) and by script id in its frame, and a pause in a frame is
+  reported to the call that caused it, inspected, stepped and resumed
+  there. A frame's own `debugger;` statements are skipped without
+  breakpoints, as the page's. Not yet on Firefox. (#36)
 - Chrome: a click (or any mouse action) into a frame of another origin
   right after the page loaded was sometimes lost while reported as done:
   Chrome routes input to such an out-of-process frame only once it has

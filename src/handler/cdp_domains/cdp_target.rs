@@ -153,7 +153,13 @@ impl CdpTarget {
         call: &str,
         work: impl Future<Output = T>,
     ) -> Result<T, Interruption> {
-        let events = self.on_domain("Page").merge(self.on_domain("Debugger"));
+        let frames = match &self.debugger {
+            Some(state) => state.lock().await.frame_events.subscribe(),
+            None => tokio::sync::broadcast::channel(1).1,
+        };
+        // The frames' too: a call can make a frame of another origin pause.
+        let debugger = super::debugger::frames::debugger_events(self, frames);
+        let events = self.on_domain("Page").merge(debugger);
         // The outcome is not held across the naming's await: a tool's error
         // (a possible `T`) is not `Send`.
         let location = match unless_interrupted(work, events, call).await {

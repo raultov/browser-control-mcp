@@ -68,6 +68,16 @@ impl<T> BreakpointIds<T> {
         self.by_id.is_empty()
     }
 
+    /// Mutable access to the protocol handle of `id`.
+    pub(crate) fn get_mut(&mut self, id: &str) -> Option<&mut T> {
+        self.by_id.get_mut(id)
+    }
+
+    /// Every breakpoint: its MCP id and protocol handle.
+    pub(crate) fn iter_mut(&mut self) -> impl Iterator<Item = (&String, &mut T)> {
+        self.by_id.iter_mut()
+    }
+
     /// The id already registered for `native`, if any.
     pub(crate) fn id_of(&self, native: &T) -> Option<&str>
     where

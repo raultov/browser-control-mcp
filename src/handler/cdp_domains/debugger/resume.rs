@@ -1,4 +1,5 @@
 use crate::handler::McpHandler;
+use crate::handler::cdp_domains::cdp_target::CdpTarget;
 use crate::handler::debugging;
 use rust_mcp_sdk::{
     macros,
@@ -27,14 +28,14 @@ impl ResumeTool {
         let debugger_state = session.debugger_state(ids.tab_id.clone())?;
         let pause_script = debugger_state.lock().await.pause_on_load_script.take();
         let target = session.target(ids.tab_id.clone()).await?;
-        // Subscribed first: an immediate new pause can arrive before the reply.
-        let mut events = target.on_domain("Debugger");
+        let (paused, mut events) =
+            super::frames::paused_with_events(&target, &debugger_state).await;
         // Before resuming: a page `debugger;` right after must not stop it.
         super::sync_pauses(&target, &debugger_state).await;
         let params = serde_json::json!({});
         let failure = "Failed to resume execution";
         // As text: the error type is not `Send` across the awaits below.
-        let resumed = crate::handler::send_or(&target, "Debugger.resume", params, failure)
+        let resumed = crate::handler::send_or(&paused, "Debugger.resume", params, failure)
             .await
             .map_err(|e| e.to_string());
         if let Err(e) = resumed {
@@ -47,15 +48,21 @@ impl ResumeTool {
             }
             return Err(CallToolError::from_message(e));
         }
-        if let Some(identifier) = pause_script {
-            let params = serde_json::json!({ "identifier": identifier });
-            let _ = target
-                .send_raw_command("Page.removeScriptToEvaluateOnNewDocument", params)
-                .await;
-        }
+        remove_pause_script(&target, pause_script).await;
         let location =
             super::wait_for_pause(&mut events, debugging::RESUME_WAIT, &debugger_state).await;
         Ok(debugging::resumed(location.as_ref()))
+    }
+}
+
+/// Removes the `debugger;` script `pause_on_load` installed, if any, once
+/// its pause was resumed: later navigations must not pause again.
+async fn remove_pause_script(target: &CdpTarget, script: Option<String>) {
+    if let Some(identifier) = script {
+        let params = serde_json::json!({ "identifier": identifier });
+        let _ = target
+            .send_raw_command("Page.removeScriptToEvaluateOnNewDocument", params)
+            .await;
     }
 }
 

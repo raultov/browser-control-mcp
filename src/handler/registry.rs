@@ -753,11 +753,11 @@ The page reacted (the DOM changed) and settled after ",
         let state = session.debugger_state(None).unwrap();
         let parsed = serde_json::json!({"scriptId": "35", "hash": "h", "url": "http://a/cart.js"});
         process_debugger_event(&make_event("Debugger.scriptParsed", parsed), &state).await;
-        state
-            .lock()
-            .await
-            .breakpoints
-            .add("1:3:0:http://a/cart.js".into());
+        state.lock().await.breakpoints.add(
+            crate::handler::cdp_domains::debugger::frames::ChromeBreakpoint::on_tab(
+                "1:3:0:http://a/cart.js",
+            ),
+        );
         let frame = serde_json::json!({"callFrameId": "f1", "url": "", "location": {"scriptId": "35", "lineNumber": 3, "columnNumber": 2}});
         let paused = serde_json::json!({"reason": "other", "callFrames": [frame]});
         process_debugger_event(&make_event("Debugger.paused", paused), &state).await;

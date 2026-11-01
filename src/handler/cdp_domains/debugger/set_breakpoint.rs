@@ -1,10 +1,14 @@
-use crate::handler::McpHandler;
+use super::frames::{ChromeBreakpoint, frame_script_id, split_script_id};
+use crate::handler::cdp_domains::cdp_target::CdpTarget;
 use crate::handler::debugging::BreakpointSet;
+use crate::handler::{DebuggerState, McpHandler};
 use rust_mcp_sdk::{
     macros,
     schema::{CallToolError, CallToolRequestParams, CallToolResult},
 };
 use serde_json::{Value, json};
+use std::sync::Arc;
+use tokio::sync::Mutex;
 
 #[macros::mcp_tool(
     name = "set_breakpoint",
@@ -39,25 +43,15 @@ impl SetBreakpointTool {
             CallToolError::from_message("Either script_id, url or script_hash must be provided")
         })?;
         let target = session.target(args.tab_id.clone()).await?;
-        let failure = "Failed to set breakpoint";
-        let response = crate::handler::send_or(&target, method, params, failure).await?;
-        let reply = response.result.unwrap_or_default();
-        let native = reply["breakpointId"]
-            .as_str()
-            .filter(|id| !id.is_empty())
-            .ok_or_else(|| {
-                CallToolError::from_message(
-                    "Chrome set no breakpoint (its reply has no breakpointId)",
-                )
-            })?
-            .to_string();
         let state = session.debugger_state(args.tab_id.clone())?;
+        let placed = match &args.script_id {
+            Some(id) => place_in_script(&target, &state, id, params).await?,
+            None => place_everywhere(&target, &state, method, params).await?,
+        };
+        let reply = placed.reply;
         let past_end = args.past_loaded_end(&reply, &*state.lock().await);
         if let Some(last) = past_end {
-            let remove = json!({"breakpointId": native});
-            let _ = target
-                .send_raw_command("Debugger.removeBreakpoint", remove)
-                .await;
+            remove_everywhere(&target, &state, &placed.breakpoint).await;
             return Err(CallToolError::from_message(format!(
                 "There is no code at or after line {} in the loaded script with this URL (its last line is {last}): nothing was set. Pick a line with code ('search_scripts' finds it).",
                 args.line_number
@@ -66,7 +60,7 @@ impl SetBreakpointTool {
         let set = {
             let mut state = state.lock().await;
             let mut set = args.resolution(&reply, &state);
-            set.id = state.breakpoints.add(native);
+            set.id = state.breakpoints.add(placed.breakpoint);
             set
         };
         super::sync_pauses(&target, &state).await;
@@ -77,8 +71,7 @@ impl SetBreakpointTool {
     /// hash), when Chrome bound the breakpoint to none of them: it then
     /// never fires, unless another script with that URL loads later.
     fn past_loaded_end(&self, reply: &Value, state: &crate::handler::DebuggerState) -> Option<i32> {
-        let bound = reply["locations"].as_array().is_some_and(|l| !l.is_empty());
-        if bound || self.script_id.is_some() {
+        if bound(reply) || self.script_id.is_some() {
             return None;
         }
         state
@@ -149,6 +142,120 @@ impl SetBreakpointTool {
         Some((method, params))
     }
 }
+
+/// A breakpoint Chrome set, and the reply that says where it bound (its
+/// script ids as the tab names them).
+struct Placed {
+    breakpoint: ChromeBreakpoint,
+    reply: Value,
+}
+
+/// The id of the breakpoint a reply of Chrome's sets, or the error saying
+/// it set none.
+fn native_of(reply: &Value) -> Result<String, CallToolError> {
+    super::frames::breakpoint_id(reply).ok_or_else(|| {
+        CallToolError::from_message("Chrome set no breakpoint (its reply has no breakpointId)")
+    })
+}
+
+/// Whether a reply of `Debugger.setBreakpointByUrl` bound the breakpoint.
+fn bound(reply: &Value) -> bool {
+    reply["locations"].as_array().is_some_and(|l| !l.is_empty())
+}
+
+/// Sets the breakpoint `params` (`Debugger.setBreakpoint`, by script id)
+/// in the session of script `id`: the tab's, or its frame's (with Chrome's
+/// id there).
+async fn place_in_script(
+    target: &CdpTarget,
+    state: &Arc<Mutex<DebuggerState>>,
+    id: &str,
+    mut params: Value,
+) -> Result<Placed, CallToolError> {
+    let routed = state.lock().await.script_target(id, target);
+    let (on, raw) = routed.ok_or_else(|| {
+        CallToolError::from_message(format!(
+            "The frame of script '{id}' is gone: run 'search_scripts' again."
+        ))
+    })?;
+    params["location"]["scriptId"] = json!(raw);
+    let response = crate::handler::send_or(&on, "Debugger.setBreakpoint", params, FAILURE).await?;
+    let mut reply = response.result.unwrap_or_default();
+    let native = native_of(&reply)?;
+    if let Some(script) = reply.pointer_mut("/actualLocation/scriptId") {
+        *script = json!(id);
+    }
+    let session = split_script_id(id)
+        .0
+        .and(on.page_tab())
+        .map(|frame| frame.session_id().to_string());
+    let breakpoint = ChromeBreakpoint {
+        natives: vec![(session, native)],
+        by_url: None,
+    };
+    Ok(Placed { breakpoint, reply })
+}
+
+/// Sets the breakpoint `params` (by URL or hash) in the tab and in each of
+/// its debugged frames; the reply is the tab's, or the first frame's that
+/// bound it when the tab's did not.
+async fn place_everywhere(
+    target: &CdpTarget,
+    state: &Arc<Mutex<DebuggerState>>,
+    method: &str,
+    params: Value,
+) -> Result<Placed, CallToolError> {
+    let response = crate::handler::send_or(target, method, params.clone(), FAILURE).await?;
+    let mut reply = response.result.unwrap_or_default();
+    let mut breakpoint = ChromeBreakpoint {
+        natives: vec![(None, native_of(&reply)?)],
+        by_url: Some(params.clone()),
+    };
+    let frames = state.lock().await.debugged_frames();
+    for frame in frames {
+        let sent = frame.tab.send_raw_command(method, params.clone()).await;
+        let Some(mut in_frame) = sent.ok().and_then(|response| response.result) else {
+            continue;
+        };
+        let Some(native) = super::frames::breakpoint_id(&in_frame) else {
+            continue;
+        };
+        let session = frame.tab.session_id().to_string();
+        breakpoint.natives.push((Some(session), native));
+        if !bound(&reply) && bound(&in_frame) {
+            let locations = in_frame["locations"].as_array_mut().into_iter().flatten();
+            for location in locations {
+                let raw = location["scriptId"].as_str().unwrap_or_default();
+                location["scriptId"] = json!(frame_script_id(frame.number, raw));
+            }
+            reply = in_frame;
+        }
+    }
+    Ok(Placed { breakpoint, reply })
+}
+
+/// Removes `breakpoint` wherever it was set (best effort).
+async fn remove_everywhere(
+    target: &CdpTarget,
+    state: &Arc<Mutex<DebuggerState>>,
+    breakpoint: &ChromeBreakpoint,
+) {
+    for (_, native) in breakpoint
+        .natives
+        .iter()
+        .filter(|(frame, _)| frame.is_none())
+    {
+        let remove = json!({"breakpointId": native});
+        let _ = target
+            .send_raw_command("Debugger.removeBreakpoint", remove)
+            .await;
+    }
+    let frames = state.lock().await.debugged_frames();
+    super::frames::remove_from_frames(breakpoint, &frames).await;
+}
+
+/// The error prefix of a breakpoint Chrome refused.
+const FAILURE: &str = "Failed to set breakpoint";
 
 #[cfg(test)]
 mod tests {

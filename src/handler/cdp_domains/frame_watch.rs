@@ -1,18 +1,21 @@
-//! Console and network of a tab's frames of another origin on Chrome
-//! (#36). Such a frame runs in another process, with a target of its own:
-//! the tab's session sees neither its console messages nor its requests.
-//! Each tab auto-attaches to its frames' targets (`Target.setAutoAttach`,
-//! each frame paused until released, so its first messages are kept). For
-//! each iframe the server attaches a session of its own, enables
-//! `Runtime`, `Log` and `Network` there, feeds the tab's buffers from it
-//! and auto-attaches to its own frames, then releases the frame. A frame is
+//! Console, network and debugger of a tab's frames of another origin on
+//! Chrome (#36). Such a frame runs in another process, with a target of its
+//! own: the tab's session sees neither its console messages, its requests
+//! nor its scripts. Each tab auto-attaches to its frames' targets
+//! (`Target.setAutoAttach`, each frame paused until released, so its first
+//! messages and scripts are kept). For each iframe the server attaches a
+//! session of its own, enables `Runtime`, `Log`, `Network` and `Debugger`
+//! there, feeds the tab's buffers and debugger state from it (see
+//! `debugger::frames`: its breakpoints set before it runs) and
+//! auto-attaches to its own frames, then releases the frame. A frame is
 //! released on every path, errors included: one left waiting would never
 //! run.
 
-use crate::handler::NetworkState;
 use crate::handler::cdp_domains::cdp_target::CdpTarget;
+use crate::handler::cdp_domains::debugger;
 use crate::handler::cdp_domains::event_pump::ListenerHandles;
 use crate::handler::cdp_domains::log::LogState;
+use crate::handler::{DebuggerState, NetworkState};
 use cdp_browser_lite::{BrowserClient, NoParams, Tab, WsResponse};
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -26,7 +29,7 @@ use tokio_stream::StreamExt;
 pub(crate) const MAX_WATCHED: usize = 50;
 
 /// The domains enabled on a watched frame's session.
-const FRAME_DOMAINS: [&str; 3] = ["Runtime", "Log", "Network"];
+const FRAME_DOMAINS: [&str; 4] = ["Runtime", "Log", "Network", "Debugger"];
 
 /// The auto-attach every watched session asks for.
 fn auto_attach() -> Value {
@@ -38,15 +41,22 @@ fn auto_attach() -> Value {
 pub(crate) struct FrameSinks {
     pub(crate) log: Arc<Mutex<LogState>>,
     pub(crate) network: Arc<Mutex<NetworkState>>,
+    pub(crate) debugger: Arc<Mutex<DebuggerState>>,
     watched: Arc<AtomicUsize>,
 }
 
 impl FrameSinks {
-    /// The sinks of a tab whose buffers are `log` and `network`.
-    pub(crate) fn new(log: Arc<Mutex<LogState>>, network: Arc<Mutex<NetworkState>>) -> Self {
+    /// The sinks of a tab whose buffers are `log` and `network`, and whose
+    /// debugger state is `debugger`.
+    pub(crate) fn new(
+        log: Arc<Mutex<LogState>>,
+        network: Arc<Mutex<NetworkState>>,
+        debugger: Arc<Mutex<DebuggerState>>,
+    ) -> Self {
         Self {
             log,
             network,
+            debugger,
             watched: Arc::default(),
         }
     }
@@ -95,8 +105,13 @@ async fn watch(session: Tab, mut events: cdp_browser_lite::EventFilter, sinks: F
                 handles.push(tokio::spawn(setup));
                 frames.insert(auto, (handles, watched));
             }
-            Some("Target.detachedFromTarget") if frames.remove(&auto).is_some_and(|f| f.1) => {
-                sinks.watched.fetch_sub(1, Ordering::Relaxed);
+            Some("Target.detachedFromTarget") => {
+                if frames.remove(&auto).is_some_and(|f| f.1) {
+                    sinks.watched.fetch_sub(1, Ordering::Relaxed);
+                }
+                if let Some(target_id) = params["targetId"].as_str() {
+                    sinks.debugger.lock().await.forget_frame_target(target_id);
+                }
             }
             _ => {}
         }
@@ -123,7 +138,8 @@ async fn frame_setup(session: Tab, attached: Value, watched: bool, sinks: FrameS
 }
 
 /// Attaches a session of its own to frame `target_id`, enables its
-/// domains and starts its listeners (console, network, nested frames).
+/// domains and starts its listeners (console, network, debugger, nested
+/// frames); its debugger is ready (pauses, breakpoints) before it runs.
 async fn watch_frame(session: &Tab, target_id: &str, sinks: FrameSinks) -> ListenerHandles {
     let mut listeners = ListenerHandles::default();
     let browser = BrowserClient::from_client(session.client().clone());
@@ -143,11 +159,21 @@ async fn watch_frame(session: &Tab, target_id: &str, sinks: FrameSinks) -> Liste
             frame.session_id().to_string(),
         ),
     );
+    let session = frame.session_id().to_string();
+    sinks
+        .debugger
+        .lock()
+        .await
+        .register_frame(target_id, frame.clone());
+    let state = sinks.debugger.clone();
+    let watch = debugger::start_debugger_listener_in(&target, state, Some(session));
+    listeners.push(watch);
     for domain in FRAME_DOMAINS {
         let _ = frame
             .send_raw_command(&format!("{domain}.enable"), NoParams)
             .await;
     }
+    debugger::frames::prepare_frame(&frame, &sinks.debugger).await;
     listeners.push(start_frame_watcher(&frame, sinks));
     listeners
 }
@@ -165,6 +191,7 @@ async fn release(session: &Tab, auto: &str) -> Option<WsResponse> {
 mod tests {
     use super::*;
     use crate::handler::cdp_domains::tests::spawn_recording_mock;
+    use cdp_browser_lite::test_support::mock_devtools::MockDevTools;
 
     /// The session id of the last command `method` the mock received.
     fn session_of(
@@ -203,7 +230,7 @@ mod tests {
             .await
             .unwrap();
         let tab = browser.attach("T-tab-1").await.unwrap();
-        let sinks = FrameSinks::new(Arc::default(), Arc::default());
+        let sinks = FrameSinks::new(Arc::default(), Arc::default(), Arc::default());
         let _watcher = start_frame_watcher(&tab, sinks.clone());
         eventually(|| !mock.commands_named("Target.setAutoAttach").is_empty()).await;
         Watched {
@@ -281,6 +308,103 @@ mod tests {
         mock.emit("Target.detachedFromTarget", gone, Some(&tab));
         eventually(|| sinks.watched.load(Ordering::Relaxed) == 1).await;
         assert_eq!(sinks.watched.load(Ordering::Relaxed), 1);
+    }
+
+    /// The debugger commands the mock got in `frame`'s session, and the
+    /// releases, in order.
+    fn readied_in(mock: &MockDevTools, frame: &str) -> Vec<String> {
+        let release = "Runtime.runIfWaitingForDebugger";
+        mock.commands()
+            .into_iter()
+            .filter(|c| c.session_id.as_deref() == Some(frame) || c.method == release)
+            .map(|c| c.method)
+            .filter(|m| m.starts_with("Debugger.") || m == release)
+            .collect()
+    }
+
+    /// ISSUE-36: a frame's debugger is ready before the frame runs: it is
+    /// registered, enabled, told whether to skip pauses, and gets the tab's
+    /// breakpoints by URL, all before its release.
+    #[tokio::test]
+    async fn frame_debuggers_are_ready_before_the_frame_runs() {
+        use crate::handler::cdp_domains::debugger::frames::ChromeBreakpoint;
+        // Given a tab with a breakpoint by URL
+        let watched = watched_tab().await;
+        let by_url = json!({"url": "http://b/inner.js", "lineNumber": 1});
+        let breakpoint = ChromeBreakpoint {
+            natives: vec![(None, "B0".into())],
+            by_url: Some(by_url.clone()),
+        };
+        watched
+            .sinks
+            .debugger
+            .lock()
+            .await
+            .breakpoints
+            .add(breakpoint);
+        let answer = |_: &Value| json!({"breakpointId": "B1", "locations": []});
+        watched
+            .mock
+            .respond_with("Debugger.setBreakpointByUrl", answer);
+        // When an iframe attaches and is released
+        attach(&watched, "AUTO-F", "iframe");
+        let released = || {
+            !watched
+                .mock
+                .commands_named("Runtime.runIfWaitingForDebugger")
+                .is_empty()
+        };
+        eventually(released).await;
+        // Then its debugger was readied in its session before the release
+        let frame = frame_session(&watched).await;
+        let expected = [
+            "Debugger.enable",
+            "Debugger.setSkipAllPauses",
+            "Debugger.setBreakpointByUrl",
+            "Runtime.runIfWaitingForDebugger",
+        ];
+        assert_eq!(readied_in(watched.mock, &frame), expected);
+        let sent = &watched.mock.commands_named("Debugger.setBreakpointByUrl")[0].params;
+        assert_eq!(sent, &by_url);
+        // And the breakpoint knows its id there, and the frame is debugged
+        let mut state = watched.sinks.debugger.lock().await;
+        assert_eq!(state.frame_number(&frame), Some(1));
+        let (_, breakpoint) = state.breakpoints.iter_mut().next().unwrap();
+        assert_eq!(
+            breakpoint.natives[1],
+            (Some(frame.clone()), "B1".to_string())
+        );
+    }
+
+    /// ISSUE-36: a detached frame leaves its tab's debugger.
+    #[tokio::test]
+    async fn detached_frames_leave_the_debugger() {
+        let watched = watched_tab().await;
+        attach(&watched, "AUTO-F", "iframe");
+        let frame = frame_session(&watched).await;
+        let debugged = || {
+            watched
+                .sinks
+                .debugger
+                .try_lock()
+                .is_ok_and(|s| s.frame_number(&frame).is_some())
+        };
+        eventually(debugged).await;
+        let gone = json!({"sessionId": "AUTO-F", "targetId": "T-iframe"});
+        watched.mock.emit(
+            "Target.detachedFromTarget",
+            gone,
+            Some(watched.tab.session_id()),
+        );
+        let forgotten = || {
+            watched
+                .sinks
+                .debugger
+                .try_lock()
+                .is_ok_and(|s| s.frames.is_empty())
+        };
+        eventually(forgotten).await;
+        assert!(watched.sinks.debugger.lock().await.frames.is_empty());
     }
 
     /// ISSUE-36: a frame's requests reach the tab's buffer noting the

@@ -29,11 +29,10 @@ impl StepOverTool {
             return Err(CallToolError::from_message(debugging::NOT_PAUSED));
         }
         let target = session.target(ids.tab_id.clone()).await?;
-        // Subscribed first: the new pause can arrive before the reply.
-        let mut events = target.on_domain("Debugger");
+        let (paused, mut events) = super::frames::paused_with_events(&target, &state).await;
         let params = serde_json::json!({});
         let failure = "Failed to step over";
-        crate::handler::send_or(&target, "Debugger.stepOver", params, failure).await?;
+        crate::handler::send_or(&paused, "Debugger.stepOver", params, failure).await?;
         let location = super::wait_for_pause(&mut events, debugging::STEP_WAIT, &state).await;
         Ok(debugging::stepped(location.as_ref()))
     }

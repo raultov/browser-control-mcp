@@ -50,6 +50,13 @@ impl<K: Eq + Hash + Clone, V, const CAP: usize> BoundedMap<K, V, CAP> {
         self.map.remove(key)
     }
 
+    /// Keeps only the entries `keep` accepts.
+    pub fn retain(&mut self, mut keep: impl FnMut(&K, &V) -> bool) {
+        self.map.retain(|key, value| keep(key, value));
+        let map = &self.map;
+        self.order.retain(|key| map.contains_key(key));
+    }
+
     /// Removes every entry.
     pub fn clear(&mut self) {
         self.map.clear();

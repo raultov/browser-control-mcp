@@ -45,9 +45,10 @@ impl EvaluateOnCallFrameTool {
             })?;
 
         let target = session.target(args.tab_id.clone()).await?;
+        let paused = debugger_state.lock().await.paused_target(&target);
         let params = json!({"callFrameId": call_frame_id, "expression": args.expression});
         let evaluated = crate::handler::cdp_domains::runtime::evaluate_js::evaluate_remote(
-            &target,
+            &paused,
             "Debugger.evaluateOnCallFrame",
             params,
             |details| debugging::frame_exception(&evaluation::cdp_thrown(details)),
