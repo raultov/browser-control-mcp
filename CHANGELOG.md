@@ -12,6 +12,10 @@ from a copy of its code: entries describe the differences from that release.
 
 ### Fixed
 
+- `click_element`, `press_key` and the other input tools say when the
+  action opened tabs (a `target=_blank` link, `window.open`), naming each
+  with its URL: the new tab was registered, but nothing told the agent to
+  look at it. (#41)
 - `snapshot` and `find_in_snapshot` show `<progress>` and `<meter>`
   (`progressbar`, `meter`, with their value as `40/100`), say whether a
   `<details>` summary is expanded, mark an open modal `<dialog>` `[modal]`,

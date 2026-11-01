@@ -460,6 +460,8 @@ struct NetworkBefore {
     ids: TargetArgs,
     network: Arc<Mutex<NetworkState>>,
     known: HashSet<String>,
+    /// The ids of the instance's tabs, to tell the tabs the action opened.
+    tabs: HashSet<String>,
 }
 
 /// The request log of the tab `ids` address, read before an input action;
@@ -480,12 +482,127 @@ async fn network_before(
         }
     };
     let known = network.lock().await.known_ids();
+    let tabs = tabs_now(handler, browser, &ids)
+        .await
+        .into_iter()
+        .map(|tab| tab.id)
+        .collect();
     Some(NetworkBefore {
         browser,
         ids,
         network,
         known,
+        tabs,
     })
+}
+
+/// A tab of an instance, as its registry knows it.
+struct KnownTab {
+    id: String,
+    /// The Chrome target, to ask the browser for its current URL.
+    target: Option<String>,
+    /// For Chrome the URL the tab opened with (often blank); Firefox
+    /// follows navigations.
+    url: String,
+}
+
+/// The tabs of the instance `ids` addresses. The browser registers the
+/// tabs a page opens (`target=_blank`, `window.open`) as they appear.
+async fn tabs_now(handler: &McpHandler, browser: BrowserKind, ids: &TargetArgs) -> Vec<KnownTab> {
+    match browser {
+        BrowserKind::Chrome => {
+            let Ok(session) = handler.session(ids.instance_id.clone()).await else {
+                return Vec::new();
+            };
+            let registry = crate::util::sync::read(&session.tabs);
+            let tabs = registry.tabs.iter().map(|(id, entry)| KnownTab {
+                id: id.clone(),
+                target: Some(entry.tab.target_id().to_string()),
+                url: entry.url.clone(),
+            });
+            tabs.collect()
+        }
+        BrowserKind::Firefox => {
+            let Ok(session) = handler.firefox(ids.instance_id.as_deref()).await else {
+                return Vec::new();
+            };
+            let registry = crate::util::sync::read(&session.tabs);
+            let tabs = registry.tabs.iter().map(|(id, tab)| KnownTab {
+                id: id.clone(),
+                target: None,
+                url: tab.url.clone(),
+            });
+            tabs.collect()
+        }
+    }
+}
+
+/// The tabs the action opened (those not in `before`): `(id, URL)`, the
+/// URL of a Chrome tab asked of the browser (one round trip, only when a
+/// tab opened).
+async fn tabs_opened(
+    handler: &McpHandler,
+    browser: BrowserKind,
+    ids: &TargetArgs,
+    before: &HashSet<String>,
+) -> Vec<(String, String)> {
+    let opened = opened_tabs(before, tabs_now(handler, browser, ids).await);
+    let current = match opened.iter().any(|tab| tab.target.is_some()) {
+        true => chrome_targets(handler, ids).await,
+        false => Vec::new(),
+    };
+    opened
+        .into_iter()
+        .map(|tab| {
+            let now = current
+                .iter()
+                .find(|t| Some(&t.target_id) == tab.target.as_ref());
+            (tab.id, now.map_or(tab.url, |t| t.url.clone()))
+        })
+        .collect()
+}
+
+/// The targets of the Chrome instance `ids` addresses (their current URLs).
+async fn chrome_targets(
+    handler: &McpHandler,
+    ids: &TargetArgs,
+) -> Vec<cdp_browser_lite::TargetInfo> {
+    let Ok(session) = handler.session(ids.instance_id.clone()).await else {
+        return Vec::new();
+    };
+    match session.browser_client().await.ok() {
+        Some(client) => client.list_tabs().await.unwrap_or_default(),
+        None => Vec::new(),
+    }
+}
+
+/// The tabs of `now` that were not in `before`.
+fn opened_tabs(before: &HashSet<String>, now: Vec<KnownTab>) -> Vec<KnownTab> {
+    now.into_iter()
+        .filter(|tab| !before.contains(&tab.id))
+        .collect()
+}
+
+/// The sentence a reply adds for the tabs an action opened: nothing told
+/// the agent to look at them.
+fn opened_note(opened: &[(String, String)]) -> Option<String> {
+    let named: Vec<String> = opened
+        .iter()
+        .map(|(id, url)| match url.as_str() {
+            "" | "about:blank" => id.clone(),
+            url => format!("{id} ({url})"),
+        })
+        .collect();
+    match named.as_slice() {
+        [] => None,
+        [one] => Some(format!(
+            "The action opened tab {one}: call switch_tab with its tab_id to act in it."
+        )),
+        many => Some(format!(
+            "The action opened tabs {}: call switch_tab with a tab_id to act in one.",
+            many.join(", ")
+        )),
+    }
 }
 
 /// The page of the tab `ids` address, unless the action left it blocked
@@ -529,18 +646,22 @@ async fn settled(
     // Bounded even if the page stops answering mid-way (a navigation).
     let limit = settle::MAX + std::time::Duration::from_secs(1);
     let watched = settle::settle(&page, &before.network, &before.known);
-    let note = tokio::time::timeout(limit, watched)
+    let reacted = tokio::time::timeout(limit, watched)
         .await
         .ok()
         .flatten()
         .and_then(|reaction| reaction.note());
+    let opened = tabs_opened(handler, before.browser, &before.ids, &before.tabs).await;
+    let opened = opened_note(&opened);
     let first_text = result.content.iter_mut().find_map(|block| match block {
         rust_mcp_sdk::schema::ContentBlock::TextContent(text) => Some(text),
         _ => None,
     });
-    if let (Some(note), Some(text)) = (note, first_text) {
-        text.text.push('\n');
-        text.text.push_str(&note);
+    if let Some(text) = first_text {
+        for note in [reacted, opened].into_iter().flatten() {
+            text.text.push('\n');
+            text.text.push_str(&note);
+        }
     }
     result
 }
@@ -695,6 +816,42 @@ mod tests {
             serde_json::json!({"status": "ok", "x": 10, "y": 20})
         };
         serde_json::json!({"result": {"result": {"type": "object", "value": value}}})
+    }
+
+    /// ISSUE-41: an input action that opened tabs says so, naming each
+    /// with its URL (none while it is still blank) and how to act in it.
+    #[test]
+    fn opened_tabs_are_noted() {
+        let before: HashSet<String> = ["tab-1".to_string()].into();
+        let tab = |id: &str, url: &str| KnownTab {
+            id: id.into(),
+            target: None,
+            url: url.into(),
+        };
+        let named = |tabs: Vec<KnownTab>| -> Vec<(String, String)> {
+            opened_tabs(&before, tabs)
+                .into_iter()
+                .map(|t| (t.id, t.url))
+                .collect()
+        };
+        let opened = named(vec![
+            tab("tab-1", "http://a/"),
+            tab("tab-2", "http://a/b.html"),
+        ]);
+        assert_eq!(
+            opened_note(&opened).as_deref(),
+            Some(
+                "The action opened tab tab-2 (http://a/b.html): call switch_tab with its tab_id to act in it."
+            )
+        );
+        let two = named(vec![tab("tab-3", "about:blank"), tab("tab-4", "")]);
+        assert_eq!(
+            opened_note(&two).as_deref(),
+            Some(
+                "The action opened tabs tab-3, tab-4: call switch_tab with a tab_id to act in one."
+            )
+        );
+        assert_eq!(opened_note(&named(Vec::new())), None);
     }
 
     /// ISSUE-21: after an input action the page is watched until it

@@ -140,6 +140,10 @@ mod e2e {
     fn page(path: &str, ws: &str) -> (&'static str, String) {
         match path {
             p if p.starts_with("/app.js") => ("application/javascript", APP_JS.to_string()),
+            p if p.starts_with("/self-close.html") => (
+                "text/html",
+                "<!doctype html><title>closing</title><script>setTimeout(() => window.close(), 2000)</script>".to_string(),
+            ),
             p if p.starts_with("/xo-inner.js") => {
                 ("application/javascript", XO_INNER_JS.to_string())
             }
@@ -653,6 +657,35 @@ mod e2e {
                 "evaluate_js",
                 model,
                 "\"value\": \"new text more\"",
+            ),
+        ]
+    }
+
+    /// ISSUE-41: a click that opens a tab says so (the tab closes itself).
+    fn opened_tab_steps(instance: &str) -> Vec<Step> {
+        let i = json!(instance);
+        let link = "const a = document.createElement('a'); a.id = 'blank41'; a.href = '/self-close.html'; a.target = '_blank'; a.textContent = 'opens a tab'; document.body.prepend(a); 1";
+        vec![
+            (
+                "ISSUE-41 a link to a new tab",
+                "evaluate_js",
+                json!({"instance_id": i, "expression": link}),
+                "",
+            ),
+            (
+                "ISSUE-41 the click says it opened a tab",
+                "click_element",
+                json!({"instance_id": i, "selector": "#blank41"}),
+                "The action opened tab tab-",
+            ),
+            // (it closes itself 2 s after loading, once the click answered)
+            ("ISSUE-41 let it close", "sleep", json!({}), ""),
+            ("ISSUE-41 let it close, still", "sleep", json!({}), ""),
+            (
+                "ISSUE-41 remove the link",
+                "evaluate_js",
+                json!({"instance_id": i, "expression": "document.getElementById('blank41').remove(); 1"}),
+                "",
             ),
         ]
     }
@@ -1549,6 +1582,7 @@ mod e2e {
         [
             aria_value_steps(instance),
             widget_state_steps(instance),
+            opened_tab_steps(instance),
             late_element_steps(instance),
             valued_input_steps(instance),
             custom_editor_steps(instance),

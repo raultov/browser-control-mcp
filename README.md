@@ -173,7 +173,9 @@ action nothing reacts to costs those 50 ms and keeps its reply; otherwise
 the reply adds `The page reacted (the DOM changed, 1 request(s)) and settled
 after 134 ms.`, or says the page was still changing after 1 s. A click that
 navigates waits for the new page's requests. Use `wait_for` for anything
-slower (a timer, a long request).
+slower (a timer, a long request). An action that opened tabs (a
+`target=_blank` link, `window.open`) says so: `The action opened tab tab-3
+(https://…): call switch_tab with its tab_id to act in it.`
 
 The JavaScript debugger tools on Firefox need its debugger (RDP) port: on by
 default for a launched Firefox, `--firefox-rdp-port` for an attached one. The
