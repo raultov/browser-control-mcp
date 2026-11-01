@@ -12,6 +12,14 @@ from a copy of its code: entries describe the differences from that release.
 
 ### Fixed
 
+- `fill_input` and `fill_form` set `date`, `time`, `datetime-local`,
+  `month`, `week`, `range` and `color` inputs: the text was typed into the
+  date's segments (Chrome held `61031-02-02` for `2026-10-31`; Firefox left
+  it empty), and range and colour inputs were refused. The value is now set
+  through the input's native setter, with `input` and `change` events, in
+  the format each type expects (`YYYY-MM-DD`, `HH:MM`, a number,
+  `#rrggbb`); a range that snaps the value to its step or bounds is noted,
+  and a malformed value fails naming the format, leaving the old one. (#38)
 - `click_element`, `drag` and the checkboxes of `fill_form` no longer
   report success on a disabled control: its click handler never runs, so
   they now fail with "is disabled; nothing was clicked" and send no input.

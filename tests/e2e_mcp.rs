@@ -35,6 +35,7 @@ mod e2e {
     <div style="position:relative;display:inline-block"><button id="covered">covered</button><div style="position:absolute;inset:0;background:#fff"></div></div>
     <div id="shot" style="width:123px;height:45px;background:#c00">shot</div>
     <button id="arm" onclick="setTimeout(() => { const b = document.createElement('button'); b.id = 'appear'; b.textContent = 'appear'; b.onclick = () => window.__late = (window.__late || 0) + 1; document.getElementById('arm').after(b); document.getElementById('soon').disabled = false; }, 700)">arm</button>
+    <input id="vdate" type="date"><input id="vtime" type="time"><input id="vrange" type="range" min="0" max="100" step="5"><input id="vcolor" type="color">
     <button id="soon" disabled onclick="window.__late = (window.__late || 0) + 1">soon</button><button id="never" disabled onclick="window.__never = 1">never</button>
     <div id="custom" role="textbox" tabindex="0" aria-label="custom editor">old</div>
     <script>(() => { const ed = document.getElementById('custom'); let model = 'old', all = false; window.__custom = model;
@@ -644,6 +645,53 @@ mod e2e {
                 "evaluate_js",
                 model,
                 "\"value\": \"new text more\"",
+            ),
+        ]
+    }
+
+    /// ISSUE-38: date, time, range and colour inputs get their value; a
+    /// range snaps it (noted), a malformed date is refused and keeps the
+    /// value it had.
+    fn valued_input_steps(instance: &str) -> Vec<Step> {
+        let i = json!(instance);
+        let fill = |selector: &str, text: &str| json!({"instance_id": i, "selector": selector, "text": text});
+        let values = json!({"instance_id": i, "expression": "['vdate', 'vtime', 'vrange', 'vcolor'].map(id => document.getElementById(id).value).join(' ')"});
+        vec![
+            (
+                "ISSUE-38 set a date",
+                "fill_input",
+                fill("#vdate", "2026-10-31"),
+                "Successfully set the value",
+            ),
+            (
+                "ISSUE-38 set a time",
+                "fill_input",
+                fill("#vtime", "13:45"),
+                "Successfully set the value",
+            ),
+            (
+                "ISSUE-38 set a range, snapped",
+                "fill_input",
+                fill("#vrange", "72"),
+                "holds \"70\"",
+            ),
+            (
+                "ISSUE-38 set a colour",
+                "fill_input",
+                fill("#vcolor", "#FF0000"),
+                "Successfully set the value",
+            ),
+            (
+                "ISSUE-38 a malformed date is refused",
+                "fill_input",
+                fill("#vdate", "31/10/2026"),
+                "!it expects YYYY-MM-DD",
+            ),
+            (
+                "ISSUE-38 the inputs hold the values",
+                "evaluate_js",
+                values,
+                "2026-10-31 13:45 70 #ff0000",
             ),
         ]
     }
@@ -1356,6 +1404,21 @@ mod e2e {
         ]
     }
 
+    /// The steps on widgets that need more than a plain click or typing:
+    /// ARIA values, late or disabled elements, valued inputs, custom
+    /// editors, iframes, appended text.
+    fn widget_steps(instance: &str) -> Vec<Step> {
+        [
+            aria_value_steps(instance),
+            late_element_steps(instance),
+            valued_input_steps(instance),
+            custom_editor_steps(instance),
+            frame_focus_steps(instance),
+            append_steps(instance),
+        ]
+        .concat()
+    }
+
     /// The steps that leave the test page and come back to it.
     fn other_page_steps(instance: &str, base: &str) -> Vec<Step> {
         [
@@ -1614,11 +1677,7 @@ mod e2e {
             clickable_steps("e2e"),
             hover_reveal_steps("e2e"),
             element_shot_steps("e2e"),
-            aria_value_steps("e2e"),
-            late_element_steps("e2e"),
-            custom_editor_steps("e2e"),
-            frame_focus_steps("e2e"),
-            append_steps("e2e"),
+            widget_steps("e2e"),
             form_steps("e2e"),
             secret_steps("e2e"),
             upload_steps("e2e"),
@@ -1710,11 +1769,7 @@ mod e2e {
             clickable_steps("default"),
             hover_reveal_steps("default"),
             element_shot_steps("default"),
-            aria_value_steps("default"),
-            late_element_steps("default"),
-            custom_editor_steps("default"),
-            frame_focus_steps("default"),
-            append_steps("default"),
+            widget_steps("default"),
             form_steps("default"),
             upload_steps("default"),
             pdf_steps("default"),

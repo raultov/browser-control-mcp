@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 
 #[macros::mcp_tool(
     name = "fill_input",
-    description = "Replaces the content of a text field, textarea or contenteditable element (or, with append, types after it) by typing key by key (the page's key handlers run; about 1 ms per character), or picks the <select> option whose value or label is the text. Fails without typing on disabled, read-only, non-text or unfocusable elements, and when the field rejects the text; notes when the page reformatted it."
+    description = "Replaces the content of a text field, textarea or contenteditable element (or, with append, types after it) by typing key by key (the page's key handlers run; about 1 ms per character), or picks the <select> option whose value or label is the text, or sets a date, time, range or colour input to it (YYYY-MM-DD, HH:MM, a number, #rrggbb). Fails without typing on disabled, read-only, non-text or unfocusable elements, and when the field rejects the text; notes when the page reformatted it."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct FillInputTool {
@@ -40,8 +40,9 @@ pub(crate) enum FillStart {
         prefix: String,
         keys: Vec<Shortcut>,
     },
-    /// A `<select>` option was picked: nothing to type.
-    Selected,
+    /// Nothing to type: a `<select>` option was picked, or a value set
+    /// (date, time, range, colour); the reply.
+    Done(CallToolResult),
 }
 
 /// Reads the preparation snippet's `{status}`; anything that must not be
@@ -55,7 +56,12 @@ pub(crate) fn fill_start(value: &Value, selector: &str) -> Result<FillStart, Cal
             prefix: value["prefix"].as_str().unwrap_or_default().to_string(),
             keys: shortcuts(value)?,
         }),
-        Some("selected") => Ok(FillStart::Selected),
+        Some("selected") => Ok(FillStart::Done(selected_reply(selector))),
+        Some("set") => Ok(FillStart::Done(set_reply(value, selector))),
+        Some("rejected") => Err(CallToolError::from_message(format!(
+            "'{selector}' did not take the text: it expects {}; nothing was changed.",
+            value["format"].as_str().unwrap_or("another format")
+        ))),
         Some("not_editable") => Err(CallToolError::from_message(format!(
             "Element '{selector}' is not editable ({}); nothing was typed.",
             value["reason"].as_str().unwrap_or("unknown reason")
@@ -100,6 +106,20 @@ pub(crate) fn selected_reply(selector: &str) -> CallToolResult {
     CallToolResult::text_content(vec![
         format!("Successfully selected the option matching the text in '{selector}'.").into(),
     ])
+}
+
+/// The reply once a date, time, range or colour input got its value: a
+/// note when the input holds another one (a range snaps to its step and
+/// bounds, a colour is lowercased).
+fn set_reply(value: &Value, selector: &str) -> CallToolResult {
+    let mut text = format!("Successfully set the value of '{selector}'.");
+    if value["matches"] == false {
+        let held = value["value"].as_str().unwrap_or_default();
+        text.push_str(&format!(
+            "\nNote: '{selector}' holds {held:?}: the input adjusted the value (a range keeps to its step and bounds)."
+        ));
+    }
+    CallToolResult::text_content(vec![text.into()])
 }
 
 /// The reply from the result snippet (`util::js::fill_result`): an error
@@ -192,13 +212,13 @@ pub(crate) async fn fill(
 ) -> Result<CallToolResult, CallToolError> {
     let prepare = crate::util::js::prepare_fill(selector, text, mode);
     let prepared = crate::handler::snippet_value(target, &prepare).await?;
-    let FillStart::Type {
-        click,
-        prefix,
-        keys,
-    } = fill_start(&prepared, selector)?
-    else {
-        return Ok(selected_reply(selector));
+    let (click, prefix, keys) = match fill_start(&prepared, selector)? {
+        FillStart::Type {
+            click,
+            prefix,
+            keys,
+        } => (click, prefix, keys),
+        FillStart::Done(reply) => return Ok(reply),
     };
     if let Some(point) = click {
         let once = super::click_element::ClickOptions::default();
@@ -303,6 +323,41 @@ mod tests {
         assert_eq!(keys[first_a].1, 2, "Control held: {keys:?}");
         let text = &reply.content[0].as_text_content().unwrap().text;
         assert!(text.contains("could not be read back"), "{text}");
+    }
+
+    /// ISSUE-38: a value set directly (date, time, range, colour) types
+    /// nothing; the reply says so, notes a value the input changed, and an
+    /// input that refused it fails naming the format.
+    #[tokio::test]
+    async fn set_values_are_reported() {
+        let set = json!({"status": "set", "matches": true, "value": null});
+        let mock = page_answering(set, json!({})).await;
+        let handler = crate::handler::cdp_domains::tests::mock_handler(mock.http_port);
+        let fill = |text: &str| {
+            let args = json!({"selector": "#d", "text": text});
+            FillInputTool::handle(
+                crate::handler::cdp_domains::tests::call("fill_input", args),
+                &handler,
+            )
+        };
+        let reply = fill("2026-10-31").await.unwrap();
+        let text = &reply.content[0].as_text_content().unwrap().text;
+        assert_eq!(text, "Successfully set the value of '#d'.");
+        assert!(mock.commands_named("Input.dispatchKeyEvent").is_empty());
+        let snapped = json!({"status": "set", "matches": false, "value": "100"});
+        let reply = fill_reply_for(&snapped);
+        assert!(reply.contains("Note: '#d' holds \"100\""), "{reply}");
+        let rejected = json!({"status": "rejected", "format": "YYYY-MM-DD"});
+        let error = fill_start(&rejected, "#d").err().unwrap().to_string();
+        assert!(error.contains("expects YYYY-MM-DD"), "{error}");
+    }
+
+    /// The reply text of a fill whose preparation answered `prepared`.
+    fn fill_reply_for(prepared: &Value) -> String {
+        let Ok(FillStart::Done(reply)) = fill_start(prepared, "#d") else {
+            panic!("not done: {prepared}");
+        };
+        reply.content[0].as_text_content().unwrap().text.clone()
     }
 
     /// ISSUE-32: append types after the content, says so, and fails when

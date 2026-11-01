@@ -411,7 +411,10 @@ pub enum FillMode {
 /// through `beforeinput` (rich text editors keep their own model, which
 /// removing their DOM nodes would leave behind), and an empty `text`
 /// deletes them through the editing commands; a `<select>` gets the option
-/// whose value or label is `text`. Returns `{status}`: `missing`,
+/// whose value or label is `text`; a date, time, range or colour input gets
+/// `text` as its value (typing would go into its segments, or nothing),
+/// `set` (with `matches`, and the `value` it holds when it changed it) or
+/// `rejected` (with the `format` it expects). Returns `{status}`: `missing`,
 /// `not_editable` (with `reason`), `no_option` (with `options`), `selected`
 /// or `ready`. Checking focus matters: typing goes to whatever element has
 /// it, so an element that cannot take it would send the text elsewhere.
@@ -461,8 +464,24 @@ const PREPARE_FILL: &str = "const W = el.ownerDocument.defaultView; \
         el.dispatchEvent(new Event('change', { bubbles: true })); \
         return { status: 'selected' }; \
     } \
+    const VALUED = { date: 'YYYY-MM-DD', time: 'HH:MM or HH:MM:SS', 'datetime-local': 'YYYY-MM-DDTHH:MM', month: 'YYYY-MM', week: 'YYYY-Www', range: 'a number', color: '#rrggbb' }; \
+    if (el instanceof W.HTMLInputElement && VALUED[el.type]) { \
+        if (el.matches(':disabled')) return { status: 'not_editable', reason: 'disabled' }; \
+        if (el.readOnly) return { status: 'not_editable', reason: 'read-only' }; \
+        const format = VALUED[el.type]; \
+        const valid = el.type === 'range' ? text.trim() !== '' && !isNaN(Number(text)) : el.type === 'color' ? /^#[0-9a-f]{6}$/i.test(text) : true; \
+        if (!valid) return { status: 'rejected', format }; \
+        el.focus(); \
+        const before = el.value, setValue = Object.getOwnPropertyDescriptor(W.HTMLInputElement.prototype, 'value').set; \
+        setValue.call(el, text); \
+        if (text !== '' && el.value === '') { setValue.call(el, before); return { status: 'rejected', format }; } \
+        el.dispatchEvent(new Event('input', { bubbles: true })); \
+        el.dispatchEvent(new Event('change', { bubbles: true })); \
+        const matches = el.type === 'color' ? el.value === text.toLowerCase() : el.type === 'range' ? Number(el.value) === Number(text) : el.value === text; \
+        return { status: 'set', matches, value: matches ? null : el.value }; \
+    } \
     const field = el instanceof W.HTMLInputElement || el instanceof W.HTMLTextAreaElement; \
-    const typed = ['text', 'search', 'email', 'url', 'tel', 'password', 'number', 'date', 'datetime-local', 'month', 'week', 'time']; \
+    const typed = ['text', 'search', 'email', 'url', 'tel', 'password', 'number']; \
     if (el instanceof W.HTMLInputElement && !typed.includes(el.type)) return { status: 'not_editable', reason: 'an input of type ' + el.type }; \
     if (!field && !el.isContentEditable && !custom) return { status: 'not_editable', reason: 'not an input, textarea or contenteditable element' }; \
     const host = custom && !Array.from(el.getClientRects()).some(r => r.width > 2 && r.height > 2) ? (() => { \
@@ -926,6 +945,38 @@ mod tests {
             "{expression}"
         );
         assert!(expression.contains("x + win.scrollX"), "{expression}");
+    }
+
+    /// ISSUE-38: date, time, range and colour inputs get their value set
+    /// (typing goes into their segments or does nothing), checked against
+    /// the format each expects.
+    #[test]
+    fn valued_inputs_are_set_not_typed() {
+        let prepare = prepare_fill("#d", "2026-10-31", FillMode::Replace);
+        assert!(
+            prepare.contains("const VALUED = { date: 'YYYY-MM-DD'"),
+            "{prepare}"
+        );
+        assert!(prepare.contains("setValue.call(el, text);"), "{prepare}");
+        // A refused value leaves the old one in place
+        assert!(
+            prepare
+                .contains("{ setValue.call(el, before); return { status: 'rejected', format }; }"),
+            "{prepare}"
+        );
+        assert!(
+            prepare.contains("return { status: 'rejected', format };"),
+            "{prepare}"
+        );
+        assert!(
+            prepare
+                .contains("return { status: 'set', matches, value: matches ? null : el.value };"),
+            "{prepare}"
+        );
+        assert!(
+            !prepare.contains("'number', 'date'"),
+            "dates are no longer typed: {prepare}"
+        );
     }
 
     /// ISSUE-37: the click check says whether the control is disabled

@@ -16,7 +16,7 @@ use crate::handler::cdp_domains::input::drag::{
 };
 use crate::handler::cdp_domains::input::fill_form::{FillFormTool, FormOps};
 use crate::handler::cdp_domains::input::fill_input::{
-    FillInputTool, FillStart, fill_reply, fill_start, selected_reply,
+    FillInputTool, FillStart, fill_reply, fill_start,
 };
 use crate::handler::cdp_domains::input::hover::{HoverTool, hovered_reply};
 use crate::handler::cdp_domains::input::keys::{Key, Modifier};
@@ -623,13 +623,13 @@ impl OnTab<'_> {
         let filling = async {
             let prepare = crate::util::js::prepare_fill(selector, text, mode);
             let prepared = page::run_snippet(self.tab, &prepare).await?;
-            let FillStart::Type {
-                click,
-                prefix,
-                keys,
-            } = fill_start(&prepared, selector)?
-            else {
-                return Ok(selected_reply(selector));
+            let (click, prefix, keys) = match fill_start(&prepared, selector)? {
+                FillStart::Type {
+                    click,
+                    prefix,
+                    keys,
+                } => (click, prefix, keys),
+                FillStart::Done(reply) => return Ok(reply),
             };
             if let Some(point) = click {
                 page::click_at(self.tab, point, &ClickOptions::default()).await?;
