@@ -54,6 +54,9 @@ const OUTLINE: &str = r#"const outline = (root, maxDepth, maxChars) => {
     const cut = (text, max) => text.length > max ? text.slice(0, max - 1) + '…' : text;
     const lines = [], foreign = [];
     let size = 0, truncated = false, pending = '', pendingDepth = 0;
+    const doc = root.nodeType === 9 ? root : root.ownerDocument;
+    let modal = null; try { modal = doc.querySelector('dialog:modal'); } catch (e) {}
+    const outsideModal = node => !!modal && node.ownerDocument === doc && !modal.contains(node) && !(node.nodeType === 1 && node.contains(modal));
     const push = (depth, text) => {
         if (truncated) return;
         const line = '  '.repeat(depth) + '- ' + text;
@@ -70,7 +73,7 @@ const OUTLINE: &str = r#"const outline = (root, maxDepth, maxChars) => {
         checkbox: 'checkbox', radio: 'radio', range: 'slider', number: 'spinbutton', search: 'searchbox' };
     const TAGS = { BUTTON: 'button', SUMMARY: 'button', TEXTAREA: 'textbox', H1: 'heading', H2: 'heading',
         H3: 'heading', H4: 'heading', H5: 'heading', H6: 'heading', NAV: 'navigation', MAIN: 'main',
-        FORM: 'form', DIALOG: 'dialog', UL: 'list', OL: 'list', LI: 'listitem', TABLE: 'table', TR: 'row',
+        FORM: 'form', DIALOG: 'dialog', PROGRESS: 'progressbar', METER: 'meter', UL: 'list', OL: 'list', LI: 'listitem', TABLE: 'table', TR: 'row',
         TD: 'cell', TH: 'columnheader', OPTION: 'option', IFRAME: 'iframe', FRAME: 'iframe',
         HEADER: 'banner', FOOTER: 'contentinfo', ASIDE: 'complementary' };
     const firstRole = el => (el.getAttribute('role') || '').trim().split(/\s+/)[0];
@@ -100,7 +103,8 @@ const OUTLINE: &str = r#"const outline = (root, maxDepth, maxChars) => {
         return el.hasAttribute('onclick') || el.hasAttribute('tabindex') && el.tabIndex >= 0 ? 'clickable' : null;
     };
     const LEAF = new Set(['button', 'link', 'heading', 'textbox', 'searchbox', 'combobox', 'checkbox', 'radio',
-        'img', 'slider', 'spinbutton', 'option', 'switch', 'tab', 'menuitem', 'menuitemcheckbox', 'menuitemradio', 'clickable']);
+        'img', 'slider', 'spinbutton', 'option', 'switch', 'tab', 'menuitem', 'menuitemcheckbox', 'menuitemradio', 'clickable',
+        'progressbar', 'meter']);
     const FROM_CONTENT = new Set(['button', 'link', 'heading', 'tab', 'menuitem', 'menuitemcheckbox', 'menuitemradio',
         'option', 'switch', 'clickable', 'checkbox', 'radio']);
     const NAMED_BY_TEXT = new Set(['cell', 'columnheader', 'rowheader', 'gridcell']);
@@ -136,12 +140,16 @@ const OUTLINE: &str = r#"const outline = (root, maxDepth, maxChars) => {
         flag(el.disabled || el.getAttribute('aria-disabled') === 'true', 'disabled');
         flag(el.required, 'required');
         flag((role === 'option' && el.selected) || el.getAttribute('aria-selected') === 'true', 'selected');
-        const expanded = el.getAttribute('aria-expanded'); if (expanded) out.push('[expanded=' + expanded + ']');
+        const summary = el.tagName === 'SUMMARY' && el.parentElement && el.parentElement.tagName === 'DETAILS' && !el.hasAttribute('aria-expanded');
+        const expanded = summary ? (el.parentElement.open ? 'true' : 'false') : el.getAttribute('aria-expanded');
+        if (expanded) out.push('[expanded=' + expanded + ']');
+        flag(role === 'dialog' && el.matches(':modal'), 'modal');
         if (role === 'heading') out.push('[level=' + (el.getAttribute('aria-level') || (/^H[1-6]$/.test(el.tagName) ? el.tagName[1] : '2')) + ']');
         if (role === 'link') out.push('[href=' + cut(el.getAttribute('href') || '', 120) + ']');
         return out;
     };
     const valueOf = (el, role, name) => {
+        if ((el.tagName === 'PROGRESS' || el.tagName === 'METER') && (el.tagName === 'METER' || el.hasAttribute('value'))) return el.value + '/' + el.max;
         if (el.tagName === 'SELECT' && !el.multiple) { const option = el.selectedOptions[0]; return option ? clean(option.label) : ''; }
         const field = el.tagName === 'INPUT' || el.tagName === 'TEXTAREA';
         if (field && ['textbox', 'searchbox', 'spinbutton', 'slider', 'combobox'].includes(role)) return el.type !== 'password' ? el.value : '';
@@ -158,7 +166,7 @@ const OUTLINE: &str = r#"const outline = (root, maxDepth, maxChars) => {
     const walk = (node, depth) => {
         for (const child of childrenOf(node)) {
             if (truncated) return;
-            if (child.nodeType === 3) addText(child.data, depth);
+            if (child.nodeType === 3) { if (!outsideModal(child)) addText(child.data, depth); }
             else if (child.nodeType === 1 && !SKIP.has(child.tagName)) visit(child, depth);
         }
     };
@@ -167,6 +175,7 @@ const OUTLINE: &str = r#"const outline = (root, maxDepth, maxChars) => {
         const view = el.ownerDocument.defaultView, style = view.getComputedStyle(el);
         const contents = style.display === 'contents';
         if (el.getAttribute('aria-hidden') === 'true' || !shown(el, contents)) return;
+        if (el.inert || outsideModal(el)) return;
         let role = roleOf(el);
         const parent = el.parentElement;
         if (!role && style.cursor === 'pointer' && parent && view.getComputedStyle(parent).cursor !== 'pointer') role = 'clickable';
@@ -361,6 +370,35 @@ mod tests {
             "{OUTLINE}"
         );
         assert!(OUTLINE.contains("valueOf(el, role, name)"), "{OUTLINE}");
+    }
+
+    /// ISSUE-40: progress bars and meters show their value, a details'
+    /// summary whether it is expanded, a modal dialog is marked, and what
+    /// the page made inert (an inert subtree, everything outside an open
+    /// modal dialog, text included) is left out.
+    #[test]
+    fn widgets_states_and_inert_content() {
+        assert!(
+            OUTLINE.contains("PROGRESS: 'progressbar', METER: 'meter'"),
+            "{OUTLINE}"
+        );
+        assert!(
+            OUTLINE.contains("if ((el.tagName === 'PROGRESS' || el.tagName === 'METER') && "),
+            "{OUTLINE}"
+        );
+        assert!(
+            OUTLINE.contains("el.parentElement.open ? 'true' : 'false'"),
+            "{OUTLINE}"
+        );
+        assert!(
+            OUTLINE.contains("flag(role === 'dialog' && el.matches(':modal'), 'modal');"),
+            "{OUTLINE}"
+        );
+        assert!(
+            OUTLINE.contains("if (el.inert || outsideModal(el)) return;"),
+            "{OUTLINE}"
+        );
+        assert!(OUTLINE.contains("if (child.nodeType === 3) { if (!outsideModal(child)) addText(child.data, depth); }"), "{OUTLINE}");
     }
 
     /// ISSUE-27: the outline keeps the iframes it cannot read (their ref

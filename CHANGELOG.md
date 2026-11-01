@@ -12,6 +12,12 @@ from a copy of its code: entries describe the differences from that release.
 
 ### Fixed
 
+- `snapshot` and `find_in_snapshot` show `<progress>` and `<meter>`
+  (`progressbar`, `meter`, with their value as `40/100`), say whether a
+  `<details>` summary is expanded, mark an open modal `<dialog>` `[modal]`,
+  and leave out what the page made inert: `inert` subtrees and, while a
+  modal dialog is open, everything outside it (it was listed, and clicking
+  it failed as covered). (#40)
 - Chrome: `navigate` and `reload` to a page that pauses at a breakpoint
   while it loads (in the page or in a frame of another origin) waited the
   whole 30 s, then answered as if the page were slow. They now fail at once

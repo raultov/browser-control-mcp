@@ -657,6 +657,60 @@ mod e2e {
         ]
     }
 
+    /// ISSUE-40: snapshot shows progress bars and meters with their value
+    /// and whether a details is open; with a modal dialog open only the
+    /// dialog is listed, marked modal.
+    fn widget_state_steps(instance: &str) -> Vec<Step> {
+        let i = json!(instance);
+        let run = |expression: &str| json!({"instance_id": i, "expression": expression});
+        let build = "const w = document.createElement('div'); w.id = 'w40'; w.innerHTML = '<progress value=\\'40\\' max=\\'100\\'></progress><details><summary>W40 more</summary><p>w40 hidden</p></details><dialog id=\\'w40d\\'><button>W40 ok</button></dialog>'; document.body.append(w); document.getElementById('w40d').showModal(); 1";
+        let snapshot = json!({"instance_id": i});
+        vec![
+            (
+                "ISSUE-40 open a modal dialog over widgets",
+                "evaluate_js",
+                run(build),
+                "",
+            ),
+            (
+                "ISSUE-40 the modal dialog is marked",
+                "snapshot",
+                snapshot.clone(),
+                "dialog [modal]",
+            ),
+            (
+                "ISSUE-40 nothing behind the modal is listed",
+                "find_in_snapshot",
+                json!({"instance_id": i, "text": "W40 more"}),
+                "No line of the snapshot",
+            ),
+            (
+                "ISSUE-40 close the dialog",
+                "evaluate_js",
+                run("document.getElementById('w40d').close(); 1"),
+                "",
+            ),
+            (
+                "ISSUE-40 a progress bar shows its value",
+                "snapshot",
+                snapshot.clone(),
+                ": \"40/100\"",
+            ),
+            (
+                "ISSUE-40 a closed details says so",
+                "snapshot",
+                snapshot,
+                "button \"W40 more\" [expanded=false]",
+            ),
+            (
+                "ISSUE-40 remove the widgets",
+                "evaluate_js",
+                run("document.getElementById('w40').remove(); 1"),
+                "",
+            ),
+        ]
+    }
+
     /// ISSUE-38: date, time, range and colour inputs get their value; a
     /// range snaps it (noted), a malformed date is refused and keeps the
     /// value it had.
@@ -1494,6 +1548,7 @@ mod e2e {
     fn widget_steps(instance: &str) -> Vec<Step> {
         [
             aria_value_steps(instance),
+            widget_state_steps(instance),
             late_element_steps(instance),
             valued_input_steps(instance),
             custom_editor_steps(instance),
