@@ -7,7 +7,7 @@ use serde_json::json;
 
 #[macros::mcp_tool(
     name = "reload",
-    description = "Reloads the tab and waits for load (at most 30 s). Returns the same shape as 'navigate'."
+    description = "Reloads the tab and waits for load (at most 30 s; a page that pauses at a breakpoint or opens a dialog while loading fails at once saying so). Returns the same shape as 'navigate'."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct ReloadTool {
@@ -38,7 +38,12 @@ impl ReloadTool {
         let resp = reply.map_err(|e| {
             CallToolError::from_message(crate::handler::cdp_failure("Failed to reload page", &e))
         })?;
-        let loaded = super::navigate::wait_for_load(&mut page_events).await;
+        // A page paused in the debugger (or showing a dialog) while it
+        // loads never fires `load`: the call ends saying so, as on Firefox.
+        let loaded = target
+            .race_interruptions("reload", super::navigate::wait_for_load(&mut page_events))
+            .await
+            .map_err(|stopped| CallToolError::from_message(stopped.during("reload")))?;
         let browser = resp.result.unwrap_or_else(|| json!({}));
         let network = session.network_state(ids.tab_id.clone())?;
         let outcome = super::navigate::finish(&target, "", browser, loaded).await;
@@ -98,6 +103,22 @@ mod tests {
         assert_eq!(body["url"], "http://127.0.0.1:8/page");
         assert!(body.get("tab_id").is_some() && body.get("browser").is_some());
         assert!(body.get("notes").is_none(), "load fired: {body}");
+    }
+
+    /// ISSUE-45: a page that pauses in the debugger while it reloads makes
+    /// reload fail at once naming where.
+    #[tokio::test]
+    async fn a_pause_while_reloading_ends_the_wait() {
+        let mock = spawn_recording_mock().await;
+        crate::handler::cdp_domains::page::navigate::tests::pause_after(mock, "Page.reload");
+        let handler = mock_handler(mock.http_port);
+        let started = std::time::Instant::now();
+        let error = ReloadTool::handle(call("reload", json!({})), &handler)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+        assert!(error.contains("while running reload"), "{error}");
     }
 
     /// PAG-RL1: reload right after navigate retries the transient

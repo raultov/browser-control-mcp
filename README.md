@@ -119,8 +119,8 @@ see the note.
 | `close_tab` | ✓ | ✓ | |
 | `list_tabs` | ✓ | ✓ | |
 | `switch_tab` | ✓ | ✓ | |
-| `navigate` | ✓ | ✓ | `history: "back"` or `"forward"` instead of `url` moves one entry in the tab's history and waits for the page to load (also when it comes from the back-forward cache, which fires no `load`); at either end it fails without moving |
-| `reload` | ✓ | ✓ | |
+| `navigate` | ✓ | ✓ | `history: "back"` or `"forward"` instead of `url` moves one entry in the tab's history and waits for the page to load (also when it comes from the back-forward cache, which fires no `load`); at either end it fails without moving; a page that pauses at a breakpoint or opens a dialog while loading fails at once naming it (see `resume`, `handle_dialog`) |
+| `reload` | ✓ | ✓ | a pause or a dialog while loading fails at once, as with `navigate` |
 | `scroll` | ✓ | ✓ | reports the window positions before and after |
 | `emulate` | ✓ | partial | `emulation` group; `width`/`height`, `device_scale_factor`, `mobile` (touch), `color_scheme`, `reduced_motion`, `forced_colors`, `media` (`print`), `reset`; answers what the page now sees; Firefox: viewport and device pixel ratio only (BiDi has no media or touch emulation yet; those options fail naming them) |
 | `wait_for` | ✓ | ✓ | waits (checking every 100 ms, at most 30 s) until a visible text appears or is gone, a selector is `visible` / `hidden` / `attached` / `detached`, or the URL contains a text; a dialog or debugger pause ends the wait at once |

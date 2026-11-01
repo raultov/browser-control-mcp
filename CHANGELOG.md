@@ -10,6 +10,15 @@ from a copy of its code: entries describe the differences from that release.
 
 ## [Unreleased]
 
+### Fixed
+
+- Chrome: `navigate` and `reload` to a page that pauses at a breakpoint
+  while it loads (in the page or in a frame of another origin) waited the
+  whole 30 s, then answered as if the page were slow. They now fail at once
+  naming where it paused, as on Firefox; `resume` lets the page finish
+  loading. A page opening a dialog while it loads (`alert()` in an inline
+  script) fails at once too, pointing to `handle_dialog`. (#45)
+
 ## [0.9.0-beta.13] - 2026-11-01
 
 Public **BETA**. Frames of another origin are now observed and debugged, not

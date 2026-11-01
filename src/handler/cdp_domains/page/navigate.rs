@@ -14,7 +14,7 @@ use tokio::sync::Mutex;
 
 #[macros::mcp_tool(
     name = "navigate",
-    description = "Loads a URL in the tab, or goes back or forward in its history ('history' instead of 'url'), and waits for load (at most 30 s). Returns {url (after redirects), tab_id, browser, status?, notes?}; a network error or a download fails with 'Navigation failed: <reason> (<url>)'. With --local only local addresses are allowed. Note: copy_cookies imports the user's real Chrome cookies: ask the user first. On a running instance it relaunches it, closing its tabs: the call first fails listing them, then re-issue it with confirm_restart: true."
+    description = "Loads a URL in the tab, or goes back or forward in its history ('history' instead of 'url'), and waits for load (at most 30 s; a page that pauses at a breakpoint or opens a dialog while loading fails at once saying so). Returns {url (after redirects), tab_id, browser, status?, notes?}; a network error or a download fails with 'Navigation failed: <reason> (<url>)'. With --local only local addresses are allowed. Note: copy_cookies imports the user's real Chrome cookies: ask the user first. On a running instance it relaunches it, closing its tabs: the call first fails listing them, then re-issue it with confirm_restart: true."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct NavigateTool {
@@ -118,16 +118,26 @@ impl NavigateTool {
         }
         let target = session.target(args.tab_id.clone()).await?;
         let network = session.network_state(args.tab_id.clone())?;
-        let (outcome, went) = match destination {
-            Destination::Url(url) => (
-                navigate_and_wait(&target, &network, url).await?,
-                "Navigated to",
-            ),
-            Destination::History(step) => (
-                traverse_and_wait(&target, &network, step).await?,
-                step.went(),
-            ),
+        let navigation = async {
+            Ok(match destination {
+                Destination::Url(url) => (
+                    navigate_and_wait(&target, &network, url).await?,
+                    "Navigated to",
+                ),
+                Destination::History(step) => (
+                    traverse_and_wait(&target, &network, step).await?,
+                    step.went(),
+                ),
+            })
         };
+        // A page paused in the debugger (or showing a dialog) while it
+        // loads never fires `load`: the call ends saying so, as on Firefox.
+        let (outcome, went) = target
+            .race_interruptions("navigate", navigation)
+            .await
+            .unwrap_or_else(|stopped| {
+                Err(CallToolError::from_message(stopped.during("navigate")))
+            })?;
         let tab_id = session.tab_id_of(args.tab_id.as_deref());
         Ok(outcome.reply(&format!("{went} {}.", outcome.url), tab_id.as_deref()))
     }
@@ -424,7 +434,7 @@ fn restart_warning(instance_id: &str, session: &BrowserSession) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::handler::cdp_domains::tests::spawn_mock_chrome_server;
     use crate::handler::chrome_instance::MockChromeManager;
@@ -575,6 +585,47 @@ mod tests {
         assert_eq!(body["browser"]["loaderId"], "L1");
         assert!(body.get("tab_id").is_some());
         assert!(body.get("notes").is_none(), "load fired: {body}");
+    }
+
+    /// The `Debugger.paused` of a page stopped at line 2 of app.js while it
+    /// loads, emitted after the next `command`.
+    pub(crate) fn pause_after(
+        mock: &'static cdp_browser_lite::test_support::mock_devtools::MockDevTools,
+        command: &'static str,
+    ) {
+        let location = json!({"scriptId": "7", "lineNumber": 2, "columnNumber": 4});
+        let frame =
+            json!({"callFrameId": "c1", "url": "http://127.0.0.1:8/app.js", "location": location});
+        let paused = json!({"reason": "other", "callFrames": [frame]});
+        crate::handler::cdp_domains::tests::fire_after(mock, command, "Debugger.paused", paused);
+    }
+
+    /// ISSUE-45: a page that pauses in the debugger while it loads makes
+    /// navigate fail at once naming where (it waited 30 s for `load`).
+    #[tokio::test]
+    async fn a_pause_while_loading_ends_the_wait() {
+        // Given a navigation that pauses at app.js before `load`
+        let mock = spawn_recording_mock().await;
+        mock.respond_with(
+            "Page.navigate",
+            |_| json!({"frameId": "F1", "loaderId": "L1"}),
+        );
+        pause_after(mock, "Page.navigate");
+        let handler = mock_handler(mock.http_port);
+        // When navigate runs
+        let started = std::time::Instant::now();
+        let args = json!({"url": "http://127.0.0.1:8/page"});
+        let error = NavigateTool::handle(call("navigate", args), &handler)
+            .await
+            .unwrap_err()
+            .to_string();
+        // Then it fails at once, naming the pause and the call
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+        assert!(
+            error.contains("paused in the debugger at http://127.0.0.1:8/app.js line 2"),
+            "{error}"
+        );
+        assert!(error.contains("while running navigate"), "{error}");
     }
 
     /// The CDP events of a document response with `status` on loader `L1`.

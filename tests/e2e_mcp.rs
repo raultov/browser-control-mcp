@@ -1598,7 +1598,40 @@ mod e2e {
             ("resume", "resume", json!({"instance_id": i}), "resumed"),
         ];
         steps.extend(click_into_breakpoint_steps(&i));
+        steps.extend(pause_on_navigate_steps(&i, base));
         steps
+    }
+
+    /// ISSUE-45: a page that pauses in the debugger while it loads makes
+    /// navigate fail at once naming the pause (Chrome waited 30 s).
+    fn pause_on_navigate_steps(i: &Value, base: &str) -> Vec<Step> {
+        let at_load = json!({"instance_id": i, "url": format!("{base}/app.js"), "line_number": 4});
+        vec![
+            (
+                "ISSUE-45 a breakpoint in a script run at load",
+                "set_breakpoint",
+                at_load,
+                "Breakpoint set",
+            ),
+            (
+                "ISSUE-45 navigate stops at the pause",
+                "navigate",
+                json!({"instance_id": i, "url": format!("{base}/")}),
+                "!while running navigate",
+            ),
+            (
+                "ISSUE-45 resume the load",
+                "resume",
+                json!({"instance_id": i}),
+                "resumed",
+            ),
+            (
+                "ISSUE-45 remove the breakpoint",
+                "remove_breakpoint",
+                json!({"instance_id": i, "breakpoint_id": "bp-3"}),
+                "removed",
+            ),
+        ]
     }
 
     /// A click whose handler hits the breakpoint, then the paused frame.
