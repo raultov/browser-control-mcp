@@ -10,6 +10,18 @@ from a copy of its code: entries describe the differences from that release.
 
 ## [Unreleased]
 
+## [0.10.0-beta.14] - 2026-11-01
+
+Public **BETA**. `emulate` gains `user_agent`, `locale`, `timezone` and
+`geolocation` on both browsers, and each call now adds to the earlier ones;
+input actions say when they opened a tab; `evaluate_js` takes top-level
+`await`; Chrome's snapshot reads closed shadow roots. Behaviour changes:
+`navigate` and `reload` fail at once when the page pauses at a breakpoint or
+opens a dialog while loading (Chrome waited 30 s); with a modal `<dialog>`
+open, `snapshot` lists only the dialog; on Firefox a navigation that becomes
+a download fails, as on Chrome; `emulate`'s reply has `user_agent`, `locale`
+and `timezone`.
+
 ### Fixed
 
 - Chrome: `snapshot` and `find_in_snapshot` read closed shadow roots (some
