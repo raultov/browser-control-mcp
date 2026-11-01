@@ -10,6 +10,18 @@ from a copy of its code: entries describe the differences from that release.
 
 ## [Unreleased]
 
+## [0.9.0-beta.13] - 2026-11-01
+
+Public **BETA**. Frames of another origin are now observed and debugged, not
+only read and acted in: on Chrome their console messages and requests (bodies
+included) join the tab's logs, and on both browsers the debugger searches their
+scripts, binds breakpoints in them and pauses, steps and resumes there.
+Behaviour changes: a click on a disabled control now fails instead of reporting
+success, a pointer action waits up to 2 s for its element to appear or be
+enabled, date, time, range and colour inputs get their value set rather than
+typed, and on Chrome the scripts of such frames have ids naming the frame
+(`2.17`).
+
 ### Fixed
 
 - Chrome: `get_console_logs` and `get_network_logs` now include the
