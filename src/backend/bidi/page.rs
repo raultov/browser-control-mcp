@@ -204,8 +204,8 @@ pub(crate) async fn evaluate(tab: &Tab, expression: &str) -> Result<Value, Backe
 
 /// `evaluate_js`: [`evaluate_once`], run again as an async function
 /// ([`crate::util::js::with_top_level_await`]) when the expression uses
-/// `await` at its top level, which `script.evaluate` refuses (Chrome's
-/// `replMode` takes it).
+/// `await` at its top level, which `script.evaluate` refuses (Chrome does
+/// the same).
 pub(crate) async fn evaluate_js(tab: &Tab, expression: &str) -> Result<Evaluation, BackendError> {
     match evaluate_once(tab, expression).await {
         Err(BackendError::InvalidArgument(error)) if error.contains("await is only valid") => {

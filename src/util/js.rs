@@ -730,19 +730,10 @@ pub const PAGE_VITALS: &str = "(() => { \
     }; \
 })()";
 
-/// Whether `expression` uses `await` (as a word, not in `awaited`): it may
-/// then await at its top level.
-pub fn uses_await(expression: &str) -> bool {
-    let word = |c: Option<char>| c.is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '$');
-    expression.match_indices("await").any(|(at, _)| {
-        !word(expression[..at].chars().next_back()) && !word(expression[at + 5..].chars().next())
-    })
-}
-
 /// `expression`, whose statements use `await` at their top level, as an
 /// async function called at once that returns its last expression
 /// statement's value, as a console does (Firefox's `script.evaluate` has no
-/// top-level await; Chrome has `replMode`). A last statement that is a
+/// top-level await, nor has Chrome's `Runtime.evaluate`). A last statement that is a
 /// declaration or a block returns nothing. No line is added before the
 /// code, so an error's line is the expression's.
 pub fn with_top_level_await(expression: &str) -> String {
@@ -810,15 +801,6 @@ fn continues(rest: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    /// ISSUE-43: `await` counts as a word only.
-    #[test]
-    fn await_is_found_as_a_word() {
-        assert!(uses_await("await x"));
-        assert!(uses_await("const r = (await f()).ok"));
-        assert!(!uses_await("awaited + x.await_ + $await"));
-        assert!(!uses_await("fetch('/a')"));
-    }
-
     /// ISSUE-43: an expression using `await` at its top level becomes an
     /// async function returning its last expression statement, as a
     /// console does; strings, brackets, comments and chained lines do not

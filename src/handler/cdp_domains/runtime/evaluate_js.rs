@@ -37,19 +37,24 @@ impl EvaluateJsTool {
         // Chrome cannot await a promise while the page is paused in the
         // debugger (no microtask runs): the call would wait for the timeout.
         let paused = target.is_paused().await;
-        let mut params = json!({"expression": args.expression, "awaitPromise": !paused});
-        // `replMode`: top-level `await`, as in DevTools' console (only then:
-        // it hands back a promise the expression ends with unawaited).
-        if !paused && crate::util::js::uses_await(&args.expression) {
-            params["replMode"] = json!(true);
-        }
-        let evaluated = evaluate_remote(
-            &target,
-            "Runtime.evaluate",
-            params,
-            evaluation::cdp_exception,
-        )
-        .await;
+        let evaluate = |expression: &str| {
+            let params = json!({"expression": expression, "awaitPromise": !paused});
+            evaluate_remote(
+                &target,
+                "Runtime.evaluate",
+                params,
+                evaluation::cdp_exception,
+            )
+        };
+        // `await` at the top level is refused by a script: it runs again as
+        // an async function, as on Firefox (not `replMode`, whose `const`s
+        // outlive the call).
+        let evaluated = match evaluate(&args.expression).await {
+            Err(error) if !paused && error.contains("await is only valid") => {
+                evaluate(&crate::util::js::with_top_level_await(&args.expression)).await
+            }
+            outcome => outcome,
+        };
         evaluated
             .map(|evaluation| evaluation.reply())
             .map_err(CallToolError::from_message)
@@ -69,14 +74,7 @@ pub(crate) async fn evaluate_remote(
     mut params: Value,
     thrown: fn(&Value) -> String,
 ) -> Result<Evaluation, String> {
-    let promise = match (
-        params["awaitPromise"] == json!(false),
-        params["replMode"] == json!(true),
-    ) {
-        (true, _) => LastPromise::Settled,
-        (false, true) => LastPromise::Awaited,
-        (false, false) => LastPromise::Kept,
-    };
+    let unawaited = params["awaitPromise"] == json!(false);
     params["returnByValue"] = json!(false);
     params["objectGroup"] = json!(GROUP);
     params["timeout"] = json!(evaluation::EVAL_TIMEOUT_MS);
@@ -84,7 +82,7 @@ pub(crate) async fn evaluate_remote(
     let outcome = match target.send_raw_command(method, params).await {
         Ok(reply) => {
             let result = reply.result.unwrap_or_default();
-            read_outcome(target, result, thrown, promise).await
+            read_outcome(target, result, thrown, unawaited).await
         }
         // A dialog blocks the page: releasing would wait for a timeout.
         Err(e) if crate::handler::dialogs::interrupted(&e) => {
@@ -117,36 +115,20 @@ fn evaluation_failure(error: &cdp_browser_lite::CdpError, elapsed: std::time::Du
     }
 }
 
-/// What becomes of a promise an evaluation answers.
-#[derive(Clone, Copy)]
-enum LastPromise {
-    /// Read from its state: it was not awaited (the page is paused).
-    Settled,
-    /// Awaited: the evaluation ran in replMode, which awaited the
-    /// expression's own `await`s but hands back the promise it ends with.
-    Awaited,
-    /// Kept: it was awaited already, or is the value asked for.
-    Kept,
-}
-
-/// The evaluation of a reply, or its exception as an error; a promise is
-/// read as `promise` says.
+/// The evaluation of a reply, or its exception as an error; an `unawaited`
+/// promise stands for its value.
 async fn read_outcome(
     target: &CdpTarget,
     mut result: Value,
     thrown: fn(&Value) -> String,
-    promise: LastPromise,
+    unawaited: bool,
 ) -> Result<Evaluation, String> {
     if let Some(details) = result.get("exceptionDetails") {
         return Err(thrown(details));
     }
     let mut remote = result["result"].take();
-    if remote["subtype"] == "promise" {
-        remote = match promise {
-            LastPromise::Settled => settled(target, &remote).await?,
-            LastPromise::Awaited => awaited(target, &remote, thrown).await?,
-            LastPromise::Kept => remote,
-        };
+    if unawaited && remote["subtype"] == "promise" {
+        remote = settled(target, &remote).await?;
     }
     let remote = &remote;
     let by_value = match remote.get("objectId").and_then(Value::as_str) {
@@ -159,26 +141,6 @@ async fn read_outcome(
     let text = |key: &str| remote.get(key).and_then(Value::as_str);
     let kind = text("type").unwrap_or("object");
     Ok(evaluation::from_measured(kind, text("subtype"), read))
-}
-
-/// The value of `promise` once it settles (`Runtime.awaitPromise`), or
-/// its rejection as an error worded by `thrown`.
-async fn awaited(
-    target: &CdpTarget,
-    promise: &Value,
-    thrown: fn(&Value) -> String,
-) -> Result<Value, String> {
-    let params = json!({"promiseObjectId": promise["objectId"], "returnByValue": false});
-    let mut reply = target
-        .send_raw_command("Runtime.awaitPromise", params)
-        .await
-        .map_err(|e| crate::handler::cdp_failure("CDP Error", &e))?
-        .result
-        .unwrap_or_default();
-    match reply.get("exceptionDetails") {
-        Some(details) => Err(thrown(details)),
-        None => Ok(reply["result"].take()),
-    }
 }
 
 /// The value of a promise that was not awaited, read from its internal
@@ -321,22 +283,22 @@ mod tests {
         call, mock_handler, reply_text, spawn_recording_mock,
     };
 
-    /// ISSUE-43: an expression using `await` at its top level runs in
-    /// replMode (as in DevTools' console), and a promise it ends with is
-    /// awaited too, as one without `await` is.
+    /// ISSUE-43: an expression awaiting at its top level, which a script
+    /// refuses, runs again as an async function (as on Firefox).
     #[tokio::test]
-    async fn top_level_await_runs_in_repl_mode() {
-        // Given an expression whose last value is a promise of 7
+    async fn top_level_await_runs_as_an_async_function() {
+        // Given a page that refuses top-level await
         let mock = spawn_recording_mock().await;
-        mock.respond_with("Runtime.evaluate", |_| {
-            json!({"result": {"result": {"type": "object", "subtype": "promise", "className": "Promise", "objectId": "p1"}}})
+        mock.respond_with("Runtime.evaluate", |params| {
+            match params["expression"].as_str().unwrap_or_default().starts_with("(async () =>") {
+                true => json!({"result": {"result": {"type": "number", "value": 7, "description": "7"}}}),
+                false => json!({"result": {"result": {"type": "object"}, "exceptionDetails": {"text": "Uncaught",
+                    "lineNumber": 0, "columnNumber": 0, "exception": {"type": "object", "subtype": "error",
+                    "description": "SyntaxError: await is only valid in async functions and the top level bodies of modules"}}}}),
+            }
         });
-        mock.respond_with(
-            "Runtime.awaitPromise",
-            |_| json!({"result": {"result": {"type": "number", "value": 7, "description": "7"}}}),
-        );
         let handler = mock_handler(mock.http_port);
-        // When evaluate_js runs it
+        // When evaluate_js runs an expression with await
         let expression = "const r = await fetch('/a'); r.json()";
         let reply = EvaluateJsTool::handle(
             call("evaluate_js", json!({"expression": expression})),
@@ -344,16 +306,14 @@ mod tests {
         )
         .await
         .unwrap();
-        // Then it ran in replMode and answers the promise's value
+        // Then it ran again wrapped, and answers the value
         let body: Value = serde_json::from_str(&reply_text(&reply)).unwrap();
         assert_eq!(body["value"], 7);
+        let sent = mock.commands_named("Runtime.evaluate");
+        assert_eq!(sent.len(), 2);
         assert_eq!(
-            mock.commands_named("Runtime.evaluate")[0].params["replMode"],
-            true
-        );
-        assert_eq!(
-            mock.commands_named("Runtime.awaitPromise")[0].params["promiseObjectId"],
-            "p1"
+            sent[1].params["expression"],
+            crate::util::js::with_top_level_await(expression)
         );
     }
 
@@ -385,8 +345,6 @@ mod tests {
         let evaluate = &mock.commands_named("Runtime.evaluate")[0].params;
         assert_eq!(evaluate["returnByValue"], false);
         assert_eq!(evaluate["awaitPromise"], true);
-        // (ISSUE-43: no `await`, no replMode: a returned promise is awaited)
-        assert!(evaluate.get("replMode").is_none(), "{evaluate}");
         assert_eq!(evaluate["objectGroup"], GROUP);
         let read = &mock.commands_named("Runtime.callFunctionOn")[0].params;
         assert_eq!(
