@@ -662,6 +662,57 @@ mod e2e {
         ]
     }
 
+    /// ISSUE-42: on Chrome the outline reaches a closed shadow root, and
+    /// its button is clicked by ref; Firefox cannot see into it.
+    fn closed_root_steps(instance: &str, chrome: bool) -> Vec<Step> {
+        let i = json!(instance);
+        let build = "const h = document.createElement('div'); h.id = 'closed42'; document.body.append(h); const r = h.attachShadow({mode: 'closed'}); r.innerHTML = '<button>closed e2e button</button>'; r.querySelector('button').onclick = () => { window.__closed = 1; }; 1";
+        let run = |expression: &str| json!({"instance_id": i, "expression": expression});
+        let find = json!({"instance_id": i, "text": "closed e2e button"});
+        let mut steps = vec![(
+            "ISSUE-42 a closed shadow root",
+            "evaluate_js",
+            run(build),
+            "",
+        )];
+        if chrome {
+            steps.extend([
+                (
+                    "ISSUE-42 the outline reaches it",
+                    "find_in_snapshot",
+                    find,
+                    "button \"closed e2e button\" [ref=",
+                ),
+                (
+                    "ISSUE-42 click its button by ref",
+                    "click_element",
+                    json!({"instance_id": i, "selector": "$REF"}),
+                    "Successfully clicked",
+                ),
+                (
+                    "ISSUE-42 its handler ran",
+                    "evaluate_js",
+                    run("window.__closed === 1"),
+                    "true",
+                ),
+            ]);
+        } else {
+            steps.push((
+                "ISSUE-42 Firefox cannot see into it",
+                "find_in_snapshot",
+                find,
+                "No line of the snapshot",
+            ));
+        }
+        steps.push((
+            "ISSUE-42 remove it",
+            "evaluate_js",
+            run("document.getElementById('closed42').remove(); 1"),
+            "",
+        ));
+        steps
+    }
+
     /// ISSUE-41: a click that opens a tab says so (the tab closes itself).
     fn opened_tab_steps(instance: &str) -> Vec<Step> {
         let i = json!(instance);
@@ -1968,6 +2019,7 @@ mod e2e {
             key_and_pointer_steps("e2e"),
             storage_steps("e2e"),
             emulate_steps("e2e", browser == "chrome"),
+            closed_root_steps("e2e", browser == "chrome"),
             observation_steps("e2e"),
             network_steps("e2e"),
             websocket_steps("e2e", &base),
@@ -2059,6 +2111,7 @@ mod e2e {
             key_and_pointer_steps("default"),
             storage_steps("default"),
             emulate_steps("default", variable.contains("CHROME")),
+            closed_root_steps("default", variable.contains("CHROME")),
             network_steps("default"),
             other_page_steps("default", &base),
             debugger_steps("default", &base),

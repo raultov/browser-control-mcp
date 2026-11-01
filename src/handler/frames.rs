@@ -221,6 +221,17 @@ pub(crate) trait FrameReader {
         expression: &str,
     ) -> Result<Value, CallToolError>;
 
+    /// The value of `expression`, an outline snippet (`util::outline`), in
+    /// `frame`: a browser that can reach what the page's script cannot
+    /// (closed shadow roots, on Chrome) hands it over.
+    async fn outline(
+        &self,
+        frame: Option<&Self::Frame>,
+        expression: &str,
+    ) -> Result<Value, CallToolError> {
+        self.evaluate(frame, expression).await
+    }
+
     /// The frame shown by the `<iframe>` whose ref is `owner` in `parent`'s
     /// document, and its key; with `scroll`, the `<iframe>` is first
     /// scrolled into view there.
@@ -367,7 +378,7 @@ impl<R: FrameReader> TabFrames<'_, R> {
             }
         };
         let expression = crate::util::outline::snapshot(scope, depth, bounds.budget);
-        let outcome = self.reader.evaluate(base.1.as_ref(), &expression).await?;
+        let outcome = self.reader.outline(base.1.as_ref(), &expression).await?;
         Ok(self.with_frames(base, outcome, bounds).await)
     }
 
@@ -380,7 +391,7 @@ impl<R: FrameReader> TabFrames<'_, R> {
         expression: &str,
         (text, regex): (Option<&str>, Option<&str>),
     ) -> Result<Value, CallToolError> {
-        let found = self.reader.evaluate(None, expression).await?;
+        let found = self.reader.outline(None, expression).await?;
         if unreadable(&found).is_empty() {
             return Ok(found);
         }
@@ -389,7 +400,7 @@ impl<R: FrameReader> TabFrames<'_, R> {
             budget: crate::util::outline::FIND_MAX_CHARS,
         };
         let page = crate::util::outline::snapshot(None, None, bounds.budget);
-        let page = self.reader.evaluate(None, &page).await?;
+        let page = self.reader.outline(None, &page).await?;
         let whole = self.with_frames((0, None), page, bounds).await;
         let lines: Vec<&str> = whole["text"].as_str().unwrap_or_default().lines().collect();
         let search = crate::util::outline::find_in_lines(&lines, text, regex);

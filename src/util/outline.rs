@@ -158,7 +158,8 @@ const OUTLINE: &str = r#"const outline = (root, maxDepth, maxChars) => {
         return '';
     };
     const childrenOf = node => {
-        if (node.shadowRoot) return Array.from(node.shadowRoot.childNodes);
+        const shadow = node.shadowRoot || (typeof __bcm_closed_roots__ !== 'undefined' && __bcm_closed_roots__.get(node));
+        if (shadow) return Array.from(shadow.childNodes);
         if (node.tagName === 'SLOT') { const assigned = node.assignedNodes({ flatten: true }); return assigned.length ? assigned : Array.from(node.childNodes); }
         return Array.from(node.childNodes);
     };
@@ -399,6 +400,18 @@ mod tests {
             "{OUTLINE}"
         );
         assert!(OUTLINE.contains("if (child.nodeType === 3) { if (!outsideModal(child)) addText(child.data, depth); }"), "{OUTLINE}");
+    }
+
+    /// ISSUE-42: the outline walks the closed shadow roots it is handed
+    /// (Chrome finds them; the page's script cannot).
+    #[test]
+    fn closed_shadow_roots_are_walked_when_handed() {
+        assert!(
+            OUTLINE.contains(
+                "typeof __bcm_closed_roots__ !== 'undefined' && __bcm_closed_roots__.get(node)"
+            ),
+            "{OUTLINE}"
+        );
     }
 
     /// ISSUE-27: the outline keeps the iframes it cannot read (their ref

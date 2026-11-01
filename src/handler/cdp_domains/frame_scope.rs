@@ -89,6 +89,74 @@ impl FrameScope {
     }
 }
 
+/// The object group of the closed shadow roots handed to an outline.
+const CLOSED_ROOTS: &str = "browser-control-closed-roots";
+
+/// Most elements a page may have for its closed shadow roots to be looked
+/// for: Chrome describes the whole document to find them.
+const CLOSED_ROOT_SCAN_MAX: u32 = 20_000;
+
+/// Most closed shadow roots handed to an outline.
+const MAX_CLOSED_ROOTS: usize = 200;
+
+/// Handles (in [`CLOSED_ROOTS`]) on the closed shadow roots of `page`'s
+/// document, not its iframes': its script cannot reach them, Chrome can
+/// (`DOM.describeNode` with `pierce`, which does not make the DOM domain
+/// track nodes). Empty when there are none, the page is too large
+/// ([`CLOSED_ROOT_SCAN_MAX`]), or anything fails.
+async fn closed_roots(page: &FrameScope) -> Vec<String> {
+    let small = format!(
+        "document.getElementsByTagName('*').length <= {CLOSED_ROOT_SCAN_MAX} ? document : null"
+    );
+    let document = json!({"expression": small, "objectGroup": CLOSED_ROOTS});
+    let Ok(reply) = page.evaluate(document).await else {
+        return Vec::new();
+    };
+    let Some(document) = reply
+        .result
+        .and_then(|r| r["result"]["objectId"].as_str().map(str::to_string))
+    else {
+        return Vec::new();
+    };
+    let described = json!({"objectId": document, "depth": -1, "pierce": true});
+    let Ok(tree) = page.send("DOM.describeNode", described).await else {
+        return Vec::new();
+    };
+    let mut found = Vec::new();
+    closed_root_nodes(&tree.result.unwrap_or_default()["node"], &mut found);
+    let mut handles = Vec::new();
+    for backend in found.into_iter().take(MAX_CLOSED_ROOTS) {
+        let resolve = json!({"backendNodeId": backend, "objectGroup": CLOSED_ROOTS});
+        let handle = page
+            .send("DOM.resolveNode", resolve)
+            .await
+            .ok()
+            .and_then(|reply| {
+                reply.result?["object"]["objectId"]
+                    .as_str()
+                    .map(str::to_string)
+            });
+        handles.extend(handle);
+    }
+    handles
+}
+
+/// The backend node ids of the closed shadow roots under `node`, in
+/// document order, not looking into iframes (`contentDocument`).
+fn closed_root_nodes(node: &Value, found: &mut Vec<u64>) {
+    for root in node["shadowRoots"].as_array().into_iter().flatten() {
+        if root["shadowRootType"] == "closed"
+            && let Some(id) = root["backendNodeId"].as_u64()
+        {
+            found.push(id);
+        }
+        closed_root_nodes(root, found);
+    }
+    for child in node["children"].as_array().into_iter().flatten() {
+        closed_root_nodes(child, found);
+    }
+}
+
 /// A CDP failure as a tool error.
 fn failure(error: CdpError) -> CallToolError {
     CallToolError::from_message(crate::handler::cdp_failure("CDP Error", &error))
@@ -113,6 +181,44 @@ impl FrameReader for ChromeFrames {
         expression: &str,
     ) -> Result<Value, CallToolError> {
         frame.unwrap_or(&self.page).value(expression).await
+    }
+
+    /// The page's outline walks its closed shadow roots too (#42): Chrome
+    /// finds them, and they are handed to the outline as arguments of the
+    /// call, so the page's own scripts never get them. Frames are outlined
+    /// as they are.
+    async fn outline(
+        &self,
+        frame: Option<&FrameScope>,
+        expression: &str,
+    ) -> Result<Value, CallToolError> {
+        if frame.is_some() {
+            return self.evaluate(frame, expression).await;
+        }
+        let roots = closed_roots(&self.page).await;
+        let outcome = match roots.first() {
+            None => self.page.value(expression).await,
+            Some(first) => {
+                let call = json!({
+                    "objectId": first,
+                    "functionDeclaration": format!(
+                        "function (...roots) {{ const __bcm_closed_roots__ = new Map(roots.map(root => [root.host, root])); return (\n{expression}\n); }}"
+                    ),
+                    "arguments": roots.iter().map(|id| json!({"objectId": id})).collect::<Vec<_>>(),
+                    "returnByValue": true,
+                    "awaitPromise": true,
+                });
+                match self.page.send("Runtime.callFunctionOn", call).await {
+                    Ok(reply) => crate::handler::snippet_outcome(reply.result.unwrap_or_default()),
+                    Err(error) => Err(failure(error)),
+                }
+            }
+        };
+        // As text across the release: the tool error type is not `Send`.
+        let outcome = outcome.map_err(|e| e.to_string());
+        let release = json!({"objectGroup": CLOSED_ROOTS});
+        let _ = self.page.send("Runtime.releaseObjectGroup", release).await;
+        outcome.map_err(CallToolError::from_message)
     }
 
     /// The `<iframe>`'s frame id (its key), from its node: an in-process
@@ -344,6 +450,66 @@ pub(crate) async fn enter_frame(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ISSUE-42: the page's outline gets the closed shadow roots Chrome
+    /// describes (`DOM.describeNode` with `pierce`, the page's own: not an
+    /// iframe's), handed to it as arguments, never left in the page; the
+    /// handles are released. A page without any is a plain evaluation.
+    #[tokio::test]
+    async fn closed_shadow_roots_reach_the_outline() {
+        use crate::handler::frames::FrameReader;
+        // Given a page with a closed root under x-w, and one in an iframe
+        let mock = crate::handler::cdp_domains::tests::spawn_recording_mock().await;
+        mock.respond_with(
+            "Runtime.evaluate",
+            |_| json!({"result": {"result": {"type": "object", "objectId": "DOC"}}}),
+        );
+        let closed =
+            |id: u64| json!({"backendNodeId": id, "shadowRootType": "closed", "children": []});
+        let tree = json!({"node": {"nodeName": "#document", "children": [
+            {"nodeName": "X-W", "backendNodeId": 5, "shadowRoots": [closed(42), {"backendNodeId": 43, "shadowRootType": "open"}]},
+            {"nodeName": "IFRAME", "backendNodeId": 6, "contentDocument": {"nodeName": "#document", "children": [{"nodeName": "Y", "shadowRoots": [closed(99)]}]}},
+        ]}});
+        mock.respond_with("DOM.describeNode", move |_| tree.clone());
+        mock.respond_with(
+            "DOM.resolveNode",
+            |_| json!({"object": {"objectId": "ROOT42"}}),
+        );
+        let outline = json!({"type": "object", "value": {"status": "ok", "text": "- button \"closed\" [ref=e1]"}});
+        mock.respond_with(
+            "Runtime.callFunctionOn",
+            move |_| json!({"result": {"result": outline.clone()}}),
+        );
+        let address = format!("127.0.0.1:{}", mock.http_port);
+        let browser =
+            cdp_browser_lite::BrowserClient::connect(&address, std::time::Duration::from_secs(2))
+                .await
+                .unwrap();
+        let reader = ChromeFrames {
+            page: FrameScope::page(browser.attach("T-tab-1").await.unwrap()),
+        };
+        // When the page is outlined
+        let value = reader.outline(None, "OUTLINE_EXPRESSION").await.unwrap();
+        // Then the outline ran with the page's closed root as an argument
+        assert_eq!(value["status"], "ok");
+        let resolved = mock.commands_named("DOM.resolveNode");
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].params["backendNodeId"], 42);
+        assert_eq!(
+            mock.commands_named("DOM.describeNode")[0].params["pierce"],
+            true
+        );
+        let call = &mock.commands_named("Runtime.callFunctionOn")[0].params;
+        assert_eq!(call["objectId"], "ROOT42");
+        assert_eq!(call["arguments"], json!([{"objectId": "ROOT42"}]));
+        let declaration = call["functionDeclaration"].as_str().unwrap();
+        assert!(
+            declaration.contains("const __bcm_closed_roots__ = new Map(")
+                && declaration.contains("OUTLINE_EXPRESSION"),
+            "{declaration}"
+        );
+        assert_eq!(mock.commands_named("Runtime.releaseObjectGroup").len(), 1);
+    }
 
     /// A Chrome page whose iframe `e2` (at (100, 200)) shows the in-process
     /// frame `FRAME1`, whose document object is `DOC`.

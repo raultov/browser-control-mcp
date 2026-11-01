@@ -12,6 +12,13 @@ from a copy of its code: entries describe the differences from that release.
 
 ### Fixed
 
+- Chrome: `snapshot` and `find_in_snapshot` read closed shadow roots (some
+  design systems and third-party widgets), whose elements were invisible:
+  Chrome finds them (`DOM.describeNode` with `pierce`) and hands them to
+  the outline for that call only, so the page's own scripts never get them;
+  their elements are then reached by ref like any other. Pages up to 20 000
+  elements; `host >>> inner` selectors still stop at a closed root. Firefox
+  has no equivalent: there they stay out of reach. (#42)
 - Firefox: `navigate` to a URL Firefox saves rather than opens (a type such
   as CSV, without `Content-Disposition: attachment`) answered "Navigated
   to" the previous page; it now fails as a download, as on Chrome, from
