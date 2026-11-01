@@ -1227,11 +1227,72 @@ mod e2e {
                 json!({"instance_id": i, "color_scheme": "dark"}),
                 dark,
             ),
+        ]
+        .into_iter()
+        .chain(emulate_identity_steps(&i))
+        .chain([(
+            "ISSUE-9 reset",
+            "emulate",
+            json!({"instance_id": i, "reset": true}),
+            "Emulation reset",
+        )])
+        .chain(after_reset_steps(&i))
+        .collect()
+    }
+
+    /// ISSUE-43: emulate adds to earlier calls, sets the user agent,
+    /// locale, time zone and position, and refuses an unknown time zone.
+    fn emulate_identity_steps(i: &Value) -> Vec<Step> {
+        vec![
             (
-                "ISSUE-9 reset",
+                "ISSUE-43 a later call keeps the earlier ones",
                 "emulate",
-                json!({"instance_id": i, "reset": true}),
-                "Emulation reset",
+                json!({"instance_id": i, "device_scale_factor": 3.0}),
+                "\"width\": 500",
+            ),
+            (
+                "ISSUE-43 user agent, locale, time zone and position",
+                "emulate",
+                json!({"instance_id": i, "user_agent": "E2E-Agent/1", "locale": "fr-FR", "timezone": "Asia/Tokyo",
+                    "geolocation": {"latitude": 40.4, "longitude": -3.7}}),
+                "\"timezone\": \"Asia/Tokyo\"",
+            ),
+            (
+                "ISSUE-43 the page reads the position",
+                "evaluate_js",
+                json!({"instance_id": i, "expression": "const p = await new Promise(r => navigator.geolocation.getCurrentPosition(r)); p.coords.latitude"}),
+                "40.4",
+            ),
+            (
+                "ISSUE-43 an unknown time zone changes nothing",
+                "emulate",
+                json!({"instance_id": i, "timezone": "Mars/Base"}),
+                "!nothing was changed",
+            ),
+        ]
+    }
+
+    /// ISSUE-43: what a reset restores, and evaluate_js with top-level
+    /// await and a symbol.
+    fn after_reset_steps(i: &Value) -> Vec<Step> {
+        vec![
+            (
+                "ISSUE-43 the reset restores the user agent",
+                "evaluate_js",
+                json!({"instance_id": i, "expression": "navigator.userAgent.includes('E2E-Agent')"}),
+                "false",
+            ),
+            (
+                "ISSUE-43 top-level await",
+                "evaluate_js",
+                json!({"instance_id": i, "expression": "const r = await fetch('/api'); r.json()"}),
+                "\"ok\": true",
+            ),
+            (
+                "ISSUE-43 a symbol is described",
+                "evaluate_js",
+                json!({"instance_id": i, "expression": "Symbol('e2e')"}),
+                "Symbol(e2e)",
             ),
         ]
     }

@@ -736,6 +736,8 @@ pub(crate) struct BrowserSession {
     pub(crate) webmcp_state: Arc<Mutex<cdp_domains::webmcp::WebmcpState>>,
     pub(crate) dialog_state: Arc<Mutex<dialogs::DialogState>>,
     pub(crate) route_state: Arc<Mutex<routes::RouteState>>,
+    /// What `emulate` set on the session-level page so far.
+    pub(crate) emulation_state: Arc<Mutex<cdp_domains::page::emulate::Emulation>>,
     pub(crate) chrome_manager: Arc<Mutex<dyn chrome_instance::ChromeManager>>,
     pub(crate) tabs: Arc<std::sync::RwLock<chrome_instance::tab_registry::TabRegistry>>,
     pub(crate) session_listeners: Arc<Mutex<cdp_domains::event_pump::ListenerHandles>>,
@@ -784,6 +786,7 @@ impl BrowserSession {
             webmcp_state: Arc::new(Mutex::new(webmcp_state)),
             dialog_state: Default::default(),
             route_state: Default::default(),
+            emulation_state: Default::default(),
             chrome_manager,
             tabs: Arc::new(std::sync::RwLock::new(
                 chrome_instance::tab_registry::TabRegistry::new(16),
@@ -1177,6 +1180,7 @@ impl BrowserSession {
     state_accessor!(webmcp_state, cdp_domains::webmcp::WebmcpState);
     state_accessor!(dialog_state, dialogs::DialogState);
     state_accessor!(route_state, routes::RouteState);
+    state_accessor!(emulation_state, cdp_domains::page::emulate::Emulation);
 
     /// Whether an `enable_proxy_auth` handler still runs: it owns Chrome's
     /// Fetch domain, which mocked routes need too.

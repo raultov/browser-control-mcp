@@ -12,6 +12,17 @@ from a copy of its code: entries describe the differences from that release.
 
 ### Fixed
 
+- `evaluate_js` takes `await` at the top level (`const r = await
+  fetch(u); r.json()`), answering the last statement's value as a console
+  does: it failed with a SyntaxError on both browsers. A symbol is described
+  as `Symbol(x)` on both (Firefox answered an empty object), and a function
+  on Chrome by its code (it answered `{}`). (#43)
+- `emulate`: each call adds to the earlier ones, for every option (Chrome
+  kept an earlier viewport but dropped the earlier media settings), and it
+  emulates `user_agent`, `locale`, `timezone` and `geolocation` on both
+  browsers (the page is granted the geolocation permission, and the reply
+  says the position it reads). An unknown time zone or locale fails without
+  changing anything (Chrome kept the old zone silently). (#43)
 - `click_element`, `press_key` and the other input tools say when the
   action opened tabs (a `target=_blank` link, `window.open`), naming each
   with its URL: the new tab was registered, but nothing told the agent to

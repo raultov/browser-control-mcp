@@ -202,11 +202,25 @@ pub(crate) async fn evaluate(tab: &Tab, expression: &str) -> Result<Value, Backe
     outcome(&reply)
 }
 
-/// `evaluate_js`: the result in the shared shape, or the exception as an
-/// error worded as on Chrome. An object is held by reference (a handle,
-/// without its contents) and read by value only when its JSON form fits
-/// ([`evaluation::MEASURE`]): a large one would cross the connection whole.
+/// `evaluate_js`: [`evaluate_once`], run again as an async function
+/// ([`crate::util::js::with_top_level_await`]) when the expression uses
+/// `await` at its top level, which `script.evaluate` refuses (Chrome's
+/// `replMode` takes it).
 pub(crate) async fn evaluate_js(tab: &Tab, expression: &str) -> Result<Evaluation, BackendError> {
+    match evaluate_once(tab, expression).await {
+        Err(BackendError::InvalidArgument(error)) if error.contains("await is only valid") => {
+            evaluate_once(tab, &crate::util::js::with_top_level_await(expression)).await
+        }
+        outcome => outcome,
+    }
+}
+
+/// One `script.evaluate`: the result in the shared shape, or the exception
+/// as an error worded as on Chrome. An object is held by reference (a
+/// handle, without its contents) and read by value only when its JSON form
+/// fits ([`evaluation::MEASURE`]): a large one would cross the connection
+/// whole.
+async fn evaluate_once(tab: &Tab, expression: &str) -> Result<Evaluation, BackendError> {
     let params = json!({
         "expression": expression,
         "target": tab.script_target(),
@@ -251,6 +265,9 @@ fn evaluation_error(error: &BidiError) -> BackendError {
 /// maps, sets, nodes, errors...).
 const RETURN_THIS: &str = "function () { return this; }";
 
+/// The text of a symbol held by a handle (`Symbol(x)`, as Chrome describes it).
+const DESCRIBE_SYMBOL: &str = "function () { return this.toString(); }";
+
 /// The shared result for `remote`, read by value when it is held by a
 /// handle: an object or array through [`evaluation::MEASURE`] (its JSON
 /// form, as on Chrome), anything else as it is.
@@ -260,10 +277,11 @@ async fn measured(tab: &Tab, remote: &Value) -> Result<Evaluation, BackendError>
     };
     let kind = remote.get("type").and_then(Value::as_str);
     let json_like = matches!(kind, Some("object" | "array"));
-    let declaration = if json_like {
-        evaluation::MEASURE
-    } else {
-        RETURN_THIS
+    // `this` boxes a symbol into an object: its text describes it instead.
+    let declaration = match kind {
+        _ if json_like => evaluation::MEASURE,
+        Some("symbol") => DESCRIBE_SYMBOL,
+        _ => RETURN_THIS,
     };
     let params = json!({
         "functionDeclaration": declaration,
@@ -276,6 +294,10 @@ async fn measured(tab: &Tab, remote: &Value) -> Result<Evaluation, BackendError>
     let reply = command(tab, "script.callFunction", params).await?;
     thrown(&reply)?;
     let read = &reply["result"];
+    if kind == Some("symbol") {
+        let text = read["value"].as_str().unwrap_or("Symbol()");
+        return Ok(Evaluation::described("symbol", None, text));
+    }
     let json = remote_value::json_form(read).filter(|_| json_like);
     let Some(json) = json else {
         return Ok(remote_value::evaluation(read));
@@ -597,6 +619,50 @@ mod tests {
         .unwrap();
         let err = outcome(&string["result"]).unwrap_err().to_string();
         assert_eq!(err, "boom (line 1, column 7)");
+    }
+
+    /// ISSUE-43 (Firefox): a symbol is described (`this` of a function
+    /// boxed it into an object, read as `{}`); an expression awaiting at
+    /// its top level runs again as an async function.
+    #[tokio::test]
+    async fn symbols_and_top_level_await() {
+        use super::super::test_support::{self as ts, evaluate_success};
+        let mock = bidi_browser_lite::test_support::MockFirefox::start(false)
+            .await
+            .unwrap();
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = calls.clone();
+        mock.bidi().respond_with("script.evaluate", move |params| {
+            let wrapped = params["expression"].as_str().unwrap_or_default().starts_with("(async () =>");
+            counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if params["expression"] == "Symbol('x')" {
+                return evaluate_success(json!({"type": "symbol", "handle": "h1"}));
+            }
+            match wrapped {
+                true => evaluate_success(json!({"type": "number", "value": 42})),
+                false => json!({"type": "success", "result": {"type": "exception", "realm": "r1",
+                    "exceptionDetails": {"text": "SyntaxError: await is only valid in async functions, async generators and modules",
+                    "lineNumber": 0, "columnNumber": 0, "exception": {"type": "error"}, "stackTrace": {"callFrames": []}}}}),
+            }
+        });
+        mock.bidi().respond_with("script.callFunction", |_| {
+            evaluate_success(json!({"type": "string", "value": "Symbol(x)"}))
+        });
+        let handler = ts::handler(&mock);
+        let evaluate = |expression: &str| {
+            let call = ts::call("evaluate_js", json!({"expression": expression}));
+            crate::backend::bidi::tools::evaluate_js(call, &handler)
+        };
+        let symbol: Value =
+            serde_json::from_str(&ts::text(&evaluate("Symbol('x')").await.unwrap())).unwrap();
+        assert_eq!(
+            (symbol["type"].as_str(), symbol["description"].as_str()),
+            (Some("symbol"), Some("Symbol(x)"))
+        );
+        let awaited: Value =
+            serde_json::from_str(&ts::text(&evaluate("await f()").await.unwrap())).unwrap();
+        assert_eq!(awaited["value"], 42);
+        ts::stop(&handler).await;
     }
 
     /// AUD-EV-06 (Firefox): an evaluation without a result in time says

@@ -33,6 +33,8 @@ pub(crate) struct TabEntry {
     pub(crate) webmcp_state: Arc<Mutex<WebmcpState>>,
     pub(crate) dialog_state: Arc<Mutex<DialogState>>,
     pub(crate) route_state: Arc<Mutex<crate::handler::routes::RouteState>>,
+    /// What `emulate` set on the tab so far.
+    pub(crate) emulation_state: Arc<Mutex<crate::handler::cdp_domains::page::emulate::Emulation>>,
     pub(crate) listeners: Option<ListenerHandles>,
 }
 
@@ -132,6 +134,7 @@ impl TabRegistry {
             webmcp_state: Arc::new(Mutex::new(webmcp_st)),
             dialog_state: Default::default(),
             route_state: Default::default(),
+            emulation_state: Default::default(),
             listeners: None,
         };
 

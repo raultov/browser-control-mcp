@@ -730,8 +730,124 @@ pub const PAGE_VITALS: &str = "(() => { \
     }; \
 })()";
 
+/// Whether `expression` uses `await` (as a word, not in `awaited`): it may
+/// then await at its top level.
+pub fn uses_await(expression: &str) -> bool {
+    let word = |c: Option<char>| c.is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '$');
+    expression.match_indices("await").any(|(at, _)| {
+        !word(expression[..at].chars().next_back()) && !word(expression[at + 5..].chars().next())
+    })
+}
+
+/// `expression`, whose statements use `await` at their top level, as an
+/// async function called at once that returns its last expression
+/// statement's value, as a console does (Firefox's `script.evaluate` has no
+/// top-level await; Chrome has `replMode`). A last statement that is a
+/// declaration or a block returns nothing. No line is added before the
+/// code, so an error's line is the expression's.
+pub fn with_top_level_await(expression: &str) -> String {
+    let code = expression.trim().trim_end_matches(';').trim_end();
+    let (head, last) = code.split_at(last_statement_start(code));
+    let blank = last.len() - last.trim_start().len();
+    let (head, last) = (&code[..head.len() + blank], last.trim_start());
+    const DECLARING: &[&str] = &[
+        "const ", "let ", "var ", "function", "class ", "if", "for", "while", "do", "switch",
+        "try", "return", "throw", "{",
+    ];
+    if DECLARING.iter().any(|keyword| last.starts_with(keyword)) {
+        return format!("(async () => {{ {code}\n}})()");
+    }
+    // The line break ends a comment closing the last line.
+    format!("(async () => {{ {head}return ({last}\n); }})()")
+}
+
+/// Where the last statement of `code` starts: after its last `;` or line
+/// break outside strings, brackets and comments, a line break only when the
+/// next line does not continue the statement (`.then(...)`, an operator).
+fn last_statement_start(code: &str) -> usize {
+    let bytes = code.as_bytes();
+    let (mut depth, mut start, mut at) = (0_i32, 0, 0);
+    while at < bytes.len() {
+        match bytes[at] {
+            quote @ (b'\'' | b'"' | b'`') => at = string_end(bytes, at, quote),
+            b'/' if bytes.get(at + 1) == Some(&b'/') => {
+                at = code[at..].find('\n').map_or(bytes.len(), |n| at + n) - 1;
+            }
+            b'/' if bytes.get(at + 1) == Some(&b'*') => {
+                at = code[at + 2..]
+                    .find("*/")
+                    .map_or(bytes.len(), |n| at + n + 3);
+            }
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => depth -= 1,
+            b';' if depth == 0 => start = at + 1,
+            b'\n' if depth == 0 && !continues(&code[at + 1..]) => start = at + 1,
+            _ => {}
+        }
+        at += 1;
+    }
+    start
+}
+
+/// Where the string opening at `open` (with `quote`) ends.
+fn string_end(bytes: &[u8], open: usize, quote: u8) -> usize {
+    let mut at = open + 1;
+    while at < bytes.len() && bytes[at] != quote {
+        at += if bytes[at] == b'\\' { 2 } else { 1 };
+    }
+    at.min(bytes.len())
+}
+
+/// Whether a line starting `rest` continues the statement before it.
+fn continues(rest: &str) -> bool {
+    let next = rest.trim_start();
+    next.is_empty()
+        || next.starts_with([
+            '.', '?', ':', '+', '-', '*', '/', '%', '&', '|', '^', ',', '=', '<', '>', ')', ']',
+            '}',
+        ])
+}
+
 #[cfg(test)]
 mod tests {
+    /// ISSUE-43: `await` counts as a word only.
+    #[test]
+    fn await_is_found_as_a_word() {
+        assert!(uses_await("await x"));
+        assert!(uses_await("const r = (await f()).ok"));
+        assert!(!uses_await("awaited + x.await_ + $await"));
+        assert!(!uses_await("fetch('/a')"));
+    }
+
+    /// ISSUE-43: an expression using `await` at its top level becomes an
+    /// async function returning its last expression statement, as a
+    /// console does; strings, brackets, comments and chained lines do not
+    /// split statements; a final declaration returns nothing.
+    #[test]
+    fn top_level_await_is_wrapped() {
+        let wrapped = |code: &str| with_top_level_await(code);
+        assert_eq!(
+            wrapped("await Promise.resolve(41) + 1"),
+            "(async () => { return (await Promise.resolve(41) + 1\n); })()"
+        );
+        assert_eq!(
+            wrapped("const r = await fetch('/a;b'); r.status;"),
+            "(async () => { const r = await fetch('/a;b'); return (r.status\n); })()"
+        );
+        assert_eq!(
+            wrapped("const r = await f({a: 1, b: [2; 3]})\nr.ok // done; really"),
+            "(async () => { const r = await f({a: 1, b: [2; 3]})\nreturn (r.ok // done; really\n); })()"
+        );
+        assert_eq!(
+            wrapped("await fetch(x)\n  .then(r => r.status)"),
+            "(async () => { return (await fetch(x)\n  .then(r => r.status)\n); })()"
+        );
+        assert_eq!(
+            wrapped("await 1; const z = `a;${1}`;"),
+            "(async () => { await 1; const z = `a;${1}`\n})()"
+        );
+    }
+
     use super::*;
 
     /// The argument of `resolve(..)` in `expression`, parsed back as JSON.

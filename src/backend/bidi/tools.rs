@@ -281,33 +281,52 @@ pub(crate) async fn scroll(params: CallToolRequestParams, handler: &McpHandler) 
 }
 
 /// `emulate`: the viewport and device pixel ratio through
-/// `browsingContext.setViewport` (Firefox 157 has no BiDi media or touch
-/// emulation: those options fail naming them).
+/// `browsingContext.setViewport`, the user agent, locale, time zone and
+/// geolocation through `emulation.*` (each leaves what it does not give
+/// as it was, so calls add up as on Chrome). Firefox has no BiDi media or
+/// touch emulation: those options fail naming them.
 pub(crate) async fn emulate(params: CallToolRequestParams, handler: &McpHandler) -> ToolResult {
     let args: EmulateTool = parse_args(params)?;
     args.check_arguments()?;
     let unsupported = args.chrome_only();
     if !unsupported.is_empty() {
         return Err(CallToolError::from_message(format!(
-            "{} not available on Firefox: WebDriver BiDi has no media or touch emulation yet (Firefox emulates width, height and device_scale_factor)",
+            "{} not available on Firefox: WebDriver BiDi has no media or touch emulation yet (Firefox emulates the viewport, device_scale_factor, user_agent, locale, timezone and geolocation)",
             unsupported.join(", ")
         )));
     }
     let (_, _, tab) = target(handler, &ids(&args.instance_id, &args.tab_id)).await?;
-    let mut viewport = json!({"context": tab.tab.context_id()});
-    if args.resets() {
-        viewport["viewport"] = Value::Null;
-        viewport["devicePixelRatio"] = Value::Null;
+    if let Some(check) = args.names_check() {
+        EmulateTool::names_error(&page::run_snippet(&tab.tab, &check).await?)?;
     }
-    if let (Some(width), Some(height)) = (args.width, args.height) {
-        viewport["viewport"] = json!({"width": width, "height": height});
+    let context = tab.tab.context_id();
+    if let Some(viewport) = args.bidi_viewport(context) {
+        page::command(&tab.tab, "browsingContext.setViewport", viewport).await?;
     }
-    if let Some(ratio) = args.device_scale_factor {
-        viewport["devicePixelRatio"] = json!(ratio);
+    for (method, params) in args.bidi_overrides(context) {
+        page::command(&tab.tab, method, params).await?;
     }
-    page::command(&tab.tab, "browsingContext.setViewport", viewport).await?;
-    let seen = page::run_snippet(&tab.tab, EmulateTool::measure()).await?;
+    if args.geolocation.is_some() || args.resets() {
+        geolocation_permission(&tab.tab, args.geolocation.is_some()).await?;
+    }
+    let seen = page::run_snippet(&tab.tab, &args.measure()).await?;
     Ok(args.reply(&seen))
+}
+
+/// Grants (or, on a reset, takes back to asking) the geolocation permission
+/// of the page's origin: without it the page is asked, and waits.
+async fn geolocation_permission(
+    tab: &bidi_browser_lite::Tab,
+    grant: bool,
+) -> Result<(), BackendError> {
+    let origin = page::run_snippet(tab, "location.origin").await?;
+    let Some(origin) = origin.as_str().filter(|o| o.starts_with("http")) else {
+        return Ok(());
+    };
+    let state = if grant { "granted" } else { "prompt" };
+    let params = json!({"descriptor": {"name": "geolocation"}, "state": state, "origin": origin});
+    page::command(tab, "permissions.setPermission", params).await?;
+    Ok(())
 }
 
 /// `save_pdf`: `browsingContext.print`, then the shared delivery.

@@ -186,8 +186,12 @@ pub(crate) fn exception_message(thrown: &str, line: i64, column: i64) -> String 
 
 /// `true` for the remote objects whose by-value form is the object itself:
 /// plain objects and real arrays. Others serialise to `{}` (or, for array
-/// likes such as `NodeList`, to `{"0": {}, ...}`) and are described.
+/// likes such as `NodeList`, to `{"0": {}, ...}`) and are described, as are
+/// symbols and functions.
 pub(crate) fn has_json_form(remote: &Value) -> bool {
+    if remote.get("type").and_then(Value::as_str) != Some("object") {
+        return false;
+    }
     match remote.get("subtype").and_then(Value::as_str) {
         None => true,
         Some("array") => remote.get("className").and_then(Value::as_str) == Some("Array"),
@@ -251,6 +255,18 @@ fn thrown_value(value: &Value) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// ISSUE-43: only objects are read by value; a symbol or a function
+    /// keeps its description (it was read as `{}`).
+    #[test]
+    fn only_objects_are_read_by_value() {
+        assert!(has_json_form(&serde_json::json!({"type": "object"})));
+        let symbol = serde_json::json!({"type": "symbol", "description": "Symbol(x)"});
+        assert!(!has_json_form(&symbol));
+        assert!(!has_json_form(&serde_json::json!({"type": "function"})));
+        let described = from_cdp(&symbol, None).to_json();
+        assert_eq!(described["description"], "Symbol(x)");
+    }
+
     use super::*;
 
     /// AUD-EV-02 / AUD-EV-12: MEASURE answers the JSON form, named or
