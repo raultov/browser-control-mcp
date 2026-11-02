@@ -750,6 +750,50 @@ mod e2e {
         ]
     }
 
+    /// ISSUE-47: fill_input picks exactly the options of a <select multiple>
+    /// named one per line; an unknown one changes nothing.
+    fn multiple_select_steps(instance: &str) -> Vec<Step> {
+        let i = json!(instance);
+        let run = |expression: &str| json!({"instance_id": i, "expression": expression});
+        let fill = |text: &str| json!({"instance_id": i, "selector": "#m47", "text": text});
+        let build = "document.body.insertAdjacentHTML('beforeend', '<select id=\"m47\" multiple><option>M47 a</option><option selected>M47 b</option><option>M47 c</option></select>'); 1";
+        let picked =
+            "Array.from(document.getElementById('m47').selectedOptions).map(o => o.text).join('+')";
+        vec![
+            ("ISSUE-47 a multiple select", "evaluate_js", run(build), ""),
+            (
+                "ISSUE-47 pick two",
+                "fill_input",
+                fill("M47 a\nM47 c"),
+                "Successfully selected 2 options",
+            ),
+            (
+                "ISSUE-47 exactly those",
+                "evaluate_js",
+                run(picked),
+                "M47 a+M47 c",
+            ),
+            (
+                "ISSUE-47 an unknown one fails",
+                "fill_input",
+                fill("M47 a\nM47 z"),
+                "!the value or label 'M47 z'; nothing was changed",
+            ),
+            (
+                "ISSUE-47 nothing changed",
+                "evaluate_js",
+                run(picked),
+                "M47 a+M47 c",
+            ),
+            (
+                "ISSUE-47 remove it",
+                "evaluate_js",
+                run("document.getElementById('m47').remove(); 1"),
+                "",
+            ),
+        ]
+    }
+
     /// ISSUE-48: a draggable element and a drop zone have refs in snapshot.
     fn drag_ref_steps(instance: &str) -> Vec<Step> {
         let i = json!(instance);
@@ -1825,6 +1869,7 @@ mod e2e {
             select_option_steps(instance),
             invalid_field_steps(instance),
             drag_ref_steps(instance),
+            multiple_select_steps(instance),
             opened_tab_steps(instance),
             late_element_steps(instance),
             valued_input_steps(instance),

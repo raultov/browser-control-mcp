@@ -182,6 +182,7 @@ class BrowserControl(Adapter):
 
     def fill(self, handle, text): return self.ok(self.bc("fill_input", {"selector": handle, "text": text}), "fill")
     def select(self, handle, label, value): return self.fill(handle, label)
+    def select_many(self, handle, labels): return self.fill(handle, "\n".join(labels))
     def hover(self, handle): return self.ok(self.bc("hover", {"selector": handle}), "hover")
 
     def press(self, key, handle=None):

@@ -40,6 +40,10 @@ from a copy of its code: entries describe the differences from that release.
 - `snapshot` gives a ref to an element made draggable (`draggable="true"`,
   marked `[draggable]`) and to a drop zone (an `ondrop` or `ondragover`
   attribute): both were plain text, so `drag` needed CSS selectors. (#48)
+- `fill_input` (and `fill_form`) on a `<select multiple>` selects exactly
+  the options named one per line of `text` (none for an empty one), firing
+  `input` and `change` once; an unknown line fails naming it, with nothing
+  changed. It could only add one option at a time. (#47)
 
 ## [0.10.0-beta.14] - 2026-11-01
 

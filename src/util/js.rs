@@ -419,11 +419,13 @@ pub enum FillMode {
 /// through `beforeinput` (rich text editors keep their own model, which
 /// removing their DOM nodes would leave behind), and an empty `text`
 /// deletes them through the editing commands; a `<select>` gets the option
-/// whose value or label is `text`; a date, time, range or colour input gets
+/// whose value or label is `text`, a `<select multiple>` exactly the options
+/// its lines name (none for an empty `text`); a date, time, range or colour input gets
 /// `text` as its value (typing would go into its segments, or nothing),
 /// `set` (with `matches`, and the `value` it holds when it changed it) or
 /// `rejected` (with the `format` it expects). Returns `{status}`: `missing`,
-/// `not_editable` (with `reason`), `no_option` (with `options`), `selected`
+/// `not_editable` (with `reason`), `no_option` (with `missing` and
+/// `options`), `selected` (with `count` on a multiple select)
 /// or `ready`. Checking focus matters: typing goes to whatever element has
 /// it, so an element that cannot take it would send the text elsewhere.
 pub fn prepare_fill(selector: &str, text: &str, mode: FillMode) -> String {
@@ -465,12 +467,14 @@ const PREPARE_FILL: &str = "const W = el.ownerDocument.defaultView; \
     if (el instanceof W.HTMLSelectElement) { \
         if (el.matches(':disabled')) return { status: 'not_editable', reason: 'disabled' }; \
         const options = Array.from(el.options); \
-        const option = options.find(o => o.value === text) || options.find(o => o.label.trim() === text.trim()); \
-        if (!option) return { status: 'no_option', options: options.slice(0, 20).map(o => o.label.trim()) }; \
-        option.selected = true; \
+        const find = t => options.find(o => o.value === t) || options.find(o => o.label.trim() === t.trim()); \
+        const wanted = el.multiple ? text.split(/\\r?\\n/).filter(t => t.trim() !== '') : [text]; \
+        const picked = wanted.map(find), missing = wanted.find((t, i) => !picked[i]); \
+        if (missing !== undefined) return { status: 'no_option', missing, options: options.slice(0, 20).map(o => o.label.trim()) }; \
+        if (el.multiple) options.forEach(o => { o.selected = picked.includes(o); }); else picked[0].selected = true; \
         el.dispatchEvent(new Event('input', { bubbles: true })); \
         el.dispatchEvent(new Event('change', { bubbles: true })); \
-        return { status: 'selected' }; \
+        return { status: 'selected', count: el.multiple ? el.selectedOptions.length : null }; \
     } \
     const VALUED = { date: 'YYYY-MM-DD', time: 'HH:MM or HH:MM:SS', 'datetime-local': 'YYYY-MM-DDTHH:MM', month: 'YYYY-MM', week: 'YYYY-Www', range: 'a number', color: '#rrggbb' }; \
     if (el instanceof W.HTMLInputElement && VALUED[el.type]) { \

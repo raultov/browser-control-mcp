@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 
 #[macros::mcp_tool(
     name = "fill_input",
-    description = "Replaces the content of a text field, textarea or contenteditable element (or, with append, types after it) by typing key by key (the page's key handlers run; about 1 ms per character), or picks the <select> option whose value or label is the text, or sets a date, time, range or colour input to it (YYYY-MM-DD, HH:MM, a number, #rrggbb). Fails without typing on disabled, read-only, non-text or unfocusable elements, and when the field rejects the text; notes when the page reformatted it."
+    description = "Replaces the content of a text field, textarea or contenteditable element (or, with append, types after it) by typing key by key (the page's key handlers run; about 1 ms per character), or picks the <select> option whose value or label is the text (on a <select multiple>, exactly the options named one per line), or sets a date, time, range or colour input to it (YYYY-MM-DD, HH:MM, a number, #rrggbb). Fails without typing on disabled, read-only, non-text or unfocusable elements, and when the field rejects the text; notes when the page reformatted it."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct FillInputTool {
@@ -20,7 +20,7 @@ pub struct FillInputTool {
     pub tab_id: Option<String>,
     /// Element: CSS selector, 'host >>> inner' (inside an open shadow root or same-origin iframe), or a snapshot ref (e12).
     pub selector: String,
-    /// Text to type, or the value or label of the option of a `<select>`.
+    /// Text to type, or the value or label of the option of a `<select>` (of a `<select multiple>`: one per line, exactly those selected).
     pub text: String,
     /// Type the text at the end of the current content instead of replacing it. Default: false.
     pub append: Option<bool>,
@@ -56,7 +56,10 @@ pub(crate) fn fill_start(value: &Value, selector: &str) -> Result<FillStart, Cal
             prefix: value["prefix"].as_str().unwrap_or_default().to_string(),
             keys: shortcuts(value)?,
         }),
-        Some("selected") => Ok(FillStart::Done(selected_reply(selector))),
+        Some("selected") => Ok(FillStart::Done(selected_reply(
+            value["count"].as_u64(),
+            selector,
+        ))),
         Some("set") => Ok(FillStart::Done(set_reply(value, selector))),
         Some("rejected") => Err(CallToolError::from_message(format!(
             "'{selector}' did not take the text: it expects {}; nothing was changed.",
@@ -71,8 +74,12 @@ pub(crate) fn fill_start(value: &Value, selector: &str) -> Result<FillStart, Cal
                 .as_array()
                 .map(|o| o.iter().filter_map(Value::as_str).collect())
                 .unwrap_or_default();
+            let which = value["missing"].as_str().map_or_else(
+                || "that value or label".to_string(),
+                |missing| format!("the value or label '{missing}'; nothing was changed"),
+            );
             Err(CallToolError::from_message(format!(
-                "No option of '{selector}' has that value or label. Options: {}.",
+                "No option of '{selector}' has {which}. Options: {}.",
                 options.join(", ")
             )))
         }
@@ -98,10 +105,16 @@ fn shortcuts(value: &Value) -> Result<Vec<Shortcut>, CallToolError> {
         .collect()
 }
 
-/// The reply once a `<select>` option was picked.
-pub(crate) fn selected_reply(selector: &str) -> CallToolResult {
+/// The reply once a `<select>` option was picked, or `count` options of a
+/// `<select multiple>`.
+pub(crate) fn selected_reply(count: Option<u64>, selector: &str) -> CallToolResult {
+    let what = match count {
+        None => "the option matching the text".to_string(),
+        Some(1) => "1 option, one per line of the text,".to_string(),
+        Some(count) => format!("{count} options, one per line of the text,"),
+    };
     CallToolResult::text_content(vec![
-        format!("Successfully selected the option matching the text in '{selector}'.").into(),
+        format!("Successfully selected {what} in '{selector}'.").into(),
     ])
 }
 
@@ -454,6 +467,37 @@ mod tests {
         assert_eq!(
             error,
             "No option of '#s' has that value or label. Options: Red, Blue."
+        );
+    }
+
+    /// ISSUE-47: a `<select multiple>` gets exactly the options named one
+    /// per line (the reply counts them); an unknown line fails naming it,
+    /// with nothing changed.
+    #[tokio::test]
+    async fn multiple_select_picks_every_line() {
+        // Given a multiple select the page set to the lines of the text
+        let mock = page_answering(json!({"status": "selected", "count": 2}), json!(null)).await;
+        // When fill_input targets it, Then the reply counts the options
+        let reply = fill(mock, "#m").await.unwrap();
+        let text = crate::handler::cdp_domains::tests::reply_text(&reply);
+        assert_eq!(
+            text,
+            "Successfully selected 2 options, one per line of the text, in '#m'."
+        );
+        let prepare = &mock.commands_named("Runtime.evaluate")[0].params;
+        let expression = prepare["expression"].as_str().unwrap();
+        assert!(
+            expression.contains("const wanted = el.multiple ? text.split(/\\r?\\n/)"),
+            "{expression}"
+        );
+        // And a line no option matches is named
+        let missing =
+            json!({"status": "no_option", "missing": "Olives", "options": ["Cheese", "Ham"]});
+        let mock = page_answering(missing, json!(null)).await;
+        let error = fill(mock, "#m").await.unwrap_err().to_string();
+        assert_eq!(
+            error,
+            "No option of '#m' has the value or label 'Olives'; nothing was changed. Options: Cheese, Ham."
         );
     }
 
