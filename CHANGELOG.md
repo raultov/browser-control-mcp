@@ -10,6 +10,20 @@ from a copy of its code: entries describe the differences from that release.
 
 ## [Unreleased]
 
+## [0.11.0-beta.16] - 2026-11-02
+
+Public **BETA**. `audit_page` (`perf` group) audits the rendered page for
+accessibility, SEO and best-practice problems on Chrome and Firefox, with the
+same script and no Lighthouse bundle (each failing check lists its first 10
+elements with their snapshot refs); `emulate` gains `cpu_throttling` and
+`network_throttling` on Chrome; `profile_page_performance` adds INP, LCP image
+discovery, DOM size, oversized/unsized images and third-party weight on both
+browsers, and on Chrome extracts `forced_reflows` from the trace, measures
+`unused_code` (JavaScript and CSS) on a reload and saves the raw trace with
+`save_path`; `get_performance_metrics` takes `collect_garbage: true` and reads
+`Memory.getDOMCounters` on Chrome. Behaviour changes: `get_performance_metrics`
+sorts its metrics by name.
+
 ### Added
 
 - `emulate` gains `cpu_throttling` (`1` to `20`, e.g. `4` for a 4× slowdown)
