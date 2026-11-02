@@ -750,6 +750,29 @@ mod e2e {
         ]
     }
 
+    /// ISSUE-49: snapshot marks a field the page rejects [invalid], with
+    /// its error message.
+    fn invalid_field_steps(instance: &str) -> Vec<Step> {
+        let i = json!(instance);
+        let run = |expression: &str| json!({"instance_id": i, "expression": expression});
+        let build = "const d = document.createElement('div'); d.id = 'd49'; d.innerHTML = '<input id=\"i49\" aria-label=\"I49 zip\" aria-invalid=\"true\" aria-describedby=\"e49\"><span id=\"e49\">I49 digits only</span>'; document.body.append(d); 1";
+        vec![
+            ("ISSUE-49 an invalid field", "evaluate_js", run(build), ""),
+            (
+                "ISSUE-49 it is marked with why",
+                "snapshot",
+                json!({"instance_id": i, "selector": "#d49"}),
+                "textbox \"I49 zip\" [invalid] [error=\"I49 digits only\"]",
+            ),
+            (
+                "ISSUE-49 remove it",
+                "evaluate_js",
+                run("document.getElementById('d49').remove(); 1"),
+                "",
+            ),
+        ]
+    }
+
     /// ISSUE-46: snapshot lists a native <select>'s options under its
     /// combobox, the first ones only on a long list, which the search reaches.
     fn select_option_steps(instance: &str) -> Vec<Step> {
@@ -1766,6 +1789,7 @@ mod e2e {
             aria_value_steps(instance),
             widget_state_steps(instance),
             select_option_steps(instance),
+            invalid_field_steps(instance),
             opened_tab_steps(instance),
             late_element_steps(instance),
             valued_input_steps(instance),

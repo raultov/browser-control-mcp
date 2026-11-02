@@ -32,6 +32,11 @@ from a copy of its code: entries describe the differences from that release.
   loading or were never read by the page: Chrome never finishes a `fetch`
   whose body the page did not consume, and the old wording (an open event
   stream, no body until it ends) suggested that waiting would help. (#51)
+- `snapshot` marks a field the page or the browser rejects `[invalid]`
+  (`aria-invalid`, or `:user-invalid` once the user changed it or tried to
+  submit), with `[error="..."]` from its `aria-errormessage`,
+  `aria-describedby` or the browser's validation message: after a submit an
+  agent could not tell which fields were rejected. (#49)
 
 ## [0.10.0-beta.14] - 2026-11-01
 

@@ -8,7 +8,7 @@ use serde_json::Value;
 
 #[macros::mcp_tool(
     name = "snapshot",
-    description = "Outlines the page for acting on it: one line per element with a role (button, link, textbox, heading...), its name, states, value and a ref ([ref=e12]), indented under its parent; a <select>'s options under it (the first 25; pick one with fill_input); through open shadow roots and iframes (a frame of another origin is marked [frame=f2], its refs are f2e5; selector 'f2' outlines it alone), hidden elements left out, password values never shown; at most 50000 characters. Pass a ref as the selector of the input tools; refs last until the page navigates. Computed in the page, the same on Chrome and Firefox."
+    description = "Outlines the page for acting on it: one line per element with a role (button, link, textbox, heading...), its name, states, value and a ref ([ref=e12]), indented under its parent; a rejected field is [invalid] [error='why']; a <select>'s options under it (the first 25; pick one with fill_input); through open shadow roots and iframes (a frame of another origin is marked [frame=f2], its refs are f2e5; selector 'f2' outlines it alone), hidden elements left out, password values never shown; at most 50000 characters. Pass a ref as the selector of the input tools; refs last until the page navigates. Computed in the page, the same on Chrome and Firefox."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct SnapshotTool {

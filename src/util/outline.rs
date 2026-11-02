@@ -130,13 +130,18 @@ const OUTLINE: &str = r#"const outline = (root, maxDepth, maxChars, maxOptions) 
     };
     const INTERACTIVE = 'a[href], button, input, select, textarea, summary, [role], [onclick], [tabindex], [contenteditable]';
     const textOf = el => clean(el.innerText !== undefined ? el.innerText : el.textContent);
+    const idText = (el, attribute) => {
+        const root = el.getRootNode(), ids = el.getAttribute(attribute);
+        if (!ids || !root.getElementById) return '';
+        return clean(ids.split(/\s+/).map(id => root.getElementById(id)).filter(Boolean).map(textOf).join(' '));
+    };
+    const matches = (el, selector) => { try { return el.matches(selector); } catch (e) { return false; } };
+    const invalid = el => {
+        const aria = el.getAttribute('aria-invalid');
+        return aria === null || aria === 'false' ? matches(el, ':user-invalid') : true;
+    };
     const nameOf = (el, role) => {
-        const root = el.getRootNode();
-        const by = el.getAttribute('aria-labelledby');
-        if (by && root.getElementById) {
-            const named = clean(by.split(/\s+/).map(id => root.getElementById(id)).filter(Boolean).map(textOf).join(' '));
-            if (named) return named;
-        }
+        const named = idText(el, 'aria-labelledby'); if (named) return named;
         const label = clean(el.getAttribute('aria-label')); if (label) return label;
         if (el.labels && el.labels.length) { const named = clean(Array.from(el.labels).map(textOf).join(' ')); if (named) return named; }
         if (el.tagName === 'IMG' || el.tagName === 'AREA' || (el.tagName === 'INPUT' && el.type === 'image')) return clean(el.getAttribute('alt'));
@@ -150,6 +155,10 @@ const OUTLINE: &str = r#"const outline = (root, maxDepth, maxChars, maxOptions) 
         flag(box ? el.checked : el.getAttribute('aria-checked') === 'true', 'checked');
         flag(el.disabled || el.getAttribute('aria-disabled') === 'true', 'disabled');
         flag(el.required, 'required');
+        if (invalid(el)) {
+            const why = idText(el, 'aria-errormessage') || idText(el, 'aria-describedby') || clean(el.validationMessage || '');
+            out.push('[invalid]'); if (why) out.push('[error=' + JSON.stringify(cut(why, 100)) + ']');
+        }
         flag((role === 'option' && el.selected) || el.getAttribute('aria-selected') === 'true', 'selected');
         const summary = el.tagName === 'SUMMARY' && el.parentElement && el.parentElement.tagName === 'DETAILS' && !el.hasAttribute('aria-expanded');
         const expanded = summary ? (el.parentElement.open ? 'true' : 'false') : el.getAttribute('aria-expanded');
@@ -411,6 +420,23 @@ mod tests {
             "{OUTLINE}"
         );
         assert!(OUTLINE.contains("valueOf(el, role, name)"), "{OUTLINE}");
+    }
+
+    /// ISSUE-49: a field the page or the browser rejects is `[invalid]`
+    /// (`aria-invalid`, or `:user-invalid` once the user changed it), with
+    /// why: its error message, description or the browser's validation
+    /// message.
+    #[test]
+    fn invalid_fields_say_why() {
+        assert!(OUTLINE.contains("const invalid = el => {"), "{OUTLINE}");
+        assert!(
+            OUTLINE.contains(
+                "aria === null || aria === 'false' ? matches(el, ':user-invalid') : true"
+            ),
+            "{OUTLINE}"
+        );
+        assert!(OUTLINE.contains("const why = idText(el, 'aria-errormessage') || idText(el, 'aria-describedby') || clean(el.validationMessage || '');"), "{OUTLINE}");
+        assert!(OUTLINE.contains("out.push('[invalid]'); if (why) out.push('[error=' + JSON.stringify(cut(why, 100)) + ']');"), "{OUTLINE}");
     }
 
     /// ISSUE-46: a native `<select>` lists its options under its combobox
