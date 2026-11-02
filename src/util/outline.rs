@@ -38,31 +38,65 @@ pub const FIND_MAX_OPTIONS: usize = 10_000;
 /// Deepest level walked when no `depth` is given.
 const MAX_DEPTH: u32 = 1000;
 
+/// What the outline and the page audit (`handler::audit`) share, declared
+/// at the top of their snippets: `refOf(el)`, an element's ref, kept in the
+/// top window's map (the one `js::RESOLVE` reads), the same for an element
+/// across outlines and audits while it is in the page (entries of removed
+/// elements are dropped); `nameOf(el, role)`, its accessible name
+/// (approximate: aria-labelledby, aria-label, labels, alt, an input
+/// button's value, the content for roles named by it, title, placeholder);
+/// and the text helpers `clean`, `cut`, `textOf` (with the text slotted
+/// into a shadow tree, which `innerText` misses) and `idText`.
+pub(crate) const ELEMENT_HELPERS: &str = r#"const refsKey = Symbol.for('browser-control-mcp.refs'), refKey = Symbol.for('browser-control-mcp.ref');
+const countKey = Symbol.for('browser-control-mcp.ref-count');
+const refs = window[refsKey] || (window[refsKey] = new Map());
+for (const [ref, weak] of refs) { const known = weak.deref(); if (!known || !known.isConnected) refs.delete(ref); }
+const refOf = el => {
+    const known = el[refKey];
+    if (known && refs.has(known) && refs.get(known).deref() === el) return known;
+    window[countKey] = (window[countKey] || 0) + 1;
+    const ref = 'e' + window[countKey];
+    el[refKey] = ref; refs.set(ref, new WeakRef(el));
+    return ref;
+};
+const clean = text => (text || '').replace(/\s+/g, ' ').trim();
+const cut = (text, max) => text.length > max ? text.slice(0, max - 1) + '…' : text;
+const FROM_CONTENT = new Set(['button', 'link', 'heading', 'tab', 'menuitem', 'menuitemcheckbox', 'menuitemradio',
+    'option', 'switch', 'clickable', 'checkbox', 'radio']);
+const flatText = node => {
+    if (node.nodeType === 3) return node.data;
+    if (node.nodeType !== 1 || ['SCRIPT', 'STYLE', 'TEMPLATE'].includes(node.tagName)) return '';
+    const assigned = node.tagName === 'SLOT' ? node.assignedNodes({ flatten: true }) : [];
+    const children = assigned.length ? assigned : Array.from((node.shadowRoot || node).childNodes);
+    return children.map(flatText).join(' ');
+};
+const textOf = el => clean(el.innerText !== undefined ? el.innerText : el.textContent)
+    || (el.querySelector && el.querySelector('slot') ? clean(flatText(el)) : '');
+const idText = (el, attribute) => {
+    const root = el.getRootNode(), ids = el.getAttribute(attribute);
+    if (!ids || !root.getElementById) return '';
+    return clean(ids.split(/\s+/).map(id => root.getElementById(id)).filter(Boolean).map(textOf).join(' '));
+};
+const nameOf = (el, role) => {
+    const named = idText(el, 'aria-labelledby'); if (named) return named;
+    const label = clean(el.getAttribute('aria-label')); if (label) return label;
+    if (el.labels && el.labels.length) { const named = clean(Array.from(el.labels).map(textOf).join(' ')); if (named) return named; }
+    if (el.tagName === 'IMG' || el.tagName === 'AREA' || (el.tagName === 'INPUT' && el.type === 'image')) return clean(el.getAttribute('alt'));
+    if (el.tagName === 'INPUT' && ['button', 'submit', 'reset'].includes(el.type)) return clean(el.value) || el.type;
+    if (FROM_CONTENT.has(role)) { const named = textOf(el); if (named) return named; }
+    return clean(el.getAttribute('title') || el.getAttribute('placeholder'));
+};"#;
+
 /// Declares `outline(root, maxDepth, maxChars, maxOptions)`: `{lines,
 /// truncated, foreign}` for `root` (the document, or an element and its
 /// subtree). A native `<select>` combobox lists its options under it, at
 /// most `maxOptions` (its options have no box while it is closed, so the
 /// walk would skip them).
-/// Elements with a role get a ref, kept in the top window's map (the one
-/// `js::RESOLVE` reads); an element keeps its ref across outlines while it
-/// is in the page, and entries of removed elements are dropped. `foreign`
+/// Elements with a role get a ref ([`ELEMENT_HELPERS`], declared before
+/// it). `foreign`
 /// lists the refs of the iframes of another origin it could not read, so
 /// the server can find each frame and outline it there (`handler::frames`).
 const OUTLINE: &str = r#"const outline = (root, maxDepth, maxChars, maxOptions) => {
-    const refsKey = Symbol.for('browser-control-mcp.refs'), refKey = Symbol.for('browser-control-mcp.ref');
-    const countKey = Symbol.for('browser-control-mcp.ref-count');
-    const refs = window[refsKey] || (window[refsKey] = new Map());
-    for (const [ref, weak] of refs) { const known = weak.deref(); if (!known || !known.isConnected) refs.delete(ref); }
-    const refOf = el => {
-        const known = el[refKey];
-        if (known && refs.has(known) && refs.get(known).deref() === el) return known;
-        window[countKey] = (window[countKey] || 0) + 1;
-        const ref = 'e' + window[countKey];
-        el[refKey] = ref; refs.set(ref, new WeakRef(el));
-        return ref;
-    };
-    const clean = text => (text || '').replace(/\s+/g, ' ').trim();
-    const cut = (text, max) => text.length > max ? text.slice(0, max - 1) + '…' : text;
     const lines = [], foreign = [];
     let size = 0, truncated = false, pending = '', pendingDepth = 0;
     const doc = root.nodeType === 9 ? root : root.ownerDocument;
@@ -118,8 +152,6 @@ const OUTLINE: &str = r#"const outline = (root, maxDepth, maxChars, maxOptions) 
     const LEAF = new Set(['button', 'link', 'heading', 'textbox', 'searchbox', 'combobox', 'checkbox', 'radio',
         'img', 'slider', 'spinbutton', 'option', 'switch', 'tab', 'menuitem', 'menuitemcheckbox', 'menuitemradio', 'clickable',
         'progressbar', 'meter']);
-    const FROM_CONTENT = new Set(['button', 'link', 'heading', 'tab', 'menuitem', 'menuitemcheckbox', 'menuitemradio',
-        'option', 'switch', 'clickable', 'checkbox', 'radio']);
     const NAMED_BY_TEXT = new Set(['cell', 'columnheader', 'rowheader', 'gridcell']);
     const foldText = (at, depth, role) => {
         const own = lines.slice(at + 1), marker = '  '.repeat(depth + 1) + '- text: ';
@@ -131,25 +163,10 @@ const OUTLINE: &str = r#"const outline = (root, maxDepth, maxChars, maxOptions) 
         lines.splice(at, lines.length - at, line);
     };
     const INTERACTIVE = 'a[href], button, input, select, textarea, summary, [role], [onclick], [tabindex], [contenteditable]';
-    const textOf = el => clean(el.innerText !== undefined ? el.innerText : el.textContent);
-    const idText = (el, attribute) => {
-        const root = el.getRootNode(), ids = el.getAttribute(attribute);
-        if (!ids || !root.getElementById) return '';
-        return clean(ids.split(/\s+/).map(id => root.getElementById(id)).filter(Boolean).map(textOf).join(' '));
-    };
     const matches = (el, selector) => { try { return el.matches(selector); } catch (e) { return false; } };
     const invalid = el => {
         const aria = el.getAttribute('aria-invalid');
         return aria === null || aria === 'false' ? matches(el, ':user-invalid') : true;
-    };
-    const nameOf = (el, role) => {
-        const named = idText(el, 'aria-labelledby'); if (named) return named;
-        const label = clean(el.getAttribute('aria-label')); if (label) return label;
-        if (el.labels && el.labels.length) { const named = clean(Array.from(el.labels).map(textOf).join(' ')); if (named) return named; }
-        if (el.tagName === 'IMG' || el.tagName === 'AREA' || (el.tagName === 'INPUT' && el.type === 'image')) return clean(el.getAttribute('alt'));
-        if (el.tagName === 'INPUT' && ['button', 'submit', 'reset'].includes(el.type)) return clean(el.value) || el.type;
-        if (FROM_CONTENT.has(role)) { const named = textOf(el); if (named) return named; }
-        return clean(el.getAttribute('title') || el.getAttribute('placeholder'));
     };
     const details = (el, role) => {
         const out = [], flag = (on, name) => { if (on) out.push('[' + name + ']'); };
@@ -273,7 +290,7 @@ pub fn snapshot(selector: Option<&str>, depth: Option<u32>, max_chars: usize) ->
         false => SNAPSHOT_MAX_OPTIONS,
     };
     format!(
-        "(() => {{ {RESOLVE} {OUTLINE} const target = {target}; \
+        "(() => {{ {RESOLVE} {ELEMENT_HELPERS} {OUTLINE} const target = {target}; \
          const root = target === null ? document : resolve(target); \
          if (!root) return {{ status: 'missing' }}; \
          const result = outline(root, {depth}, {max_chars}, {options}); \
@@ -288,7 +305,7 @@ pub fn snapshot(selector: Option<&str>, depth: Option<u32>, max_chars: usize) ->
 /// unreadable frames, see the outline). An invalid regex throws.
 pub fn find(text: Option<&str>, regex: Option<&str>) -> String {
     format!(
-        "(() => {{ {OUTLINE} const {{ lines, foreign }} = outline(document, {MAX_DEPTH}, {FIND_MAX_CHARS}, {FIND_MAX_OPTIONS}); \
+        "(() => {{ {ELEMENT_HELPERS} {OUTLINE} const {{ lines, foreign }} = outline(document, {MAX_DEPTH}, {FIND_MAX_CHARS}, {FIND_MAX_OPTIONS}); \
          return Object.assign({}, {{ foreign }}); }})()",
         filter_call("lines", text, regex)
     )
@@ -362,7 +379,7 @@ mod tests {
         }
         // The resolver reads the very map the outline fills
         let key = "Symbol.for('browser-control-mcp.refs')";
-        assert!(RESOLVE.contains(key) && OUTLINE.contains(key));
+        assert!(RESOLVE.contains(key) && ELEMENT_HELPERS.contains(key));
         assert!(expression.contains(&format!(", {SNAPSHOT_MAX_CHARS}, {SNAPSHOT_MAX_OPTIONS});")));
         assert!(expression.contains("const target = null;"));
     }
@@ -381,7 +398,7 @@ mod tests {
         ] {
             assert!(OUTLINE.contains(needle), "{needle}");
         }
-        let from_content = OUTLINE
+        let from_content = ELEMENT_HELPERS
             .split("const FROM_CONTENT = new Set([")
             .nth(1)
             .and_then(|rest| rest.split("]);").next())
@@ -438,6 +455,23 @@ mod tests {
         assert!(
             OUTLINE.contains("flag(draggable(el), 'draggable');"),
             "{OUTLINE}"
+        );
+    }
+
+    /// ISSUE-55: an element whose text is slotted into its shadow tree
+    /// (`aria-labelledby` naming a `<span><slot></span>`, as web components
+    /// do) is named by it: `innerText` does not see slotted nodes.
+    #[test]
+    fn slotted_text_names_elements() {
+        assert!(
+            ELEMENT_HELPERS.contains("node.tagName === 'SLOT'"),
+            "{ELEMENT_HELPERS}"
+        );
+        assert!(
+            ELEMENT_HELPERS.contains(
+                "|| (el.querySelector && el.querySelector('slot') ? clean(flatText(el)) : '');"
+            ),
+            "{ELEMENT_HELPERS}"
         );
     }
 

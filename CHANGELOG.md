@@ -25,6 +25,23 @@ from a copy of its code: entries describe the differences from that release.
   or unsized images (`images`) and third-party origins (`third_parties`),
   with findings when they cross the web.dev and Lighthouse thresholds, on
   both Chrome and Firefox. (#53)
+- `audit_page` (`perf` group) audits the rendered page for accessibility
+  (images without alt text; fields, buttons and links without a name;
+  `html lang`; heading order; duplicate ids; broken `aria-labelledby` and
+  `aria-describedby`; `tabindex` above 0; targets under 24×24 px too close
+  to another; text contrast under WCAG AA), SEO (title, meta description,
+  viewport, vague link text, uncrawlable links, canonical, `noindex`) and
+  best practices (doctype and quirks mode, HTTPS, mixed content, distorted
+  images, console errors), with the same script on Chrome and Firefox and
+  no Lighthouse bundle. Each failing check lists its first 10 elements with
+  a snapshot ref, a selector, its start tag and a detail; `categories`
+  narrows it. (#55)
+
+### Fixed
+
+- `snapshot` names an element by the text slotted into its shadow tree
+  (a web component's button labelled by a `<span><slot></span>`):
+  `innerText` does not see slotted nodes, so it had no name. (#55)
 
 ## [0.10.0-beta.15] - 2026-11-02
 

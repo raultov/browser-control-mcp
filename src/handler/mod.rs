@@ -1,3 +1,4 @@
+pub(crate) mod audit;
 pub mod cdp_domains;
 pub mod chrome_instance;
 pub(crate) mod debugging;

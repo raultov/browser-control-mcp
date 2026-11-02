@@ -316,6 +316,12 @@ fn observation_tools() -> Vec<ToolEntry> {
             &[Tracing],
             crate::backend::bidi::performance::profile
         ),
+        entry!(
+            crate::handler::audit::AuditPageTool,
+            PERF,
+            &[Evaluate, ConsoleLogs],
+            ff::audit_page
+        ),
         entry!(custom::send_cdp_command::SendCdpCommandTool, RAW, &[RawCdp]),
         entry!(
             custom::get_custom_events::GetCustomEventsTool,
@@ -981,6 +987,7 @@ The page reacted (the DOM changed) and settled after ",
             "get_custom_events",
             "get_performance_metrics",
             "profile_page_performance",
+            "audit_page",
             "emulate",
             "send_bidi_command",
             "send_rdp_request",
@@ -1098,7 +1105,7 @@ The page reacted (the DOM changed) and settled after ",
         handler.flags.enable_webmcp = true;
         handler.tool_groups = vec![crate::cli::ToolGroup::All];
         let listed = names(listed_tools(&handler));
-        assert_eq!(listed.len(), 54);
+        assert_eq!(listed.len(), 55);
         assert!(listed.contains("restart_browser") && listed.contains("stop_browser"));
         assert!(!listed.contains("restart_chrome") && !listed.contains("stop_chrome"));
     }

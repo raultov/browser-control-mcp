@@ -794,6 +794,41 @@ mod e2e {
         ]
     }
 
+    /// ISSUE-55: audit_page finds an image without alt text and faint text,
+    /// naming each element (the same checks on both browsers).
+    fn audit_steps(instance: &str) -> Vec<Step> {
+        let i = json!(instance);
+        let run = |expression: &str| json!({"instance_id": i, "expression": expression});
+        let build = "document.body.insertAdjacentHTML('beforeend', '<div id=\"d55\"><img id=\"i55\" src=\"data:image/gif;base64,R0lGODlhAQABAAAAACw=\" width=\"30\" height=\"30\"><p id=\"p55\" style=\"color:#bbb;background:#fff\">D55 faint</p></div>'); 1";
+        let audit = json!({"instance_id": i, "categories": ["accessibility"]});
+        vec![
+            (
+                "ISSUE-55 an image without alt and faint text",
+                "evaluate_js",
+                run(build),
+                "",
+            ),
+            (
+                "ISSUE-55 the image is named",
+                "audit_page",
+                audit.clone(),
+                "\"selector\": \"#i55\"",
+            ),
+            (
+                "ISSUE-55 the faint text is named",
+                "audit_page",
+                audit,
+                "contrast 1.92:1, needs 4.5:1 (#bbbbbb on #ffffff",
+            ),
+            (
+                "ISSUE-55 remove them",
+                "evaluate_js",
+                run("document.getElementById('d55').remove(); 1"),
+                "",
+            ),
+        ]
+    }
+
     /// ISSUE-48: a draggable element and a drop zone have refs in snapshot.
     fn drag_ref_steps(instance: &str) -> Vec<Step> {
         let i = json!(instance);
@@ -1880,6 +1915,7 @@ mod e2e {
             select_option_steps(instance),
             invalid_field_steps(instance),
             drag_ref_steps(instance),
+            audit_steps(instance),
             multiple_select_steps(instance),
             opened_tab_steps(instance),
             late_element_steps(instance),
@@ -2214,7 +2250,7 @@ mod e2e {
         // Every opt-in tool group: the suite drives them all.
         let secrets = secrets_file(browser);
         let mut mcp = Mcp::start(&["--tool-groups", "all", "--secrets", &secrets]).await;
-        mcp.list_tools(49).await;
+        mcp.list_tools(50).await;
         let all = [
             page_steps(browser, &base),
             tab_steps("e2e", &base),

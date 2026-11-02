@@ -29,7 +29,7 @@ the same stdio client through the same tasks on Chrome 156 (headless,
 Linux). Every outcome was checked in the page, not taken from the reply.
 Tokens are estimated as characters / 4 for every server. browser-control's
 tool lists and the HTTP authentication row were measured again on
-2026-11-02, after the fixes of #46 to #51.
+2026-11-02, with the changes of #46 to #55.
 
 **What each one can do**
 
@@ -48,7 +48,8 @@ tool lists and the HTTP authentication row were measured again on
 | PDF | ✓ file or inline | ✓ file | ✗ |
 | Cookies and web storage | ✓ values hidden unless asked | ✓ values shown | ✗ |
 | Secrets masked in output (`--secrets`) | ✓ | ✓ | ✗ |
-| Performance | vitals + insights (LCP breakdown, layout shifts, render-blocking, long scripts) | trace file | trace + insights, Lighthouse |
+| Performance | vitals + insights (INP, LCP breakdown and discovery, layout shifts, render-blocking, long scripts, DOM size, images, third parties); CPU and network throttling on Chrome | trace file | trace + insights; CPU and network throttling |
+| Page audit (accessibility, SEO, best practices) | ✓ `audit_page`, on Chrome and Firefox: failing elements with snapshot refs, no bundle | ✗ | Lighthouse, Chrome only: scores, failing elements with selectors, reports saved to disk |
 | Heap snapshots, CSS styles, screencast | ✗ | video, tracing | ✓ |
 | Generates Playwright test code | ✗ | ✓ | ✗ |
 | Telemetry | **none** | none found | usage statistics on by default; traced URLs sent to CrUX |
@@ -59,7 +60,7 @@ tool lists and the HTTP authentication row were measured again on
 | Task | browser-control-mcp | Playwright MCP | chrome-devtools-mcp |
 | --- | --- | --- | --- |
 | Tool list in context, default tools | 6 730 tokens | 5 330 tokens | 7 770 tokens |
-| Tool list in context, every opt-in tool on | 10 390 tokens | 12 040 tokens | not measured (optional categories) |
+| Tool list in context, every opt-in tool on | 10 880 tokens | 12 040 tokens | not measured (optional categories) |
 | Snapshot of Hacker News | **4 588 tokens** | 12 356 tokens | 6 869 tokens |
 | Snapshot of Wikipedia "Web browser" | **12 643 tokens** (cut, searchable) | 34 349 tokens | 27 656 tokens |
 | Snapshot of MDN `<input>` | **12 625 tokens** (cut, searchable) | 158 077 tokens | 76 654 tokens |
@@ -95,7 +96,7 @@ tools are off by default and listed only with `--tool-groups`:
 | `storage` | `cookies`, `web_storage` | reads and changes session tokens |
 | `files` | `upload_file`, `save_pdf` | reads and writes files of the machine |
 | `raw` | `send_cdp_command`, `send_bidi_command`, `send_rdp_request`, `get_custom_events` | anything the protocol allows |
-| `perf` | `get_performance_metrics`, `profile_page_performance` | niche |
+| `perf` | `get_performance_metrics`, `profile_page_performance`, `audit_page` | niche |
 | `emulation` | `emulate` | niche |
 | `network` | `mock_route`, `list_routes`, `remove_route`, `set_offline` | changes what the page receives |
 
@@ -152,6 +153,7 @@ see the note.
 | `get_custom_events` | ✓ | partial | `raw` group; `{events, total, truncated}`, the newest `limit` events; `clear` removes the returned ones; params over 64 000 characters of JSON are replaced by `{truncated, characters}`; Firefox: events of the modules subscribed with `send_bidi_command` |
 | `get_performance_metrics` | ✓ | partial | `perf` group; Firefox: `Nodes`, `Frames`, `Resources`, `TransferSize` from the Web Performance APIs (no Performance domain), plus a note |
 | `profile_page_performance` | ✓ | partial | `perf` group; `insights: true` adds what explains the numbers, read with the Web Performance APIs and the DOM (same JavaScript on both): the document's TTFB, server time and compression, the LCP element, its breakdown (TTFB, load delay, load, render delay) and image discovery (`lazy_loaded`, `fetch_priority`), Interaction to Next Paint (`inp`: duration, event, target and input/processing/presentation breakdown), layout-shift culprits, render-blocking requests, the slowest requests, the scripts of long animation frames, DOM size (`nodes`, `max_depth`, `widest_element`, `max_children`), oversized or unsized images, and third-party origins by duration and bytes (at most 5 each), plus `findings` from the web.dev and Lighthouse thresholds; Firefox: FCP, LCP, DCL and Load; no trace, so `total_blocking_time_ms` and `top_long_tasks` are `null`, and its insights have no layout shifts, render-blocking requests or long frames (`null`, with notes) |
+| `audit_page` | ✓ | ✓ | `perf` group; accessibility (images without alt, fields, buttons and links without a name, `html lang`, heading order, duplicate ids, broken `aria-labelledby`/`aria-describedby`, `tabindex` > 0, targets under 24×24 px too close to another, text contrast under WCAG AA), SEO (title, meta description, viewport, vague link text, uncrawlable links, canonical, `noindex`) and best practices (doctype and quirks mode, HTTPS, mixed content, distorted images, console errors); the same script on both browsers; each failing check lists its first 10 elements with a snapshot ref, a selector, its start tag and a detail (the contrast ratio, the size...), then the ids that passed or did not apply; `categories` narrows it; not checked: text over background images or gradients, iframes, closed shadow roots, response headers |
 | `set_breakpoint` | ✓ | partial | Firefox: by URL only (no `script_id` / `script_hash`) |
 | `remove_breakpoint` | ✓ | ✓ | |
 | `resume` | ✓ | ✓ | |

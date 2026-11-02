@@ -7,6 +7,7 @@ use super::page;
 use super::session::FirefoxSession;
 use crate::backend::BackendError;
 use crate::backend::BrowserKind;
+use crate::handler::audit::AuditPageTool;
 use crate::handler::cdp_domains::custom::get_custom_events::GetCustomEventsTool;
 use crate::handler::cdp_domains::input::click_element::{
     ClickElementTool, ClickOptions, PointCheck, clicked_reply, ready_point,
@@ -789,6 +790,16 @@ pub(crate) async fn console_logs(
     // Page errors and CSS warnings come from the tab's watcher.
     super::debugger::watch_session_tab(&session, &id, &tab).await;
     Ok(args.report(&tab.log, session.lag_note()).await)
+}
+
+/// `audit_page`: the shared checks in the page, and the tab's console
+/// (its page errors come from the tab's watcher, as for `get_console_logs`).
+pub(crate) async fn audit_page(params: CallToolRequestParams, handler: &McpHandler) -> ToolResult {
+    let args: AuditPageTool = parse_args(params)?;
+    let (session, id, tab) = target(handler, &ids(&args.instance_id, &args.tab_id)).await?;
+    super::debugger::watch_session_tab(&session, &id, &tab).await;
+    let found = page::run_snippet(&tab.tab, &args.snippet()).await?;
+    Ok(args.report(found, &tab.log).await)
 }
 
 /// `get_network_logs`: REST requests (bodies through `network.getData`)
@@ -2294,6 +2305,7 @@ mod tests {
         for _ in 0..100 {
             let result = match name {
                 "get_network_logs" => network_logs(call(name, args.clone()), handler).await,
+                "audit_page" => audit_page(call(name, args.clone()), handler).await,
                 _ => console_logs(call(name, args.clone()), handler).await,
             };
             reply = ts::text(&result.unwrap());
@@ -2340,6 +2352,43 @@ mod tests {
         let reply = until_contains(&handler, "get_network_logs", args, "\n41 sent").await;
         assert!(reply.contains("\n41 sent ws://127.0.0.1:8808/"), "{reply}");
         ts::stop(&handler).await;
+    }
+
+    /// ISSUE-55 (Firefox): the shared checks run in the tab's page, and
+    /// its console errors fail best practices.
+    #[tokio::test]
+    async fn audit_runs_the_checks_in_the_page() {
+        // Given a page whose checks find nothing, and a script error
+        let mock = MockFirefox::start(false).await.unwrap();
+        let found = json!({"type": "object", "value": [
+            ["url", {"type": "string", "value": "http://a/"}],
+            ["notes", {"type": "array", "value": []}],
+            ["audits", {"type": "array", "value": []}]]});
+        mock.bidi()
+            .respond_with("script.evaluate", move |_| evaluate_success(found.clone()));
+        let handler = ts::handler(&mock);
+        handler
+            .firefox(None)
+            .await
+            .unwrap()
+            .browser()
+            .await
+            .unwrap();
+        let error = json!({"type": "javascript", "level": "error", "text": "boom",
+            "timestamp": 1_791_822_789_737_u64, "source": {"context": "ctx-0", "realm": "r"}});
+        mock.bidi().emit("log.entryAdded", error);
+        // When the page is audited, Then the error fails best practices
+        let reply = until_contains(&handler, "audit_page", json!({}), "boom").await;
+        assert!(
+            reply.starts_with("Audit of http://a/: 1 failing check(s)"),
+            "{reply}"
+        );
+        let sent = mock.bidi().commands_named("script.evaluate");
+        let expression = sent[0].params["expression"].as_str().unwrap();
+        assert!(
+            expression.contains("const audit = (wanted, maxElements)"),
+            "{expression}"
+        );
     }
 
     /// FWS-03 / FWS-04: page errors reach the console with honest labels,

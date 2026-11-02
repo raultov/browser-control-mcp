@@ -81,7 +81,8 @@ pub enum ToolGroup {
     Files,
     /// The raw protocol tools and `get_custom_events`: anything goes.
     Raw,
-    /// `get_performance_metrics` and `profile_page_performance`.
+    /// `get_performance_metrics`, `profile_page_performance` and
+    /// `audit_page`.
     Perf,
     /// `emulate`.
     Emulation,
