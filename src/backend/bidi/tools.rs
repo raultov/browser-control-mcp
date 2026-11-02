@@ -906,6 +906,9 @@ pub(crate) async fn open_tab(params: CallToolRequestParams, handler: &McpHandler
             return Err(CallToolError::from_message(e));
         }
     };
+    // The browser shows the new tab: it becomes the tab the tools act on.
+    write(&session.tabs).active = Some(tab_id.clone());
+    super::session::front_active(&session.tabs).await;
     // Watched before it loads anything, so the first WebSocket frames count.
     if let Ok((_, entry)) = session.tab(Some(&tab_id)).await {
         super::debugger::watch_session_tab(&session, &tab_id, &entry).await;
@@ -943,6 +946,7 @@ pub(crate) async fn close_tab(params: CallToolRequestParams, handler: &McpHandle
         .map_err(|e| super::protocol_error("browsingContext.close", &e))?;
     super::debugger::detach_tab(&session, &id).await;
     write(&session.tabs).remove(&id);
+    super::session::front_active(&session.tabs).await;
     let active = read(&session.tabs).active.clone();
     Ok(text(
         json!({"closed_tab_id": id, "active_tab_id": active}).to_string(),
@@ -2474,6 +2478,94 @@ mod tests {
         navigate(call("navigate", args), &handler).await.unwrap();
         let sent = mock.bidi().commands_named("browsingContext.navigate");
         assert_eq!(sent.last().unwrap().params["context"], context.as_str());
+        ts::stop(&handler).await;
+    }
+
+    /// The contexts `browsingContext.activate` was sent for, in order.
+    fn activated(mock: &MockFirefox) -> Vec<String> {
+        mock.bidi()
+            .commands_named("browsingContext.activate")
+            .iter()
+            .filter_map(|c| c.params["context"].as_str().map(str::to_string))
+            .collect()
+    }
+
+    /// The native context of tab `id`.
+    async fn context_of(handler: &McpHandler, id: &str) -> String {
+        let session = handler.firefox(None).await.unwrap();
+        let (_, tab) = session.tab(Some(id)).await.unwrap();
+        tab.tab.context_id().to_string()
+    }
+
+    /// ISSUE-68 (Firefox): open_tab makes the new tab the active one, in
+    /// front, as the browser shows it.
+    #[tokio::test]
+    async fn opened_tab_becomes_active_in_front() {
+        // Given a Firefox instance with tab-1
+        let mock = MockFirefox::start(false).await.unwrap();
+        let handler = ts::handler(&mock);
+        // When open_tab creates a page
+        let reply = open_tab(call("open_tab", json!({})), &handler).await;
+        let opened = ts::json_of(&reply.unwrap());
+        // Then it is the active tab and in front
+        let session = handler.firefox(None).await.unwrap();
+        assert_eq!(read(&session.tabs).active.as_deref(), Some("tab-2"));
+        let context = opened["target_id"].as_str().unwrap().to_string();
+        assert_eq!(activated(&mock).last(), Some(&context));
+        ts::stop(&handler).await;
+    }
+
+    /// ISSUE-68 (Firefox): closing the active tab brings the next active
+    /// one to the front, so its page is not left hidden.
+    #[tokio::test]
+    async fn closing_the_active_tab_fronts_the_next_one() {
+        // Given tab-1 and the active tab-2
+        let mock = MockFirefox::start(false).await.unwrap();
+        let handler = ts::handler(&mock);
+        open_tab(call("open_tab", json!({})), &handler)
+            .await
+            .unwrap();
+        let args = json!({"tab_id": "tab-2"});
+        switch_tab(call("switch_tab", args.clone()), &handler)
+            .await
+            .unwrap();
+        // When the active tab is closed
+        close_tab(call("close_tab", args), &handler).await.unwrap();
+        // Then tab-1 is active and in front
+        let first = context_of(&handler, "tab-1").await;
+        let session = handler.firefox(None).await.unwrap();
+        assert_eq!(read(&session.tabs).active.as_deref(), Some("tab-1"));
+        assert_eq!(activated(&mock).last(), Some(&first));
+        ts::stop(&handler).await;
+    }
+
+    /// ISSUE-68 (Firefox): when the page or the user closes the active tab,
+    /// the next active one is brought to the front.
+    #[tokio::test]
+    async fn a_tab_closed_by_the_page_fronts_the_next_one() {
+        // Given tab-1 and the active tab-2
+        let mock = MockFirefox::start(false).await.unwrap();
+        let handler = ts::handler(&mock);
+        open_tab(call("open_tab", json!({})), &handler)
+            .await
+            .unwrap();
+        let (first, second) = (
+            context_of(&handler, "tab-1").await,
+            context_of(&handler, "tab-2").await,
+        );
+        // When Firefox reports tab-2's context destroyed
+        mock.bidi().emit(
+            "browsingContext.contextDestroyed",
+            json!({"context": second, "url": "about:blank", "children": [], "userContext": "default"}),
+        );
+        // Then tab-1 is brought to the front
+        for _ in 0..100 {
+            if activated(&mock).last() == Some(&first) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert_eq!(activated(&mock).last(), Some(&first));
         ts::stop(&handler).await;
     }
 

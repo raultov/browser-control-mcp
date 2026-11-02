@@ -10,6 +10,13 @@ from a copy of its code: entries describe the differences from that release.
 
 ## [Unreleased]
 
+### Changed
+
+- `open_tab` makes the new tab the active one (the tools that omit `tab_id`
+  act on it), as the browser shows it, Playwright MCP's `browser_tabs` and
+  chrome-devtools-mcp's `new_page` do. Before, the previous tab stayed
+  active while the browser showed the new one. (#68)
+
 ### Fixed
 
 - Firefox: `profile_page_performance` with `action: "reload"` and
@@ -25,6 +32,16 @@ from a copy of its code: entries describe the differences from that release.
   later were missing (`Total cached scripts: 1` on a page with five). Each
   thread is now asked for its `sources`, merged with the announced ones;
   pause locations and breakable columns use the same list. (#62)
+- The browser's front tab is kept on the active tab. After a click that
+  opened a tab (`target=_blank`, a popup, `window.open`), after
+  `close_tab` and after a page or the user closed a tab, the active tab was
+  left in the background: its page was `hidden`, `requestAnimationFrame`
+  stopped (Chrome) or ran at about 1 s (Firefox), and on Chrome an element
+  screenshot hung 10 s before a raw CDP timeout. On Chrome,
+  `capture_screenshot` of a tab still in the background now fails at once,
+  naming `switch_tab`. On Chrome, a click whose reply came before the new
+  tab was registered no longer misses the "opened tab" note: it waits (at
+  most 2 s) for the pages Chrome announced. (#68)
 
 ## [0.11.0-beta.16] - 2026-11-02
 

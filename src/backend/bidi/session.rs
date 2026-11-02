@@ -46,6 +46,24 @@ pub(crate) struct FirefoxTab {
 }
 
 /// Tabs by MCP id, plus the context tree used to route iframe events.
+/// Brings the active tab to the browser's front. Firefox shows one tab per
+/// window: the others are hidden (`visibilityState`) and throttle
+/// `requestAnimationFrame` and timers to about 1 s. The browser picks its
+/// own front tab when a page opens or closes one, so it is set back to the
+/// tab the tools act on. Best effort and bounded: a failure is logged.
+pub(crate) async fn front_active(tabs: &RwLock<FirefoxTabs>) {
+    let Some((tab_id, tab)) = read(tabs).active_tab() else {
+        return;
+    };
+    let activated = tokio::time::timeout(FRONT_TIMEOUT, tab.activate()).await;
+    if !matches!(activated, Ok(Ok(()))) {
+        tracing::debug!(tab_id, "could not bring the active tab to the front");
+    }
+}
+
+/// How long [`front_active`] waits for Firefox.
+const FRONT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
 #[derive(Default)]
 pub(crate) struct FirefoxTabs {
     pub(crate) tabs: BTreeMap<String, FirefoxTab>,
@@ -138,6 +156,12 @@ impl FirefoxTabs {
             .iter()
             .find(|(_, t)| t.tab.context_id() == context)
             .map(|(id, _)| id.clone())
+    }
+
+    /// The active tab's handle, to bring it to the front.
+    fn active_tab(&self) -> Option<(String, Tab)> {
+        let id = self.active.clone()?;
+        self.tabs.get(&id).map(|t| (id, t.tab.clone()))
     }
 
     /// Forgets a tab; the active tab falls back to another one.

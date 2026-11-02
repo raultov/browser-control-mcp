@@ -543,6 +543,21 @@ async fn tabs_now(handler: &McpHandler, browser: BrowserKind, ids: &TargetArgs) 
     }
 }
 
+/// Waits for the pages Chrome announced to the instance `ids` addresses
+/// to be registered (see [`REGISTRATION_WAIT`]).
+async fn chrome_registrations(handler: &McpHandler, ids: &TargetArgs) {
+    let Ok(session) = handler.session(ids.instance_id.clone()).await else {
+        return;
+    };
+    let tabs = &session.tabs;
+    crate::handler::chrome_instance::tab_lifecycle::registrations_done(tabs, REGISTRATION_WAIT)
+        .await;
+}
+
+/// How long an action waits for Chrome's announced pages to be registered
+/// before naming the tabs it opened.
+const REGISTRATION_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// The tabs the action opened (those not in `before`): `(id, URL)`, the
 /// URL of a Chrome tab asked of the browser (one round trip, only when a
 /// tab opened).
@@ -552,6 +567,9 @@ async fn tabs_opened(
     ids: &TargetArgs,
     before: &HashSet<String>,
 ) -> Vec<(String, String)> {
+    if browser == BrowserKind::Chrome {
+        chrome_registrations(handler, ids).await;
+    }
     let opened = opened_tabs(before, tabs_now(handler, browser, ids).await);
     let current = match opened.iter().any(|tab| tab.target.is_some()) {
         true => chrome_targets(handler, ids).await,
@@ -587,6 +605,25 @@ fn opened_tabs(before: &HashSet<String>, now: Vec<KnownTab>) -> Vec<KnownTab> {
     now.into_iter()
         .filter(|tab| !before.contains(&tab.id))
         .collect()
+}
+
+/// Brings the active tab of the instance `ids` address back to the front
+/// (ISSUE-68), after the browser showed a tab an action opened.
+async fn front_active(handler: &McpHandler, browser: BrowserKind, ids: &TargetArgs) {
+    match browser {
+        BrowserKind::Chrome => {
+            let Ok(session) = handler.session(ids.instance_id.clone()).await else {
+                return;
+            };
+            crate::handler::chrome_instance::tab_lifecycle::front_active(&session.tabs).await;
+        }
+        BrowserKind::Firefox => {
+            let Ok(session) = handler.firefox(ids.instance_id.as_deref()).await else {
+                return;
+            };
+            crate::backend::bidi::session::front_active(&session.tabs).await;
+        }
+    }
 }
 
 /// The sentence a reply adds for the tabs an action opened: nothing told
@@ -658,6 +695,10 @@ async fn settled(
         .flatten()
         .and_then(|reaction| reaction.note());
     let opened = tabs_opened(handler, before.browser, &before.ids, &before.tabs).await;
+    if !opened.is_empty() {
+        // The browser shows the new tab; the agent stays on its tab.
+        front_active(handler, before.browser, &before.ids).await;
+    }
     let opened = opened_note(&opened);
     let first_text = result.content.iter_mut().find_map(|block| match block {
         rust_mcp_sdk::schema::ContentBlock::TextContent(text) => Some(text),

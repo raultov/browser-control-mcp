@@ -6,7 +6,7 @@ use rust_mcp_sdk::{
 
 #[macros::mcp_tool(
     name = "close_tab",
-    description = "Closes a tab; another tab becomes active. Returns {tab_id, active_tab_id}."
+    description = "Closes a tab; another tab becomes active and is brought to the front. Returns {closed_tab_id, active_tab_id}."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct CloseTabTool {
@@ -58,9 +58,7 @@ impl CloseTabTool {
         browser_client.close_tab(&target_id).await.map_err(|e| {
             CallToolError::from_message(format!("Failed to close tab on browser: {}", e))
         })?;
-        crate::util::sync::write(&session.tabs).remove_tab(&args.tab_id);
-
-        let new_active = crate::util::sync::read(&session.tabs).active_tab_id.clone();
+        let new_active = super::tab_lifecycle::forget_tab(&session.tabs, &args.tab_id).await;
 
         Ok(CallToolResult::text_content(vec![
             serde_json::json!({

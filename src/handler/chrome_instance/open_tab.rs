@@ -6,7 +6,7 @@ use rust_mcp_sdk::{
 
 #[macros::mcp_tool(
     name = "open_tab",
-    description = "Opens a tab (launching the instance if needed) and waits for 'url' to load. Returns {tab_id, target_id, url, label}; a network error fails naming the tab, which stays open."
+    description = "Opens a tab (launching the instance if needed), makes it the active tab in front, and waits for 'url' to load. Returns {tab_id, target_id, url, label}; a network error fails naming the tab, which stays open."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct OpenTabTool {
@@ -123,6 +123,10 @@ impl OpenTabTool {
         drop(session.get_or_connect().await?);
 
         let (tab_id, target_id) = create_tab(&session, args.label.clone(), &url).await?;
+        // The browser shows the new tab: it becomes the tab the tools act on.
+        super::tab_lifecycle::make_active(&session.tabs, &tab_id)
+            .await
+            .map_err(CallToolError::from_message)?;
         let url = match deferred_navigation(&url) {
             Some(url) => open_url(&session, &tab_id, url).await?,
             None => url,

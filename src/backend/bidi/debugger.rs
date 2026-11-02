@@ -910,7 +910,7 @@ mod tests {
                 .await
                 .unwrap();
         }
-        // Then each tab was attached to its own descriptor, nothing activated
+        // Then each tab was attached to its own descriptor, nothing else activated
         assert_eq!(
             watched_descriptors(rdp),
             [
@@ -925,7 +925,8 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(watched_descriptors(rdp).len(), 3);
-        assert_eq!(mock.bidi().count("browsingContext.activate"), 0);
+        // (one activation per open_tab, ISSUE-68; none from the debugger)
+        assert_eq!(mock.bidi().count("browsingContext.activate"), 2);
         ts::stop(&handler).await;
     }
 
@@ -948,7 +949,8 @@ mod tests {
         // Then it fails, only tab-1 was attached and nothing was activated
         assert!(error.contains("debugger does not know this tab"), "{error}");
         assert_eq!(watched_descriptors(rdp).len(), 1);
-        assert_eq!(mock.bidi().count("browsingContext.activate"), 0);
+        // (open_tab's own activation, ISSUE-68; none from the debugger)
+        assert_eq!(mock.bidi().count("browsingContext.activate"), 1);
         ts::stop(&handler).await;
     }
 

@@ -76,11 +76,7 @@ pub(crate) async fn route(event: &WsResponse, client: &BrowserClient, state: &Pu
     };
     match method {
         "browsingContext.contextCreated" => on_context_created(params, client, state).await,
-        "browsingContext.contextDestroyed" => {
-            if let Some(context) = str_field(params, "context") {
-                write(&state.tabs).remove_context(context);
-            }
-        }
+        "browsingContext.contextDestroyed" => on_context_destroyed(params, state).await,
         "browsingContext.navigationStarted"
         | "browsingContext.navigationCommitted"
         | "browsingContext.load" => on_navigation(method, params, state).await,
@@ -367,6 +363,22 @@ pub(crate) fn on_network(method: &str, params: &Value, network: &mut crate::hand
         entry.response_status = response.get("status").and_then(Value::as_i64);
         entry.response_status_text = opt_string(response, "statusText");
         entry.response_headers = headers(response.get("headers"));
+    }
+}
+
+/// Forgets a destroyed context; when it was a tab, the browser picked its
+/// own front tab, so the active one is brought back to the front.
+async fn on_context_destroyed(params: &Value, state: &PumpState) {
+    let Some(context) = str_field(params, "context") else {
+        return;
+    };
+    let tab = read(&state.tabs)
+        .tabs
+        .values()
+        .any(|t| t.tab.context_id() == context);
+    write(&state.tabs).remove_context(context);
+    if tab {
+        super::session::front_active(&state.tabs).await;
     }
 }
 

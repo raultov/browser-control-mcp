@@ -25,6 +25,21 @@ pub struct CaptureScreenshotTool {
     pub selector: Option<String>,
 }
 
+/// Why a page in the background is not captured.
+const BACKGROUND: &str = "The tab is in the background (its page is hidden) and Chrome draws no frames for it, so nothing was captured: bring it to the front with switch_tab first.";
+
+/// Whether the page is hidden (its tab in the background, or the window
+/// minimized). Read without awaiting a promise, so a page paused in the
+/// debugger still answers; a page that does not answer counts as shown.
+async fn hidden(target: &crate::handler::cdp_domains::cdp_target::CdpTarget) -> bool {
+    let params = json!({"expression": "document.visibilityState", "returnByValue": true});
+    let reply = target.send_raw_command("Runtime.evaluate", params).await;
+    reply
+        .ok()
+        .and_then(|r| r.result)
+        .is_some_and(|r| r["result"]["value"] == "hidden")
+}
+
 impl CaptureScreenshotTool {
     pub async fn handle(
         params: CallToolRequestParams,
@@ -36,6 +51,7 @@ impl CaptureScreenshotTool {
             crate::handler::resolve_target(handler, args.instance_id.clone(), args.tab_id.clone())
                 .await?;
         let format = image_format(args.format.as_deref())?;
+        args.ensure_drawn(handler, &target).await?;
         let mut command_params = json!({"format": format, "fromSurface": true});
         if let (Some(q), Some(map)) = (args.quality, command_params.as_object_mut()) {
             map.insert("quality".to_string(), json!(q));
@@ -74,6 +90,29 @@ impl CaptureScreenshotTool {
 }
 
 impl CaptureScreenshotTool {
+    /// Chrome draws no frame of a page in the background (`hidden`): a
+    /// capture of it waits for the 10 s timeout. The active tab is brought
+    /// back to the front (the browser may show another one); a page still
+    /// hidden is refused at once, naming switch_tab.
+    async fn ensure_drawn(
+        &self,
+        handler: &McpHandler,
+        target: &crate::handler::cdp_domains::cdp_target::CdpTarget,
+    ) -> Result<(), CallToolError> {
+        if !hidden(target).await {
+            return Ok(());
+        }
+        let session = handler.session(self.instance_id.clone()).await?;
+        let active = crate::util::sync::read(&session.tabs).active_tab_id.clone();
+        if self.tab_id.is_none() || self.tab_id == active {
+            crate::handler::chrome_instance::tab_lifecycle::front_active(&session.tabs).await;
+            if !hidden(target).await {
+                return Ok(());
+            }
+        }
+        Err(CallToolError::from_message(BACKGROUND))
+    }
+
     /// Refuses an element inside a frame of another origin: its box is
     /// measured in the frame, not in the page the capture is taken of.
     pub(crate) fn check_frame(&self) -> Result<(), CallToolError> {
@@ -266,6 +305,30 @@ mod tests {
         // In the mock server, if the result is not exactly right, we might get an error because the mock server
         // doesn't return the mocked screenshot data. We'll update the mock server to return valid data.
         assert!(result.is_ok(), "Handle should succeed: {:?}", result.err());
+    }
+
+    /// ISSUE-68 (Chrome): a tab whose page stays hidden (in the background)
+    /// is not captured: Chrome draws no frame of it, so the capture would
+    /// wait for the 10 s timeout. The reply says to bring it to the front.
+    #[tokio::test]
+    async fn a_hidden_page_is_refused_at_once() {
+        use crate::handler::cdp_domains::tests::{call, mock_handler, spawn_recording_mock};
+        // Given a page that stays hidden
+        let mock = spawn_recording_mock().await;
+        mock.respond_with(
+            "Runtime.evaluate",
+            |_| json!({"result": {"result": {"type": "string", "value": "hidden"}}}),
+        );
+        let handler = mock_handler(mock.http_port);
+        // When it is captured
+        let error = CaptureScreenshotTool::handle(call("capture_screenshot", json!({})), &handler)
+            .await
+            .unwrap_err()
+            .to_string();
+        // Then it fails at once naming switch_tab, and nothing is captured
+        assert!(error.contains("in the background"), "{error}");
+        assert!(error.contains("switch_tab"), "{error}");
+        assert!(mock.commands_named("Page.captureScreenshot").is_empty());
     }
 
     /// AUD-IN-22: a full-page capture of a 30 000 px page is cut to

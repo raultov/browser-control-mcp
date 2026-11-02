@@ -410,12 +410,45 @@ mod e2e {
                 "\"label\":\"t\"",
             ),
             (
+                "ISSUE-68 open_tab made it active, in front",
+                "evaluate_js",
+                json!({"instance_id": i, "expression": "document.visibilityState"}),
+                "\"visible\"",
+            ),
+            (
                 "switch_tab",
                 "switch_tab",
                 json!({"instance_id": i, "tab_id": "$TAB"}),
                 "$TAB",
             ),
             ("wait for the page", "sleep", json!({}), ""),
+        ]
+    }
+
+    /// ISSUE-68: after open_tab and close_tab, the active tab is the one
+    /// the browser shows (its page visible).
+    fn foreground_steps(instance: &str) -> Vec<Step> {
+        let i = json!(instance);
+        let visible = json!({"instance_id": i, "expression": "document.visibilityState"});
+        vec![
+            (
+                "ISSUE-68 open a tab to close",
+                "open_tab",
+                json!({"instance_id": i, "label": "closing68"}),
+                "tab_id",
+            ),
+            (
+                "ISSUE-68 close the active tab",
+                "close_tab",
+                json!({"instance_id": i, "tab_id": "$TAB"}),
+                "active_tab_id",
+            ),
+            (
+                "ISSUE-68 the next active tab is in front",
+                "evaluate_js",
+                visible,
+                "\"visible\"",
+            ),
         ]
     }
 
@@ -738,9 +771,21 @@ mod e2e {
                 json!({"instance_id": i, "selector": "#blank41"}),
                 "The action opened tab tab-",
             ),
+            (
+                "ISSUE-68 the opener stays in front",
+                "evaluate_js",
+                json!({"instance_id": i, "expression": "document.visibilityState"}),
+                "\"visible\"",
+            ),
             // (it closes itself 2 s after loading, once the click answered)
             ("ISSUE-41 let it close", "sleep", json!({}), ""),
             ("ISSUE-41 let it close, still", "sleep", json!({}), ""),
+            (
+                "ISSUE-68 the opener is in front once it closed",
+                "evaluate_js",
+                json!({"instance_id": i, "expression": "document.visibilityState"}),
+                "\"visible\"",
+            ),
             (
                 "ISSUE-41 remove the link",
                 "evaluate_js",
@@ -2316,6 +2361,7 @@ mod e2e {
         let all = [
             page_steps(browser, &base),
             tab_steps("e2e", &base),
+            foreground_steps("e2e"),
             runtime_steps("e2e"),
             dialog_and_wait_steps("e2e"),
             pierce_steps("e2e"),

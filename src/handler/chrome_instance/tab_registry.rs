@@ -73,6 +73,10 @@ pub(crate) struct TabRegistry {
     pub(crate) active_tab_id: Option<TabId>,
     pub(crate) max_tabs: usize,
     pub(crate) counter: usize,
+    /// Pages Chrome announced that the lifecycle listener is still
+    /// attaching and registering: an action that opened a tab waits for
+    /// them before naming the tabs it opened.
+    pub(crate) opening: usize,
     /// Tabs in the order they were last made active (most recent last), so
     /// closing the active tab falls back to the previous one.
     recent: Vec<TabId>,
@@ -85,6 +89,7 @@ impl TabRegistry {
             active_tab_id: None,
             max_tabs,
             counter: 1,
+            opening: 0,
             recent: Vec::new(),
         }
     }
