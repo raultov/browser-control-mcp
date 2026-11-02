@@ -1,3 +1,4 @@
+pub(crate) mod coverage;
 pub mod profile_page_performance;
 
 use cdp_browser_lite::WsResponse;

@@ -1,3 +1,4 @@
+use super::coverage;
 use crate::handler::{McpHandler, insights};
 use rust_mcp_sdk::{
     macros,
@@ -9,7 +10,7 @@ use tokio::sync::mpsc;
 
 #[macros::mcp_tool(
     name = "profile_page_performance",
-    description = "Traces the page for duration_ms and returns FCP, LCP, DCL, Load, total blocking time and the top 5 long tasks; 'action': reload with disable_cache measures a cold load; 'insights': true adds what explains them (LCP breakdown and discovery, INP, layout shifts, render-blocking and slowest requests, long scripts, DOM size, oversized/unsized images, third-party weight, findings). On Firefox: partial, no trace (vitals and insights from the Web Performance APIs and DOM; blocking time, long tasks, layout shifts, render-blocking requests and long scripts are null, with notes)."
+    description = "Traces the page for duration_ms and returns FCP, LCP, DCL, Load, total blocking time and the top 5 long tasks; 'action': reload with disable_cache measures a cold load; 'insights': true adds what explains them (LCP breakdown and discovery, INP, layout shifts, render-blocking and slowest requests, long scripts, DOM size, oversized/unsized images, third-party weight, findings), and with 'reload' on Chrome the JavaScript and CSS each file left unused. On Firefox: partial, no trace (vitals and insights from the Web Performance APIs and DOM; blocking time, long tasks, layout shifts, render-blocking requests, long scripts and unused code are null, with notes)."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct ProfilePagePerformanceTool {
@@ -29,7 +30,7 @@ pub struct ProfilePagePerformanceTool {
     #[serde(default)]
     pub disable_cache: Option<bool>,
 
-    /// Add what explains the numbers (LCP element, breakdown and discovery, INP, layout shifts, render-blocking and slowest requests, scripts of long frames, DOM size, oversized/unsized images, third-party origins, findings). Default: false.
+    /// Add what explains the numbers (LCP element, breakdown and discovery, INP, layout shifts, render-blocking and slowest requests, scripts of long frames, DOM size, oversized/unsized images, third-party origins, findings; with action 'reload' on Chrome, the unused JavaScript and CSS of the load). Default: false.
     #[serde(default)]
     pub insights: Option<bool>,
 }
@@ -79,11 +80,27 @@ impl ProfilePagePerformanceTool {
         // where the tracing listener pumps Tracing.tracingComplete for that tab.
         let tracing_state = session.tracing_state(args.tab_id.clone())?;
         let duration = args.duration_ms.unwrap_or(3000).clamp(500, 15000);
-        let raw_json_data = traced(&target, &tracing_state, &args, duration)
-            .await
-            .map_err(CallToolError::from_message)?;
+        let with_insights = args.insights.unwrap_or(false);
+        // Coverage spans the reload; it is stopped whatever the trace does.
+        let recording = match with_insights && args.reloads() {
+            true => Some(coverage::start(&target).await),
+            false => None,
+        };
+        let raw_json_data = traced(&target, &tracing_state, &args, duration).await;
+        let unused = match recording {
+            Some(Ok(recording)) => recording.finish(&target).await,
+            Some(Err(why)) => Err(why),
+            None => Err(coverage::NEEDS_RELOAD.to_string()),
+        };
+        let raw_json_data = raw_json_data.map_err(CallToolError::from_message)?;
         let summary = Self::analyze_trace(&raw_json_data, duration);
-        reply(&target, &summary, args.insights.unwrap_or(false)).await
+        let insights = with_insights.then_some(unused);
+        reply(&target, &summary, insights).await
+    }
+
+    /// Whether the page is reloaded while profiling.
+    pub(crate) fn reloads(&self) -> bool {
+        self.action.as_deref() == Some("reload")
     }
 
     fn analyze_trace(raw_json: &str, duration_ms: u64) -> PerformanceSummary {
@@ -143,7 +160,7 @@ async fn traced(
     }
     let (tx, mut rx) = mpsc::channel(1);
     tracing_state.lock().await.completion_channel = Some(tx);
-    let reload = args.action.as_deref() == Some("reload");
+    let reload = args.reloads();
     let recorded = record(target, &mut rx, (duration, reload, disable_cache))
         .await
         .map_err(|e| e.to_string());
@@ -158,16 +175,19 @@ async fn traced(
     recorded.map(|_| raw_json_data)
 }
 
-/// The reply: the summary, with the page's insights when asked for.
+/// The reply: the summary, with the page's insights and the reload's
+/// unused code (or why there is none) when insights were asked for.
 async fn reply(
     target: &Target,
     summary: &PerformanceSummary,
-    with_insights: bool,
+    unused: Option<Result<serde_json::Value, String>>,
 ) -> Result<CallToolResult, CallToolError> {
     let mut result_json = serde_json::to_value(summary).unwrap_or_default();
-    if with_insights {
+    if let Some(unused) = unused {
         let found = crate::handler::snippet_value(target, insights::SNIPPET).await?;
-        result_json["insights"] = insights::annotate(found);
+        let mut annotated = insights::annotate(found);
+        insights::add_unused_code(&mut annotated, unused);
+        result_json["insights"] = annotated;
     }
     let text = serde_json::to_string_pretty(&result_json).unwrap_or_default();
     Ok(CallToolResult::text_content(vec![text.into()]))

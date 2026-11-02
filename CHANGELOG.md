@@ -42,6 +42,13 @@ from a copy of its code: entries describe the differences from that release.
   `Memory.getDOMCounters`, so reads after repeating an action show what it
   leaked; its metrics are sorted by name. On Firefox, where WebDriver BiDi
   cannot force a collection, a note says so. (#57)
+- `profile_page_performance` with `insights: true` and `action: "reload"`
+  adds `unused_code` on Chrome: the bytes of JavaScript that never ran and
+  of CSS that matched nothing during the load (`Profiler` precise coverage
+  and `CSS` rule usage, as Lighthouse's "Reduce unused JavaScript / CSS"),
+  with the 5 files that waste most and a finding over 50 KB. Without a
+  reload, and on Firefox (no coverage over WebDriver BiDi), it is `null`
+  with a note saying why. (#54)
 
 ### Fixed
 

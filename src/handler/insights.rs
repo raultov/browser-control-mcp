@@ -161,6 +161,60 @@ pub(crate) fn annotate(mut found: Value) -> Value {
     found
 }
 
+/// Most unused bytes of JavaScript or CSS before it is a finding.
+const UNUSED_CODE_BYTES: u64 = 50_000;
+
+/// Adds `unused_code` to `insights` (Chrome's coverage of a reload, see
+/// `tracing::coverage`) with a finding when much of it went unused, or
+/// `null` and a note saying why it is missing.
+pub(crate) fn add_unused_code(insights: &mut Value, unused: Result<Value, String>) {
+    let Some(object) = insights.as_object_mut() else {
+        return;
+    };
+    let push = |object: &mut serde_json::Map<String, Value>, key: &str, text: String| {
+        let list = object.entry(key).or_insert_with(|| json!([]));
+        if let Some(list) = list.as_array_mut() {
+            list.push(json!(text));
+        }
+    };
+    let unused = match unused {
+        Ok(unused) => unused,
+        Err(why) => {
+            object.insert("unused_code".into(), Value::Null);
+            push(object, "notes", format!("unused_code is null: {why}"));
+            return;
+        }
+    };
+    let kib = |bytes: u64| (bytes as f64 / 1024.0).round();
+    for (kind, key, what) in [
+        ("js", "unused_js_bytes", "of JavaScript never ran"),
+        ("css", "unused_css_bytes", "of CSS matched nothing"),
+    ] {
+        let bytes = unused[key].as_u64().unwrap_or(0);
+        if bytes <= UNUSED_CODE_BYTES {
+            continue;
+        }
+        let first = unused["top_unused"]
+            .as_array()
+            .and_then(|rows| rows.iter().find(|r| r["kind"] == kind))
+            .map(|r| {
+                let (url, part, whole) = (
+                    r["url"].as_str().unwrap_or_default(),
+                    r["unused_bytes"].as_u64().unwrap_or(0),
+                    r["total_bytes"].as_u64().unwrap_or(0),
+                );
+                format!(" (first: {url}, {} KiB of {} KiB)", kib(part), kib(whole))
+            })
+            .unwrap_or_default();
+        push(
+            object,
+            "findings",
+            format!("{} KiB {what} during the load{first}", kib(bytes)),
+        );
+    }
+    object.insert("unused_code".into(), unused);
+}
+
 /// Why each `null` section is missing.
 fn missing_notes(found: &Value, lcp_supported: bool, inp_unsupported: bool) -> Vec<String> {
     let lcp = if lcp_supported {
@@ -342,6 +396,32 @@ mod tests {
 
     fn fixture(text: &str) -> Value {
         serde_json::from_str(text).unwrap()
+    }
+
+    /// ISSUE-54: unused code joins the insights with a finding over 50 KB
+    /// of JavaScript or CSS; without it, it is null with a note saying why.
+    #[test]
+    fn unused_code_adds_a_finding_or_a_note() {
+        let unused = json!({"unused_js_bytes": 80_000, "unused_css_bytes": 20_000, "top_unused": [
+            {"url": "http://a/app.js", "kind": "js", "total_bytes": 100_000, "unused_bytes": 80_000, "unused_percent": 80.0}]});
+        let mut insights = json!({"findings": ["LCP is slow"]});
+        add_unused_code(&mut insights, Ok(unused.clone()));
+        assert_eq!(insights["unused_code"], unused);
+        assert_eq!(
+            insights["findings"],
+            json!([
+                "LCP is slow",
+                "78 KiB of JavaScript never ran during the load (first: http://a/app.js, 78 KiB of 98 KiB)"
+            ])
+        );
+        let mut quiet = json!({});
+        add_unused_code(&mut quiet, Err("it needs action: 'reload'".into()));
+        assert_eq!(quiet["unused_code"], Value::Null);
+        assert_eq!(
+            quiet["notes"],
+            json!(["unused_code is null: it needs action: 'reload'"])
+        );
+        assert!(quiet.get("findings").is_none(), "{quiet}");
     }
 
     /// ISSUE-22: Chrome reports every section; nothing is noted missing.

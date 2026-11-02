@@ -21,6 +21,10 @@ pub(crate) const METRICS_NOTE: &str = "Firefox gives only Nodes, Frames, Resourc
 pub(crate) const LONG_TASKS_NOTE: &str =
     "Firefox has no Long Tasks API: total_blocking_time_ms and top_long_tasks are null";
 
+/// Why Firefox has no `unused_code`.
+const NO_COVERAGE: &str =
+    "Firefox has no code coverage over WebDriver BiDi (Chrome's Profiler and CSS domains give it)";
+
 /// `get_performance_metrics`: the metrics the page can read, plus a note.
 pub(crate) async fn metrics(params: CallToolRequestParams, handler: &McpHandler) -> ToolResult {
     let args: GetPerformanceMetricsTool = parse_args(params)?;
@@ -60,7 +64,9 @@ pub(crate) async fn profile(params: CallToolRequestParams, handler: &McpHandler)
     let mut summary = summary(&vitals, duration);
     if args.insights.unwrap_or(false) {
         let found = page::run_snippet(&tab.tab, insights::SNIPPET).await?;
-        summary["insights"] = insights::annotate(found);
+        let mut annotated = insights::annotate(found);
+        insights::add_unused_code(&mut annotated, Err(NO_COVERAGE.into()));
+        summary["insights"] = annotated;
     }
     Ok(CallToolResult::text_content(vec![
         serde_json::to_string_pretty(&summary)
@@ -185,6 +191,10 @@ mod tests {
             notes[0].as_str().unwrap().starts_with("cls is null"),
             "{body}"
         );
+        // ISSUE-54: and no code coverage, saying why
+        assert_eq!(body["insights"]["unused_code"], Value::Null);
+        let last = notes.last().and_then(Value::as_str).unwrap_or_default();
+        assert_eq!(last, format!("unused_code is null: {NO_COVERAGE}"));
         // And without insights the snippet is not run
         let args = json!({"duration_ms": 500});
         let reply = profile(ts::call("profile_page_performance", args), &handler)

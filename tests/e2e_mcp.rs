@@ -2158,6 +2158,16 @@ mod e2e {
                 args,
                 "\"dom_size\": {",
             ),
+            (
+                "ISSUE-54 a reload measures unused code (Chrome)",
+                "profile_page_performance",
+                json!({"instance_id": "e2e", "duration_ms": 1000, "action": "reload", "insights": true}),
+                if browser == "chrome" {
+                    "\"unused_js_bytes\":"
+                } else {
+                    "unused_code is null: Firefox has no code coverage"
+                },
+            ),
         ]
     }
 
