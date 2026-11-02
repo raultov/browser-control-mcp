@@ -1,4 +1,4 @@
-use super::keys::{Key, Modifier};
+use super::keys::{Key, Modifier, Shortcut};
 use crate::handler::McpHandler;
 use crate::handler::cdp_domains::cdp_target::CdpTarget;
 use crate::handler::interruption::Interruption;
@@ -10,7 +10,7 @@ use serde_json::Value;
 
 #[macros::mcp_tool(
     name = "press_key",
-    description = "Presses one key with optional modifiers, as a user, in the element 'selector' names (focused first) or the focused one; the browser's default action runs (Enter submits, Tab moves the focus). With Control, Alt or Meta held the key types nothing. A dialog or breakpoint it causes is noted, as for 'click_element'."
+    description = "Presses one key with optional modifiers ('modifiers', or written before it: Control+a, Shift+Tab), as a user, in the element 'selector' names (focused first) or the focused one; the browser's default action runs (Enter submits, Tab moves the focus). With Control, Alt or Meta held the key types nothing. A dialog or breakpoint it causes is noted, as for 'click_element'."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct PressKeyTool {
@@ -18,7 +18,7 @@ pub struct PressKeyTool {
     pub instance_id: Option<String>,
     /// Tab id; omit for the active tab.
     pub tab_id: Option<String>,
-    /// One character, or Enter, Tab, Escape, Backspace, Delete, ArrowLeft, ArrowUp, ArrowRight, ArrowDown, Home, End, PageUp, PageDown, Insert, Space, F1 to F12.
+    /// One character, or Enter, Tab, Escape, Backspace, Delete, ArrowLeft, ArrowUp, ArrowRight, ArrowDown, Home, End, PageUp, PageDown, Insert, Space, F1 to F12; optionally after modifiers joined with '+' (Control+a, Shift+Tab, ControlOrMeta+c: Meta on macOS, Control elsewhere).
     pub key: String,
     /// Keys held while it is pressed.
     pub modifiers: Option<Vec<Modifier>>,
@@ -27,14 +27,11 @@ pub struct PressKeyTool {
 }
 
 impl PressKeyTool {
-    /// The key asked for, or why it is unknown.
-    pub(crate) fn key(&self) -> Result<Key, CallToolError> {
-        super::keys::key(&self.key).map_err(CallToolError::from_message)
-    }
-
-    /// The modifiers held.
-    pub(crate) fn held(&self) -> Vec<Modifier> {
-        self.modifiers.clone().unwrap_or_default()
+    /// The key asked for and the modifiers held (those of `modifiers`, then
+    /// those written before the key), or why the key is unknown.
+    pub(crate) fn pressed(&self) -> Result<Shortcut, CallToolError> {
+        let modifiers = self.modifiers.as_deref().unwrap_or_default();
+        super::keys::combination(&self.key, modifiers).map_err(CallToolError::from_message)
     }
 
     pub async fn handle(
@@ -42,7 +39,7 @@ impl PressKeyTool {
         handler: &McpHandler,
     ) -> Result<CallToolResult, CallToolError> {
         let args: PressKeyTool = crate::handler::parse_args(params)?;
-        let key = args.key()?;
+        let (key, held) = args.pressed()?;
         let target = crate::handler::resolve_target_at(
             handler,
             args.instance_id.clone(),
@@ -58,7 +55,6 @@ impl PressKeyTool {
                 selector,
             )?;
         }
-        let held = args.held();
         let pressing = press(&target, &key, &held);
         let interrupted = super::keys::holding(&target, &held, pressing).await?;
         Ok(pressed_reply(selector, &key, &held, interrupted.as_ref()))
@@ -186,6 +182,23 @@ mod tests {
         assert_eq!(events[1].params["modifiers"], 2);
         assert_eq!(events[1].params["windowsVirtualKeyCode"], 13);
         assert_eq!(events[3].params["modifiers"], 0);
+    }
+
+    /// ISSUE-51 (Chrome): `Control+a` in `key` presses a with Control
+    /// held, as `modifiers: ["Control"]` does.
+    #[tokio::test]
+    async fn key_combinations_hold_their_modifiers() {
+        let mock = page("focused").await;
+        let reply = run(mock, json!({"key": "Control+a"})).await.unwrap();
+        let text = crate::handler::cdp_domains::tests::reply_text(&reply);
+        assert_eq!(text, "Pressed Control+a in the focused element.");
+        let events = mock.commands_named("Input.dispatchKeyEvent");
+        let pressed = &events[1].params;
+        assert_eq!(
+            (pressed["type"].clone(), pressed["key"].clone()),
+            (json!("rawKeyDown"), json!("a"))
+        );
+        assert_eq!(pressed["modifiers"], 2);
     }
 
     /// ISSUE-7: an unknown key fails before anything reaches the browser;

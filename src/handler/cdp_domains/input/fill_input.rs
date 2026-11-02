@@ -1,4 +1,4 @@
-use super::keys::{Key, Modifier};
+use super::keys::Shortcut;
 use crate::handler::McpHandler;
 use crate::handler::cdp_domains::cdp_target::CdpTarget;
 use crate::util::js::FillMode;
@@ -82,9 +82,6 @@ pub(crate) fn fill_start(value: &Value, selector: &str) -> Result<FillStart, Cal
         ))),
     }
 }
-
-/// A key pressed with modifiers held (Control+A).
-pub(crate) type Shortcut = (Key, Vec<Modifier>);
 
 /// The keys the preparation snippet asks for (`keys: [{key, modifiers}]`).
 fn shortcuts(value: &Value) -> Result<Vec<Shortcut>, CallToolError> {

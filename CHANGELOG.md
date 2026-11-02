@@ -24,6 +24,14 @@ from a copy of its code: entries describe the differences from that release.
   Chrome only said `net::ERR_INVALID_AUTH_CREDENTIALS`, and Firefox showed
   its prompt while the call waited 30 s and answered the previous page.
   (#50)
+- `press_key` takes a key written with its modifiers, `Control+a`,
+  `Shift+Tab` or `ControlOrMeta+c` (Meta on macOS, Control elsewhere), as
+  agents write it after Playwright; they add to `modifiers`. It failed with
+  `Unknown key 'Control+a'`. (#51)
+- `get_network_logs`' note on responses without a body says they are still
+  loading or were never read by the page: Chrome never finishes a `fetch`
+  whose body the page did not consume, and the old wording (an open event
+  stream, no body until it ends) suggested that waiting would help. (#51)
 
 ## [0.10.0-beta.14] - 2026-11-01
 

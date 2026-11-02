@@ -455,11 +455,11 @@ pub(crate) async fn hover(params: CallToolRequestParams, handler: &McpHandler) -
 /// `press_key`: BiDi key actions, the modifiers wrapping the key.
 pub(crate) async fn press_key(params: CallToolRequestParams, handler: &McpHandler) -> ToolResult {
     let args: PressKeyTool = parse_args(params)?;
-    let key = args.key()?;
+    let (key, held) = args.pressed()?;
     let selector = args.selector.as_deref();
     let ids = ids(&args.instance_id, &args.tab_id);
     on_input(handler, ids, selector, async |on| {
-        on.press(selector, &key, &args.held()).await
+        on.press(selector, &key, &held).await
     })
     .await
 }

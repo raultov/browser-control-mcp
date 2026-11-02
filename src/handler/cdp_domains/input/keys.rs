@@ -354,6 +354,52 @@ pub(crate) fn key(name: &str) -> Result<Key, String> {
     }
 }
 
+/// A key pressed with modifiers held (Control+A).
+pub(crate) type Shortcut = (Key, Vec<Modifier>);
+
+/// The key `text` names with the modifiers written before it
+/// (`Control+Shift+z`, as agents write it after Playwright) added to
+/// `modifiers`, each once and in order; `+` alone (or last, `Control++`)
+/// is the plus key.
+pub(crate) fn combination(text: &str, modifiers: &[Modifier]) -> Result<Shortcut, String> {
+    let (written, name) = match text.strip_suffix("++") {
+        Some(prefix) => (prefix, "+"),
+        None => match text.rsplit_once('+') {
+            Some((prefix, name)) if !prefix.is_empty() && !name.is_empty() => (prefix, name),
+            _ => ("", text),
+        },
+    };
+    let mut held = modifiers.to_vec();
+    for part in written.split('+').filter(|_| !written.is_empty()) {
+        let modifier = modifier(part).ok_or_else(|| {
+            format!("Unknown modifier '{part}' in '{text}': use Control, Shift, Alt, Meta or ControlOrMeta (Meta on macOS, Control elsewhere)")
+        })?;
+        if !held.contains(&modifier) {
+            held.push(modifier);
+        }
+    }
+    Ok((key(name)?, held))
+}
+
+/// The modifier `name` names (case-insensitive, with the usual aliases).
+/// `ControlOrMeta` is the platform's shortcut key: Meta on macOS, where
+/// the server runs with its browser, Control elsewhere.
+fn modifier(name: &str) -> Option<Modifier> {
+    let primary = if cfg!(target_os = "macos") {
+        Modifier::Meta
+    } else {
+        Modifier::Control
+    };
+    match name.trim().to_ascii_lowercase().as_str() {
+        "control" | "ctrl" => Some(Modifier::Control),
+        "shift" => Some(Modifier::Shift),
+        "alt" | "option" => Some(Modifier::Alt),
+        "meta" | "command" | "cmd" => Some(Modifier::Meta),
+        "controlormeta" => Some(primary),
+        _ => None,
+    }
+}
+
 /// `F1`..`F12`'s number.
 fn function_key(name: &str) -> Option<u32> {
     let rest = name.strip_prefix('F').or_else(|| name.strip_prefix('f'))?;
@@ -443,6 +489,42 @@ mod tests {
             "{error}"
         );
         assert!(key("F13").is_err());
+    }
+
+    /// ISSUE-51: a key written with its modifiers (`Control+a`, as in
+    /// Playwright) holds them, merged with `modifiers`; `+` is a key too.
+    #[test]
+    fn combinations_hold_their_modifiers() {
+        let pressed = |text: &str, modifiers: &[Modifier]| {
+            let (key, held) = combination(text, modifiers).unwrap();
+            (key.key, held)
+        };
+        use Modifier::{Alt, Control, Meta, Shift};
+        assert_eq!(pressed("Control+a", &[]), ("a".into(), vec![Control]));
+        assert_eq!(
+            pressed("ctrl+Shift+Z", &[]),
+            ("Z".into(), vec![Control, Shift])
+        );
+        assert_eq!(
+            pressed("Shift+Tab", &[Shift, Alt]),
+            ("Tab".into(), vec![Shift, Alt])
+        );
+        assert_eq!(pressed("Meta+Enter", &[]), ("Enter".into(), vec![Meta]));
+        assert_eq!(pressed("+", &[]), ("+".into(), vec![]));
+        assert_eq!(pressed("Control++", &[]), ("+".into(), vec![Control]));
+        let primary = if cfg!(target_os = "macos") {
+            Meta
+        } else {
+            Control
+        };
+        assert_eq!(pressed("ControlOrMeta+c", &[]), ("c".into(), vec![primary]));
+        let error = combination("Hyper+a", &[]).err().unwrap();
+        assert!(
+            error.starts_with("Unknown modifier 'Hyper' in 'Hyper+a'"),
+            "{error}"
+        );
+        let error = combination("Control+Hyper", &[]).err().unwrap();
+        assert!(error.starts_with("Unknown key 'Hyper'"), "{error}");
     }
 
     /// ISSUE-7: a shortcut types nothing on Chrome; Shift alone still types.

@@ -1250,6 +1250,33 @@ mod e2e {
         ]
     }
 
+    /// ISSUE-51: a key written with its modifiers (Control+a, as agents
+    /// write it) holds them: it selects the field's text, typed over next.
+    fn key_combination_steps(instance: &str) -> Vec<Step> {
+        let i = json!(instance);
+        let value = "document.querySelector('#pk').value";
+        vec![
+            (
+                "ISSUE-51 press Control+a",
+                "press_key",
+                json!({"instance_id": i, "selector": "#pk", "key": "Control+a"}),
+                "Pressed Control+a in '#pk'.",
+            ),
+            (
+                "ISSUE-51 type over the selection",
+                "press_key",
+                json!({"instance_id": i, "key": "z"}),
+                "Pressed z",
+            ),
+            (
+                "ISSUE-51 the field holds it alone",
+                "evaluate_js",
+                json!({"instance_id": i, "expression": value}),
+                "\"value\": \"z\"",
+            ),
+        ]
+    }
+
     /// ISSUE-8: a cookie and a localStorage item set, read by the page,
     /// listed and removed.
     fn storage_steps(instance: &str) -> Vec<Step> {
@@ -2084,6 +2111,7 @@ mod e2e {
             upload_steps("e2e"),
             pdf_steps("e2e"),
             key_and_pointer_steps("e2e"),
+            key_combination_steps("e2e"),
             storage_steps("e2e"),
             emulate_steps("e2e", browser == "chrome"),
             closed_root_steps("e2e", browser == "chrome"),
@@ -2176,6 +2204,7 @@ mod e2e {
             upload_steps("default"),
             pdf_steps("default"),
             key_and_pointer_steps("default"),
+            key_combination_steps("default"),
             storage_steps("default"),
             emulate_steps("default", variable.contains("CHROME")),
             closed_root_steps("default", variable.contains("CHROME")),

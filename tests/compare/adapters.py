@@ -185,10 +185,7 @@ class BrowserControl(Adapter):
     def hover(self, handle): return self.ok(self.bc("hover", {"selector": handle}), "hover")
 
     def press(self, key, handle=None):
-        *held, key = key.split("+") if len(key) > 1 else [key]
         args = {"key": key}
-        if held:
-            args["modifiers"] = held
         if handle:
             args["selector"] = handle
         return self.ok(self.bc("press_key", args), "press")

@@ -378,8 +378,9 @@ pub(crate) fn wants_body(id: &str, request: &NetworkRequest, current: &HashSet<S
 }
 
 /// How many answered requests of the current navigation are still loading
-/// (an open stream such as server-sent events): their bodies are not asked
-/// for, as the browser would only answer once they end.
+/// (an open stream such as server-sent events, or on Chrome a response the
+/// page never read, which Chrome never finishes): their bodies are not
+/// asked for, as the browser would only answer once they end.
 pub(crate) fn still_loading(requests: &Requests, current: &HashSet<String>) -> usize {
     requests
         .iter()
@@ -391,7 +392,7 @@ pub(crate) fn still_loading(requests: &Requests, current: &HashSet<String>) -> u
 pub(crate) fn still_loading_note(count: usize) -> Option<String> {
     let plural = if count == 1 { "response" } else { "responses" };
     (count > 0).then(|| {
-        format!("{count} {plural} still loading (e.g. an open event stream): no body until it ends")
+        format!("{count} {plural} still loading or never read by the page (an open stream, or a fetch whose body the page did not consume): no body")
     })
 }
 
@@ -591,7 +592,12 @@ mod tests {
         assert_eq!(fetched.len(), 1);
         assert_eq!(fetched[0].params["requestId"], "done");
         let note = still_loading_note(1).unwrap();
-        assert!(note.starts_with("1 response still loading"), "{note}");
+        // ISSUE-51: Chrome never finishes a response whose body the page
+        // did not read; waiting does not help, and the note says so
+        assert_eq!(
+            note,
+            "1 response still loading or never read by the page (an open stream, or a fetch whose body the page did not consume): no body"
+        );
         assert_eq!(still_loading_note(0), None);
     }
 
