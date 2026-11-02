@@ -18,6 +18,13 @@ from a copy of its code: entries describe the differences from that release.
   kept in the tab's emulation state across calls, reported in the reply and
   cleared by `reset: true`. On Firefox, where WebDriver BiDi has no CPU or
   bandwidth/latency throttling, they fail naming them. (#52)
+- `profile_page_performance` with `insights: true` adds Interaction to Next
+  Paint (`inp`: worst interaction, target and input/processing/presentation
+  breakdown), LCP image discovery (`lazy_loaded`, `fetch_priority`), DOM
+  size (`nodes`, `max_depth`, `widest_element`, `max_children`), oversized
+  or unsized images (`images`) and third-party origins (`third_parties`),
+  with findings when they cross the web.dev and Lighthouse thresholds, on
+  both Chrome and Firefox. (#53)
 
 ## [0.10.0-beta.15] - 2026-11-02
 

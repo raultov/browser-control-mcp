@@ -9,7 +9,7 @@ use tokio::sync::mpsc;
 
 #[macros::mcp_tool(
     name = "profile_page_performance",
-    description = "Traces the page for duration_ms and returns FCP, LCP, DCL, Load, total blocking time and the top 5 long tasks; 'action': reload with disable_cache measures a cold load; 'insights': true adds what explains them, with findings. On Firefox: partial, no trace (vitals from the Web Performance APIs; blocking time, long tasks, layout shifts and render-blocking requests are null, with notes)."
+    description = "Traces the page for duration_ms and returns FCP, LCP, DCL, Load, total blocking time and the top 5 long tasks; 'action': reload with disable_cache measures a cold load; 'insights': true adds what explains them (LCP breakdown and discovery, INP, layout shifts, render-blocking and slowest requests, long scripts, DOM size, oversized/unsized images, third-party weight, findings). On Firefox: partial, no trace (vitals and insights from the Web Performance APIs and DOM; blocking time, long tasks, layout shifts, render-blocking requests and long scripts are null, with notes)."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct ProfilePagePerformanceTool {
@@ -29,7 +29,7 @@ pub struct ProfilePagePerformanceTool {
     #[serde(default)]
     pub disable_cache: Option<bool>,
 
-    /// Add what explains the numbers (LCP element and breakdown, layout shifts, render-blocking and slowest requests, scripts of long frames, findings). Default: false.
+    /// Add what explains the numbers (LCP element, breakdown and discovery, INP, layout shifts, render-blocking and slowest requests, scripts of long frames, DOM size, oversized/unsized images, third-party origins, findings). Default: false.
     #[serde(default)]
     pub insights: Option<bool>,
 }

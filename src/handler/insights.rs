@@ -6,8 +6,9 @@
 
 use serde_json::{Value, json};
 
-/// The snippet: `{document, lcp, cls, render_blocking, long_scripts,
-/// slowest_resources, lcp_supported}`, at most 5 entries per list.
+/// The snippet: `{document, lcp, inp, cls, render_blocking, long_scripts,
+/// slowest_resources, dom_size, images, third_parties, lcp_supported,
+/// inp_supported}`, at most 5 entries per list.
 pub(crate) const SNIPPET: &str = r#"(() => {
     const types = (window.PerformanceObserver && PerformanceObserver.supportedEntryTypes) || [];
     const take = type => {
@@ -38,14 +39,32 @@ pub(crate) const SNIPPET: &str = r#"(() => {
     const lcps = take('largest-contentful-paint');
     let lcp = null;
     if (lcps && lcps.length) {
-        const entry = lcps[lcps.length - 1], start = ttfb || 0;
+        const entry = lcps[lcps.length - 1], start = ttfb || 0, lcpEl = entry.element;
         const res = entry.url ? resources.find(r => r.name === entry.url) : null;
         const loadStart = res ? (res.requestStart || res.startTime) : null, loadEnd = res ? res.responseEnd : null;
-        lcp = { time_ms: ms(entry.startTime), element: describe(entry.element), url: url(entry.url), size: entry.size,
+        const discovery = lcpEl && lcpEl.tagName === 'IMG' ? {
+            lazy_loaded: lcpEl.loading === 'lazy' || lcpEl.getAttribute('loading') === 'lazy',
+            fetch_priority: lcpEl.fetchPriority || lcpEl.getAttribute('fetchpriority') || 'auto',
+        } : null;
+        lcp = { time_ms: ms(entry.startTime), element: describe(lcpEl), url: url(entry.url), size: entry.size,
             breakdown: { ttfb_ms: ms(start), load_delay_ms: res ? ms(Math.max(0, loadStart - start)) : null,
                 load_duration_ms: res ? ms(loadEnd - loadStart) : null,
-                render_delay_ms: ms(entry.startTime - (res ? Math.max(loadEnd, start) : start)) } };
+                render_delay_ms: ms(entry.startTime - (res ? Math.max(loadEnd, start) : start)) },
+            ...(discovery ? { discovery } : {}) };
     }
+    const events = take('event');
+    const interactions = events && events.filter(e => e.interactionId > 0 || ['click', 'keydown', 'pointerdown', 'pointerup'].includes(e.name));
+    const worstIn = interactions && interactions.length ? top(interactions.slice(), 'duration')[0] : null;
+    const worstEvent = worstIn && worstIn.interactionId
+        ? interactions.filter(e => e.interactionId === worstIn.interactionId)
+            .sort((a, b) => (b.processingEnd - b.processingStart) - (a.processingEnd - a.processingStart))[0]
+        : worstIn;
+    const inp = worstEvent ? {
+        duration_ms: ms(worstEvent.duration), name: worstEvent.name, target: describe(worstEvent.target),
+        input_delay_ms: ms(worstEvent.processingStart - worstEvent.startTime),
+        processing_ms: ms(worstEvent.processingEnd - worstEvent.processingStart),
+        presentation_delay_ms: ms(Math.max(0, worstEvent.startTime + worstEvent.duration - worstEvent.processingEnd)),
+    } : null;
     const shifts = take('layout-shift');
     const cls = shifts && {
         score: Math.round(shifts.filter(s => !s.hadRecentInput).reduce((sum, s) => sum + s.value, 0) * 1000) / 1000,
@@ -63,21 +82,67 @@ pub(crate) const SNIPPET: &str = r#"(() => {
         duration_ms: ms(s.duration), at_ms: ms(s.startTime) })), 'duration_ms');
     const slowest = top(resources.map(r => ({ url: url(r.name), type: r.initiatorType,
         duration_ms: ms(r.duration), transfer_size: r.transferSize })), 'duration_ms');
-    return { document: document_, lcp, cls, render_blocking: blocking, long_scripts: scripts, slowest_resources: slowest,
-        lcp_supported: types.includes('largest-contentful-paint') };
+    const domSize = (() => {
+        let nodes = 0, maxDepth = 0, maxChildren = 0, widest = null;
+        const stack = document.documentElement ? [[document.documentElement, 1]] : [];
+        while (stack.length) {
+            const [node, depth] = stack.pop();
+            nodes++;
+            if (depth > maxDepth) maxDepth = depth;
+            const children = node.children;
+            if (children && children.length) {
+                if (children.length > maxChildren) { maxChildren = children.length; widest = describe(node); }
+                for (let i = children.length - 1; i >= 0; i--) stack.push([children[i], depth + 1]);
+            }
+        }
+        return { nodes, max_depth: maxDepth, widest_element: widest, max_children: maxChildren };
+    })();
+    const dpr = window.devicePixelRatio || 1;
+    const images = top(Array.from(document.querySelectorAll('img')).map(img => {
+        const r = img.getBoundingClientRect();
+        if (r.width <= 0 || r.height <= 0 || !img.complete || !img.naturalWidth) return null;
+        const natural = img.naturalWidth * img.naturalHeight, shown = r.width * r.height * dpr * dpr;
+        const oversized = natural > shown * 2 && natural - shown > 100000;
+        const missing = !img.hasAttribute('width') || !img.hasAttribute('height');
+        if (!oversized && !missing) return null;
+        return { element: describe(img), url: url(img.currentSrc || img.src),
+            rendered_px: [Math.round(r.width), Math.round(r.height)],
+            natural_px: [img.naturalWidth, img.naturalHeight],
+            oversized, missing_dimensions: missing, _waste: Math.max(0, natural - shown) };
+    }).filter(Boolean), '_waste').map(({ _waste, ...rest }) => rest);
+    const byOrigin = new Map();
+    for (const r of resources) {
+        let origin = null;
+        try { const u = new URL(r.name, location.href); if (u.origin !== location.origin && /^https?:$/.test(u.protocol)) origin = u.origin; } catch (e) {}
+        if (!origin) continue;
+        const entry = byOrigin.get(origin) || { origin, requests: 0, transfer_size: 0, total_duration_ms: 0 };
+        entry.requests++;
+        entry.transfer_size += r.transferSize || 0;
+        entry.total_duration_ms = ms(entry.total_duration_ms + (r.duration || 0));
+        byOrigin.set(origin, entry);
+    }
+    const thirdParties = top(Array.from(byOrigin.values()), 'total_duration_ms');
+    return { document: document_, lcp, inp, cls, render_blocking: blocking, long_scripts: scripts, slowest_resources: slowest,
+        dom_size: domSize, images, third_parties: thirdParties,
+        lcp_supported: types.includes('largest-contentful-paint'), inp_supported: types.includes('event') };
 })()"#;
 
 /// The page's insights with notes for what the browser does not report,
 /// and the findings they show.
 pub(crate) fn annotate(mut found: Value) -> Value {
     let lcp_supported = found.get("lcp_supported") == Some(&Value::Bool(true));
-    let notes = missing_notes(&found, lcp_supported);
+    let inp_unsupported = found.get("inp_supported") == Some(&Value::Bool(false));
+    let notes = missing_notes(&found, lcp_supported, inp_unsupported);
     let findings: Vec<String> = [
         lcp_finding(&found["lcp"]),
+        lcp_discovery_finding(&found["lcp"]),
+        inp_finding(&found["inp"]),
         cls_finding(&found["cls"]),
         server_finding(&found["document"]),
         compression_finding(&found["document"]),
         blocking_finding(&found["render_blocking"]),
+        dom_finding(&found["dom_size"]),
+        image_finding(&found["images"]),
     ]
     .into_iter()
     .flatten()
@@ -86,6 +151,7 @@ pub(crate) fn annotate(mut found: Value) -> Value {
         return found;
     };
     object.remove("lcp_supported");
+    object.remove("inp_supported");
     if !findings.is_empty() {
         object.insert("findings".into(), json!(findings));
     }
@@ -96,13 +162,13 @@ pub(crate) fn annotate(mut found: Value) -> Value {
 }
 
 /// Why each `null` section is missing.
-fn missing_notes(found: &Value, lcp_supported: bool) -> Vec<String> {
+fn missing_notes(found: &Value, lcp_supported: bool, inp_unsupported: bool) -> Vec<String> {
     let lcp = if lcp_supported {
         "the page painted no largest-contentful-paint candidate yet"
     } else {
         "this browser does not report largest-contentful-paint"
     };
-    [
+    let mut notes: Vec<String> = [
         ("document", "the page has no navigation timing"),
         ("lcp", lcp),
         ("cls", "this browser does not report layout shifts"),
@@ -112,7 +178,11 @@ fn missing_notes(found: &Value, lcp_supported: bool) -> Vec<String> {
     .into_iter()
     .filter(|(key, _)| found[*key].is_null())
     .map(|(key, why)| format!("{key} is null: {why}"))
-    .collect()
+    .collect();
+    if inp_unsupported && found["inp"].is_null() {
+        notes.push("inp is null: this browser does not report event timing".into());
+    }
+    notes
 }
 
 /// `value` as JSON prints it (`4200`, `0.3`).
@@ -131,26 +201,90 @@ fn rating(value: f64, (needs_improvement, poor): (f64, f64)) -> Option<String> {
     }
 }
 
+/// The phase in `from` that took longest (`", mostly its <name> (<ms> ms)"`).
+fn longest_phase(from: &Value, phases: &[(&str, &str)]) -> String {
+    let longest = phases
+        .iter()
+        .filter_map(|(key, name)| Some((from[*key].as_f64()?, *name, *key)))
+        .max_by(|a, b| a.0.total_cmp(&b.0));
+    longest
+        .map(|(_, name, key)| format!(", mostly its {name} ({} ms)", shown(&from[key])))
+        .unwrap_or_default()
+}
+
 /// A slow LCP, with its element and the phase that took longest.
 fn lcp_finding(lcp: &Value) -> Option<String> {
     let rated = rating(lcp["time_ms"].as_f64()?, (2500.0, 4000.0))?;
     let element = lcp["element"].as_str().unwrap_or("an element");
-    let phases = [
-        ("ttfb_ms", "server response"),
-        ("load_delay_ms", "load delay"),
-        ("load_duration_ms", "load"),
-        ("render_delay_ms", "render delay"),
-    ];
-    let longest = phases
-        .iter()
-        .filter_map(|(key, name)| Some((lcp["breakdown"][*key].as_f64()?, *name, *key)))
-        .max_by(|a, b| a.0.total_cmp(&b.0));
-    let phase = longest
-        .map(|(_, name, key)| format!(", mostly its {name} ({} ms)", shown(&lcp["breakdown"][key])))
-        .unwrap_or_default();
+    let phase = longest_phase(
+        &lcp["breakdown"],
+        &[
+            ("ttfb_ms", "server response"),
+            ("load_delay_ms", "load delay"),
+            ("load_duration_ms", "load"),
+            ("render_delay_ms", "render delay"),
+        ],
+    );
     Some(format!(
         "LCP is {} ms ({rated}): {element}{phase}",
         shown(&lcp["time_ms"])
+    ))
+}
+
+/// An LCP image whose attributes delay its discovery (`loading="lazy"`).
+fn lcp_discovery_finding(lcp: &Value) -> Option<String> {
+    if lcp["discovery"]["lazy_loaded"].as_bool() != Some(true) {
+        return None;
+    }
+    let element = lcp["element"].as_str().unwrap_or("img");
+    Some(format!(
+        "LCP image ({element}) has loading=\"lazy\", which delays its discovery"
+    ))
+}
+
+/// A slow Interaction to Next Paint (INP), with the event, target and dominant phase.
+fn inp_finding(inp: &Value) -> Option<String> {
+    let rated = rating(inp["duration_ms"].as_f64()?, (200.0, 500.0))?;
+    let event = inp["name"].as_str().unwrap_or("interaction");
+    let target = inp["target"]
+        .as_str()
+        .map(|t| format!(" ({t})"))
+        .unwrap_or_default();
+    let phase = longest_phase(
+        inp,
+        &[
+            ("input_delay_ms", "input delay"),
+            ("processing_ms", "processing"),
+            ("presentation_delay_ms", "presentation delay"),
+        ],
+    );
+    Some(format!(
+        "INP is {} ms ({rated}) on {event}{target}{phase}",
+        shown(&inp["duration_ms"])
+    ))
+}
+
+/// A large or deeply nested DOM tree (over 1 500 nodes or depth 32).
+fn dom_finding(dom: &Value) -> Option<String> {
+    let nodes = dom["nodes"].as_u64()?;
+    let depth = dom["max_depth"].as_u64()?;
+    if nodes <= 1500 && depth <= 32 {
+        return None;
+    }
+    let widest = dom["widest_element"].as_str().unwrap_or("element");
+    let children = dom["max_children"].as_u64().unwrap_or(0);
+    Some(format!(
+        "DOM has {nodes} nodes (max depth {depth}, widest element {widest} with {children} children)"
+    ))
+}
+
+/// Images that are oversized or lack explicit `width`/`height` attributes.
+fn image_finding(images: &Value) -> Option<String> {
+    let list = images.as_array().filter(|a| !a.is_empty())?;
+    let first = list[0]["element"].as_str().unwrap_or("img");
+    Some(format!(
+        "{} image(s) are oversized or lack width/height attributes (first: {first})",
+        list.len()
     ))
 }
 
@@ -282,6 +416,56 @@ mod tests {
             json!([
                 "document is null: the page has no navigation timing",
                 "lcp is null: the page painted no largest-contentful-paint candidate yet"
+            ])
+        );
+    }
+
+    /// ISSUE-53: insights include INP, LCP discovery, DOM size, oversized or
+    /// unsized images and third-party origins, with findings when they cross
+    /// the thresholds.
+    #[test]
+    fn inp_discovery_dom_images_and_third_parties_produce_findings() {
+        assert!(
+            SNIPPET.contains("const events = take('event');"),
+            "{SNIPPET}"
+        );
+        assert!(
+            SNIPPET.contains("dom_size: domSize, images, third_parties: thirdParties"),
+            "{SNIPPET}"
+        );
+        let page = json!({
+            "document": {"ttfb_ms": 50, "server_ms": 20, "redirect_ms": 0, "transfer_size": 1000,
+                "encoded_body_size": 800, "decoded_body_size": 2000},
+            "lcp": {"time_ms": 1200, "element": "img#hero", "url": "http://a/hero.jpg", "size": 50000,
+                "breakdown": {"ttfb_ms": 50, "load_delay_ms": 200, "load_duration_ms": 800, "render_delay_ms": 150},
+                "discovery": {"lazy_loaded": true, "fetch_priority": "auto"}},
+            "inp": {"duration_ms": 340, "name": "click", "target": "button#buy",
+                "input_delay_ms": 20, "processing_ms": 280, "presentation_delay_ms": 40},
+            "cls": {"score": 0, "culprits": []},
+            "render_blocking": [],
+            "long_scripts": [],
+            "slowest_resources": [],
+            "dom_size": {"nodes": 1820, "max_depth": 35, "widest_element": "ul#feed", "max_children": 90},
+            "images": [{"element": "img#banner", "url": "http://a/b.jpg", "rendered_px": [200, 100],
+                "natural_px": [2000, 1000], "oversized": true, "missing_dimensions": true}],
+            "third_parties": [{"origin": "https://cdn.example.com", "requests": 4, "transfer_size": 120000, "total_duration_ms": 410}],
+            "lcp_supported": true,
+            "inp_supported": true
+        });
+        let insights = annotate(page);
+        assert!(insights.get("inp_supported").is_none(), "{insights}");
+        assert_eq!(
+            insights["third_parties"][0]["origin"],
+            "https://cdn.example.com"
+        );
+        let findings = insights["findings"].clone();
+        assert_eq!(
+            findings,
+            json!([
+                "LCP image (img#hero) has loading=\"lazy\", which delays its discovery",
+                "INP is 340 ms (needs improvement, over 200) on click (button#buy), mostly its processing (280 ms)",
+                "DOM has 1820 nodes (max depth 35, widest element ul#feed with 90 children)",
+                "1 image(s) are oversized or lack width/height attributes (first: img#banner)"
             ])
         );
     }

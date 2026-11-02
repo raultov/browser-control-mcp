@@ -2088,21 +2088,30 @@ mod e2e {
         ]
     }
 
-    /// ISSUE-22: insights explain the profile: Chrome lists the
-    /// render-blocking requests, Firefox notes it cannot.
-    fn insights_step(browser: &str) -> Step {
+    /// ISSUE-22 / ISSUE-53: insights explain the profile: Chrome lists the
+    /// render-blocking requests, Firefox notes it cannot, and both report
+    /// the DOM size and interaction timing.
+    fn insights_steps(browser: &str) -> Vec<Step> {
         let args = json!({"instance_id": "e2e", "duration_ms": 500, "insights": true});
         let expected = if browser == "chrome" {
             "\"render_blocking\": ["
         } else {
             "render_blocking is null: this browser does not say"
         };
-        (
-            "ISSUE-22 profile_page_performance insights",
-            "profile_page_performance",
-            args,
-            expected,
-        )
+        vec![
+            (
+                "ISSUE-22 profile_page_performance insights",
+                "profile_page_performance",
+                args.clone(),
+                expected,
+            ),
+            (
+                "ISSUE-53 insights include dom_size and third_parties",
+                "profile_page_performance",
+                args,
+                "\"dom_size\": {",
+            ),
+        ]
     }
 
     /// Steps 13–15: tracing and pause on load (Chrome only; Firefox
@@ -2118,31 +2127,30 @@ mod e2e {
         );
         if browser != "chrome" {
             let reload = json!({"instance_id": i, "duration_ms": 500, "action": "reload"});
-            return vec![
-                (
-                    "FPF-02 profile_page_performance",
-                    "profile_page_performance",
-                    reload,
-                    "first_contentful_paint_ms",
-                ),
-                insights_step(browser),
-                (
-                    "pause_on_load",
-                    "pause_on_load",
-                    json!({"instance_id": i}),
-                    "!is not available on",
-                ),
-                close,
-            ];
+            let mut steps = vec![(
+                "FPF-02 profile_page_performance",
+                "profile_page_performance",
+                reload,
+                "first_contentful_paint_ms",
+            )];
+            steps.extend(insights_steps(browser));
+            steps.push((
+                "pause_on_load",
+                "pause_on_load",
+                json!({"instance_id": i}),
+                "!is not available on",
+            ));
+            steps.push(close);
+            return steps;
         }
-        vec![
-            (
-                "profile_page_performance",
-                "profile_page_performance",
-                profile,
-                "profile_duration_ms",
-            ),
-            insights_step(browser),
+        let mut steps = vec![(
+            "profile_page_performance",
+            "profile_page_performance",
+            profile,
+            "profile_duration_ms",
+        )];
+        steps.extend(insights_steps(browser));
+        steps.extend([
             (
                 "pause_on_load",
                 "pause_on_load",
@@ -2157,7 +2165,8 @@ mod e2e {
                 "resumed",
             ),
             close,
-        ]
+        ]);
+        steps
     }
 
     /// The secret the launched server masks (`--secrets`).
