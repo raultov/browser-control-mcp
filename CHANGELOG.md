@@ -10,6 +10,20 @@ from a copy of its code: entries describe the differences from that release.
 
 ## [Unreleased]
 
+## [0.11.0-beta.17] - 2026-11-02
+
+Public **BETA**. Fixes found probing the debugger, tab and raw protocol tools
+on both browsers. The browser's front tab now stays on the active tab (pages
+in background tabs were hidden, with `requestAnimationFrame` stopped and
+Chrome screenshots timing out); a click whose handler pauses or opens a
+dialog after an `await` is noted at once; Chrome `snapshot`,
+`find_in_snapshot` and `emulate` answer on a paused page; Firefox
+`search_scripts` sees inline scripts and modules, `step_over` and `resume`
+report a breakpoint hit again in a loop, and `get_custom_events` keeps every
+subscribed event and RDP event packets; Chrome `navigate` to a hash route
+reports the new URL; `webmcp_invoke_tool` passes a page tool's error and
+blocks through. Behaviour changes: `open_tab` makes the new tab active.
+
 ### Changed
 
 - `open_tab` makes the new tab the active one (the tools that omit `tab_id`
