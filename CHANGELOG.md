@@ -49,6 +49,12 @@ from a copy of its code: entries describe the differences from that release.
   with the 5 files that waste most and a finding over 50 KB. Without a
   reload, and on Firefox (no coverage over WebDriver BiDi), it is `null`
   with a note saying why. (#54)
+- `profile_page_performance` on Chrome extracts `forced_reflows` from the
+  trace when `insights: true` (`Layout` and `UpdateLayoutTree` events with a
+  JavaScript stack, grouped by call site, with a finding over 30 ms; `null`
+  with a note on Firefox) and takes `save_path` (`.json` or `.json.gz` under
+  the upload roots) to write the raw trace for Chrome DevTools or Perfetto
+  (refused on Firefox before running). (#56)
 
 ### Fixed
 

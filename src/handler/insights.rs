@@ -164,28 +164,90 @@ pub(crate) fn annotate(mut found: Value) -> Value {
 /// Most unused bytes of JavaScript or CSS before it is a finding.
 const UNUSED_CODE_BYTES: u64 = 50_000;
 
+/// Most forced-reflow time (ms) before it is a finding.
+const FORCED_REFLOW_MS: f64 = 30.0;
+
+/// Adds the section `key` to `insights` with its findings, or `null` and a
+/// note saying why it is missing.
+fn add_section(insights: &mut Value, key: &str, section: Result<(Value, Vec<String>), String>) {
+    let Some(object) = insights.as_object_mut() else {
+        return;
+    };
+    let push = |object: &mut serde_json::Map<String, Value>, list: &str, text: String| {
+        let entries = object.entry(list).or_insert_with(|| json!([]));
+        if let Some(entries) = entries.as_array_mut() {
+            entries.push(json!(text));
+        }
+    };
+    match section {
+        Ok((value, findings)) => {
+            for finding in findings {
+                push(object, "findings", finding);
+            }
+            object.insert(key.into(), value);
+        }
+        Err(why) => {
+            object.insert(key.into(), Value::Null);
+            push(object, "notes", format!("{key} is null: {why}"));
+        }
+    }
+}
+
 /// Adds `unused_code` to `insights` (Chrome's coverage of a reload, see
 /// `tracing::coverage`) with a finding when much of it went unused, or
 /// `null` and a note saying why it is missing.
 pub(crate) fn add_unused_code(insights: &mut Value, unused: Result<Value, String>) {
-    let Some(object) = insights.as_object_mut() else {
-        return;
+    let section = unused.map(|unused| {
+        let findings = unused_code_findings(&unused);
+        (unused, findings)
+    });
+    add_section(insights, "unused_code", section);
+}
+
+/// Adds `forced_reflows` to `insights` (from Chrome's trace) with a finding
+/// when they took long, or `null` and a note saying why it is missing.
+pub(crate) fn add_forced_reflows(insights: &mut Value, reflows: Result<Value, String>) {
+    let section = reflows.map(|reflows| {
+        let findings = forced_reflow_finding(&reflows).into_iter().collect();
+        (reflows, findings)
+    });
+    add_section(insights, "forced_reflows", section);
+}
+
+/// Forced reflows over [`FORCED_REFLOW_MS`], with the call site that
+/// forced most.
+fn forced_reflow_finding(reflows: &Value) -> Option<String> {
+    let total = reflows["total_ms"].as_f64()?;
+    if total <= FORCED_REFLOW_MS {
+        return None;
+    }
+    let site = &reflows["top_call_sites"][0];
+    let function = site["function"]
+        .as_str()
+        .filter(|f| !f.is_empty())
+        .unwrap_or("(anonymous)");
+    let at = format!(
+        "{}:{}",
+        site["url"].as_str().unwrap_or_default(),
+        site["line"]
+    );
+    let mostly = if site.is_object() {
+        format!(", mostly {function} ({at})")
+    } else {
+        String::new()
     };
-    let push = |object: &mut serde_json::Map<String, Value>, key: &str, text: String| {
-        let list = object.entry(key).or_insert_with(|| json!([]));
-        if let Some(list) = list.as_array_mut() {
-            list.push(json!(text));
-        }
-    };
-    let unused = match unused {
-        Ok(unused) => unused,
-        Err(why) => {
-            object.insert("unused_code".into(), Value::Null);
-            push(object, "notes", format!("unused_code is null: {why}"));
-            return;
-        }
-    };
+    Some(format!(
+        "forced reflows took {} ms in {} layouts or style recalculations{mostly}",
+        shown(&reflows["total_ms"]),
+        reflows["count"]
+    ))
+}
+
+/// Unused JavaScript or CSS over [`UNUSED_CODE_BYTES`], with the file that
+/// wastes most.
+fn unused_code_findings(unused: &Value) -> Vec<String> {
     let kib = |bytes: u64| (bytes as f64 / 1024.0).round();
+    let mut findings = Vec::new();
     for (kind, key, what) in [
         ("js", "unused_js_bytes", "of JavaScript never ran"),
         ("css", "unused_css_bytes", "of CSS matched nothing"),
@@ -198,21 +260,15 @@ pub(crate) fn add_unused_code(insights: &mut Value, unused: Result<Value, String
             .as_array()
             .and_then(|rows| rows.iter().find(|r| r["kind"] == kind))
             .map(|r| {
-                let (url, part, whole) = (
-                    r["url"].as_str().unwrap_or_default(),
-                    r["unused_bytes"].as_u64().unwrap_or(0),
-                    r["total_bytes"].as_u64().unwrap_or(0),
-                );
+                let url = r["url"].as_str().unwrap_or_default();
+                let part = r["unused_bytes"].as_u64().unwrap_or(0);
+                let whole = r["total_bytes"].as_u64().unwrap_or(0);
                 format!(" (first: {url}, {} KiB of {} KiB)", kib(part), kib(whole))
             })
             .unwrap_or_default();
-        push(
-            object,
-            "findings",
-            format!("{} KiB {what} during the load{first}", kib(bytes)),
-        );
+        findings.push(format!("{} KiB {what} during the load{first}", kib(bytes)));
     }
-    object.insert("unused_code".into(), unused);
+    findings
 }
 
 /// Why each `null` section is missing.
@@ -396,6 +452,33 @@ mod tests {
 
     fn fixture(text: &str) -> Value {
         serde_json::from_str(text).unwrap()
+    }
+
+    /// ISSUE-56: forced reflows join the insights with a finding over
+    /// 30 ms, naming the call site that forced most; without a trace they
+    /// are null with a note.
+    #[test]
+    fn forced_reflows_add_a_finding_or_a_note() {
+        let reflows = json!({"count": 400, "total_ms": 42.5, "top_call_sites": [
+            {"function": "thrash", "url": "http://a/t.js", "line": 6, "count": 400, "total_ms": 42.5}]});
+        let mut insights = json!({});
+        add_forced_reflows(&mut insights, Ok(reflows.clone()));
+        assert_eq!(insights["forced_reflows"], reflows);
+        assert_eq!(
+            insights["findings"],
+            json!([
+                "forced reflows took 42.5 ms in 400 layouts or style recalculations, mostly thrash (http://a/t.js:6)"
+            ])
+        );
+        let mut light = json!({});
+        add_forced_reflows(
+            &mut light,
+            Ok(json!({"count": 2, "total_ms": 1.0, "top_call_sites": []})),
+        );
+        assert!(light.get("findings").is_none(), "{light}");
+        let mut none = json!({});
+        add_forced_reflows(&mut none, Err("no trace".into()));
+        assert_eq!(none["notes"], json!(["forced_reflows is null: no trace"]));
     }
 
     /// ISSUE-54: unused code joins the insights with a finding over 50 KB

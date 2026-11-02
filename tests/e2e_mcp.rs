@@ -2168,6 +2168,21 @@ mod e2e {
                     "unused_code is null: Firefox has no code coverage"
                 },
             ),
+            (
+                "ISSUE-56 save_path writes the trace on Chrome and fails on Firefox",
+                "profile_page_performance",
+                json!({
+                    "instance_id": "e2e",
+                    "duration_ms": 500,
+                    "insights": true,
+                    "save_path": std::env::temp_dir().join("e2e-trace-56.json.gz").display().to_string(),
+                }),
+                if browser == "chrome" {
+                    "\"saved_trace\": {"
+                } else {
+                    "!save_path is only available on Chrome"
+                },
+            ),
         ]
     }
 

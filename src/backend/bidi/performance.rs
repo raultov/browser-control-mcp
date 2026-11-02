@@ -21,6 +21,12 @@ pub(crate) const METRICS_NOTE: &str = "Firefox gives only Nodes, Frames, Resourc
 pub(crate) const LONG_TASKS_NOTE: &str =
     "Firefox has no Long Tasks API: total_blocking_time_ms and top_long_tasks are null";
 
+/// Why Firefox refuses `save_path`.
+const SAVE_UNSUPPORTED: &str = "save_path is only available on Chrome: Firefox has no tracing over WebDriver BiDi, so there is no trace to save; nothing was profiled";
+
+/// Why Firefox has no `forced_reflows`.
+const NO_TRACE: &str = "Firefox has no trace over WebDriver BiDi, which is where Chrome records the layouts a script forced";
+
 /// Why Firefox has no `unused_code`.
 const NO_COVERAGE: &str =
     "Firefox has no code coverage over WebDriver BiDi (Chrome's Profiler and CSS domains give it)";
@@ -44,6 +50,9 @@ pub(crate) async fn metrics(params: CallToolRequestParams, handler: &McpHandler)
 /// page-load vitals. Same keys as on Chrome.
 pub(crate) async fn profile(params: CallToolRequestParams, handler: &McpHandler) -> ToolResult {
     let args: ProfilePagePerformanceTool = parse_args(params)?;
+    if args.save_path.is_some() {
+        return Err(CallToolError::from_message(SAVE_UNSUPPORTED));
+    }
     let session = handler.firefox(args.instance_id.as_deref()).await?;
     let (_, tab) = session.tab(args.tab_id.as_deref()).await?;
     let duration = args.duration_ms.unwrap_or(3000).clamp(500, 15000);
@@ -66,6 +75,7 @@ pub(crate) async fn profile(params: CallToolRequestParams, handler: &McpHandler)
         let found = page::run_snippet(&tab.tab, insights::SNIPPET).await?;
         let mut annotated = insights::annotate(found);
         insights::add_unused_code(&mut annotated, Err(NO_COVERAGE.into()));
+        insights::add_forced_reflows(&mut annotated, Err(NO_TRACE.into()));
         summary["insights"] = annotated;
     }
     Ok(CallToolResult::text_content(vec![
@@ -159,6 +169,25 @@ mod tests {
         ts::stop(&handler).await;
     }
 
+    /// ISSUE-56 (Firefox): `save_path` fails before anything runs: there
+    /// is no trace to save.
+    #[tokio::test]
+    async fn firefox_refuses_to_save_a_trace() {
+        let mock = MockFirefox::start(false).await.unwrap();
+        let handler = ts::handler(&mock);
+        let args = json!({"save_path": "/tmp/trace.json"});
+        let error = profile(ts::call("profile_page_performance", args), &handler)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.starts_with("save_path is only available on Chrome"),
+            "{error}"
+        );
+        assert!(mock.bidi().commands_named("script.evaluate").is_empty());
+        ts::stop(&handler).await;
+    }
+
     /// ISSUE-22: `insights: true` adds the page's insights, with notes
     /// for what Firefox does not report; without it they are not read.
     #[tokio::test]
@@ -191,10 +220,11 @@ mod tests {
             notes[0].as_str().unwrap().starts_with("cls is null"),
             "{body}"
         );
-        // ISSUE-54: and no code coverage, saying why
+        // ISSUE-54 / ISSUE-56: and no coverage or forced reflows, saying why
         assert_eq!(body["insights"]["unused_code"], Value::Null);
-        let last = notes.last().and_then(Value::as_str).unwrap_or_default();
-        assert_eq!(last, format!("unused_code is null: {NO_COVERAGE}"));
+        assert_eq!(body["insights"]["forced_reflows"], Value::Null);
+        assert!(notes.contains(&json!(format!("unused_code is null: {NO_COVERAGE}"))));
+        assert!(notes.contains(&json!(format!("forced_reflows is null: {NO_TRACE}"))));
         // And without insights the snippet is not run
         let args = json!({"duration_ms": 500});
         let reply = profile(ts::call("profile_page_performance", args), &handler)

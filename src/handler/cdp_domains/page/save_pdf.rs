@@ -56,7 +56,7 @@ impl SavePdfTool {
             ));
         }
         match &self.path {
-            Some(path) => output_path(path, roots)
+            Some(path) => output_path(path, roots, (".pdf", &[".pdf"]))
                 .map(Some)
                 .map_err(CallToolError::from_message),
             None => Ok(None),
@@ -166,19 +166,23 @@ fn valid_range(range: &str) -> bool {
     }
 }
 
-/// The file `path` names, once checked: absolute, ending in `.pdf`, in an
+/// The file `path` names, once checked: absolute, ending in one of the
+/// `endings` (case-insensitive; `kind` names them in the error), in an
 /// existing directory under one of `roots` (default: the working and temp
 /// directories) once resolved, so `..` and symlinks cannot leave them.
-fn output_path(path: &str, roots: &[PathBuf]) -> Result<PathBuf, String> {
+pub(crate) fn output_path(
+    path: &str,
+    roots: &[PathBuf],
+    (kind, endings): (&str, &[&str]),
+) -> Result<PathBuf, String> {
     let given = Path::new(path);
     if !given.is_absolute() {
         return Err(format!("'{path}' is not an absolute path"));
     }
-    let is_pdf = given
-        .extension()
-        .is_some_and(|e| e.eq_ignore_ascii_case("pdf"));
-    let (Some(directory), Some(name), true) = (given.parent(), given.file_name(), is_pdf) else {
-        return Err(format!("'{path}' must name a .pdf file"));
+    let lower = path.to_ascii_lowercase();
+    let fits = endings.iter().any(|ending| lower.ends_with(ending));
+    let (Some(directory), Some(name), true) = (given.parent(), given.file_name(), fits) else {
+        return Err(format!("'{path}' must name a {kind} file"));
     };
     let Ok(directory) = std::fs::canonicalize(directory) else {
         return Err(format!("the directory of '{path}' does not exist"));
