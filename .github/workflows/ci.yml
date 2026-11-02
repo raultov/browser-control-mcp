@@ -3,6 +3,8 @@ on:
   push:
     branches: [ "master", "phase-*" ]
   pull_request: { branches: [ "master" ] }
+  # Run by hand when GitHub drops a push event (it did for 0.11.0-beta.17).
+  workflow_dispatch:
 env:
   CARGO_TERM_COLOR: always
 jobs:
