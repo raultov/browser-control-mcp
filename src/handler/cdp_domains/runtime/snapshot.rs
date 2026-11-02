@@ -146,5 +146,13 @@ mod tests {
                 .unwrap()
                 .contains("outline(root, 3, ")
         );
+        // ISSUE-64: the outline is synchronous; awaiting a promise would hang
+        // on a page paused in the debugger (no microtask runs)
+        let awaited = mock
+            .commands_named("Runtime.evaluate")
+            .into_iter()
+            .filter(|c| c.params["awaitPromise"] == json!(true))
+            .count();
+        assert_eq!(awaited, 0);
     }
 }

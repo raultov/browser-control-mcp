@@ -42,6 +42,12 @@ from a copy of its code: entries describe the differences from that release.
   naming `switch_tab`. On Chrome, a click whose reply came before the new
   tab was registered no longer misses the "opened tab" note: it waits (at
   most 2 s) for the pages Chrome announced. (#68)
+- Chrome: `snapshot`, `find_in_snapshot` and `emulate` answer at once on a
+  page paused in the debugger, instead of failing after 10 s with
+  `CDP Error: Command Runtime.evaluate timed out after 10s`: their
+  synchronous snippets are no longer awaited (Chrome runs no microtask while
+  paused). `emulate` with `geolocation` on a paused page says the position
+  is read once the page resumes. (#64)
 
 ## [0.11.0-beta.16] - 2026-11-02
 

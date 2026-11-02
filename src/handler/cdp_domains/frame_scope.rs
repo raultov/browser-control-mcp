@@ -81,9 +81,12 @@ impl FrameScope {
         self.session.send_raw_command(method, params).await
     }
 
-    /// The value of a snippet in the frame, or its exception.
+    /// The value of a snippet in the frame, or its exception. The snippets
+    /// are synchronous and not awaited: Chrome runs no microtask while the
+    /// page is paused in the debugger, so an awaited one would wait for the
+    /// timeout (ISSUE-64).
     async fn value(&self, expression: &str) -> Result<Value, CallToolError> {
-        let params = json!({"expression": expression, "returnByValue": true, "awaitPromise": true});
+        let params = json!({"expression": expression, "returnByValue": true});
         let reply = self.evaluate(params).await.map_err(failure)?;
         crate::handler::snippet_outcome(reply.result.unwrap_or_default())
     }
@@ -206,7 +209,6 @@ impl FrameReader for ChromeFrames {
                     ),
                     "arguments": roots.iter().map(|id| json!({"objectId": id})).collect::<Vec<_>>(),
                     "returnByValue": true,
-                    "awaitPromise": true,
                 });
                 match self.page.send("Runtime.callFunctionOn", call).await {
                     Ok(reply) => crate::handler::snippet_outcome(reply.result.unwrap_or_default()),
@@ -451,6 +453,40 @@ pub(crate) async fn enter_frame(
 mod tests {
     use super::*;
 
+    /// ISSUE-64 (Chrome): the snippets read through the frames (outline,
+    /// search, frame marks) are synchronous and are not awaited: Chrome
+    /// runs no microtask while the page is paused in the debugger, so an
+    /// awaited evaluation waited for the 10 s timeout.
+    #[tokio::test]
+    async fn frame_snippets_are_not_awaited() {
+        use crate::handler::frames::FrameReader;
+        // Given a page whose snippet answers
+        let mock = crate::handler::cdp_domains::tests::spawn_recording_mock().await;
+        mock.respond_with(
+            "Runtime.evaluate",
+            |_| json!({"result": {"result": {"type": "object", "value": {"status": "ok"}}}}),
+        );
+        let address = format!("127.0.0.1:{}", mock.http_port);
+        let browser =
+            cdp_browser_lite::BrowserClient::connect(&address, std::time::Duration::from_secs(2))
+                .await
+                .unwrap();
+        let reader = ChromeFrames {
+            page: FrameScope::page(browser.attach("T-tab-1").await.unwrap()),
+        };
+        // When a snippet is read in the page
+        let value = reader.evaluate(None, "SNIPPET").await.unwrap();
+        // Then it was evaluated by value, without awaiting a promise
+        assert_eq!(value["status"], "ok");
+        let sent = mock.commands_named("Runtime.evaluate");
+        let snippet = sent
+            .iter()
+            .find(|c| c.params["expression"] == "SNIPPET")
+            .unwrap();
+        assert_eq!(snippet.params["returnByValue"], true);
+        assert_ne!(snippet.params["awaitPromise"], true);
+    }
+
     /// ISSUE-42: the page's outline gets the closed shadow roots Chrome
     /// describes (`DOM.describeNode` with `pierce`, the page's own: not an
     /// iframe's), handed to it as arguments, never left in the page; the
@@ -501,6 +537,8 @@ mod tests {
         );
         let call = &mock.commands_named("Runtime.callFunctionOn")[0].params;
         assert_eq!(call["objectId"], "ROOT42");
+        // ISSUE-64: not awaited, so a page paused in the debugger answers
+        assert_ne!(call["awaitPromise"], true);
         assert_eq!(call["arguments"], json!([{"objectId": "ROOT42"}]));
         let declaration = call["functionDeclaration"].as_str().unwrap();
         assert!(

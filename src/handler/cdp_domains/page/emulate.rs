@@ -219,6 +219,10 @@ pub enum MediaType {
 }
 
 /// What the page sees after an emulation.
+/// What the reply says of the position on a page paused in the debugger.
+const PAUSED_POSITION: &str =
+    "not read: the page is paused in the debugger (set; it reads it once resumed)";
+
 const EMULATED: &str = "({ width: innerWidth, height: innerHeight, device_pixel_ratio: devicePixelRatio, \
     color_scheme: matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light', \
     reduced_motion: matchMedia('(prefers-reduced-motion: reduce)').matches, \
@@ -583,12 +587,22 @@ impl EmulateTool {
         apply(&target, &args.cdp_commands(&merged)).await?;
         // Kept once Chrome took it all.
         *state.lock().await = merged.clone();
-        // Awaited: the position the page reads comes in a promise.
+        // The position the page reads comes in a promise, awaited; Chrome
+        // runs no microtask while the page is paused in the debugger, so it
+        // is left out then (ISSUE-64).
+        let paused = target.is_paused().await;
+        let (expression, awaited) = match paused {
+            true => (EMULATED.to_string(), false),
+            false => (args.measure(), args.geolocation.is_some()),
+        };
         let read =
-            json!({"expression": args.measure(), "awaitPromise": true, "returnByValue": true});
+            json!({"expression": expression, "awaitPromise": awaited, "returnByValue": true});
         let reply = crate::handler::send_or(&target, "Runtime.evaluate", read, "CDP Error").await?;
         let mut seen = crate::handler::snippet_outcome(reply.result.unwrap_or_default())?;
         merged.annotate(&args, &mut seen);
+        if paused && args.geolocation.is_some() {
+            seen["geolocation"] = json!(PAUSED_POSITION);
+        }
         Ok(args.reply(&seen))
     }
 }
@@ -606,6 +620,41 @@ mod tests {
 
     fn tool(args: Value) -> EmulateTool {
         serde_json::from_value(args).unwrap()
+    }
+
+    /// ISSUE-64 (Chrome): on a page paused in the debugger, what the page
+    /// sees is read without awaiting a promise (Chrome runs no microtask
+    /// then, so the call waited for the 10 s timeout); the position it
+    /// would read from a promise is left out, saying so.
+    #[tokio::test]
+    async fn paused_page_is_measured_without_awaiting() {
+        use crate::handler::cdp_domains::tests::{
+            call, mock_handler, reply_text, spawn_recording_mock,
+        };
+        // Given a tab paused in the debugger
+        let mock = spawn_recording_mock().await;
+        mock.respond_with(
+            "Runtime.evaluate",
+            |_| json!({"result": {"result": {"type": "object", "value": {"width": 800}}}}),
+        );
+        let handler = mock_handler(mock.http_port);
+        let session = handler.session(None).await.unwrap();
+        let debugger = session.debugger_state(None).unwrap();
+        debugger.lock().await.paused_call_frame_id = Some("f1".into());
+        // When emulate sets a position
+        let args = json!({"geolocation": {"latitude": 1.0, "longitude": 2.0}});
+        let reply = EmulateTool::handle(call("emulate", args), &handler)
+            .await
+            .unwrap();
+        // Then nothing was awaited, and the reply says why the position is missing
+        let reads = mock.commands_named("Runtime.evaluate");
+        assert!(
+            reads
+                .iter()
+                .all(|c| c.params["awaitPromise"] != json!(true))
+        );
+        let text = reply_text(&reply);
+        assert!(text.contains("paused in the debugger"), "{text}");
     }
 
     /// ISSUE-9: options that make no sense are refused before any browser

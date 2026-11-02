@@ -2105,11 +2105,34 @@ mod e2e {
                 json!({"instance_id": i, "expression": "x * 7"}),
                 "35",
             ),
+        ];
+        steps.extend(paused_page_steps(&i));
+        steps.extend(click_into_breakpoint_steps(&i));
+        steps.extend(pause_on_navigate_steps(&i, base));
+        steps
+    }
+
+    /// Tools on the paused page answer at once (ISSUE-16, ISSUE-64), then
+    /// a step and the resume.
+    fn paused_page_steps(i: &Value) -> Vec<Step> {
+        vec![
             (
                 "ISSUE-16 evaluate_js while paused answers at once",
                 "evaluate_js",
                 json!({"instance_id": i, "expression": "Promise.resolve(6 * 7)"}),
                 "42",
+            ),
+            (
+                "ISSUE-64 snapshot while paused answers at once",
+                "snapshot",
+                json!({"instance_id": i}),
+                "[ref=e",
+            ),
+            (
+                "ISSUE-64 find_in_snapshot while paused",
+                "find_in_snapshot",
+                json!({"instance_id": i, "text": "hit"}),
+                "button \"hit\"",
             ),
             (
                 "step_over",
@@ -2118,10 +2141,7 @@ mod e2e {
                 "Stepped",
             ),
             ("resume", "resume", json!({"instance_id": i}), "resumed"),
-        ];
-        steps.extend(click_into_breakpoint_steps(&i));
-        steps.extend(pause_on_navigate_steps(&i, base));
-        steps
+        ]
     }
 
     /// ISSUE-45: a page that pauses in the debugger while it loads makes
