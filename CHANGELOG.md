@@ -10,6 +10,15 @@ from a copy of its code: entries describe the differences from that release.
 
 ## [Unreleased]
 
+### Added
+
+- `emulate` gains `cpu_throttling` (`1` to `20`, e.g. `4` for a 4× slowdown)
+  and `network_throttling` (`slow-3g`, `fast-3g`, `4g` or `none`; Chrome
+  DevTools names such as `Slow 3G` and `Fast 3G` are accepted too) on Chrome,
+  kept in the tab's emulation state across calls, reported in the reply and
+  cleared by `reset: true`. On Firefox, where WebDriver BiDi has no CPU or
+  bandwidth/latency throttling, they fail naming them. (#52)
+
 ## [0.10.0-beta.15] - 2026-11-02
 
 Public **BETA**. Fixes from a comparison round against Playwright MCP,

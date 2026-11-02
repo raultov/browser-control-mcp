@@ -1437,6 +1437,11 @@ mod e2e {
         } else {
             "!color_scheme not available on Firefox"
         };
+        let throttle = if chrome {
+            "\"cpu_throttling\": 4.0"
+        } else {
+            "!cpu_throttling, network_throttling not available on Firefox"
+        };
         vec![
             (
                 "ISSUE-9 emulate a viewport",
@@ -1449,6 +1454,12 @@ mod e2e {
                 "emulate",
                 json!({"instance_id": i, "color_scheme": "dark"}),
                 dark,
+            ),
+            (
+                "ISSUE-52 throttle CPU and network",
+                "emulate",
+                json!({"instance_id": i, "cpu_throttling": 4.0, "network_throttling": "fast-3g"}),
+                throttle,
             ),
         ]
         .into_iter()

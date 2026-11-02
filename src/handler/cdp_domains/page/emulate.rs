@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 
 #[macros::mcp_tool(
     name = "emulate",
-    description = "Emulates, in the tab, its viewport ('width' and 'height', device_scale_factor, 'mobile' with touch), CSS media (color_scheme, reduced_motion, forced_colors, 'media'), user_agent, locale, timezone and geolocation (the page is granted the permission to read it). Each call adds to the earlier ones (options it does not give keep their value); 'reset' removes every emulation. Returns what the page now sees. Firefox has no media or touch emulation (WebDriver BiDi): 'mobile' and the media options fail there."
+    description = "Emulates, in the tab, its viewport ('width' and 'height', device_scale_factor, 'mobile' with touch), CSS media (color_scheme, reduced_motion, forced_colors, 'media'), user_agent, locale, timezone, geolocation (the page is granted the permission to read it), cpu_throttling and network_throttling. Each call adds to the earlier ones (options it does not give keep their value); 'reset' removes every emulation. Returns what the page now sees. Firefox has no media, touch or throttling emulation (WebDriver BiDi): 'mobile', the media options, cpu_throttling and network_throttling fail there."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct EmulateTool {
@@ -40,6 +40,10 @@ pub struct EmulateTool {
     pub timezone: Option<String>,
     /// The position navigator.geolocation reports.
     pub geolocation: Option<Geolocation>,
+    /// CPU slowdown factor, 1 to 20 (4 = 4x slower, 1 = no throttling; Chrome only).
+    pub cpu_throttling: Option<f64>,
+    /// Network preset ('slow-3g', 'fast-3g', '4g', or 'none' to remove; Chrome only; use set_offline for offline).
+    pub network_throttling: Option<NetworkThrottling>,
     /// Remove every emulation; takes no other option.
     pub reset: Option<bool>,
 }
@@ -77,9 +81,9 @@ impl Geolocation {
     }
 }
 
-/// The viewport and media a tab emulates, as every call so far set them:
-/// Chrome replaces its device metrics and its media features as a whole,
-/// so a call that gives some of them sends the others again.
+/// The viewport, media and throttling a tab emulates, as every call so
+/// far set them: Chrome replaces its device metrics and its media features
+/// as a whole, so a call that gives some of them sends the others again.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub(crate) struct Emulation {
     width: Option<u32>,
@@ -90,10 +94,14 @@ pub(crate) struct Emulation {
     reduced_motion: Option<bool>,
     forced_colors: Option<bool>,
     media: Option<MediaType>,
+    cpu_throttling: Option<f64>,
+    network_throttling: Option<NetworkThrottling>,
 }
 
 impl Emulation {
-    /// This emulation with what `args` gives (nothing after a reset).
+    /// This emulation with what `args` gives (nothing after a reset; `1`
+    /// for `cpu_throttling` and `"none"` for `network_throttling` clear
+    /// them).
     pub(crate) fn merged(&self, args: &EmulateTool) -> Self {
         if args.resets() {
             return Self::default();
@@ -107,7 +115,80 @@ impl Emulation {
             reduced_motion: args.reduced_motion.or(self.reduced_motion),
             forced_colors: args.forced_colors.or(self.forced_colors),
             media: args.media.or(self.media),
+            cpu_throttling: args
+                .cpu_throttling
+                .or(self.cpu_throttling)
+                .filter(|&rate| rate > 1.0),
+            network_throttling: args
+                .network_throttling
+                .or(self.network_throttling)
+                .filter(|&net| net != NetworkThrottling::None),
         }
+    }
+
+    /// Adds the active CPU and network throttling (or the values `args`
+    /// just cleared them to) to `seen`, as the page cannot read them.
+    pub(crate) fn annotate(&self, args: &EmulateTool, seen: &mut Value) {
+        if let Some(rate) = self.cpu_throttling.or(args.cpu_throttling) {
+            seen["cpu_throttling"] = json!(rate);
+        }
+        if let Some(net) = self.network_throttling.or(args.network_throttling) {
+            seen["network_throttling"] = json!(net.as_str());
+        }
+    }
+}
+
+/// `network_throttling` (Chrome DevTools presets; DevTools names such as
+/// `'Slow 3G'`, `'Fast 3G'` and `'Fast 4G'` are accepted as aliases).
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema,
+)]
+pub enum NetworkThrottling {
+    /// Slow 3G (2000 ms latency, 400 kbps up/down).
+    #[serde(rename = "slow-3g", alias = "Slow 3G")]
+    Slow3g,
+    /// Fast 3G / Slow 4G (562.5 ms latency, 1.44 Mbps down, 675 kbps up).
+    #[serde(
+        rename = "fast-3g",
+        alias = "Fast 3G",
+        alias = "slow-4g",
+        alias = "Slow 4G"
+    )]
+    Fast3g,
+    /// Fast 4G (165 ms latency, 8.1 Mbps down, 1.35 Mbps up).
+    #[serde(rename = "4g", alias = "fast-4g", alias = "Fast 4G")]
+    FourG,
+    /// No network throttling.
+    #[serde(rename = "none", alias = "No throttling")]
+    None,
+}
+
+impl NetworkThrottling {
+    /// Its canonical name in the reply.
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Slow3g => "slow-3g",
+            Self::Fast3g => "fast-3g",
+            Self::FourG => "4g",
+            Self::None => "none",
+        }
+    }
+
+    /// Its `Network.emulateNetworkConditions` parameters (`latency` in ms,
+    /// throughput in bytes/s).
+    fn cdp_conditions(self) -> Value {
+        let (latency, down, up) = match self {
+            Self::Slow3g => (2000.0, 50_000.0, 50_000.0),
+            Self::Fast3g => (562.5, 180_000.0, 84_375.0),
+            Self::FourG => (165.0, 1_012_500.0, 168_750.0),
+            Self::None => (0.0, -1.0, -1.0),
+        };
+        json!({
+            "offline": false,
+            "latency": latency,
+            "downloadThroughput": down,
+            "uploadThroughput": up,
+        })
     }
 }
 
@@ -195,6 +276,12 @@ impl EmulateTool {
         if self.mobile.is_some() {
             options.push("mobile");
         }
+        if self.cpu_throttling.is_some() {
+            options.push("cpu_throttling");
+        }
+        if self.network_throttling.is_some() {
+            options.push("network_throttling");
+        }
         options
     }
 
@@ -204,7 +291,9 @@ impl EmulateTool {
         let anything = self.sets_viewport()
             || self.height.is_some()
             || !self.media_options().is_empty()
-            || !self.identity_options().is_empty();
+            || !self.identity_options().is_empty()
+            || self.cpu_throttling.is_some()
+            || self.network_throttling.is_some();
         if self.resets() {
             return if anything {
                 fail("'reset' takes no other option".into())
@@ -213,11 +302,16 @@ impl EmulateTool {
             };
         }
         if !anything {
-            return fail("emulate needs a viewport, media, user_agent, locale, timezone or geolocation option, or 'reset'".into());
+            return fail("emulate needs a viewport, media, user_agent, locale, timezone, geolocation, cpu_throttling or network_throttling option, or 'reset'".into());
         }
         self.check_texts().map_err(CallToolError::from_message)?;
         if let Some(place) = self.geolocation {
             place.check().map_err(CallToolError::from_message)?;
+        }
+        if let Some(rate) = self.cpu_throttling
+            && !(1.0..=20.0).contains(&rate)
+        {
+            return fail(format!("cpu_throttling must be 1 to 20, got {rate}"));
         }
         if self.width.is_some() != self.height.is_some() {
             return fail("'width' and 'height' go together".into());
@@ -341,6 +435,11 @@ impl EmulateTool {
                 ("Emulation.setTimezoneOverride", json!({"timezoneId": ""})),
                 ("Emulation.clearGeolocationOverride", json!({})),
                 ("Browser.resetPermissions", json!({})),
+                ("Emulation.setCPUThrottlingRate", json!({"rate": 1})),
+                (
+                    "Network.emulateNetworkConditions",
+                    NetworkThrottling::None.cdp_conditions(),
+                ),
             ];
         }
         let mut commands = Vec::new();
@@ -360,6 +459,12 @@ impl EmulateTool {
             commands.push(("Emulation.setEmulatedMedia", cdp_media(state)));
         }
         commands.extend(self.cdp_identity());
+        if let Some(rate) = self.cpu_throttling {
+            commands.push(("Emulation.setCPUThrottlingRate", json!({"rate": rate})));
+        }
+        if let Some(net) = self.network_throttling {
+            commands.push(("Network.emulateNetworkConditions", net.cdp_conditions()));
+        }
         commands
     }
 
@@ -477,12 +582,13 @@ impl EmulateTool {
         let merged = state.lock().await.merged(&args);
         apply(&target, &args.cdp_commands(&merged)).await?;
         // Kept once Chrome took it all.
-        *state.lock().await = merged;
+        *state.lock().await = merged.clone();
         // Awaited: the position the page reads comes in a promise.
         let read =
             json!({"expression": args.measure(), "awaitPromise": true, "returnByValue": true});
         let reply = crate::handler::send_or(&target, "Runtime.evaluate", read, "CDP Error").await?;
-        let seen = crate::handler::snippet_outcome(reply.result.unwrap_or_default())?;
+        let mut seen = crate::handler::snippet_outcome(reply.result.unwrap_or_default())?;
+        merged.annotate(&args, &mut seen);
         Ok(args.reply(&seen))
     }
 }
@@ -549,7 +655,7 @@ mod tests {
             json!({"media": "print", "features": [{"name": "prefers-color-scheme", "value": "dark"}]})
         );
         let reset = tool(json!({"reset": true}));
-        assert_eq!(reset.cdp_commands(&Emulation::default()).len(), 8);
+        assert_eq!(reset.cdp_commands(&Emulation::default()).len(), 10);
         assert_eq!(phone.chrome_only(), ["color_scheme", "media", "mobile"]);
     }
 
@@ -656,6 +762,60 @@ mod tests {
         assert_eq!(
             cleared[3].1,
             json!({"coordinates": null, "contexts": ["C1"]})
+        );
+    }
+
+    /// ISSUE-52: CPU and network throttling become their Chrome CDP
+    /// commands, stay in the tab's emulation state across calls, appear in
+    /// the reply, and are refused on Firefox and when out of range.
+    #[test]
+    fn cpu_and_network_throttling() {
+        let error = |args: Value| tool(args).check_arguments().unwrap_err().to_string();
+        assert!(error(json!({"cpu_throttling": 0.5})).contains("1 to 20"));
+        assert!(error(json!({"cpu_throttling": 25.0})).contains("1 to 20"));
+        // Given 4x CPU slowdown and Fast 3G (also accepted by its DevTools name)
+        let args = tool(json!({"cpu_throttling": 4.0, "network_throttling": "Fast 3G"}));
+        args.check_arguments().unwrap();
+        assert_eq!(args.chrome_only(), ["cpu_throttling", "network_throttling"]);
+        let state = Emulation::default().merged(&args);
+        let commands = args.cdp_commands(&state);
+        assert_eq!(
+            commands,
+            [
+                ("Emulation.setCPUThrottlingRate", json!({"rate": 4.0})),
+                (
+                    "Network.emulateNetworkConditions",
+                    json!({"offline": false, "latency": 562.5, "downloadThroughput": 180_000.0, "uploadThroughput": 84_375.0})
+                )
+            ]
+        );
+        // When a later call only changes the colour scheme, Then the reply still shows the active throttling
+        let later = tool(json!({"color_scheme": "dark"}));
+        let state = state.merged(&later);
+        let mut seen = json!({"width": 800});
+        state.annotate(&later, &mut seen);
+        assert_eq!(
+            (
+                seen["cpu_throttling"].clone(),
+                seen["network_throttling"].clone()
+            ),
+            (json!(4.0), json!("fast-3g"))
+        );
+        // And setting 1 and "none" clears them in the state while confirming them in that call's reply
+        let clear = tool(json!({"cpu_throttling": 1.0, "network_throttling": "none"}));
+        let state = state.merged(&clear);
+        assert_eq!(
+            (state.cpu_throttling, state.network_throttling),
+            (None, None)
+        );
+        let mut seen = json!({});
+        state.annotate(&clear, &mut seen);
+        assert_eq!(
+            (
+                seen["cpu_throttling"].clone(),
+                seen["network_throttling"].clone()
+            ),
+            (json!(1.0), json!("none"))
         );
     }
 }
