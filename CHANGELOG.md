@@ -20,6 +20,11 @@ from a copy of its code: entries describe the differences from that release.
   during hydration (as MDN does) is retried once after 50 ms instead of
   failing. `forced_reflows.total_ms` no longer serializes `-0.0` when there
   are none. (#58)
+- Firefox: `search_scripts` finds every script of the page, not only the
+  first one Firefox announced: inline scripts, modules and scripts loaded
+  later were missing (`Total cached scripts: 1` on a page with five). Each
+  thread is now asked for its `sources`, merged with the announced ones;
+  pause locations and breakable columns use the same list. (#62)
 
 ## [0.11.0-beta.16] - 2026-11-02
 

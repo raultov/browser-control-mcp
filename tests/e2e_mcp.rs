@@ -2045,6 +2045,12 @@ mod e2e {
                 json!({"instance_id": i, "query": "appTarget"}),
                 "appTarget",
             ),
+            (
+                "ISSUE-62 search_scripts finds inline scripts",
+                "search_scripts",
+                json!({"instance_id": i, "query": "hello from e2e"}),
+                "hello from e2e",
+            ),
             ("set_breakpoint", "set_breakpoint", bp, "Breakpoint set"),
             ("trigger", "evaluate_js", trigger, ""),
             ("wait for the pause", "sleep", json!({}), ""),

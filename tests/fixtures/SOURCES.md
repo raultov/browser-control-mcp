@@ -7,7 +7,8 @@ test cookie (`probe=1`), kept on purpose for the redaction tests.
 
 | File(s) | Origin |
 | --- | --- |
-| `bidi/event-load.json`, `bidi/event-log-entry.json`, `bidi/get-tree.json`, `bidi/session-new*.json`, `bidi/session-status-busy.json`, `rdp/*.json` without `bbl_` prefix | copied from `bidi-lite/tests/fixtures/` (its spike, Firefox 157.0.1; see that repo for hand-made ones: `rdp/source-long-string.json`) |
+| `bidi/event-load.json`, `bidi/event-log-entry.json`, `bidi/get-tree.json`, `bidi/session-new*.json`, `bidi/session-status-busy.json`, `rdp/*.json` without `bbl_` prefix (except `rdp/thread-sources.json`) | copied from `bidi-lite/tests/fixtures/` (its spike, Firefox 157.0.1; see that repo for hand-made ones: `rdp/source-long-string.json`) |
+| `rdp/thread-sources.json` | ISSUE-62 probe (Firefox 159): a thread's `sources` reply on a page with an external, a minified, two inline and an imported module script, plus two `debugger eval` sources |
 | `bidi/bbl_*.json`, `rdp/bbl_*.json` | copied from `bidi-browser-lite/src/test_support/fixtures/` (its spike, Firefox 157.0.1) |
 | `bidi/script-evaluate-*.json`, `bidi/input-perform-actions.json`, `bidi/capture-screenshot.json` (data truncated), `bidi/event-*.json` (except `event-load`/`event-log-entry`), `bidi/session-capabilities.json` | browser-control-mcp F5 spike, `docs/specs/spikes/transcripts/f5_main.jsonl` |
 | `bidi/network-get-data.json` | F5 spike, `f5_short_headless.jsonl` |

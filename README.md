@@ -159,7 +159,7 @@ see the note.
 | `resume` | ✓ | ✓ | |
 | `step_over` | ✓ | ✓ | |
 | `evaluate_on_call_frame` | ✓ | ✓ | |
-| `search_scripts` | ✓ | ✓ | a long line's preview is 100 characters on each side of the match; frames of another origin too (Chrome ids such as `2.17`) |
+| `search_scripts` | ✓ | ✓ | a long line's preview is 100 characters on each side of the match; inline scripts and modules included; frames of another origin too (Chrome ids such as `2.17`) |
 | `pause_on_load` | ✓ | ✗ | TODO on Firefox, see [Limitations and TODO](#limitations-and-todo) |
 | `enable_proxy_auth` | ✓ | partial | needs `--proxy-server`; a request the proxy rejects twice is cancelled; untested on Firefox against a real proxy |
 | `send_cdp_command` | ✓ | ✗ | `raw` group; raw Chrome DevTools Protocol; refuses `Network`/`Page`/`Runtime`/`Log`/`Debugger.disable` and `Browser.close`; `Fetch.enable` comes with a note |

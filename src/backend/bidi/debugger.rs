@@ -301,10 +301,42 @@ fn not_paused() -> BackendError {
 }
 
 /// The sources of the tab's document and of its frames of another origin.
-fn every_source(debugger: &Debugger) -> Vec<SourceInfo> {
+/// The announcements alone miss scripts (inline ones, modules, those loaded
+/// after the first: ISSUE-62), so each thread is also asked for its
+/// `sources`; a thread that does not answer keeps what was announced.
+async fn every_source(debugger: &Debugger) -> Vec<SourceInfo> {
+    let mut known = announced_sources(debugger);
+    let frames = debugger.frame_targets().into_iter().map(|f| f.thread_actor);
+    let threads = std::iter::once(debugger.thread_actor()).chain(frames);
+    for thread in threads {
+        let listed = debugger
+            .client()
+            .request(&thread, "sources", serde_json::json!({}))
+            .await;
+        if let Ok(reply) = listed {
+            merge_sources(&mut known, &reply.body);
+        }
+    }
+    known
+}
+
+/// The sources Firefox announced for the tab's document and its frames.
+fn announced_sources(debugger: &Debugger) -> Vec<SourceInfo> {
     let frames = debugger.frame_targets();
     let in_frames = frames.iter().flat_map(|f| debugger.frame_sources(&f.actor));
     debugger.sources().into_iter().chain(in_frames).collect()
+}
+
+/// Adds the scripts of a thread's `sources` reply that `known` lacks,
+/// leaving out debugger evaluations (as the announcements do).
+fn merge_sources(known: &mut Vec<SourceInfo>, reply: &Value) {
+    let listed = reply["sources"].as_array().into_iter().flatten();
+    for source in listed.filter_map(|s| serde_json::from_value::<SourceInfo>(s.clone()).ok()) {
+        let evaluation = source.introduction_type.as_deref() == Some("debugger eval");
+        if !evaluation && !known.iter().any(|seen| seen.actor == source.actor) {
+            known.push(source);
+        }
+    }
 }
 
 /// The thread a pause is in: its frame's, or the tab's (also when the tab
@@ -317,13 +349,20 @@ fn paused_thread(debugger: &Debugger, pause: Option<&PauseInfo>) -> TargetThread
 }
 
 /// Where a pause stopped, 0-based as every tool reports it, with the URL of
-/// its source.
-fn pause_location(debugger: &Debugger, pause: &PauseInfo) -> Option<PauseLocation> {
+/// its source (the threads are asked only when it was not announced).
+async fn pause_location(debugger: &Debugger, pause: &PauseInfo) -> Option<PauseLocation> {
     let (actor, line, column) = pause.location.clone()?;
-    let url = every_source(debugger)
+    let announced = announced_sources(debugger)
         .into_iter()
-        .find(|s| s.actor == actor)
-        .and_then(|s| s.url);
+        .find(|s| s.actor == actor);
+    let source = match announced {
+        Some(source) => Some(source),
+        None => every_source(debugger)
+            .await
+            .into_iter()
+            .find(|s| s.actor == actor),
+    };
+    let url = source.and_then(|s| s.url);
     Some(PauseLocation {
         url,
         script_id: None,
@@ -339,7 +378,7 @@ pub(crate) async fn paused(session: &FirefoxSession, tab_id: Option<&str>) -> Op
     let shared = session.debuggers.lock().await.get(&id).cloned()?;
     let entry = shared.lock().await;
     let pause = current_pause(&entry)?;
-    Some(Paused(pause_location(&entry.debugger, &pause)))
+    Some(Paused(pause_location(&entry.debugger, &pause).await))
 }
 
 /// Waits up to `limit` for a pause other than `before`.
@@ -352,7 +391,7 @@ async fn next_pause(
     while tokio::time::Instant::now() < deadline {
         tokio::time::sleep(PAUSE_POLL).await;
         if let Some(now) = current_pause(entry).filter(|p| Some(p) != before) {
-            return pause_location(&entry.debugger, &now);
+            return pause_location(&entry.debugger, &now).await;
         }
     }
     None
@@ -395,7 +434,7 @@ pub(crate) async fn race_pause<T>(
         loop {
             tokio::time::sleep(PAUSE_POLL).await;
             if let Some(now) = read_pause(&pause).filter(|p| Some(p) != before.as_ref()) {
-                return pause_location(&debugger, &now);
+                return pause_location(&debugger, &now).await;
             }
         }
     };
@@ -517,6 +556,7 @@ async fn breakable_columns(
     line: u32,
 ) -> Result<Option<Vec<u32>>, BackendError> {
     let sources: Vec<_> = every_source(debugger)
+        .await
         .into_iter()
         .filter(|source| source.url.as_deref() == Some(url))
         .collect();
@@ -665,6 +705,7 @@ pub(crate) async fn search_scripts(
     let report = with_debugger(&session, args.tab_id.as_deref(), async |entry| {
         // Source actors name their process: frames' never collide.
         let sources: Vec<_> = every_source(&entry.debugger)
+            .await
             .into_iter()
             .filter(|s| s.url.is_some())
             .collect();
@@ -1335,6 +1376,60 @@ mod tests {
             "{needle}"
         );
         assert!(needle.contains("\"lineNumber\": 0"), "{needle}");
+        ts::stop(&handler).await;
+    }
+
+    /// ISSUE-62 (Firefox): a thread's `sources` reply adds the scripts the
+    /// announcements missed (inline, module, later ones), once each and
+    /// without debugger evaluations.
+    #[test]
+    fn listed_sources_complete_the_announced_ones() {
+        // Given the announced app.js and a thread listing five scripts and
+        // two debugger evaluations, app.js among them
+        let reply: Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/rdp/thread-sources.json"
+        ))
+        .unwrap();
+        let app = reply["sources"][0].clone();
+        let mut known: Vec<SourceInfo> = vec![serde_json::from_value(app).unwrap()];
+        // When the reply is merged
+        merge_sources(&mut known, &reply);
+        // Then the five scripts are known once each, the evaluations left out
+        let urls: Vec<&str> = known.iter().filter_map(|s| s.url.as_deref()).collect();
+        assert_eq!(
+            urls,
+            [
+                "http://127.0.0.1:8000/r7/app.js",
+                "http://127.0.0.1:8000/r7/min.js",
+                "http://127.0.0.1:8000/r7/debug.html",
+                "http://127.0.0.1:8000/r7/debug.html",
+                "http://127.0.0.1:8000/r7/mod.js",
+            ]
+        );
+        assert_eq!(known.len(), 5);
+    }
+
+    /// ISSUE-62 (Firefox): search_scripts asks the tab's thread for its
+    /// sources instead of trusting the announcements alone.
+    #[tokio::test]
+    async fn search_scripts_asks_the_thread_for_its_sources() {
+        // Given a Firefox tab with its debugger attached
+        let mock = ts::firefox_with_debugger().await;
+        let rdp = mock.rdp().unwrap();
+        let handler = ts::handler(&mock);
+        let search = || ts::call("search_scripts", json!({"query": ""}));
+        search_scripts(search(), &handler).await.unwrap();
+        rdp.clear_requests();
+        // When search_scripts counts the scripts
+        search_scripts(search(), &handler).await.unwrap();
+        // Then the thread was asked for its sources
+        let asked: Vec<String> = rdp
+            .requests()
+            .into_iter()
+            .filter(|r| r.request_type == "sources")
+            .map(|r| r.to)
+            .collect();
+        assert!(asked.iter().any(|to| to.contains("thread")), "{asked:?}");
         ts::stop(&handler).await;
     }
 

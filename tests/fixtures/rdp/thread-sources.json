@@ -1,0 +1,96 @@
+{
+  "from": "server1.conn1.watcher21.process8//thread1",
+  "sources": [
+    {
+      "actor": "server1.conn1.watcher21.process8//source18",
+      "extensionName": null,
+      "introductionType": "scriptElement",
+      "isBlackBoxed": false,
+      "isInlineSource": false,
+      "sourceLength": 595,
+      "sourceMapBaseURL": "http://127.0.0.1:8000/r7/app.js",
+      "sourceMapURL": null,
+      "sourceStartColumn": 0,
+      "sourceStartLine": 1,
+      "url": "http://127.0.0.1:8000/r7/app.js"
+    },
+    {
+      "actor": "server1.conn1.watcher21.process8//source19",
+      "extensionName": null,
+      "introductionType": "scriptElement",
+      "isBlackBoxed": false,
+      "isInlineSource": false,
+      "sourceLength": 168,
+      "sourceMapBaseURL": "http://127.0.0.1:8000/r7/min.js",
+      "sourceMapURL": null,
+      "sourceStartColumn": 0,
+      "sourceStartLine": 1,
+      "url": "http://127.0.0.1:8000/r7/min.js"
+    },
+    {
+      "actor": "server1.conn1.watcher21.process8//source20",
+      "extensionName": null,
+      "introductionType": "scriptElement",
+      "isBlackBoxed": false,
+      "isInlineSource": true,
+      "sourceLength": 184,
+      "sourceMapBaseURL": "http://127.0.0.1:8000/r7/debug.html",
+      "sourceMapURL": null,
+      "sourceStartColumn": 8,
+      "sourceStartLine": 12,
+      "url": "http://127.0.0.1:8000/r7/debug.html"
+    },
+    {
+      "actor": "server1.conn1.watcher21.process8//source21",
+      "extensionName": null,
+      "introductionType": "scriptElement",
+      "isBlackBoxed": false,
+      "isInlineSource": true,
+      "sourceLength": 171,
+      "sourceMapBaseURL": "http://127.0.0.1:8000/r7/debug.html",
+      "sourceMapURL": null,
+      "sourceStartColumn": 22,
+      "sourceStartLine": 19,
+      "url": "http://127.0.0.1:8000/r7/debug.html"
+    },
+    {
+      "actor": "server1.conn1.watcher21.process8//source22",
+      "extensionName": null,
+      "introductionType": "importedModule",
+      "isBlackBoxed": false,
+      "isInlineSource": false,
+      "sourceLength": 61,
+      "sourceMapBaseURL": "http://127.0.0.1:8000/r7/mod.js",
+      "sourceMapURL": null,
+      "sourceStartColumn": 0,
+      "sourceStartLine": 1,
+      "url": "http://127.0.0.1:8000/r7/mod.js"
+    },
+    {
+      "actor": "server1.conn1.watcher21.process8//source23",
+      "extensionName": null,
+      "introductionType": "debugger eval",
+      "isBlackBoxed": false,
+      "isInlineSource": false,
+      "sourceLength": 2871,
+      "sourceMapBaseURL": "http://127.0.0.1:8000/r7/debug.html",
+      "sourceMapURL": null,
+      "sourceStartColumn": 0,
+      "sourceStartLine": 1,
+      "url": null
+    },
+    {
+      "actor": "server1.conn1.watcher21.process8//source30",
+      "extensionName": null,
+      "introductionType": "debugger eval",
+      "isBlackBoxed": false,
+      "isInlineSource": false,
+      "sourceLength": 3,
+      "sourceMapBaseURL": "http://127.0.0.1:8000/r7/debug.html",
+      "sourceMapURL": null,
+      "sourceStartColumn": 0,
+      "sourceStartLine": 1,
+      "url": null
+    }
+  ]
+}
