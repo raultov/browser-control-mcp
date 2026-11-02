@@ -2108,6 +2108,7 @@ mod e2e {
         ];
         steps.extend(paused_page_steps(&i));
         steps.extend(click_into_breakpoint_steps(&i));
+        steps.extend(async_click_into_breakpoint_steps(&i));
         steps.extend(pause_on_navigate_steps(&i, base));
         steps
     }
@@ -2202,6 +2203,45 @@ mod e2e {
                 "resume",
                 json!({"instance_id": i}),
                 "resumed",
+            ),
+        ]
+    }
+
+    /// ISSUE-65: a click whose handler hits the breakpoint after an `await`
+    /// notes the pause too (it waited 2 s and said nothing).
+    fn async_click_into_breakpoint_steps(i: &Value) -> Vec<Step> {
+        let button = "const b = document.createElement('button'); b.id = 'hit65'; b.textContent = 'hit later'; b.onclick = async () => { await new Promise(r => setTimeout(r, 20)); appTarget(4); }; document.body.prepend(b); 1";
+        let run = |expression: &str| json!({"instance_id": i, "expression": expression});
+        vec![
+            (
+                "ISSUE-65 a handler that awaits",
+                "evaluate_js",
+                run(button),
+                "",
+            ),
+            (
+                "ISSUE-65 the click notes the pause after the await",
+                "click_element",
+                json!({"instance_id": i, "selector": "#hit65"}),
+                "The page paused in the debugger at http",
+            ),
+            (
+                "ISSUE-65 the paused frame",
+                "evaluate_on_call_frame",
+                json!({"instance_id": i, "expression": "x * 7"}),
+                "28",
+            ),
+            (
+                "ISSUE-65 resume",
+                "resume",
+                json!({"instance_id": i}),
+                "resumed",
+            ),
+            (
+                "ISSUE-65 remove the button",
+                "evaluate_js",
+                run("document.getElementById('hit65').remove(); 1"),
+                "",
             ),
         ]
     }

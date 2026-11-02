@@ -48,6 +48,12 @@ from a copy of its code: entries describe the differences from that release.
   synchronous snippets are no longer awaited (Chrome runs no microtask while
   paused). `emulate` with `geolocation` on a paused page says the position
   is read once the page resumes. (#64)
+- An input action (`click_element`, `press_key`, `fill_form`, `drag`,
+  `hover`) whose handler pauses in the debugger or opens a dialog after an
+  async step (an `await`, a timer, a fetch) no longer waits 2 s and answers
+  a plain success: the watch of the page settling ends at once and the
+  reply notes `{paused, location}` or `{dialog}`, as for a handler that
+  blocks right away. Both browsers. (#65)
 
 ## [0.11.0-beta.16] - 2026-11-02
 

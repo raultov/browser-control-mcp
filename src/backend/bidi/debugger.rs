@@ -445,6 +445,39 @@ pub(crate) async fn race_pause<T>(
     }
 }
 
+/// Runs `operation` on tab `id` unless the tab pauses in the debugger or
+/// opens a JavaScript dialog (`dialog`, kept by the event pump) first: then
+/// what blocked it. For the wait after an input action, which a handler
+/// blocking the page after an async step (an `await`, a timer) would keep
+/// waiting for its limit (ISSUE-65).
+pub(crate) async fn race_blockers<T>(
+    session: &FirefoxSession,
+    id: &str,
+    dialog: &tokio::sync::Mutex<crate::handler::dialogs::DialogState>,
+    operation: impl std::future::Future<Output = T>,
+) -> Result<T, Interruption> {
+    let opened = async {
+        loop {
+            tokio::time::sleep(PAUSE_POLL).await;
+            if let Some(open) = dialog.lock().await.open.clone() {
+                return open;
+            }
+        }
+    };
+    let raced = async {
+        tokio::select! {
+            biased;
+            outcome = operation => Ok(outcome),
+            open = opened => Err(open),
+        }
+    };
+    match race_pause(session, id, raced).await {
+        Ok(Ok(outcome)) => Ok(outcome),
+        Ok(Err(open)) => Err(Interruption::Dialog(open)),
+        Err(paused) => Err(paused),
+    }
+}
+
 /// How often a call racing a pause ([`race_pause`]) reads the thread
 /// state the state task keeps.
 const PAUSE_POLL: Duration = Duration::from_millis(25);
@@ -1433,6 +1466,37 @@ mod tests {
             .collect();
         assert!(asked.iter().any(|to| to.contains("thread")), "{asked:?}");
         ts::stop(&handler).await;
+    }
+
+    /// ISSUE-65 (Firefox): a dialog the page opens while a call is
+    /// pending (a handler after an `await`) ends the race at once with the
+    /// dialog, as a pause does.
+    #[tokio::test]
+    async fn a_dialog_opened_meanwhile_ends_the_race() {
+        // Given a call that never ends, and a confirm opened 50 ms later
+        let session = FirefoxSession::new(Default::default());
+        let dialog: Arc<tokio::sync::Mutex<crate::handler::dialogs::DialogState>> =
+            Default::default();
+        let opening = dialog.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            let opened = crate::handler::dialogs::OpenDialog::from_firefox(
+                &json!({"type": "confirm", "message": "Sure?"}),
+            );
+            opening.lock().await.open = Some(opened);
+        });
+        // When the call races the tab's blockers
+        let pending = std::future::pending::<()>();
+        let raced = tokio::time::timeout(
+            Duration::from_secs(2),
+            race_blockers(&session, "tab-1", &dialog, pending),
+        )
+        .await;
+        // Then the dialog ends it
+        let Ok(Err(Interruption::Dialog(opened))) = raced else {
+            panic!("not ended by the dialog");
+        };
+        assert_eq!(opened.message, "Sure?");
     }
 
     /// RDP-10: Detaching removes breakpoints first.

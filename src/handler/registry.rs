@@ -689,11 +689,11 @@ async fn settled(
     // Bounded even if the page stops answering mid-way (a navigation).
     let limit = settle::MAX + std::time::Duration::from_secs(1);
     let watched = settle::settle(&page, &before.network, &before.known);
-    let reacted = tokio::time::timeout(limit, watched)
-        .await
-        .ok()
-        .flatten()
-        .and_then(|reaction| reaction.note());
+    let watched = tokio::time::timeout(limit, watched);
+    let (reacted, interruption) = match unless_blocked(handler, &before, &page, watched).await {
+        Ok(reaction) => (reaction.ok().flatten().and_then(|r| r.note()), None),
+        Err(interruption) => (None, Some(interruption)),
+    };
     let opened = tabs_opened(handler, before.browser, &before.ids, &before.tabs).await;
     if !opened.is_empty() {
         // The browser shows the new tab; the agent stays on its tab.
@@ -705,12 +705,37 @@ async fn settled(
         _ => None,
     });
     if let Some(text) = first_text {
+        if let Some(interruption) = interruption {
+            text.text = interruption.appended_to(&text.text);
+        }
         for note in [reacted, opened].into_iter().flatten() {
             text.text.push('\n');
             text.text.push_str(&note);
         }
     }
     result
+}
+
+/// Runs `watch` (the page settling after an action) unless the page pauses
+/// in the debugger or opens a dialog meanwhile, as a handler does after an
+/// async step (an `await`, a timer): the blocked page would keep the watch
+/// waiting for its limit (ISSUE-65).
+async fn unless_blocked<T>(
+    handler: &McpHandler,
+    before: &NetworkBefore,
+    page: &settle::Page,
+    watch: impl std::future::Future<Output = T>,
+) -> Result<T, crate::handler::interruption::Interruption> {
+    match page {
+        settle::Page::Chrome(target) => target.race_interruptions("the watch", watch).await,
+        settle::Page::Firefox(_) => {
+            let target = crate::backend::bidi::tools::target(handler, &before.ids);
+            let Some((session, id, tab)) = target.await.ok() else {
+                return Ok(watch.await);
+            };
+            crate::backend::bidi::debugger::race_blockers(&session, &id, &tab.dialog, watch).await
+        }
+    }
 }
 
 /// Where the tab a call addresses is stopped in the debugger, if it is. A
@@ -941,6 +966,44 @@ The page reacted (the DOM changed) and settled after ",
             );
             assert_eq!(noted, mutations > 0, "{text}");
         }
+    }
+
+    /// ISSUE-65 (Chrome): a handler that pauses in the debugger after an
+    /// async step (an `await`, a timer), while the page is being watched
+    /// to settle, ends the watch at once and the reply notes the pause, as
+    /// for a handler that pauses right away.
+    #[tokio::test]
+    async fn a_pause_while_settling_is_noted_at_once() {
+        use crate::handler::cdp_domains::tests::{mock_handler, reply_text, spawn_recording_mock};
+        // Given a click that starts a request still loading, whose handler
+        // pauses at cart.js:3 once the page is being watched
+        let mock = spawn_recording_mock().await;
+        let handler = mock_handler(mock.http_port);
+        let session = handler.session(None).await.unwrap();
+        let network = session.network_state(None).unwrap();
+        mock.respond_with("Runtime.evaluate", move |params| {
+            let watching = params["expression"].to_string().contains("MutationObserver");
+            if let (true, Ok(mut log)) = (watching, network.try_lock()) {
+                let request = crate::handler::NetworkRequest {
+                    url: "http://a/api".into(),
+                    ..Default::default()
+                };
+                log.insert_request("r65".into(), request);
+                let frame = serde_json::json!({"callFrameId": "f1", "url": "http://a/cart.js", "location": {"scriptId": "35", "lineNumber": 3, "columnNumber": 2}});
+                let paused = serde_json::json!({"reason": "other", "callFrames": [frame]});
+                mock.emit("Debugger.paused", paused, None);
+            }
+            page_reacting(params, 0)
+        });
+        // When the element is clicked
+        let start = std::time::Instant::now();
+        let args = serde_json::json!({"selector": "#b"});
+        let reply = call(&handler, params("click_element", args)).await.unwrap();
+        // Then the reply notes the pause, well before the 1 s watch ended
+        let text = reply_text(&reply);
+        assert!(text.contains("The page paused in the debugger"), "{text}");
+        assert!(text.contains("\"paused\": true"), "{text}");
+        assert!(start.elapsed() < std::time::Duration::from_millis(900));
     }
 
     /// ISSUE-17: on a page paused in the debugger, the input tools refuse

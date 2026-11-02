@@ -41,6 +41,17 @@ impl Interruption {
         format!("{done}. {}\n{body}", self.note())
     }
 
+    /// `reply` (an action's reply text) with the note and JSON of this
+    /// interruption, which came after the action answered: worded as
+    /// [`Self::after`] for a one-line reply, appended to a longer one.
+    pub(crate) fn appended_to(&self, reply: &str) -> String {
+        if !reply.contains('\n') {
+            return self.after(reply);
+        }
+        let body = serde_json::to_string_pretty(&self.to_json()).unwrap_or_default();
+        format!("{reply}\n{}\n{body}", self.note())
+    }
+
     /// `{dialog}` or `{paused, location}` (the `step_over` shape) for replies.
     pub(crate) fn to_json(&self) -> Value {
         match self {
