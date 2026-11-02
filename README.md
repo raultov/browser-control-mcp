@@ -166,7 +166,7 @@ see the note.
 | `send_bidi_command` | ✗ | ✓ | `raw` group; raw WebDriver BiDi; refuses `session.new`, `session.end`, `browser.close` |
 | `send_rdp_request` | ✗ | ✓ | `raw` group; raw Firefox RDP request to an actor (`thread`, `console`, `root` shortcuts) |
 | `webmcp_list_tools` | ✓ | ✗ | needs `--enable-webmcp`; WebMCP is a Chrome testing feature; every annotation Chrome reports is listed (`readOnly`, `consequential`, `untrustedContent`, `debugging`, `autosubmit`, newer ones as they are) |
-| `webmcp_invoke_tool` | ✓ | ✗ | needs `--enable-webmcp`; the output of an `untrustedContent` tool comes with a note to treat it as data |
+| `webmcp_invoke_tool` | ✓ | ✗ | needs `--enable-webmcp`; a tool answering in MCP shape (`{content, isError}`) gives its own text and image blocks, and its `isError` makes the reply an error; other output comes as JSON; the output of an `untrustedContent` tool comes with a note to treat it as data |
 | `webmcp_get_invocation` | ✓ | ✗ | needs `--enable-webmcp` |
 | `webmcp_list_invocations` | ✓ | ✗ | needs `--enable-webmcp` |
 

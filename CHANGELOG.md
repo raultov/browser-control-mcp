@@ -62,6 +62,11 @@ from a copy of its code: entries describe the differences from that release.
   breakpoint in a loop, hit on the next iteration) report the pause with
   its location, instead of waiting 2 s and answering `paused: false` while
   the page was paused. (#63)
+- `webmcp_invoke_tool` maps a page tool's MCP-shaped result
+  (`{content: [...], isError}`) to its own reply: the page's text and image
+  blocks as they are, and `isError: true` as a tool error. Before, a failed
+  page tool answered as a success with its error buried in the text, and
+  its output came as JSON escaped inside a string. (#72)
 
 ## [0.11.0-beta.16] - 2026-11-02
 

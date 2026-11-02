@@ -1,8 +1,9 @@
 use crate::handler::McpHandler;
 use rust_mcp_sdk::{
     macros,
-    schema::{CallToolError, CallToolRequestParams, CallToolResult},
+    schema::{CallToolError, CallToolRequestParams, CallToolResult, ContentBlock, ImageContent},
 };
+use serde_json::Value;
 
 #[macros::mcp_tool(
     name = "webmcp_invoke_tool",
@@ -112,6 +113,45 @@ fn untrusted_note(tool_name: &str) -> String {
     )
 }
 
+/// The reply blocks of a page tool's `output`, and whether it failed. A
+/// tool answering in MCP shape (`{content: [...], isError}`) gives its own
+/// blocks, its text unescaped and its images as images (ISSUE-72); any
+/// other output is given as JSON.
+fn page_result(output: &Value) -> (Vec<ContentBlock>, bool) {
+    let blocks = output.get("content").and_then(Value::as_array);
+    match blocks.filter(|blocks| !blocks.is_empty()) {
+        Some(blocks) => (
+            blocks.iter().map(page_block).collect(),
+            output["isError"] == true,
+        ),
+        None => (vec![json_block(output)], false),
+    }
+}
+
+/// One block of a page tool's MCP-shaped result: text and images as they
+/// are, anything else as JSON.
+fn page_block(block: &Value) -> ContentBlock {
+    let field = |name: &str| block[name].as_str();
+    match (
+        field("type"),
+        field("text"),
+        field("data"),
+        field("mimeType"),
+    ) {
+        (Some("text"), Some(text), _, _) => ContentBlock::TextContent(text.to_string().into()),
+        (Some("image"), _, Some(data), Some(mime)) => ContentBlock::ImageContent(
+            ImageContent::new(data.to_string(), mime.to_string(), None, None),
+        ),
+        _ => json_block(block),
+    }
+}
+
+/// `value` as pretty JSON text.
+fn json_block(value: &Value) -> ContentBlock {
+    let text = serde_json::to_string_pretty(value).unwrap_or_else(|_| "{}".to_string());
+    ContentBlock::TextContent(text.into())
+}
+
 /// The tool result for a finished invocation; `None` while still pending.
 fn invocation_outcome(
     status: &str,
@@ -120,13 +160,17 @@ fn invocation_outcome(
     match status {
         "Completed" => {
             let output = invocation.output.clone().unwrap_or(serde_json::json!({}));
-            let content =
-                serde_json::to_string_pretty(&output).unwrap_or_else(|_| "{}".to_string());
-            let mut blocks = vec![content.into()];
+            let (mut content, failed) = page_result(&output);
             if invocation.untrusted_content {
-                blocks.push(untrusted_note(&invocation.tool_name).into());
+                let note = untrusted_note(&invocation.tool_name);
+                content.push(ContentBlock::TextContent(note.into()));
             }
-            Some(Ok(CallToolResult::text_content(blocks)))
+            Some(Ok(CallToolResult {
+                content,
+                is_error: failed.then_some(true),
+                meta: None,
+                structured_content: None,
+            }))
         }
         "Error" => {
             let error_text = invocation.error_text.as_deref().unwrap_or("Unknown error");
@@ -146,6 +190,62 @@ fn invocation_outcome(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// ISSUE-72: a page tool answering in MCP shape (`{content, isError}`)
+    /// gives its blocks as the reply's own, unescaped, and its `isError`
+    /// makes the reply an error; the untrusted note stays its own block.
+    #[test]
+    fn mcp_shaped_output_becomes_the_reply() {
+        // Given a page tool that failed, and one whose text is JSON
+        let mut failed = crate::handler::cdp_domains::webmcp::WebmcpInvocation {
+            tool_name: "get-latest-releases".into(),
+            output: Some(
+                json!({"content": [{"type": "text", "text": "limit must be between 1 and 4"}], "isError": true}),
+            ),
+            untrusted_content: true,
+            ..Default::default()
+        };
+        let listed = crate::handler::cdp_domains::webmcp::WebmcpInvocation {
+            tool_name: "list".into(),
+            output: Some(json!({"content": [
+                {"type": "text", "text": "{\"count\":2}"},
+                {"type": "image", "data": "iVBORw0KGgo=", "mimeType": "image/png"}
+            ]})),
+            ..Default::default()
+        };
+        // When their outcomes are built
+        let error = invocation_outcome("Completed", &failed).unwrap().unwrap();
+        let ok = invocation_outcome("Completed", &listed).unwrap().unwrap();
+        // Then the failure is a tool error with the page's text, still flagged
+        assert_eq!(error.is_error, Some(true));
+        let text = &error.content[0].as_text_content().unwrap().text;
+        assert_eq!(text, "limit must be between 1 and 4");
+        assert!(
+            error.content[1]
+                .as_text_content()
+                .unwrap()
+                .text
+                .contains("untrusted content")
+        );
+        // And the success carries the page's text and image as they are
+        assert_eq!(ok.is_error, None);
+        assert_eq!(
+            ok.content[0].as_text_content().unwrap().text,
+            "{\"count\":2}"
+        );
+        assert!(ok.content[1].as_image_content().is_ok());
+        // And output in no MCP shape is still given as JSON
+        failed.output = Some(json!({"value": 1}));
+        failed.untrusted_content = false;
+        let plain = invocation_outcome("Completed", &failed).unwrap().unwrap();
+        assert!(
+            plain.content[0]
+                .as_text_content()
+                .unwrap()
+                .text
+                .contains("\"value\": 1")
+        );
+    }
 
     /// AUD-RW-17: the output of a tool declaring untrusted content comes
     /// with a note saying to treat it as data.
