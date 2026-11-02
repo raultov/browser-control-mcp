@@ -9,3 +9,5 @@
 logs/
 out.json
 out.err
+/tests/compare/results/
+__pycache__/

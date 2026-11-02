@@ -1,0 +1,5 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Big</title></head><body>
+<h1>Big table</h1><table id="t"><thead><tr><th>#</th><th>Name</th><th>Action</th></tr></thead><tbody></tbody></table>
+<script>const b = document.querySelector('#t tbody'); let html = '';
+for (let i = 0; i < 3000; i++) html += '<tr><td>' + i + '</td><td>Row ' + i + '</td><td><button>Edit ' + i + '</button></td></tr>';
+b.innerHTML = html; b.querySelectorAll('button')[2999].onclick = () => window.__last = 1;</script></body></html>

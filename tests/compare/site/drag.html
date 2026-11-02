@@ -1,0 +1,9 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Drag</title></head><body>
+<div id="src" draggable="true" ondragstart="event.dataTransfer.setData('text', 'card')" style="width:80px;height:40px;background:#9cf">Card</div>
+<div id="dst" ondragover="event.preventDefault()" ondrop="event.preventDefault(); window.__dropped = event.dataTransfer.getData('text')" style="width:160px;height:80px;margin-top:40px;background:#fc9">Drop zone</div>
+<div id="track" style="position:relative;width:300px;height:20px;background:#ddd;margin-top:30px"><div id="knob" role="slider" aria-label="Knob" style="position:absolute;left:0;width:20px;height:20px;background:#333"></div></div>
+<script>const k = document.getElementById('knob'); let down = false;
+k.addEventListener('pointerdown', e => { down = true; k.setPointerCapture(e.pointerId); });
+k.addEventListener('pointermove', e => { if (down) { const r = document.getElementById('track').getBoundingClientRect(); k.style.left = Math.max(0, Math.min(280, e.clientX - r.left - 10)) + 'px'; } });
+k.addEventListener('pointerup', () => { down = false; window.__knob = parseInt(k.style.left); });</script>
+</body></html>

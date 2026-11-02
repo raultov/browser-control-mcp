@@ -1,0 +1,3817 @@
+{
+ "started": "2026-11-01T23-38-20",
+ "scenarios": [
+  {
+   "id": "nav.basic",
+   "level": 1,
+   "title": "Navigate to a page"
+  },
+  {
+   "id": "read.snapshot",
+   "level": 1,
+   "title": "Read the page's text and headings"
+  },
+  {
+   "id": "click.button",
+   "level": 1,
+   "title": "Click a button"
+  },
+  {
+   "id": "click.link",
+   "level": 1,
+   "title": "Follow a link"
+  },
+  {
+   "id": "fill.text",
+   "level": 1,
+   "title": "Type into a labelled field"
+  },
+  {
+   "id": "fill.replace",
+   "level": 1,
+   "title": "Replace a field's value"
+  },
+  {
+   "id": "select.native",
+   "level": 1,
+   "title": "Pick a <select> option by its label"
+  },
+  {
+   "id": "check.checkbox",
+   "level": 1,
+   "title": "Tick a checkbox"
+  },
+  {
+   "id": "check.radio",
+   "level": 1,
+   "title": "Choose a radio button"
+  },
+  {
+   "id": "form.submit",
+   "level": 1,
+   "title": "Fill and submit a form (POST)"
+  },
+  {
+   "id": "press.enter",
+   "level": 1,
+   "title": "Submit with Enter"
+  },
+  {
+   "id": "wait.text",
+   "level": 1,
+   "title": "Wait for text that appears later"
+  },
+  {
+   "id": "shot.viewport",
+   "level": 1,
+   "title": "Take a screenshot"
+  },
+  {
+   "id": "console.read",
+   "level": 1,
+   "title": "Read console messages of every level"
+  },
+  {
+   "id": "network.read",
+   "level": 1,
+   "title": "List the page's requests"
+  },
+  {
+   "id": "eval.object",
+   "level": 1,
+   "title": "Evaluate JavaScript returning an object"
+  },
+  {
+   "id": "tabs.new",
+   "level": 1,
+   "title": "Follow a link that opens a new tab"
+  },
+  {
+   "id": "nav.redirect",
+   "level": 2,
+   "title": "Report the final URL after redirects"
+  },
+  {
+   "id": "nav.back",
+   "level": 2,
+   "title": "Go back in history"
+  },
+  {
+   "id": "read.form_names",
+   "level": 2,
+   "title": "Snapshot names form controls by their labels"
+  },
+  {
+   "id": "read.states",
+   "level": 2,
+   "title": "Snapshot shows checked, disabled and expanded"
+  },
+  {
+   "id": "read.hidden",
+   "level": 2,
+   "title": "Snapshot leaves out hidden elements"
+  },
+  {
+   "id": "fill.textarea",
+   "level": 2,
+   "title": "Type several lines into a textarea"
+  },
+  {
+   "id": "fill.date",
+   "level": 2,
+   "title": "Set a date input"
+  },
+  {
+   "id": "fill.unicode",
+   "level": 2,
+   "title": "Type accents, emoji and other scripts"
+  },
+  {
+   "id": "hover.menu",
+   "level": 2,
+   "title": "Open a hover menu and click its item"
+  },
+  {
+   "id": "widget.tabs",
+   "level": 2,
+   "title": "Switch an ARIA tab"
+  },
+  {
+   "id": "widget.listbox",
+   "level": 2,
+   "title": "Pick from a custom (ARIA) dropdown"
+  },
+  {
+   "id": "dialog.alert",
+   "level": 2,
+   "title": "Close an alert a click opened"
+  },
+  {
+   "id": "dialog.confirm",
+   "level": 2,
+   "title": "Accept a confirm"
+  },
+  {
+   "id": "dialog.prompt",
+   "level": 2,
+   "title": "Answer a prompt"
+  },
+  {
+   "id": "wait.gone",
+   "level": 2,
+   "title": "Wait for text to go away"
+  },
+  {
+   "id": "settle.fetch",
+   "level": 2,
+   "title": "Read the result of a click that fetches, without waiting"
+  },
+  {
+   "id": "dynamic.spawn",
+   "level": 2,
+   "title": "Click a button that appears after a click"
+  },
+  {
+   "id": "scroll.nested",
+   "level": 2,
+   "title": "Click a button inside a scrolled container"
+  },
+  {
+   "id": "scroll.far",
+   "level": 2,
+   "title": "Click a button far below, under a sticky header"
+  },
+  {
+   "id": "upload.single",
+   "level": 2,
+   "title": "Upload a file"
+  },
+  {
+   "id": "console.exception",
+   "level": 2,
+   "title": "See an uncaught exception"
+  },
+  {
+   "id": "network.body",
+   "level": 2,
+   "title": "Read a request's POST body"
+  },
+  {
+   "id": "network.errors",
+   "level": 2,
+   "title": "See failed requests and their status"
+  },
+  {
+   "id": "shot.full",
+   "level": 2,
+   "title": "Take a full-page screenshot of a long page"
+  },
+  {
+   "id": "shot.element",
+   "level": 2,
+   "title": "Take a screenshot of one element"
+  },
+  {
+   "id": "eval.promise",
+   "level": 2,
+   "title": "Evaluate an expression that returns a promise"
+  },
+  {
+   "id": "eval.throw",
+   "level": 2,
+   "title": "An expression that throws reports the error"
+  },
+  {
+   "id": "frames.same",
+   "level": 2,
+   "title": "Click a button in a same-origin iframe"
+  },
+  {
+   "id": "frames.cross",
+   "level": 2,
+   "title": "Click a button in an iframe of another origin"
+  },
+  {
+   "id": "spa.history",
+   "level": 2,
+   "title": "Navigate a single-page app and go back"
+  },
+  {
+   "id": "cookies.read",
+   "level": 2,
+   "title": "Read cookies, HttpOnly included"
+  },
+  {
+   "id": "click.double",
+   "level": 3,
+   "title": "Double-click"
+  },
+  {
+   "id": "click.right",
+   "level": 3,
+   "title": "Right-click (context menu)"
+  },
+  {
+   "id": "fill.range",
+   "level": 3,
+   "title": "Set a range input"
+  },
+  {
+   "id": "fill.editable",
+   "level": 3,
+   "title": "Type into a contenteditable editor"
+  },
+  {
+   "id": "keys.select_all",
+   "level": 3,
+   "title": "Select all with Ctrl+A and type over it"
+  },
+  {
+   "id": "keys.escape",
+   "level": 3,
+   "title": "Press Escape"
+  },
+  {
+   "id": "upload.multiple",
+   "level": 3,
+   "title": "Upload several files"
+  },
+  {
+   "id": "drag.html5",
+   "level": 3,
+   "title": "Drag and drop (HTML5)"
+  },
+  {
+   "id": "frames.srcdoc",
+   "level": 3,
+   "title": "Click a button in a srcdoc iframe"
+  },
+  {
+   "id": "frames.cross_fill",
+   "level": 3,
+   "title": "Type into a field of an iframe of another origin"
+  },
+  {
+   "id": "shadow.open",
+   "level": 3,
+   "title": "Click a button in an open shadow root"
+  },
+  {
+   "id": "stale.ref",
+   "level": 3,
+   "title": "A ref of a re-rendered element is not silently clicked"
+  },
+  {
+   "id": "read.big",
+   "level": 3,
+   "title": "Snapshot a page with 3000 table rows, then click the last"
+  },
+  {
+   "id": "busy.click",
+   "level": 3,
+   "title": "Click on a page that changes every 30 ms (in under 3 s)"
+  },
+  {
+   "id": "nav.slow",
+   "level": 3,
+   "title": "Navigate to a page that answers after 3 s"
+  },
+  {
+   "id": "nav.status",
+   "level": 3,
+   "title": "Say that a page answered 404"
+  },
+  {
+   "id": "eval.await",
+   "level": 3,
+   "title": "Evaluate code with top-level await"
+  },
+  {
+   "id": "shadow.closed",
+   "level": 4,
+   "title": "Click a button in a closed shadow root"
+  },
+  {
+   "id": "read.invalid",
+   "level": 4,
+   "title": "Snapshot says a field is invalid, and why"
+  },
+  {
+   "id": "nav.download",
+   "level": 4,
+   "title": "Say that a URL is a download"
+  },
+  {
+   "id": "nav.pdf",
+   "level": 4,
+   "title": "Open a PDF"
+  },
+  {
+   "id": "nav.auth",
+   "level": 4,
+   "title": "Say that a page needs HTTP authentication"
+  },
+  {
+   "id": "console.csp",
+   "level": 4,
+   "title": "See a Content-Security-Policy violation"
+  },
+  {
+   "id": "nav.beforeunload",
+   "level": 4,
+   "title": "Leave a page that asks before unloading"
+  },
+  {
+   "id": "form.many",
+   "level": 2,
+   "title": "Fill several fields of a form in one go"
+  },
+  {
+   "id": "read.select_options",
+   "level": 2,
+   "title": "Snapshot lists a <select>'s options"
+  },
+  {
+   "id": "select.multiple",
+   "level": 3,
+   "title": "Pick two options of a multiple <select>"
+  },
+  {
+   "id": "keys.tab",
+   "level": 3,
+   "title": "Move the focus with Tab"
+  },
+  {
+   "id": "console.frame",
+   "level": 3,
+   "title": "See console messages of an iframe of another origin"
+  },
+  {
+   "id": "eval.large",
+   "level": 3,
+   "title": "Evaluate a 2 MB string without flooding the context"
+  },
+  {
+   "id": "storage.local",
+   "level": 3,
+   "title": "Read a localStorage item"
+  },
+  {
+   "id": "emulate.dark",
+   "level": 3,
+   "title": "Emulate dark mode"
+  },
+  {
+   "id": "viewport.resize",
+   "level": 3,
+   "title": "Resize the viewport to a phone width"
+  },
+  {
+   "id": "route.mock",
+   "level": 4,
+   "title": "Mock a request's response"
+  },
+  {
+   "id": "network.offline",
+   "level": 4,
+   "title": "Go offline: a fetch fails, then works again"
+  },
+  {
+   "id": "pdf.save",
+   "level": 4,
+   "title": "Save the page as a PDF"
+  }
+ ],
+ "servers": {
+  "bc": {
+   "version": "0.10.0-beta.14",
+   "name": "browser-control",
+   "results": {
+    "nav.basic": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.39,
+     "calls": 1,
+     "ms": 383,
+     "tokens": 70
+    },
+    "read.snapshot": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.02,
+     "calls": 2,
+     "ms": 22,
+     "tokens": 149
+    },
+    "click.button": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.12,
+     "calls": 3,
+     "ms": 114,
+     "tokens": 164
+    },
+    "click.link": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.2,
+     "calls": 3,
+     "ms": 200,
+     "tokens": 183
+    },
+    "fill.text": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.1,
+     "calls": 3,
+     "ms": 95,
+     "tokens": 315
+    },
+    "fill.replace": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.09,
+     "calls": 3,
+     "ms": 88,
+     "tokens": 315
+    },
+    "select.native": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.08,
+     "calls": 3,
+     "ms": 78,
+     "tokens": 320
+    },
+    "check.checkbox": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.08,
+     "calls": 3,
+     "ms": 81,
+     "tokens": 320
+    },
+    "check.radio": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.08,
+     "calls": 3,
+     "ms": 81,
+     "tokens": 320
+    },
+    "form.submit": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.27,
+     "calls": 4,
+     "ms": 264,
+     "tokens": 345
+    },
+    "press.enter": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.14,
+     "calls": 4,
+     "ms": 135,
+     "tokens": 146
+    },
+    "wait.text": {
+     "status": "pass",
+     "note": "",
+     "seconds": 1.62,
+     "calls": 4,
+     "ms": 1616,
+     "tokens": 220
+    },
+    "shot.viewport": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.08,
+     "calls": 2,
+     "ms": 78,
+     "tokens": 1603
+    },
+    "console.read": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.08,
+     "calls": 4,
+     "ms": 73,
+     "tokens": 288
+    },
+    "network.read": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.65,
+     "calls": 4,
+     "ms": 153,
+     "tokens": 328
+    },
+    "eval.object": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.02,
+     "calls": 2,
+     "ms": 16,
+     "tokens": 96
+    },
+    "tabs.new": {
+     "status": "pass",
+     "note": "",
+     "seconds": 1.73,
+     "calls": 5,
+     "ms": 730,
+     "tokens": 260
+    },
+    "nav.redirect": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.06,
+     "calls": 1,
+     "ms": 50,
+     "tokens": 71
+    },
+    "nav.back": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.11,
+     "calls": 3,
+     "ms": 106,
+     "tokens": 179
+    },
+    "read.form_names": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.07,
+     "calls": 2,
+     "ms": 70,
+     "tokens": 305
+    },
+    "read.states": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.07,
+     "calls": 2,
+     "ms": 64,
+     "tokens": 346
+    },
+    "read.hidden": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.06,
+     "calls": 2,
+     "ms": 60,
+     "tokens": 346
+    },
+    "fill.textarea": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.13,
+     "calls": 3,
+     "ms": 132,
+     "tokens": 315
+    },
+    "fill.date": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.08,
+     "calls": 3,
+     "ms": 80,
+     "tokens": 314
+    },
+    "fill.unicode": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.1,
+     "calls": 3,
+     "ms": 99,
+     "tokens": 147
+    },
+    "hover.menu": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.15,
+     "calls": 5,
+     "ms": 149,
+     "tokens": 346
+    },
+    "widget.tabs": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.08,
+     "calls": 3,
+     "ms": 77,
+     "tokens": 206
+    },
+    "widget.listbox": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.14,
+     "calls": 5,
+     "ms": 133,
+     "tokens": 369
+    },
+    "dialog.alert": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.04,
+     "calls": 4,
+     "ms": 25,
+     "tokens": 247
+    },
+    "dialog.confirm": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.06,
+     "calls": 4,
+     "ms": 57,
+     "tokens": 244
+    },
+    "dialog.prompt": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.06,
+     "calls": 4,
+     "ms": 56,
+     "tokens": 249
+    },
+    "wait.gone": {
+     "status": "pass",
+     "note": "",
+     "seconds": 1.13,
+     "calls": 4,
+     "ms": 1130,
+     "tokens": 221
+    },
+    "settle.fetch": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.75,
+     "calls": 3,
+     "ms": 743,
+     "tokens": 203
+    },
+    "dynamic.spawn": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.96,
+     "calls": 6,
+     "ms": 953,
+     "tokens": 342
+    },
+    "scroll.nested": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.07,
+     "calls": 3,
+     "ms": 70,
+     "tokens": 160
+    },
+    "scroll.far": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.09,
+     "calls": 3,
+     "ms": 81,
+     "tokens": 160
+    },
+    "upload.single": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.03,
+     "calls": 3,
+     "ms": 22,
+     "tokens": 152
+    },
+    "console.exception": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.41,
+     "calls": 4,
+     "ms": 108,
+     "tokens": 251
+    },
+    "network.body": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.7,
+     "calls": 4,
+     "ms": 196,
+     "tokens": 559
+    },
+    "network.errors": {
+     "status": "pass",
+     "note": "",
+     "seconds": 1.96,
+     "calls": 5,
+     "ms": 1156,
+     "tokens": 430
+    },
+    "shot.full": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.16,
+     "calls": 2,
+     "ms": 163,
+     "tokens": 1382
+    },
+    "shot.element": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.05,
+     "calls": 3,
+     "ms": 49,
+     "tokens": 150
+    },
+    "eval.promise": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.02,
+     "calls": 2,
+     "ms": 17,
+     "tokens": 79
+    },
+    "eval.throw": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.02,
+     "calls": 2,
+     "ms": 17,
+     "tokens": 79
+    },
+    "frames.same": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.66,
+     "calls": 3,
+     "ms": 159,
+     "tokens": 215
+    },
+    "frames.cross": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.63,
+     "calls": 3,
+     "ms": 129,
+     "tokens": 215
+    },
+    "spa.history": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.1,
+     "calls": 4,
+     "ms": 92,
+     "tokens": 191
+    },
+    "cookies.read": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.02,
+     "calls": 2,
+     "ms": 17,
+     "tokens": 212
+    },
+    "click.double": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.12,
+     "calls": 3,
+     "ms": 114,
+     "tokens": 209
+    },
+    "click.right": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.08,
+     "calls": 3,
+     "ms": 77,
+     "tokens": 210
+    },
+    "fill.range": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.09,
+     "calls": 3,
+     "ms": 82,
+     "tokens": 314
+    },
+    "fill.editable": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.08,
+     "calls": 3,
+     "ms": 82,
+     "tokens": 201
+    },
+    "keys.select_all": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.13,
+     "calls": 4,
+     "ms": 132,
+     "tokens": 145
+    },
+    "keys.escape": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.07,
+     "calls": 2,
+     "ms": 69,
+     "tokens": 79
+    },
+    "upload.multiple": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.03,
+     "calls": 3,
+     "ms": 28,
+     "tokens": 158
+    },
+    "drag.html5": {
+     "status": "fail",
+     "note": "'Card' has no handle in the snapshot",
+     "seconds": 0.06,
+     "calls": 2,
+     "ms": 59,
+     "tokens": 126
+    },
+    "frames.srcdoc": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.66,
+     "calls": 3,
+     "ms": 155,
+     "tokens": 215
+    },
+    "frames.cross_fill": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.64,
+     "calls": 3,
+     "ms": 133,
+     "tokens": 211
+    },
+    "shadow.open": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.08,
+     "calls": 3,
+     "ms": 75,
+     "tokens": 149
+    },
+    "stale.ref": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.08,
+     "calls": 4,
+     "ms": 81,
+     "tokens": 222
+    },
+    "read.big": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.94,
+     "calls": 4,
+     "ms": 932,
+     "tokens": 12710
+    },
+    "busy.click": {
+     "status": "pass",
+     "note": "",
+     "seconds": 1.03,
+     "calls": 3,
+     "ms": 1025,
+     "tokens": 164
+    },
+    "nav.slow": {
+     "status": "pass",
+     "note": "",
+     "seconds": 3.02,
+     "calls": 1,
+     "ms": 3019,
+     "tokens": 71
+    },
+    "nav.status": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.06,
+     "calls": 1,
+     "ms": 56,
+     "tokens": 83
+    },
+    "eval.await": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.06,
+     "calls": 2,
+     "ms": 56,
+     "tokens": 79
+    },
+    "shadow.closed": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.08,
+     "calls": 3,
+     "ms": 75,
+     "tokens": 149
+    },
+    "read.invalid": {
+     "status": "fail",
+     "note": "invalid is missing: '- textbox \"Zip code\" [ref=e20]: \"abc\"'",
+     "seconds": 0.03,
+     "calls": 2,
+     "ms": 29,
+     "tokens": 346
+    },
+    "nav.download": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.06,
+     "calls": 2,
+     "ms": 57,
+     "tokens": 108
+    },
+    "nav.pdf": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.02,
+     "calls": 1,
+     "ms": 21,
+     "tokens": 69
+    },
+    "nav.auth": {
+     "status": "fail",
+     "note": "navigate: Navigation failed: net::ERR_INVALID_AUTH_CREDENTIALS (http://127.0.0.1:43339/auth)",
+     "seconds": 0.02,
+     "calls": 1,
+     "ms": 17,
+     "tokens": 20
+    },
+    "console.csp": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.35,
+     "calls": 2,
+     "ms": 47,
+     "tokens": 182
+    },
+    "nav.beforeunload": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.09,
+     "calls": 6,
+     "ms": 76,
+     "tokens": 268
+    },
+    "form.many": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.13,
+     "calls": 3,
+     "ms": 129,
+     "tokens": 378
+    },
+    "read.select_options": {
+     "status": "fail",
+     "note": "the options are not listed",
+     "seconds": 0.03,
+     "calls": 2,
+     "ms": 29,
+     "tokens": 305
+    },
+    "select.multiple": {
+     "status": "unsupported",
+     "note": "no tool to select several options",
+     "seconds": 0.06,
+     "calls": 2,
+     "ms": 56,
+     "tokens": 305
+    },
+    "keys.tab": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.12,
+     "calls": 3,
+     "ms": 114,
+     "tokens": 310
+    },
+    "console.frame": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.86,
+     "calls": 2,
+     "ms": 59,
+     "tokens": 200
+    },
+    "eval.large": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.05,
+     "calls": 2,
+     "ms": 54,
+     "tokens": 25104
+    },
+    "storage.local": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.02,
+     "calls": 2,
+     "ms": 17,
+     "tokens": 106
+    },
+    "emulate.dark": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.06,
+     "calls": 2,
+     "ms": 55,
+     "tokens": 166
+    },
+    "viewport.resize": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.06,
+     "calls": 2,
+     "ms": 54,
+     "tokens": 166
+    },
+    "route.mock": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.05,
+     "calls": 3,
+     "ms": 50,
+     "tokens": 138
+    },
+    "network.offline": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.06,
+     "calls": 3,
+     "ms": 49,
+     "tokens": 116
+    },
+    "pdf.save": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.04,
+     "calls": 2,
+     "ms": 37,
+     "tokens": 143
+    }
+   }
+  },
+  "bc-ff": {
+   "version": "0.10.0-beta.14",
+   "name": "browser-control (Firefox)",
+   "results": {
+    "nav.basic": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.1,
+     "calls": 1,
+     "ms": 81,
+     "tokens": 65
+    },
+    "read.snapshot": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.04,
+     "calls": 2,
+     "ms": 35,
+     "tokens": 144
+    },
+    "click.button": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.15,
+     "calls": 3,
+     "ms": 147,
+     "tokens": 159
+    },
+    "click.link": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.22,
+     "calls": 3,
+     "ms": 216,
+     "tokens": 178
+    },
+    "fill.text": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.13,
+     "calls": 3,
+     "ms": 125,
+     "tokens": 309
+    },
+    "fill.replace": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.1,
+     "calls": 3,
+     "ms": 99,
+     "tokens": 309
+    },
+    "select.native": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.08,
+     "calls": 3,
+     "ms": 76,
+     "tokens": 314
+    },
+    "check.checkbox": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.08,
+     "calls": 3,
+     "ms": 80,
+     "tokens": 314
+    },
+    "check.radio": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.09,
+     "calls": 3,
+     "ms": 90,
+     "tokens": 314
+    },
+    "form.submit": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.25,
+     "calls": 4,
+     "ms": 244,
+     "tokens": 343
+    },
+    "press.enter": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.15,
+     "calls": 4,
+     "ms": 146,
+     "tokens": 140
+    },
+    "wait.text": {
+     "status": "pass",
+     "note": "",
+     "seconds": 1.54,
+     "calls": 4,
+     "ms": 1538,
+     "tokens": 215
+    },
+    "shot.viewport": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.05,
+     "calls": 2,
+     "ms": 45,
+     "tokens": 1598
+    },
+    "console.read": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.09,
+     "calls": 4,
+     "ms": 90,
+     "tokens": 219
+    },
+    "network.read": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.67,
+     "calls": 4,
+     "ms": 169,
+     "tokens": 429
+    },
+    "eval.object": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.02,
+     "calls": 2,
+     "ms": 22,
+     "tokens": 91
+    },
+    "tabs.new": {
+     "status": "pass",
+     "note": "",
+     "seconds": 2.1,
+     "calls": 5,
+     "ms": 1094,
+     "tokens": 256
+    },
+    "nav.redirect": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.38,
+     "calls": 1,
+     "ms": 373,
+     "tokens": 65
+    },
+    "nav.back": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.14,
+     "calls": 3,
+     "ms": 137,
+     "tokens": 163
+    },
+    "read.form_names": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.06,
+     "calls": 2,
+     "ms": 60,
+     "tokens": 299
+    },
+    "read.states": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.07,
+     "calls": 2,
+     "ms": 72,
+     "tokens": 340
+    },
+    "read.hidden": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.06,
+     "calls": 2,
+     "ms": 64,
+     "tokens": 340
+    },
+    "fill.textarea": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.21,
+     "calls": 3,
+     "ms": 206,
+     "tokens": 309
+    },
+    "fill.date": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.1,
+     "calls": 3,
+     "ms": 93,
+     "tokens": 308
+    },
+    "fill.unicode": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.16,
+     "calls": 3,
+     "ms": 153,
+     "tokens": 141
+    },
+    "hover.menu": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.17,
+     "calls": 5,
+     "ms": 166,
+     "tokens": 341
+    },
+    "widget.tabs": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.08,
+     "calls": 3,
+     "ms": 81,
+     "tokens": 201
+    },
+    "widget.listbox": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.15,
+     "calls": 5,
+     "ms": 142,
+     "tokens": 364
+    },
+    "dialog.alert": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.11,
+     "calls": 4,
+     "ms": 109,
+     "tokens": 230
+    },
+    "dialog.confirm": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.1,
+     "calls": 4,
+     "ms": 97,
+     "tokens": 227
+    },
+    "dialog.prompt": {
+     "status": "pass",
+     "note": "",
+     "seconds": 2.07,
+     "calls": 4,
+     "ms": 2063,
+     "tokens": 244
+    },
+    "wait.gone": {
+     "status": "pass",
+     "note": "",
+     "seconds": 1.11,
+     "calls": 4,
+     "ms": 1108,
+     "tokens": 216
+    },
+    "settle.fetch": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.73,
+     "calls": 3,
+     "ms": 722,
+     "tokens": 198
+    },
+    "dynamic.spawn": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.98,
+     "calls": 6,
+     "ms": 970,
+     "tokens": 337
+    },
+    "scroll.nested": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.08,
+     "calls": 3,
+     "ms": 79,
+     "tokens": 154
+    },
+    "scroll.far": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.08,
+     "calls": 3,
+     "ms": 79,
+     "tokens": 154
+    },
+    "upload.single": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.03,
+     "calls": 3,
+     "ms": 21,
+     "tokens": 146
+    },
+    "console.exception": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.46,
+     "calls": 4,
+     "ms": 154,
+     "tokens": 199
+    },
+    "network.body": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.68,
+     "calls": 4,
+     "ms": 180,
+     "tokens": 504
+    },
+    "network.errors": {
+     "status": "pass",
+     "note": "",
+     "seconds": 1.11,
+     "calls": 5,
+     "ms": 304,
+     "tokens": 544
+    },
+    "shot.full": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.11,
+     "calls": 2,
+     "ms": 107,
+     "tokens": 1375
+    },
+    "shot.element": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.04,
+     "calls": 3,
+     "ms": 35,
+     "tokens": 145
+    },
+    "eval.promise": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.11,
+     "calls": 2,
+     "ms": 106,
+     "tokens": 74
+    },
+    "eval.throw": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.06,
+     "calls": 2,
+     "ms": 59,
+     "tokens": 74
+    },
+    "frames.same": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.7,
+     "calls": 3,
+     "ms": 190,
+     "tokens": 209
+    },
+    "frames.cross": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.67,
+     "calls": 3,
+     "ms": 162,
+     "tokens": 209
+    },
+    "spa.history": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.11,
+     "calls": 4,
+     "ms": 109,
+     "tokens": 180
+    },
+    "cookies.read": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.02,
+     "calls": 2,
+     "ms": 20,
+     "tokens": 209
+    },
+    "click.double": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.13,
+     "calls": 3,
+     "ms": 126,
+     "tokens": 204
+    },
+    "click.right": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.09,
+     "calls": 3,
+     "ms": 90,
+     "tokens": 205
+    },
+    "fill.range": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.08,
+     "calls": 3,
+     "ms": 76,
+     "tokens": 308
+    },
+    "fill.editable": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.11,
+     "calls": 3,
+     "ms": 107,
+     "tokens": 196
+    },
+    "keys.select_all": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.14,
+     "calls": 4,
+     "ms": 138,
+     "tokens": 139
+    },
+    "keys.escape": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.16,
+     "calls": 2,
+     "ms": 161,
+     "tokens": 88
+    },
+    "upload.multiple": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.03,
+     "calls": 3,
+     "ms": 26,
+     "tokens": 152
+    },
+    "drag.html5": {
+     "status": "fail",
+     "note": "'Card' has no handle in the snapshot",
+     "seconds": 0.07,
+     "calls": 2,
+     "ms": 66,
+     "tokens": 120
+    },
+    "frames.srcdoc": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.69,
+     "calls": 3,
+     "ms": 190,
+     "tokens": 209
+    },
+    "frames.cross_fill": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.68,
+     "calls": 3,
+     "ms": 176,
+     "tokens": 205
+    },
+    "shadow.open": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.1,
+     "calls": 3,
+     "ms": 94,
+     "tokens": 133
+    },
+    "stale.ref": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.08,
+     "calls": 4,
+     "ms": 77,
+     "tokens": 217
+    },
+    "read.big": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.55,
+     "calls": 4,
+     "ms": 545,
+     "tokens": 12704
+    },
+    "busy.click": {
+     "status": "pass",
+     "note": "",
+     "seconds": 1.05,
+     "calls": 3,
+     "ms": 1044,
+     "tokens": 158
+    },
+    "nav.slow": {
+     "status": "pass",
+     "note": "",
+     "seconds": 3.03,
+     "calls": 1,
+     "ms": 3023,
+     "tokens": 66
+    },
+    "nav.status": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.06,
+     "calls": 1,
+     "ms": 60,
+     "tokens": 78
+    },
+    "eval.await": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.12,
+     "calls": 2,
+     "ms": 116,
+     "tokens": 74
+    },
+    "shadow.closed": {
+     "status": "fail",
+     "note": "button \"Closed shadow button\" is not in the snapshot",
+     "seconds": 0.06,
+     "calls": 2,
+     "ms": 64,
+     "tokens": 118
+    },
+    "read.invalid": {
+     "status": "fail",
+     "note": "invalid is missing: '- textbox \"Zip code\" [ref=e20]: \"abc\"'",
+     "seconds": 0.07,
+     "calls": 2,
+     "ms": 68,
+     "tokens": 340
+    },
+    "nav.download": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.13,
+     "calls": 2,
+     "ms": 134,
+     "tokens": 103
+    },
+    "nav.pdf": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.17,
+     "calls": 1,
+     "ms": 171,
+     "tokens": 62
+    },
+    "nav.auth": {
+     "status": "fail",
+     "note": "the reply does not say 401: Navigated to http://127.0.0.1:43339/doc.pdf. | { |   \"browser\": {}, |   \"notes\": [ |     \"the page had not fired `load` after 30 s; the URL is the one committed",
+     "seconds": 30.0,
+     "calls": 1,
+     "ms": 30002,
+     "tokens": 57
+    },
+    "console.csp": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.32,
+     "calls": 2,
+     "ms": 23,
+     "tokens": 2831
+    },
+    "nav.beforeunload": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.33,
+     "calls": 6,
+     "ms": 124,
+     "tokens": 312
+    },
+    "form.many": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.12,
+     "calls": 3,
+     "ms": 119,
+     "tokens": 372
+    },
+    "read.select_options": {
+     "status": "fail",
+     "note": "the options are not listed",
+     "seconds": 0.03,
+     "calls": 2,
+     "ms": 28,
+     "tokens": 299
+    },
+    "select.multiple": {
+     "status": "unsupported",
+     "note": "no tool to select several options",
+     "seconds": 0.07,
+     "calls": 2,
+     "ms": 72,
+     "tokens": 299
+    },
+    "keys.tab": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.13,
+     "calls": 3,
+     "ms": 131,
+     "tokens": 304
+    },
+    "console.frame": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.88,
+     "calls": 2,
+     "ms": 83,
+     "tokens": 2874
+    },
+    "eval.large": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.05,
+     "calls": 2,
+     "ms": 45,
+     "tokens": 25099
+    },
+    "storage.local": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.04,
+     "calls": 2,
+     "ms": 31,
+     "tokens": 101
+    },
+    "emulate.dark": {
+     "status": "unsupported",
+     "note": "no tool to emulate dark mode (Firefox: WebDriver BiDi has no media emulation)",
+     "seconds": 0.06,
+     "calls": 2,
+     "ms": 61,
+     "tokens": 112
+    },
+    "viewport.resize": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.08,
+     "calls": 2,
+     "ms": 78,
+     "tokens": 153
+    },
+    "route.mock": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.03,
+     "calls": 3,
+     "ms": 28,
+     "tokens": 133
+    },
+    "network.offline": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.12,
+     "calls": 3,
+     "ms": 68,
+     "tokens": 111
+    },
+    "pdf.save": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.09,
+     "calls": 2,
+     "ms": 92,
+     "tokens": 138
+    }
+   }
+  },
+  "pw": {
+   "version": "1.65.0-alpha-2026-10-30",
+   "name": "playwright",
+   "results": {
+    "nav.basic": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.82,
+     "calls": 1,
+     "ms": 305,
+     "tokens": 89
+    },
+    "read.snapshot": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.05,
+     "calls": 2,
+     "ms": 50,
+     "tokens": 145
+    },
+    "click.button": {
+     "status": "pass",
+     "note": "",
+     "seconds": 1.11,
+     "calls": 3,
+     "ms": 606,
+     "tokens": 205
+    },
+    "click.link": {
+     "status": "pass",
+     "note": "",
+     "seconds": 1.16,
+     "calls": 3,
+     "ms": 649,
+     "tokens": 207
+    },
+    "fill.text": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.58,
+     "calls": 3,
+     "ms": 68,
+     "tokens": 396
+    },
+    "fill.replace": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.58,
+     "calls": 3,
+     "ms": 72,
+     "tokens": 393
+    },
+    "select.native": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.59,
+     "calls": 3,
+     "ms": 80,
+     "tokens": 428
+    },
+    "check.checkbox": {
+     "status": "pass",
+     "note": "",
+     "seconds": 1.12,
+     "calls": 3,
+     "ms": 613,
+     "tokens": 433
+    },
+    "check.radio": {
+     "status": "pass",
+     "note": "",
+     "seconds": 1.07,
+     "calls": 3,
+     "ms": 563,
+     "tokens": 428
+    },
+    "form.submit": {
+     "status": "pass",
+     "note": "",
+     "seconds": 1.67,
+     "calls": 4,
+     "ms": 648,
+     "tokens": 459
+    },
+    "press.enter": {
+     "status": "pass",
+     "note": "",
+     "seconds": 1.63,
+     "calls": 5,
+     "ms": 1116,
+     "tokens": 259
+    },
+    "wait.text": {
+     "status": "pass",
+     "note": "",
+     "seconds": 2.38,
+     "calls": 4,
+     "ms": 1870,
+     "tokens": 308
+    },
+    "shot.viewport": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.06,
+     "calls": 2,
+     "ms": 62,
+     "tokens": 1372
+    },
+    "console.read": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.61,
+     "calls": 4,
+     "ms": 605,
+     "tokens": 363
+    },
+    "network.read": {
+     "status": "pass",
+     "note": "",
+     "seconds": 1.61,
+     "calls": 4,
+     "ms": 1112,
+     "tokens": 296
+    },
+    "eval.object": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.54,
+     "calls": 2,
+     "ms": 540,
+     "tokens": 100
+    },
+    "tabs.new": {
+     "status": "pass",
+     "note": "",
+     "seconds": 2.14,
+     "calls": 5,
+     "ms": 628,
+     "tokens": 274
+    },
+    "nav.redirect": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.58,
+     "calls": 1,
+     "ms": 71,
+     "tokens": 88
+    },
+    "nav.back": {
+     "status": "pass",
+     "note": "",
+     "seconds": 1.61,
+     "calls": 3,
+     "ms": 1103,
+     "tokens": 259
+    },
+    "read.form_names": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.04,
+     "calls": 2,
+     "ms": 43,
+     "tokens": 427
+    },
+    "read.states": {
+     "status": "fail",
+     "note": "expanded is missing: '  - button \"Menu\" [ref=f6e8]'",
+     "seconds": 0.05,
+     "calls": 2,
+     "ms": 46,
+     "tokens": 452
+    },
+    "read.hidden": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.08,
+     "calls": 2,
+     "ms": 75,
+     "tokens": 452
+    },
+    "fill.textarea": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.62,
+     "calls": 3,
+     "ms": 103,
+     "tokens": 455
+    },
+    "fill.date": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.57,
+     "calls": 3,
+     "ms": 63,
+     "tokens": 459
+    },
+    "fill.unicode": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.58,
+     "calls": 3,
+     "ms": 72,
+     "tokens": 206
+    },
+    "hover.menu": {
+     "status": "pass",
+     "note": "",
+     "seconds": 1.13,
+     "calls": 5,
+     "ms": 627,
+     "tokens": 606
+    },
+    "widget.tabs": {
+     "status": "pass",
+     "note": "",
+     "seconds": 1.11,
+     "calls": 3,
+     "ms": 603,
+     "tokens": 333
+    },
+    "widget.listbox": {
+     "status": "pass",
+     "note": "",
+     "seconds": 1.63,
+     "calls": 5,
+     "ms": 1123,
+     "tokens": 612
+    },
+    "dialog.alert": {
+     "status": "pass",
+     "note": "",
+     "seconds": 1.11,
+     "calls": 4,
+     "ms": 598,
+     "tokens": 350
+    },
+    "dialog.confirm": {
+     "status": "pass",
+     "note": "",
+     "seconds": 1.11,
+     "calls": 4,
+     "ms": 605,
+     "tokens": 350
+    },
+    "dialog.prompt": {
+     "status": "pass",
+     "note": "",
+     "seconds": 1.12,
+     "calls": 4,
+     "ms": 616,
+     "tokens": 351
+    },
+    "wait.gone": {
+     "status": "pass",
+     "note": "",
+     "seconds": 1.9,
+     "calls": 4,
+     "ms": 1395,
+     "tokens": 430
+    },
+    "settle.fetch": {
+     "status": "pass",
+     "note": "",
+     "seconds": 1.71,
+     "calls": 3,
+     "ms": 1199,
+     "tokens": 326
+    },
+    "dynamic.spawn": {
+     "status": "pass",
+     "note": "",
+     "seconds": 2.42,
+     "calls": 6,
+     "ms": 1908,
+     "tokens": 670
+    },
+    "scroll.nested": {
+     "status": "pass",
+     "note": "",
+     "seconds": 1.08,
+     "calls": 3,
+     "ms": 571,
+     "tokens": 283
+    },
+    "scroll.far": {
+     "status": "pass",
+     "note": "",
+     "seconds": 1.08,
+     "calls": 3,
+     "ms": 573,
+     "tokens": 283
+    },
+    "upload.single": {
+     "status": "pass",
+     "note": "",
+     "seconds": 1.61,
+     "calls": 4,
+     "ms": 593,
+     "tokens": 392
+    },
+    "console.exception": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.87,
+     "calls": 4,
+     "ms": 572,
+     "tokens": 436
+    },
+    "network.body": {
+     "status": "pass",
+     "note": "",
+     "seconds": 1.62,
+     "calls": 5,
+     "ms": 1111,
+     "tokens": 395
+    },
+    "network.errors": {
+     "status": "pass",
+     "note": "",
+     "seconds": 7.94,
+     "calls": 5,
+     "ms": 7139,
+     "tokens": 557
+    },
+    "shot.full": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.14,
+     "calls": 2,
+     "ms": 142,
+     "tokens": 1056
+    },
+    "shot.element": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.12,
+     "calls": 3,
+     "ms": 121,
+     "tokens": 297
+    },
+    "eval.promise": {
+     "status": "pass",
+     "note": "",
+     "seconds": 6.05,
+     "calls": 2,
+     "ms": 6050,
+     "tokens": 119
+    },
+    "eval.throw": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.03,
+     "calls": 2,
+     "ms": 27,
+     "tokens": 177
+    },
+    "frames.same": {
+     "status": "pass",
+     "note": "",
+     "seconds": 1.73,
+     "calls": 3,
+     "ms": 718,
+     "tokens": 409
+    },
+    "frames.cross": {
+     "status": "pass",
+     "note": "",
+     "seconds": 1.7,
+     "calls": 3,
+     "ms": 686,
+     "tokens": 409
+    },
+    "spa.history": {
+     "status": "pass",
+     "note": "",
+     "seconds": 1.64,
+     "calls": 4,
+     "ms": 624,
+     "tokens": 361
+    },
+    "cookies.read": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.04,
+     "calls": 2,
+     "ms": 42,
+     "tokens": 129
+    },
+    "click.double": {
+     "status": "pass",
+     "note": "",
+     "seconds": 1.12,
+     "calls": 3,
+     "ms": 606,
+     "tokens": 335
+    },
+    "click.right": {
+     "status": "pass",
+     "note": "",
+     "seconds": 1.12,
+     "calls": 3,
+     "ms": 608,
+     "tokens": 340
+    },
+    "fill.range": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.58,
+     "calls": 3,
+     "ms": 69,
+     "tokens": 456
+    },
+    "fill.editable": {
+     "status": "fail",
+     "note": "textbox \"Notes editor\" is not in the snapshot",
+     "seconds": 0.04,
+     "calls": 2,
+     "ms": 44,
+     "tokens": 241
+    },
+    "keys.select_all": {
+     "status": "pass",
+     "note": "",
+     "seconds": 1.16,
+     "calls": 5,
+     "ms": 651,
+     "tokens": 305
+    },
+    "keys.escape": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.55,
+     "calls": 2,
+     "ms": 38,
+     "tokens": 108
+    },
+    "upload.multiple": {
+     "status": "pass",
+     "note": "",
+     "seconds": 1.63,
+     "calls": 4,
+     "ms": 620,
+     "tokens": 417
+    },
+    "drag.html5": {
+     "status": "pass",
+     "note": "",
+     "seconds": 1.18,
+     "calls": 3,
+     "ms": 672,
+     "tokens": 263
+    },
+    "frames.srcdoc": {
+     "status": "pass",
+     "note": "",
+     "seconds": 1.71,
+     "calls": 3,
+     "ms": 700,
+     "tokens": 408
+    },
+    "frames.cross_fill": {
+     "status": "pass",
+     "note": "",
+     "seconds": 1.18,
+     "calls": 3,
+     "ms": 169,
+     "tokens": 342
+    },
+    "shadow.open": {
+     "status": "pass",
+     "note": "",
+     "seconds": 1.12,
+     "calls": 3,
+     "ms": 614,
+     "tokens": 250
+    },
+    "stale.ref": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.61,
+     "calls": 4,
+     "ms": 611,
+     "tokens": 348
+    },
+    "read.big": {
+     "status": "pass",
+     "note": "",
+     "seconds": 3.25,
+     "calls": 3,
+     "ms": 2742,
+     "tokens": 137704
+    },
+    "busy.click": {
+     "status": "pass",
+     "note": "",
+     "seconds": 1.14,
+     "calls": 3,
+     "ms": 630,
+     "tokens": 258
+    },
+    "nav.slow": {
+     "status": "pass",
+     "note": "",
+     "seconds": 3.54,
+     "calls": 1,
+     "ms": 3037,
+     "tokens": 90
+    },
+    "nav.status": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.04,
+     "calls": 1,
+     "ms": 37,
+     "tokens": 128
+    },
+    "eval.await": {
+     "status": "unsupported",
+     "note": "no tool to top-level await",
+     "seconds": 0.07,
+     "calls": 1,
+     "ms": 70,
+     "tokens": 89
+    },
+    "shadow.closed": {
+     "status": "fail",
+     "note": "button \"Closed shadow button\" is not in the snapshot",
+     "seconds": 0.07,
+     "calls": 2,
+     "ms": 69,
+     "tokens": 156
+    },
+    "read.invalid": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.08,
+     "calls": 2,
+     "ms": 75,
+     "tokens": 460
+    },
+    "nav.download": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.58,
+     "calls": 2,
+     "ms": 583,
+     "tokens": 202
+    },
+    "nav.pdf": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.06,
+     "calls": 1,
+     "ms": 58,
+     "tokens": 80
+    },
+    "nav.auth": {
+     "status": "fail",
+     "note": "navigate: ### Error | Error: browserBackend.callTool: net::ERR_INVALID_AUTH_CREDENTIALS at http://127.0.0.1:43339/auth | Call log: | \u001b[2m  - navigating to \"http://127.0.0.1:43339/auth\", waiting until \"domcontentloaded\"\u001b[22m",
+     "seconds": 0.01,
+     "calls": 1,
+     "ms": 9,
+     "tokens": 52
+    },
+    "console.csp": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.37,
+     "calls": 2,
+     "ms": 72,
+     "tokens": 209
+    },
+    "nav.beforeunload": {
+     "status": "fail",
+     "note": "document.title is None, expected 'Second'",
+     "seconds": 5.69,
+     "calls": 5,
+     "ms": 605,
+     "tokens": 433
+    },
+    "form.many": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.69,
+     "calls": 3,
+     "ms": 187,
+     "tokens": 505
+    },
+    "read.select_options": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.04,
+     "calls": 2,
+     "ms": 44,
+     "tokens": 432
+    },
+    "select.multiple": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.58,
+     "calls": 3,
+     "ms": 74,
+     "tokens": 524
+    },
+    "keys.tab": {
+     "status": "pass",
+     "note": "",
+     "seconds": 1.12,
+     "calls": 4,
+     "ms": 613,
+     "tokens": 542
+    },
+    "console.frame": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.92,
+     "calls": 2,
+     "ms": 120,
+     "tokens": 163
+    },
+    "eval.large": {
+     "status": "fail",
+     "note": "the reply is 500025 tokens",
+     "seconds": 0.6,
+     "calls": 2,
+     "ms": 594,
+     "tokens": 500114
+    },
+    "storage.local": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.59,
+     "calls": 2,
+     "ms": 78,
+     "tokens": 117
+    },
+    "emulate.dark": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.55,
+     "calls": 2,
+     "ms": 41,
+     "tokens": 110
+    },
+    "viewport.resize": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.54,
+     "calls": 2,
+     "ms": 37,
+     "tokens": 111
+    },
+    "route.mock": {
+     "status": "pass",
+     "note": "",
+     "seconds": 1.06,
+     "calls": 3,
+     "ms": 47,
+     "tokens": 138
+    },
+    "network.offline": {
+     "status": "pass",
+     "note": "",
+     "seconds": 7.07,
+     "calls": 3,
+     "ms": 49,
+     "tokens": 141
+    },
+    "pdf.save": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.04,
+     "calls": 2,
+     "ms": 37,
+     "tokens": 117
+    }
+   }
+  },
+  "cd": {
+   "version": "1.12.0",
+   "name": "chrome-devtools",
+   "results": {
+    "nav.basic": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.53,
+     "calls": 1,
+     "ms": 325,
+     "tokens": 31
+    },
+    "read.snapshot": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.12,
+     "calls": 2,
+     "ms": 119,
+     "tokens": 96
+    },
+    "click.button": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.58,
+     "calls": 3,
+     "ms": 375,
+     "tokens": 105
+    },
+    "click.link": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.47,
+     "calls": 3,
+     "ms": 266,
+     "tokens": 118
+    },
+    "fill.text": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.55,
+     "calls": 3,
+     "ms": 345,
+     "tokens": 420
+    },
+    "fill.replace": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.57,
+     "calls": 3,
+     "ms": 361,
+     "tokens": 420
+    },
+    "select.native": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.56,
+     "calls": 3,
+     "ms": 356,
+     "tokens": 420
+    },
+    "check.checkbox": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.56,
+     "calls": 3,
+     "ms": 358,
+     "tokens": 420
+    },
+    "check.radio": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.57,
+     "calls": 3,
+     "ms": 366,
+     "tokens": 420
+    },
+    "form.submit": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.91,
+     "calls": 4,
+     "ms": 496,
+     "tokens": 440
+    },
+    "press.enter": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.99,
+     "calls": 5,
+     "ms": 782,
+     "tokens": 100
+    },
+    "wait.text": {
+     "status": "pass",
+     "note": "",
+     "seconds": 1.86,
+     "calls": 4,
+     "ms": 1659,
+     "tokens": 212
+    },
+    "shot.viewport": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.18,
+     "calls": 2,
+     "ms": 174,
+     "tokens": 1576
+    },
+    "console.read": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.36,
+     "calls": 4,
+     "ms": 355,
+     "tokens": 187
+    },
+    "network.read": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.86,
+     "calls": 4,
+     "ms": 362,
+     "tokens": 169
+    },
+    "eval.object": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.32,
+     "calls": 2,
+     "ms": 318,
+     "tokens": 49
+    },
+    "tabs.new": {
+     "status": "pass",
+     "note": "",
+     "seconds": 1.58,
+     "calls": 5,
+     "ms": 372,
+     "tokens": 159
+    },
+    "nav.redirect": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.35,
+     "calls": 1,
+     "ms": 148,
+     "tokens": 41
+    },
+    "nav.back": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.53,
+     "calls": 3,
+     "ms": 326,
+     "tokens": 128
+    },
+    "read.form_names": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.12,
+     "calls": 2,
+     "ms": 117,
+     "tokens": 432
+    },
+    "read.states": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.12,
+     "calls": 2,
+     "ms": 115,
+     "tokens": 312
+    },
+    "read.hidden": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.11,
+     "calls": 2,
+     "ms": 113,
+     "tokens": 312
+    },
+    "fill.textarea": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.56,
+     "calls": 3,
+     "ms": 356,
+     "tokens": 441
+    },
+    "fill.date": {
+     "status": "fail",
+     "note": "textbox \"Start date\" is not in the snapshot",
+     "seconds": 0.12,
+     "calls": 2,
+     "ms": 115,
+     "tokens": 432
+    },
+    "fill.unicode": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.63,
+     "calls": 3,
+     "ms": 428,
+     "tokens": 102
+    },
+    "hover.menu": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.83,
+     "calls": 5,
+     "ms": 624,
+     "tokens": 295
+    },
+    "widget.tabs": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.57,
+     "calls": 3,
+     "ms": 362,
+     "tokens": 151
+    },
+    "widget.listbox": {
+     "status": "fail",
+     "note": "option \"Banana\" is not in the snapshot",
+     "seconds": 0.37,
+     "calls": 4,
+     "ms": 364,
+     "tokens": 267
+    },
+    "dialog.alert": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.37,
+     "calls": 4,
+     "ms": 164,
+     "tokens": 163
+    },
+    "dialog.confirm": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.37,
+     "calls": 4,
+     "ms": 162,
+     "tokens": 162
+    },
+    "dialog.prompt": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.37,
+     "calls": 4,
+     "ms": 160,
+     "tokens": 169
+    },
+    "wait.gone": {
+     "status": "unsupported",
+     "note": "no tool to wait for text to go",
+     "seconds": 0.36,
+     "calls": 3,
+     "ms": 362,
+     "tokens": 125
+    },
+    "settle.fetch": {
+     "status": "fail",
+     "note": "right after the click the page shows ''",
+     "seconds": 0.56,
+     "calls": 3,
+     "ms": 351,
+     "tokens": 125
+    },
+    "dynamic.spawn": {
+     "status": "pass",
+     "note": "",
+     "seconds": 1.41,
+     "calls": 6,
+     "ms": 1200,
+     "tokens": 315
+    },
+    "scroll.nested": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.69,
+     "calls": 3,
+     "ms": 479,
+     "tokens": 109
+    },
+    "scroll.far": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.69,
+     "calls": 3,
+     "ms": 487,
+     "tokens": 109
+    },
+    "upload.single": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.53,
+     "calls": 3,
+     "ms": 120,
+     "tokens": 134
+    },
+    "console.exception": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.66,
+     "calls": 4,
+     "ms": 355,
+     "tokens": 189
+    },
+    "network.body": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.87,
+     "calls": 5,
+     "ms": 369,
+     "tokens": 421
+    },
+    "network.errors": {
+     "status": "pass",
+     "note": "",
+     "seconds": 1.39,
+     "calls": 5,
+     "ms": 590,
+     "tokens": 207
+    },
+    "shot.full": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.24,
+     "calls": 2,
+     "ms": 237,
+     "tokens": 1365
+    },
+    "shot.element": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.16,
+     "calls": 3,
+     "ms": 157,
+     "tokens": 119
+    },
+    "eval.promise": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.32,
+     "calls": 2,
+     "ms": 317,
+     "tokens": 54
+    },
+    "eval.throw": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.12,
+     "calls": 2,
+     "ms": 117,
+     "tokens": 46
+    },
+    "frames.same": {
+     "status": "pass",
+     "note": "",
+     "seconds": 1.11,
+     "calls": 3,
+     "ms": 400,
+     "tokens": 220
+    },
+    "frames.cross": {
+     "status": "pass",
+     "note": "",
+     "seconds": 1.11,
+     "calls": 3,
+     "ms": 410,
+     "tokens": 220
+    },
+    "spa.history": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.98,
+     "calls": 4,
+     "ms": 570,
+     "tokens": 162
+    },
+    "cookies.read": {
+     "status": "unsupported",
+     "note": "no tool to cookies",
+     "seconds": 0.12,
+     "calls": 1,
+     "ms": 119,
+     "tokens": 42
+    },
+    "click.double": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.56,
+     "calls": 3,
+     "ms": 357,
+     "tokens": 152
+    },
+    "click.right": {
+     "status": "unsupported",
+     "note": "no tool to right click",
+     "seconds": 0.12,
+     "calls": 2,
+     "ms": 122,
+     "tokens": 142
+    },
+    "fill.range": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.58,
+     "calls": 3,
+     "ms": 370,
+     "tokens": 441
+    },
+    "fill.editable": {
+     "status": "fail",
+     "note": "textbox \"Notes editor\" is not in the snapshot",
+     "seconds": 0.13,
+     "calls": 2,
+     "ms": 133,
+     "tokens": 142
+    },
+    "keys.select_all": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.98,
+     "calls": 5,
+     "ms": 771,
+     "tokens": 110
+    },
+    "keys.escape": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.53,
+     "calls": 2,
+     "ms": 322,
+     "tokens": 49
+    },
+    "upload.multiple": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.53,
+     "calls": 3,
+     "ms": 127,
+     "tokens": 159
+    },
+    "drag.html5": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.66,
+     "calls": 3,
+     "ms": 459,
+     "tokens": 107
+    },
+    "frames.srcdoc": {
+     "status": "pass",
+     "note": "",
+     "seconds": 1.12,
+     "calls": 3,
+     "ms": 415,
+     "tokens": 220
+    },
+    "frames.cross_fill": {
+     "status": "pass",
+     "note": "",
+     "seconds": 1.1,
+     "calls": 3,
+     "ms": 393,
+     "tokens": 220
+    },
+    "shadow.open": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.56,
+     "calls": 3,
+     "ms": 360,
+     "tokens": 96
+    },
+    "stale.ref": {
+     "status": "pass",
+     "note": "",
+     "seconds": 5.36,
+     "calls": 4,
+     "ms": 5361,
+     "tokens": 157
+    },
+    "read.big": {
+     "status": "pass",
+     "note": "",
+     "seconds": 1.36,
+     "calls": 3,
+     "ms": 1157,
+     "tokens": 58238
+    },
+    "busy.click": {
+     "status": "fail",
+     "note": "it took 3.2 s",
+     "seconds": 9.28,
+     "calls": 3,
+     "ms": 6168,
+     "tokens": 86
+    },
+    "nav.slow": {
+     "status": "pass",
+     "note": "",
+     "seconds": 3.32,
+     "calls": 1,
+     "ms": 3112,
+     "tokens": 43
+    },
+    "nav.status": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.11,
+     "calls": 1,
+     "ms": 113,
+     "tokens": 43
+    },
+    "eval.await": {
+     "status": "unsupported",
+     "note": "no tool to top-level await",
+     "seconds": 0.11,
+     "calls": 1,
+     "ms": 111,
+     "tokens": 42
+    },
+    "shadow.closed": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.55,
+     "calls": 3,
+     "ms": 349,
+     "tokens": 96
+    },
+    "read.invalid": {
+     "status": "fail",
+     "note": "invalid is missing: '  uid=59_19 \"Zip code\"'",
+     "seconds": 0.12,
+     "calls": 2,
+     "ms": 119,
+     "tokens": 312
+    },
+    "nav.download": {
+     "status": "pass",
+     "note": "",
+     "seconds": 3.22,
+     "calls": 2,
+     "ms": 3219,
+     "tokens": 92
+    },
+    "nav.pdf": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.12,
+     "calls": 1,
+     "ms": 115,
+     "tokens": 38
+    },
+    "nav.auth": {
+     "status": "fail",
+     "note": "the reply does not say 401: Unable to navigate in the selected page: net::ERR_INVALID_AUTH_CREDENTIALS at http://127.0.0.1:43339/auth. | ## Pages | 1: Tabs (http://127.0.0.1:43339/tabs.htm",
+     "seconds": 0.13,
+     "calls": 1,
+     "ms": 127,
+     "tokens": 50
+    },
+    "console.csp": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.42,
+     "calls": 2,
+     "ms": 119,
+     "tokens": 157
+    },
+    "nav.beforeunload": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.78,
+     "calls": 5,
+     "ms": 574,
+     "tokens": 166
+    },
+    "form.many": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.69,
+     "calls": 3,
+     "ms": 481,
+     "tokens": 440
+    },
+    "read.select_options": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.12,
+     "calls": 2,
+     "ms": 114,
+     "tokens": 432
+    },
+    "select.multiple": {
+     "status": "unsupported",
+     "note": "no tool to select several options",
+     "seconds": 0.11,
+     "calls": 2,
+     "ms": 114,
+     "tokens": 432
+    },
+    "keys.tab": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.76,
+     "calls": 4,
+     "ms": 555,
+     "tokens": 448
+    },
+    "console.frame": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.96,
+     "calls": 2,
+     "ms": 155,
+     "tokens": 77
+    },
+    "eval.large": {
+     "status": "fail",
+     "note": "the reply is 500012 tokens",
+     "seconds": 0.35,
+     "calls": 2,
+     "ms": 348,
+     "tokens": 500054
+    },
+    "storage.local": {
+     "status": "unsupported",
+     "note": "no tool to read localStorage",
+     "seconds": 0.31,
+     "calls": 1,
+     "ms": 110,
+     "tokens": 42
+    },
+    "emulate.dark": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.32,
+     "calls": 2,
+     "ms": 113,
+     "tokens": 57
+    },
+    "viewport.resize": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.32,
+     "calls": 2,
+     "ms": 115,
+     "tokens": 83
+    },
+    "route.mock": {
+     "status": "unsupported",
+     "note": "no tool to mock a request",
+     "seconds": 0.11,
+     "calls": 1,
+     "ms": 112,
+     "tokens": 49
+    },
+    "network.offline": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.52,
+     "calls": 3,
+     "ms": 115,
+     "tokens": 85
+    },
+    "pdf.save": {
+     "status": "unsupported",
+     "note": "no tool to save a PDF",
+     "seconds": 0.11,
+     "calls": 1,
+     "ms": 112,
+     "tokens": 42
+    }
+   }
+  },
+  "pp": {
+   "version": "0.6.5",
+   "name": "puppeteer",
+   "results": {
+    "nav.basic": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.18,
+     "calls": 1,
+     "ms": 172,
+     "tokens": 11
+    },
+    "read.snapshot": {
+     "status": "unsupported",
+     "note": "no tool to snapshot",
+     "seconds": 0.01,
+     "calls": 1,
+     "ms": 7,
+     "tokens": 11
+    },
+    "click.button": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.02,
+     "calls": 2,
+     "ms": 17,
+     "tokens": 14
+    },
+    "click.link": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.27,
+     "calls": 2,
+     "ms": 68,
+     "tokens": 18
+    },
+    "fill.text": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.03,
+     "calls": 2,
+     "ms": 29,
+     "tokens": 14
+    },
+    "fill.replace": {
+     "status": "fail",
+     "note": "the old value is still there",
+     "seconds": 0.06,
+     "calls": 2,
+     "ms": 54,
+     "tokens": 14
+    },
+    "select.native": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.05,
+     "calls": 2,
+     "ms": 51,
+     "tokens": 15
+    },
+    "check.checkbox": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.05,
+     "calls": 2,
+     "ms": 53,
+     "tokens": 17
+    },
+    "check.radio": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.05,
+     "calls": 2,
+     "ms": 51,
+     "tokens": 17
+    },
+    "form.submit": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.27,
+     "calls": 3,
+     "ms": 66,
+     "tokens": 21
+    },
+    "press.enter": {
+     "status": "unsupported",
+     "note": "no tool to press a key",
+     "seconds": 0.02,
+     "calls": 2,
+     "ms": 17,
+     "tokens": 13
+    },
+    "wait.text": {
+     "status": "unsupported",
+     "note": "no tool to wait for text",
+     "seconds": 0.06,
+     "calls": 2,
+     "ms": 63,
+     "tokens": 19
+    },
+    "shot.viewport": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.09,
+     "calls": 2,
+     "ms": 92,
+     "tokens": 658
+    },
+    "console.read": {
+     "status": "unsupported",
+     "note": "no tool to console",
+     "seconds": 0.01,
+     "calls": 2,
+     "ms": 13,
+     "tokens": 19
+    },
+    "network.read": {
+     "status": "unsupported",
+     "note": "no tool to network",
+     "seconds": 0.56,
+     "calls": 2,
+     "ms": 56,
+     "tokens": 19
+    },
+    "eval.object": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.05,
+     "calls": 2,
+     "ms": 45,
+     "tokens": 28
+    },
+    "tabs.new": {
+     "status": "unsupported",
+     "note": "no tool to switch tab",
+     "seconds": 1.07,
+     "calls": 2,
+     "ms": 69,
+     "tokens": 17
+    },
+    "nav.redirect": {
+     "status": "fail",
+     "note": "the reply does not name the final URL: Navigated to http://127.0.0.1:43339/chain",
+     "seconds": 0.05,
+     "calls": 1,
+     "ms": 45,
+     "tokens": 10
+    },
+    "nav.back": {
+     "status": "unsupported",
+     "note": "no tool to history back",
+     "seconds": 0.09,
+     "calls": 2,
+     "ms": 88,
+     "tokens": 23
+    },
+    "read.form_names": {
+     "status": "unsupported",
+     "note": "no tool to snapshot",
+     "seconds": 0.05,
+     "calls": 1,
+     "ms": 45,
+     "tokens": 11
+    },
+    "read.states": {
+     "status": "unsupported",
+     "note": "no tool to snapshot",
+     "seconds": 0.05,
+     "calls": 1,
+     "ms": 47,
+     "tokens": 12
+    },
+    "read.hidden": {
+     "status": "unsupported",
+     "note": "no tool to snapshot",
+     "seconds": 0.04,
+     "calls": 1,
+     "ms": 44,
+     "tokens": 12
+    },
+    "fill.textarea": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.06,
+     "calls": 2,
+     "ms": 57,
+     "tokens": 14
+    },
+    "fill.date": {
+     "status": "fail",
+     "note": "the date is not set",
+     "seconds": 0.05,
+     "calls": 2,
+     "ms": 53,
+     "tokens": 14
+    },
+    "fill.unicode": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.06,
+     "calls": 2,
+     "ms": 60,
+     "tokens": 13
+    },
+    "hover.menu": {
+     "status": "fail",
+     "note": "hover: {\"message\": \"no reply after 60 s\"}",
+     "seconds": 60.09,
+     "calls": 2,
+     "ms": 60089,
+     "tokens": 20
+    },
+    "widget.tabs": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.18,
+     "calls": 2,
+     "ms": 182,
+     "tokens": 15
+    },
+    "widget.listbox": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.03,
+     "calls": 3,
+     "ms": 29,
+     "tokens": 22
+    },
+    "dialog.alert": {
+     "status": "unsupported",
+     "note": "no tool to dialog",
+     "seconds": 60.07,
+     "calls": 2,
+     "ms": 60065,
+     "tokens": 20
+    },
+    "dialog.confirm": {
+     "status": "unsupported",
+     "note": "no tool to dialog",
+     "seconds": 60.09,
+     "calls": 2,
+     "ms": 60091,
+     "tokens": 20
+    },
+    "dialog.prompt": {
+     "status": "unsupported",
+     "note": "no tool to dialog",
+     "seconds": 60.1,
+     "calls": 2,
+     "ms": 60096,
+     "tokens": 20
+    },
+    "wait.gone": {
+     "status": "unsupported",
+     "note": "no tool to wait for text to go",
+     "seconds": 0.06,
+     "calls": 2,
+     "ms": 55,
+     "tokens": 19
+    },
+    "settle.fetch": {
+     "status": "fail",
+     "note": "right after the click the page shows ''",
+     "seconds": 0.06,
+     "calls": 2,
+     "ms": 55,
+     "tokens": 19
+    },
+    "dynamic.spawn": {
+     "status": "pass",
+     "note": "",
+     "seconds": 1.06,
+     "calls": 3,
+     "ms": 60,
+     "tokens": 27
+    },
+    "scroll.nested": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.01,
+     "calls": 2,
+     "ms": 13,
+     "tokens": 17
+    },
+    "scroll.far": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.05,
+     "calls": 2,
+     "ms": 54,
+     "tokens": 17
+    },
+    "upload.single": {
+     "status": "unsupported",
+     "note": "no tool to upload",
+     "seconds": 0.04,
+     "calls": 1,
+     "ms": 43,
+     "tokens": 12
+    },
+    "console.exception": {
+     "status": "unsupported",
+     "note": "no tool to console",
+     "seconds": 0.35,
+     "calls": 2,
+     "ms": 51,
+     "tokens": 19
+    },
+    "network.body": {
+     "status": "unsupported",
+     "note": "no tool to request body",
+     "seconds": 0.56,
+     "calls": 2,
+     "ms": 57,
+     "tokens": 19
+    },
+    "network.errors": {
+     "status": "unsupported",
+     "note": "no tool to network",
+     "seconds": 0.87,
+     "calls": 3,
+     "ms": 72,
+     "tokens": 26
+    },
+    "shot.full": {
+     "status": "unsupported",
+     "note": "no tool to full-page screenshot",
+     "seconds": 0.04,
+     "calls": 1,
+     "ms": 43,
+     "tokens": 12
+    },
+    "shot.element": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.12,
+     "calls": 2,
+     "ms": 117,
+     "tokens": 19
+    },
+    "eval.promise": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.01,
+     "calls": 2,
+     "ms": 9,
+     "tokens": 15
+    },
+    "eval.throw": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.01,
+     "calls": 2,
+     "ms": 7,
+     "tokens": 17
+    },
+    "frames.same": {
+     "status": "fail",
+     "note": "window.__msgs.join() is '', expected 'clicked same'",
+     "seconds": 3.62,
+     "calls": 2,
+     "ms": 94,
+     "tokens": 15
+    },
+    "frames.cross": {
+     "status": "fail",
+     "note": "window.__msgs.join() is '', expected 'clicked cross'",
+     "seconds": 3.62,
+     "calls": 2,
+     "ms": 96,
+     "tokens": 15
+    },
+    "spa.history": {
+     "status": "unsupported",
+     "note": "no tool to history back",
+     "seconds": 0.06,
+     "calls": 2,
+     "ms": 54,
+     "tokens": 14
+    },
+    "cookies.read": {
+     "status": "unsupported",
+     "note": "no tool to cookies",
+     "seconds": 0.04,
+     "calls": 1,
+     "ms": 44,
+     "tokens": 11
+    },
+    "click.double": {
+     "status": "unsupported",
+     "note": "no tool to double or right click",
+     "seconds": 0.05,
+     "calls": 1,
+     "ms": 44,
+     "tokens": 12
+    },
+    "click.right": {
+     "status": "unsupported",
+     "note": "no tool to double or right click",
+     "seconds": 0.04,
+     "calls": 1,
+     "ms": 44,
+     "tokens": 12
+    },
+    "fill.range": {
+     "status": "fail",
+     "note": "the value is not 70",
+     "seconds": 0.06,
+     "calls": 2,
+     "ms": 56,
+     "tokens": 14
+    },
+    "fill.editable": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.06,
+     "calls": 2,
+     "ms": 54,
+     "tokens": 15
+    },
+    "keys.select_all": {
+     "status": "unsupported",
+     "note": "no tool to press a key",
+     "seconds": 0.05,
+     "calls": 1,
+     "ms": 45,
+     "tokens": 11
+    },
+    "keys.escape": {
+     "status": "unsupported",
+     "note": "no tool to press a key",
+     "seconds": 0.04,
+     "calls": 1,
+     "ms": 44,
+     "tokens": 11
+    },
+    "upload.multiple": {
+     "status": "unsupported",
+     "note": "no tool to upload",
+     "seconds": 0.04,
+     "calls": 1,
+     "ms": 44,
+     "tokens": 12
+    },
+    "drag.html5": {
+     "status": "unsupported",
+     "note": "no tool to drag",
+     "seconds": 0.04,
+     "calls": 1,
+     "ms": 44,
+     "tokens": 11
+    },
+    "frames.srcdoc": {
+     "status": "fail",
+     "note": "not clicked",
+     "seconds": 0.59,
+     "calls": 2,
+     "ms": 93,
+     "tokens": 15
+    },
+    "frames.cross_fill": {
+     "status": "fail",
+     "note": "window.__msgs.slice(-1)[0] is None, expected 'typed abc'",
+     "seconds": 3.62,
+     "calls": 2,
+     "ms": 97,
+     "tokens": 15
+    },
+    "shadow.open": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.06,
+     "calls": 2,
+     "ms": 60,
+     "tokens": 18
+    },
+    "stale.ref": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.07,
+     "calls": 3,
+     "ms": 65,
+     "tokens": 24
+    },
+    "read.big": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.17,
+     "calls": 2,
+     "ms": 165,
+     "tokens": 19
+    },
+    "busy.click": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.02,
+     "calls": 2,
+     "ms": 15,
+     "tokens": 14
+    },
+    "nav.slow": {
+     "status": "pass",
+     "note": "",
+     "seconds": 3.04,
+     "calls": 1,
+     "ms": 3042,
+     "tokens": 12
+    },
+    "nav.status": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.05,
+     "calls": 1,
+     "ms": 48,
+     "tokens": 11
+    },
+    "eval.await": {
+     "status": "fail",
+     "note": "evaluate: Eval failed: await is only valid in async functions and the top level bodies of modules",
+     "seconds": 0.05,
+     "calls": 2,
+     "ms": 48,
+     "tokens": 33
+    },
+    "shadow.closed": {
+     "status": "fail",
+     "note": "click: Click failed: No element found for selector: #closed button",
+     "seconds": 0.05,
+     "calls": 2,
+     "ms": 47,
+     "tokens": 27
+    },
+    "read.invalid": {
+     "status": "unsupported",
+     "note": "no tool to snapshot",
+     "seconds": 0.05,
+     "calls": 1,
+     "ms": 47,
+     "tokens": 12
+    },
+    "nav.download": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.05,
+     "calls": 2,
+     "ms": 47,
+     "tokens": 31
+    },
+    "nav.pdf": {
+     "status": "pass",
+     "note": "",
+     "seconds": 0.01,
+     "calls": 1,
+     "ms": 10,
+     "tokens": 11
+    },
+    "nav.auth": {
+     "status": "fail",
+     "note": "navigate: {\"code\": -32603, \"message\": \"net::ERR_INVALID_AUTH_CREDENTIALS at http://127.0.0.1:43339/auth\"}",
+     "seconds": 0.01,
+     "calls": 1,
+     "ms": 8,
+     "tokens": 23
+    },
+    "console.csp": {
+     "status": "unsupported",
+     "note": "no tool to console",
+     "seconds": 0.35,
+     "calls": 1,
+     "ms": 45,
+     "tokens": 10
+    },
+    "nav.beforeunload": {
+     "status": "unsupported",
+     "note": "no tool to dialog",
+     "seconds": 90.12,
+     "calls": 4,
+     "ms": 90120,
+     "tokens": 44
+    },
+    "form.many": {
+     "status": "fail",
+     "note": "navigate: {\"code\": -32603, \"message\": \"Navigation timeout of 30000 ms exceeded\"}",
+     "seconds": 30.0,
+     "calls": 1,
+     "ms": 30001,
+     "tokens": 17
+    },
+    "read.select_options": {
+     "status": "fail",
+     "note": "navigate: {\"code\": -32603, \"message\": \"Navigation timeout of 30000 ms exceeded\"}",
+     "seconds": 30.01,
+     "calls": 1,
+     "ms": 30007,
+     "tokens": 17
+    },
+    "select.multiple": {
+     "status": "fail",
+     "note": "navigate: {\"code\": -32603, \"message\": \"Navigation timeout of 30000 ms exceeded\"}",
+     "seconds": 30.03,
+     "calls": 1,
+     "ms": 30030,
+     "tokens": 17
+    },
+    "keys.tab": {
+     "status": "fail",
+     "note": "navigate: {\"code\": -32603, \"message\": \"Navigation timeout of 30000 ms exceeded\"}",
+     "seconds": 30.02,
+     "calls": 1,
+     "ms": 30017,
+     "tokens": 17
+    },
+    "console.frame": {
+     "status": "fail",
+     "note": "navigate: {\"code\": -32603, \"message\": \"Navigation timeout of 30000 ms exceeded\"}",
+     "seconds": 30.03,
+     "calls": 1,
+     "ms": 30030,
+     "tokens": 17
+    },
+    "eval.large": {
+     "status": "fail",
+     "note": "navigate: {\"code\": -32603, \"message\": \"Navigation timeout of 30000 ms exceeded\"}",
+     "seconds": 30.01,
+     "calls": 1,
+     "ms": 30009,
+     "tokens": 17
+    },
+    "storage.local": {
+     "status": "fail",
+     "note": "navigate: {\"code\": -32603, \"message\": \"Navigation timeout of 30000 ms exceeded\"}",
+     "seconds": 30.03,
+     "calls": 1,
+     "ms": 30027,
+     "tokens": 17
+    },
+    "emulate.dark": {
+     "status": "fail",
+     "note": "navigate: {\"code\": -32603, \"message\": \"Navigation timeout of 30000 ms exceeded\"}",
+     "seconds": 30.02,
+     "calls": 1,
+     "ms": 30020,
+     "tokens": 17
+    },
+    "viewport.resize": {
+     "status": "fail",
+     "note": "navigate: {\"code\": -32603, \"message\": \"Navigation timeout of 30000 ms exceeded\"}",
+     "seconds": 30.03,
+     "calls": 1,
+     "ms": 30030,
+     "tokens": 17
+    },
+    "route.mock": {
+     "status": "fail",
+     "note": "navigate: {\"code\": -32603, \"message\": \"Navigation timeout of 30000 ms exceeded\"}",
+     "seconds": 30.03,
+     "calls": 1,
+     "ms": 30029,
+     "tokens": 17
+    },
+    "network.offline": {
+     "status": "fail",
+     "note": "navigate: {\"code\": -32603, \"message\": \"Navigation timeout of 30000 ms exceeded\"}",
+     "seconds": 30.02,
+     "calls": 1,
+     "ms": 30017,
+     "tokens": 17
+    },
+    "pdf.save": {
+     "status": "fail",
+     "note": "navigate: {\"code\": -32603, \"message\": \"Navigation timeout of 30000 ms exceeded\"}",
+     "seconds": 30.03,
+     "calls": 1,
+     "ms": 30030,
+     "tokens": 17
+    }
+   }
+  }
+ }
+}

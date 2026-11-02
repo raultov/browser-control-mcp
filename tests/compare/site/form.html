@@ -1,0 +1,15 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Form</title></head><body>
+<h1>Sign up</h1>
+<form method="post" action="/post">
+<label for="name">Full name</label> <input id="name" name="name" required>
+<label>Email <input type="email" name="email"></label>
+<label for="msg">Message</label> <textarea id="msg" name="message"></textarea>
+<label for="country">Country</label> <select id="country" name="country"><option value="">Choose</option><option value="es">Spain</option><option value="fr">France</option><option value="de">Germany</option></select>
+<fieldset><legend>Plan</legend><label><input type="radio" name="plan" value="basic"> Basic</label><label><input type="radio" name="plan" value="pro"> Pro</label></fieldset>
+<label><input type="checkbox" name="terms" value="yes"> I accept the terms</label>
+<label for="start">Start date</label> <input id="start" type="date" name="start">
+<label for="volume">Volume</label> <input id="volume" type="range" name="volume" min="0" max="100" value="10">
+<label for="toppings">Toppings</label> <select id="toppings" name="toppings" multiple><option>Cheese</option><option>Ham</option><option>Olives</option></select>
+<label for="city">City</label> <input id="city" name="city" value="Prefilled">
+<button type="submit">Send</button>
+</form></body></html>

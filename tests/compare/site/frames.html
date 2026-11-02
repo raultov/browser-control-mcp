@@ -1,0 +1,8 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Frames</title></head><body>
+<p>Frames host</p>
+<iframe id="same" src="/frame-inner.html?same" width="300" height="80"></iframe>
+<iframe id="cross" width="300" height="80"></iframe>
+<iframe id="doc" srcdoc="<button onclick=&quot;parent.window.__srcdoc=1&quot;>Srcdoc button</button>" width="300" height="60"></iframe>
+<script>window.__msgs = []; addEventListener('message', e => window.__msgs.push(e.data));
+document.getElementById('cross').src = 'http://localhost:' + location.port + '/frame-inner.html?cross';</script>
+</body></html>

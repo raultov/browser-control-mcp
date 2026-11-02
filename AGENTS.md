@@ -128,6 +128,7 @@ make check        # fmt-check, clippy -D warnings, test, doc, dupes (0), publish
 make test-lib     # fast loop, not a gate
 make e2e          # real Chrome + Firefox over stdio MCP (headless; E2E_VISIBLE=1 shows them; not in make check)
 make check-all    # make check + make e2e
+make compare      # tests/compare: same tasks on several browser MCP servers (real browsers, npx; not a gate)
 cargo clippy --all-targets --all-features --target x86_64-pc-windows-gnu -- -D warnings   # Windows cross-check
 ```
 

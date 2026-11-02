@@ -1,0 +1,7 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Keys</title></head><body>
+<form onsubmit="event.preventDefault(); document.getElementById('out').textContent = 'submitted ' + document.getElementById('q').value">
+<label for="q">Search</label> <input id="q" value="old text"></form>
+<p id="out"></p>
+<script>window.__keys = []; document.addEventListener('keydown', e => window.__keys.push(e.key + (e.ctrlKey ? '+ctrl' : '') + (e.shiftKey ? '+shift' : '')));
+document.addEventListener('keydown', e => { if (e.key === 'Escape') document.getElementById('out').textContent = 'escaped'; });</script>
+</body></html>

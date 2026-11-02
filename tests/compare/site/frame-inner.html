@@ -1,0 +1,6 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Inner</title></head><body>
+<button id="b">Inner button</button>
+<label>Inner field <input id="f" oninput="parent.postMessage('typed ' + this.value, '*')"></label>
+<script>const which = location.search.slice(1); console.log('inner loaded ' + which); const b = document.getElementById('b');
+b.textContent = 'Inner button ' + which; document.getElementById('f').parentNode.firstChild.textContent = 'Inner field ' + which + ' ';
+b.onclick = () => parent.postMessage('clicked ' + which, '*');</script></body></html>

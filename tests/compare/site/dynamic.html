@@ -1,0 +1,8 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Dynamic</title></head><body>
+<button onclick="setTimeout(()=>{const p=document.createElement('p');p.textContent='Loaded result';document.body.append(p)},1500)">Start</button>
+<p id="gone">Will disappear</p><button onclick="setTimeout(()=>document.getElementById('gone').remove(),1000)">Remove</button>
+<button onclick="setTimeout(()=>{const b=document.createElement('button');b.textContent='Appeared';b.onclick=()=>window.__appeared=1;document.body.append(b)},800)">Spawn</button>
+<ul id="list"><li><button onclick="window.__item='old 2'">Item 2</button></li></ul>
+<button onclick="document.getElementById('list').innerHTML='<li><button onclick=&quot;window.__item=\'new 2\'&quot;>Item 2</button></li>'">Rerender</button>
+<button onclick="fetch('/slow?ms=600').then(r=>r.text()).then(()=>document.getElementById('out').textContent='fetched')">Fetch slowly</button>
+<p id="out"></p></body></html>

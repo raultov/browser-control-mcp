@@ -1,4 +1,4 @@
-.PHONY: all fmt fmt-check clippy clippy-windows test test-lib doc dupes dupes-cleanup publish-check version-check changelog-check check build install e2e check-all help
+.PHONY: all fmt fmt-check clippy clippy-windows test test-lib doc dupes dupes-cleanup publish-check version-check changelog-check check build install e2e compare check-all help
 
 # cargo-dupes reads dupes.toml ONLY from the analysed path (no parent lookup)
 # and silently passes when it finds none, so the gate refuses to run without it.
@@ -104,6 +104,11 @@ E2E_SCRIPT ?= tests/run_all_e2e.sh
 e2e:
 	@if [ -x "$(E2E_SCRIPT)" ]; then ./$(E2E_SCRIPT); else echo "e2e: $(E2E_SCRIPT) not present yet - skipped"; fi
 
+# Compare browser MCP servers on the same tasks (tests/compare; real
+# browsers and npx, so not a gate). COMPARE_ARGS: e.g. --servers bc,pw --level 2
+compare: build
+	python3 -I tests/compare/run.py $(COMPARE_ARGS)
+
 # All local quality gates AND the E2E smoke
 check-all: check e2e
 
@@ -126,3 +131,4 @@ help:
 	@echo "  make build          - Release binary"
 	@echo "  make install        - Release binary into ~/.cargo/bin"
 	@echo "  make e2e            - Smoke against real Chrome and Firefox (tests/run_all_e2e.sh)"
+	@echo "  make compare        - Compare browser MCP servers on the same tasks (tests/compare)"

@@ -683,12 +683,17 @@ incompatible:
 make check        # fmt, clippy -D warnings, tests, docs, duplication, packaging, version
 make e2e          # E2E smoke against real Chrome and Firefox, headless (E2E_VISIBLE=1 shows them; Linux, macOS)
 make check-all    # both
+make compare      # the same tasks on this and other browser MCP servers (tests/compare)
 ```
 
 `make check` is hermetic: it never starts a browser or touches the network.
 `make e2e` runs `tests/run_all_e2e.sh`: the launched-mode smoke for both
 browsers, then the attach mode against browsers started by `tests/chrome.sh`
-and `tests/firefox.sh`. See [AGENTS.md](AGENTS.md) for the conventions.
+and `tests/firefox.sh`. `make compare` runs the scenarios of
+[tests/compare](tests/compare/README.md) (from common tasks to rare ones, each
+with a check) on browser-control and on Playwright MCP, chrome-devtools-mcp
+and a Puppeteer MCP, and compares the outcome, calls and tokens with a saved
+baseline. See [AGENTS.md](AGENTS.md) for the conventions.
 
 ## Releasing
 

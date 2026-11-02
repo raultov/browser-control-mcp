@@ -1,0 +1,4 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Upload</title></head><body>
+<label for="one">Attachment</label> <input id="one" type="file" onchange="window.__one = Array.from(this.files).map(f => f.name + ':' + f.size)">
+<label for="many">Photos</label> <input id="many" type="file" multiple onchange="window.__many = Array.from(this.files).map(f => f.name)">
+</body></html>

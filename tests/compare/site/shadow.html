@@ -1,0 +1,8 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Shadow</title></head><body>
+<div id="open"></div><div id="closed"></div>
+<script>
+const o = document.getElementById('open').attachShadow({mode: 'open'});
+o.innerHTML = '<button>Open shadow button</button>'; o.querySelector('button').onclick = () => window.__open = 1;
+const c = document.getElementById('closed').attachShadow({mode: 'closed'});
+c.innerHTML = '<button>Closed shadow button</button>'; c.querySelector('button').onclick = () => window.__closed = 1;
+</script></body></html>

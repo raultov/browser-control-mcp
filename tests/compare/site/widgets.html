@@ -1,0 +1,16 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Widgets</title>
+<style>.menu .sub{display:none}.menu:hover .sub{display:block} [role=listbox]{border:1px solid #888}</style></head><body>
+<div role="tablist"><button role="tab" aria-selected="true" id="t1" onclick="sel(1)">Overview</button><button role="tab" aria-selected="false" id="t2" onclick="sel(2)">Details</button></div>
+<div id="p1" role="tabpanel">Overview panel</div><div id="p2" role="tabpanel" hidden>Details panel</div>
+<button id="dd" aria-haspopup="listbox" aria-expanded="false" onclick="toggle()">Choose fruit</button>
+<ul role="listbox" id="lb" hidden><li role="option" onclick="pick(this)">Apple</li><li role="option" onclick="pick(this)">Banana</li><li role="option" onclick="pick(this)">Cherry</li></ul>
+<div class="menu"><button>Account</button><div class="sub"><a href="#settings" onclick="document.getElementById('out').textContent='settings opened'">Settings</a></div></div>
+<button id="dbl" ondblclick="document.getElementById('out').textContent='double clicked'">Double me</button>
+<button id="ctx" oncontextmenu="event.preventDefault(); document.getElementById('out').textContent='context menu'">Right click me</button>
+<div id="editor" contenteditable="true" aria-label="Notes editor" style="border:1px solid #888;min-height:20px"></div>
+<p id="out"></p>
+<script>
+function sel(n){for(const i of [1,2]){document.getElementById('t'+i).setAttribute('aria-selected', i===n);document.getElementById('p'+i).hidden = i!==n;}}
+function toggle(){const lb=document.getElementById('lb');lb.hidden=!lb.hidden;document.getElementById('dd').setAttribute('aria-expanded', !lb.hidden);}
+function pick(li){document.getElementById('dd').textContent=li.textContent;document.getElementById('lb').hidden=true;document.getElementById('dd').setAttribute('aria-expanded','false');window.__fruit=li.textContent;}
+</script></body></html>

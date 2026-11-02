@@ -1,0 +1,5 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>SPA home</title></head><body>
+<nav><a href="/spa/about" onclick="event.preventDefault(); go('/spa/about', 'About')">About</a></nav><h1 id="h">Home view</h1>
+<script>function go(path, name) { history.pushState({name}, '', path); render(name); }
+function render(name) { document.getElementById('h').textContent = name + ' view'; document.title = 'SPA ' + name.toLowerCase(); }
+addEventListener('popstate', e => render(e.state ? e.state.name : 'Home'));</script></body></html>

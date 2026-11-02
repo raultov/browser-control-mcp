@@ -1,0 +1,8 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Observe</title></head><body>
+<button onclick="console.log('bench log', {n: 1}); console.warn('bench warn'); console.error('bench error')">Log</button>
+<button onclick="setTimeout(() => { null.boom(); })">Throw</button>
+<button onclick="fetch('/api/echo', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({hello: 'bench'})}).then(r => r.text())">Post</button>
+<button onclick="fetch('/status/500')">Fail500</button>
+<button onclick="fetch('http://127.0.0.1:65533/refused').catch(() => {})">Refused</button>
+<img src="/missing.png" alt="missing">
+</body></html>
