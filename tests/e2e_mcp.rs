@@ -1634,6 +1634,17 @@ mod e2e {
         ]
     }
 
+    /// ISSUE-57: metrics after a garbage collection (Chrome collects
+    /// first; Firefox reads them and notes it cannot).
+    fn memory_steps(instance: &str) -> Vec<Step> {
+        vec![(
+            "ISSUE-57 metrics after a garbage collection",
+            "get_performance_metrics",
+            json!({"instance_id": instance, "collect_garbage": true}),
+            "Nodes",
+        )]
+    }
+
     /// Observation steps: console, network, screenshot, DOM.
     fn observation_steps(instance: &str) -> Vec<Step> {
         let i = json!(instance);
@@ -2276,6 +2287,7 @@ mod e2e {
             emulate_steps("e2e", browser == "chrome"),
             closed_root_steps("e2e", browser == "chrome"),
             observation_steps("e2e"),
+            memory_steps("e2e"),
             network_steps("e2e"),
             websocket_steps("e2e", &base),
             other_page_steps("e2e", &base),

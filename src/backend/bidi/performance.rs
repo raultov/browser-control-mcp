@@ -4,7 +4,9 @@
 //! what Firefox cannot give, instead of answering an empty or made-up value.
 
 use super::page;
-use crate::handler::cdp_domains::performance::get_performance_metrics::GetPerformanceMetricsTool;
+use crate::handler::cdp_domains::performance::get_performance_metrics::{
+    GetPerformanceMetricsTool, NOT_COLLECTED_NOTE,
+};
 use crate::handler::cdp_domains::tracing::profile_page_performance::ProfilePagePerformanceTool;
 use crate::handler::{McpHandler, insights, parse_args};
 use rust_mcp_sdk::schema::{CallToolError, CallToolRequestParams, CallToolResult};
@@ -25,12 +27,12 @@ pub(crate) async fn metrics(params: CallToolRequestParams, handler: &McpHandler)
     let session = handler.firefox(args.instance_id.as_deref()).await?;
     let (_, tab) = session.tab(args.tab_id.as_deref()).await?;
     let metrics = page::run_snippet(&tab.tab, crate::util::js::PAGE_METRICS).await?;
-    Ok(CallToolResult::text_content(vec![
-        serde_json::to_string_pretty(&metrics)
-            .unwrap_or_default()
-            .into(),
-        METRICS_NOTE.into(),
-    ]))
+    let body = serde_json::to_string_pretty(&metrics).unwrap_or_default();
+    let collected = args.collects_garbage().then_some(NOT_COLLECTED_NOTE);
+    let blocks = [body.as_str(), METRICS_NOTE].into_iter().chain(collected);
+    Ok(CallToolResult::text_content(
+        blocks.map(|text| text.to_string().into()).collect(),
+    ))
 }
 
 /// `profile_page_performance`: reloads if asked (bypassing the cache when
@@ -121,6 +123,33 @@ mod tests {
         assert!(note.contains("JSHeapUsedSize"), "{note}");
         let sent = &mock.bidi().commands_named("script.evaluate")[0].params;
         assert_eq!(sent["expression"], crate::util::js::PAGE_METRICS);
+        ts::stop(&handler).await;
+    }
+
+    /// ISSUE-57 (Firefox): `collect_garbage` cannot be done over BiDi:
+    /// the reply says so instead of pretending.
+    #[tokio::test]
+    async fn firefox_cannot_collect_garbage() {
+        let mock = MockFirefox::start(false).await.unwrap();
+        mock.bidi().respond_with("script.evaluate", |_| {
+            evaluate_success(
+                json!({"type": "object", "value": [["Nodes", {"type": "number", "value": 12}]]}),
+            )
+        });
+        let handler = ts::handler(&mock);
+        let args = json!({"collect_garbage": true});
+        let reply = metrics(ts::call("get_performance_metrics", args), &handler)
+            .await
+            .unwrap();
+        let notes: Vec<String> = reply.content[1..]
+            .iter()
+            .map(|c| c.as_text_content().unwrap().text.clone())
+            .collect();
+        assert_eq!(notes.len(), 2, "{notes:?}");
+        assert!(
+            notes[1].starts_with("Garbage was not collected"),
+            "{notes:?}"
+        );
         ts::stop(&handler).await;
     }
 

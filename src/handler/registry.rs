@@ -1228,6 +1228,7 @@ The page reacted (the DOM changed) and settled after ",
     const ARGUMENT_NAMES: &[&str] = &[
         "active_tab_id",
         "click_count",
+        "collect_garbage",
         "color_scheme",
         "confirm_restart",
         "copy_cookies",

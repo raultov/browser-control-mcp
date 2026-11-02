@@ -36,6 +36,12 @@ from a copy of its code: entries describe the differences from that release.
   no Lighthouse bundle. Each failing check lists its first 10 elements with
   a snapshot ref, a selector, its start tag and a detail; `categories`
   narrows it. (#55)
+- `get_performance_metrics` takes `collect_garbage: true`, which collects
+  garbage before reading on Chrome (`HeapProfiler.collectGarbage`), and adds
+  the live `Documents`, `Nodes` and `JSEventListeners` of
+  `Memory.getDOMCounters`, so reads after repeating an action show what it
+  leaked; its metrics are sorted by name. On Firefox, where WebDriver BiDi
+  cannot force a collection, a note says so. (#57)
 
 ### Fixed
 

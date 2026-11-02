@@ -4,11 +4,11 @@ use rust_mcp_sdk::{
     macros,
     schema::{CallToolError, CallToolRequestParams, CallToolResult},
 };
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 #[macros::mcp_tool(
     name = "get_performance_metrics",
-    description = "Returns runtime metrics (JSHeapUsedSize, Nodes, LayoutCount...). On Firefox: partial, only Nodes, Frames, Resources and TransferSize from the Web Performance APIs (a second block says what is missing)."
+    description = "Returns runtime metrics (JSHeapUsedSize, Nodes, Documents, JSEventListeners, LayoutCount...); 'collect_garbage': true collects garbage first, so repeated reads after an action show what it leaked. On Firefox: partial, only Nodes, Frames, Resources and TransferSize from the Web Performance APIs, and no garbage collection (a block says what is missing)."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct GetPerformanceMetricsTool {
@@ -16,10 +16,46 @@ pub struct GetPerformanceMetricsTool {
     pub instance_id: Option<String>,
     /// Tab id; omit for the active tab.
     pub tab_id: Option<String>,
+    /// Collect garbage before reading (Chrome), so the heap and node counts hold only what is still reachable. Default: false.
+    pub collect_garbage: Option<bool>,
+}
+
+/// The note of a reply whose metrics were read after a garbage collection.
+const COLLECTED_NOTE: &str = "Garbage was collected first (HeapProfiler.collectGarbage): JSHeapUsedSize, Nodes and JSEventListeners count what is still reachable";
+
+/// What Firefox answers to `collect_garbage`.
+pub(crate) const NOT_COLLECTED_NOTE: &str = "Garbage was not collected: WebDriver BiDi cannot force a garbage collection, so the counts include objects not yet collected";
+
+impl GetPerformanceMetricsTool {
+    /// Whether garbage is to be collected first.
+    pub(crate) fn collects_garbage(&self) -> bool {
+        self.collect_garbage == Some(true)
+    }
+}
+
+/// `Memory.getDOMCounters` (live documents, nodes and event listeners)
+/// under the names `Performance.getMetrics` uses; nothing if Chrome does
+/// not answer it.
+async fn dom_counters(target: &CdpTarget) -> Vec<(String, f64)> {
+    let Ok(reply) = target
+        .send_raw_command("Memory.getDOMCounters", serde_json::json!({}))
+        .await
+    else {
+        return Vec::new();
+    };
+    let counters = reply.result.unwrap_or_default();
+    [
+        ("documents", "Documents"),
+        ("nodes", "Nodes"),
+        ("jsEventListeners", "JSEventListeners"),
+    ]
+    .into_iter()
+    .filter_map(|(key, name)| Some((name.to_string(), counters.get(key)?.as_f64()?)))
+    .collect()
 }
 
 /// `Performance.getMetrics` as name → value.
-async fn read_metrics(target: &CdpTarget) -> Result<HashMap<String, f64>, CallToolError> {
+async fn read_metrics(target: &CdpTarget) -> Result<BTreeMap<String, f64>, CallToolError> {
     let reply = target
         .send_raw_command("Performance.getMetrics", serde_json::json!({}))
         .await
@@ -46,6 +82,10 @@ impl GetPerformanceMetricsTool {
         let args: GetPerformanceMetricsTool = crate::handler::parse_args(params)?;
         let session = handler.session(args.instance_id.clone()).await?;
         let target = session.target(args.tab_id.clone()).await?;
+        if args.collects_garbage() {
+            let method = "HeapProfiler.collectGarbage";
+            crate::handler::send_or(&target, method, serde_json::json!({}), "CDP Error").await?;
+        }
         let mut metrics = read_metrics(&target).await?;
         // Chrome answers an empty list until the domain is enabled on this
         // session; tabs enable it when registered, so this only runs for a
@@ -61,11 +101,13 @@ impl GetPerformanceMetricsTool {
                 "Chrome returned no metrics for this tab (Performance.getMetrics answered an empty list even after Performance.enable)",
             ));
         }
-        Ok(CallToolResult::text_content(vec![
-            serde_json::to_string_pretty(&metrics)
-                .unwrap_or_default()
-                .into(),
-        ]))
+        metrics.extend(dom_counters(&target).await);
+        let body = serde_json::to_string_pretty(&metrics).unwrap_or_default();
+        let note = args.collects_garbage().then_some(COLLECTED_NOTE);
+        let blocks = std::iter::once(body).chain(note.map(str::to_string));
+        Ok(CallToolResult::text_content(
+            blocks.map(Into::into).collect(),
+        ))
     }
 }
 
@@ -174,6 +216,66 @@ mod tests {
             .map(|c| c.method)
             .collect();
         assert_eq!(on_tab[0], "Performance.enable");
+    }
+
+    /// ISSUE-57: `collect_garbage` collects before the metrics are read,
+    /// and the DOM counters (documents, nodes, event listeners) join them.
+    #[tokio::test]
+    async fn garbage_is_collected_before_reading() {
+        // Given a tab whose DOM counters Chrome reports
+        let mock = spawn_recording_mock().await;
+        metrics_after_enable(mock);
+        mock.respond_with(
+            "Memory.getDOMCounters",
+            |_| json!({"documents": 2, "nodes": 50, "jsEventListeners": 7}),
+        );
+        let handler = mock_handler(mock.http_port);
+        let tab_id = tab(&handler, mock, true).await;
+        // When get_performance_metrics collects garbage first
+        let args = json!({"tab_id": tab_id, "collect_garbage": true});
+        let reply =
+            GetPerformanceMetricsTool::handle(call("get_performance_metrics", args), &handler)
+                .await
+                .unwrap();
+        // Then the collection came before the reads, and the counters are there
+        let order: Vec<String> = mock
+            .commands()
+            .into_iter()
+            .map(|c| c.method)
+            .filter(|m| {
+                m == "HeapProfiler.collectGarbage"
+                    || m.ends_with("getMetrics")
+                    || m.ends_with("getDOMCounters")
+            })
+            .collect();
+        assert_eq!(
+            order,
+            [
+                "HeapProfiler.collectGarbage",
+                "Performance.getMetrics",
+                "Memory.getDOMCounters"
+            ]
+        );
+        let metrics: Value = serde_json::from_str(&reply_text(&reply)).unwrap();
+        assert_eq!(
+            (
+                metrics["Documents"].clone(),
+                metrics["Nodes"].clone(),
+                metrics["JSEventListeners"].clone()
+            ),
+            (json!(2.0), json!(50.0), json!(7.0))
+        );
+        assert_eq!(metrics["JSHeapUsedSize"], 1024.0);
+        let note = reply.content[1].as_text_content().unwrap().text.clone();
+        assert!(note.starts_with("Garbage was collected first"), "{note}");
+        // And without it nothing is collected
+        let args = json!({"tab_id": tab_id});
+        let reply =
+            GetPerformanceMetricsTool::handle(call("get_performance_metrics", args), &handler)
+                .await
+                .unwrap();
+        assert_eq!(mock.commands_named("HeapProfiler.collectGarbage").len(), 1);
+        assert_eq!(reply.content.len(), 1);
     }
 
     /// PRF-03: an empty metric list is an error, never `{}`.
