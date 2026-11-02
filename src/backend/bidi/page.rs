@@ -132,14 +132,38 @@ pub(crate) async fn traverse(
     Ok(outcome)
 }
 
-/// `browsingContext.reload` waiting for `load`.
+/// How long to wait before retrying a reload Firefox aborted with
+/// `NS_BINDING_ABORTED` (a page still settling after `load`).
+const ABORTED_RETRY: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// `browsingContext.reload` waiting for `load`. Firefox aborts the command
+/// with `NS_BINDING_ABORTED` when a page is still mounting frames right
+/// after `load` (as MDN does); retry that once, briefly.
 pub(crate) async fn reload(tab: &Tab) -> Result<NavigationOutcome, BackendError> {
     let method = "browsingContext.reload";
-    let Some(reply) = outlasting_timeout(tab, method, tab.reload(ReadinessState::Complete)).await?
-    else {
-        return Ok(not_loaded(tab, "").await);
+    let aborted = |error: &BackendError| matches!(error, BackendError::Navigation { reason, .. } if reason.contains("NS_BINDING_ABORTED"));
+    let once = || async {
+        let Some(reply) =
+            outlasting_timeout(tab, method, tab.reload(ReadinessState::Complete)).await?
+        else {
+            return Ok(None);
+        };
+        let reply = reply.map_err(|e| navigation_error(method, "", &e))?;
+        Ok::<_, BackendError>(Some(reply))
     };
-    let reply = reply.map_err(|e| navigation_error(method, "", &e))?;
+    let reply = match once().await {
+        Ok(Some(reply)) => reply,
+        Ok(None) => return Ok(not_loaded(tab, "").await),
+        Err(error) if aborted(&error) => {
+            tokio::time::sleep(ABORTED_RETRY).await;
+            match once().await {
+                Ok(Some(reply)) => reply,
+                Ok(None) => return Ok(not_loaded(tab, "").await),
+                Err(error) => return Err(error),
+            }
+        }
+        Err(error) => return Err(error),
+    };
     let browser = reply.result.unwrap_or_else(|| json!({}));
     let requested = browser
         .get("url")

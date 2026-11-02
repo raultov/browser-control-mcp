@@ -601,6 +601,10 @@ incompatible:
 - **TODO** `rust-mcp-sdk` 2.0: the server stays on 1.1.0 (MCP protocol
   2025-11-25). 2.0 moves to the stateless MCP protocol (2026-07-28), which
   today's MCP clients probably do not speak yet; upgrade once the clients do.
+- On Firefox, a reload with `disable_cache: true` bypasses the cache with
+  `network.setCacheBehavior` (Firefox rejects `ignoreCache` on
+  `browsingContext.reload`); a reload Firefox aborts with
+  `NS_BINDING_ABORTED` is retried once after 50 ms.
 - `get_performance_metrics` and `profile_page_performance` are partial on
   Firefox: it has no Performance or Tracing domain, so they read what the
   Web Performance APIs give and say what is missing (JS heap, layout and

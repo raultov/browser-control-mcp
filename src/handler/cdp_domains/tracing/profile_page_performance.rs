@@ -241,7 +241,7 @@ const TOP_CALL_SITES: usize = 5;
 /// frame that forced them: `{count, total_ms, top_call_sites: [{function,
 /// url, line, count, total_ms}]}`.
 fn forced_reflows(events: &[serde_json::Value]) -> serde_json::Value {
-    let round = |ms: f64| (ms * 10.0).round() / 10.0;
+    let round = |ms: f64| (ms * 10.0).round() / 10.0 + 0.0;
     let mut sites: Vec<(serde_json::Value, u64, f64)> = Vec::new();
     for ev in events {
         let name = event_str(ev, "name");
@@ -497,7 +497,13 @@ mod tests {
             json!({"count": 3, "total_ms": 5.0, "top_call_sites": [
                 {"function": "thrash", "url": "http://a/t.js", "line": 6, "count": 3, "total_ms": 5.0}]})
         );
-        assert_eq!(forced_reflows(&[])["count"], 0);
+        let empty = forced_reflows(&[]);
+        assert_eq!(empty["count"], 0);
+        // ISSUE-58: no `-0.0` in the reply
+        assert_eq!(
+            empty["total_ms"].as_f64().unwrap().to_bits(),
+            0.0f64.to_bits()
+        );
     }
 
     /// ISSUE-56: `save_path` must name an absolute .json or .json.gz file

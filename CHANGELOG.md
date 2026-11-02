@@ -10,6 +10,17 @@ from a copy of its code: entries describe the differences from that release.
 
 ## [Unreleased]
 
+### Fixed
+
+- Firefox: `profile_page_performance` with `action: "reload"` and
+  `disable_cache: true` no longer fails with `Argument "ignoreCache" is
+  not supported yet`: it bypasses the cache with `network.setCacheBehavior`
+  (restored on every exit path). A reload Firefox aborts with
+  `NS_BINDING_ABORTED` right after navigating to a page that mounts frames
+  during hydration (as MDN does) is retried once after 50 ms instead of
+  failing. `forced_reflows.total_ms` no longer serializes `-0.0` when there
+  are none. (#58)
+
 ## [0.11.0-beta.16] - 2026-11-02
 
 Public **BETA**. `audit_page` (`perf` group) audits the rendered page for

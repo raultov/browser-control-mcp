@@ -1,9 +1,9 @@
-//! Partial `get_performance_metrics` and `profile_page_performance` on
 //! Firefox, from the standard Web Performance APIs (Firefox has no
 //! equivalent of CDP's Performance and Tracing domains). Each reply says
 //! what Firefox cannot give, instead of answering an empty or made-up value.
 
 use super::page;
+use crate::backend::BackendError;
 use crate::handler::cdp_domains::performance::get_performance_metrics::{
     GetPerformanceMetricsTool, NOT_COLLECTED_NOTE,
 };
@@ -20,6 +20,21 @@ pub(crate) const METRICS_NOTE: &str = "Firefox gives only Nodes, Frames, Resourc
 /// What Firefox's `profile_page_performance` cannot report.
 pub(crate) const LONG_TASKS_NOTE: &str =
     "Firefox has no Long Tasks API: total_blocking_time_ms and top_long_tasks are null";
+
+/// `cacheBehavior` for the tab (`bypass` or `default`); Firefox has no
+/// `ignoreCache` argument on `browsingContext.reload`.
+async fn set_cache_behavior(
+    tab: &bidi_browser_lite::Tab,
+    behavior: &str,
+) -> Result<(), BackendError> {
+    page::command(
+        tab,
+        "network.setCacheBehavior",
+        json!({"cacheBehavior": behavior, "contexts": [tab.context_id()]}),
+    )
+    .await?;
+    Ok(())
+}
 
 /// Why Firefox refuses `save_path`.
 const SAVE_UNSUPPORTED: &str = "save_path is only available on Chrome: Firefox has no tracing over WebDriver BiDi, so there is no trace to save; nothing was profiled";
@@ -56,19 +71,24 @@ pub(crate) async fn profile(params: CallToolRequestParams, handler: &McpHandler)
     let session = handler.firefox(args.instance_id.as_deref()).await?;
     let (_, tab) = session.tab(args.tab_id.as_deref()).await?;
     let duration = args.duration_ms.unwrap_or(3000).clamp(500, 15000);
-    if args.action.as_deref() == Some("reload") {
-        if args.disable_cache.unwrap_or(false) {
-            page::command(
-                &tab.tab,
-                "browsingContext.reload",
-                json!({"context": tab.tab.context_id(), "ignoreCache": true, "wait": "complete"}),
-            )
-            .await?;
-        } else {
+    // Firefox rejects `ignoreCache` on browsingContext.reload: bypass the
+    // cache with network.setCacheBehavior, restored on every exit path.
+    let bypass = args.disable_cache.unwrap_or(false);
+    if bypass {
+        set_cache_behavior(&tab.tab, "bypass").await?;
+    }
+    let profiled = async {
+        if args.action.as_deref() == Some("reload") {
             page::reload(&tab.tab).await?;
         }
+        tokio::time::sleep(std::time::Duration::from_millis(duration)).await;
+        Ok::<(), BackendError>(())
     }
-    tokio::time::sleep(std::time::Duration::from_millis(duration)).await;
+    .await;
+    if bypass {
+        set_cache_behavior(&tab.tab, "default").await?;
+    }
+    profiled?;
     let vitals = page::run_snippet(&tab.tab, crate::util::js::PAGE_VITALS).await?;
     let mut summary = summary(&vitals, duration);
     if args.insights.unwrap_or(false) {
@@ -188,6 +208,66 @@ mod tests {
         ts::stop(&handler).await;
     }
 
+    /// A Firefox tab whose reload answers `reload_reply` and whose vitals
+    /// snippet answers; profiles a reload with the cache disabled and
+    /// returns the mock with the `network.setCacheBehavior` params sent.
+    async fn uncached_profile(reload_reply: Value) -> (MockFirefox, Vec<Value>) {
+        let mock = MockFirefox::start(false).await.unwrap();
+        mock.bidi()
+            .respond_with("browsingContext.reload", move |_| reload_reply.clone());
+        mock.bidi().respond_with(
+            "browsingContext.getTree",
+            |_| json!({"contexts": [{"context": "ctx-0", "url": "http://a/", "children": null}]}),
+        );
+        mock.bidi().respond_with("script.evaluate", |_| {
+            evaluate_success(ts::remote(&json!({"dom_content_loaded_ms": 120.5})))
+        });
+        let handler = ts::handler(&mock);
+        let args = json!({"duration_ms": 500, "action": "reload", "disable_cache": true});
+        let _ = profile(ts::call("profile_page_performance", args), &handler).await;
+        ts::stop(&handler).await;
+        let modes = mock
+            .bidi()
+            .commands_named("network.setCacheBehavior")
+            .iter()
+            .map(|c| c.params.clone())
+            .collect();
+        (mock, modes)
+    }
+
+    /// ISSUE-58 (Firefox): `disable_cache: true` bypasses the cache with
+    /// `network.setCacheBehavior` (Firefox rejects `ignoreCache` on reload)
+    /// and restores it afterwards.
+    #[tokio::test]
+    async fn uncached_profile_bypasses_and_restores_the_cache() {
+        // Given a Firefox tab whose reload answers
+        let reply = json!({"navigation": "n2", "url": "http://a/"});
+        // When it profiles a reload with the cache disabled
+        let (mock, modes) = uncached_profile(reply).await;
+        // Then the cache was bypassed and restored, never ignoreCache
+        assert_eq!(
+            modes,
+            [
+                json!({"cacheBehavior": "bypass", "contexts": ["ctx-0"]}),
+                json!({"cacheBehavior": "default", "contexts": ["ctx-0"]})
+            ]
+        );
+        let reload = &mock.bidi().commands_named("browsingContext.reload")[0];
+        assert!(reload.params.get("ignoreCache").is_none());
+    }
+
+    /// ISSUE-58 (Firefox): the cache is restored even when the reload fails.
+    #[tokio::test]
+    async fn failed_uncached_reload_still_restores_the_cache() {
+        // Given a Firefox tab whose reload always fails
+        let reply = json!({"type": "error", "error": "unknown error", "message": "Error: boom"});
+        // When it profiles a reload with the cache disabled
+        let (_mock, modes) = uncached_profile(reply).await;
+        // Then the cache was still restored to its default
+        let modes: Vec<&Value> = modes.iter().map(|m| &m["cacheBehavior"]).collect();
+        assert_eq!(modes, [&json!("bypass"), &json!("default")]);
+    }
+
     /// ISSUE-22: `insights: true` adds the page's insights, with notes
     /// for what Firefox does not report; without it they are not read.
     #[tokio::test]
@@ -264,10 +344,10 @@ mod tests {
             .unwrap();
         // Then it reloaded bypassing the cache and reports the vitals
         let reload = &mock.bidi().commands_named("browsingContext.reload")[0].params;
-        assert_eq!(
-            (reload["ignoreCache"].as_bool(), reload["wait"].as_str()),
-            (Some(true), Some("complete"))
-        );
+        assert_eq!(reload["wait"].as_str(), Some("complete"));
+        let bypass = mock.bidi().commands_named("network.setCacheBehavior");
+        assert!(bypass[0].params["cacheBehavior"] == json!("bypass"));
+        assert!(bypass[1].params["cacheBehavior"] == json!("default"));
         let body: Value = serde_json::from_str(&ts::text(&reply)).unwrap();
         assert_eq!(body["dom_content_loaded_ms"], 120.5);
         assert_eq!(body["first_contentful_paint_ms"], 90);

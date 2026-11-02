@@ -2186,6 +2186,32 @@ mod e2e {
         ]
     }
 
+    /// Firefox's profile steps: a reload, a cold reload bypassing the cache
+    /// and a plain reload right after (ISSUE-58).
+    fn firefox_profile_steps() -> Vec<Step> {
+        let i = json!("e2e");
+        vec![
+            (
+                "FPF-02 profile_page_performance",
+                "profile_page_performance",
+                json!({"instance_id": i, "duration_ms": 500, "action": "reload"}),
+                "first_contentful_paint_ms",
+            ),
+            (
+                "ISSUE-58 Firefox reload bypasses the cache",
+                "profile_page_performance",
+                json!({"instance_id": i, "duration_ms": 500, "action": "reload", "disable_cache": true}),
+                "first_contentful_paint_ms",
+            ),
+            (
+                "ISSUE-58 Firefox reload right after",
+                "reload",
+                json!({"instance_id": i}),
+                "Page reloaded.",
+            ),
+        ]
+    }
+
     /// Steps 13–15: tracing and pause on load (Chrome only; Firefox
     /// answers a capability error), then close.
     fn closing_steps(browser: &str) -> Vec<Step> {
@@ -2198,13 +2224,7 @@ mod e2e {
             "\"stopped\":true",
         );
         if browser != "chrome" {
-            let reload = json!({"instance_id": i, "duration_ms": 500, "action": "reload"});
-            let mut steps = vec![(
-                "FPF-02 profile_page_performance",
-                "profile_page_performance",
-                reload,
-                "first_contentful_paint_ms",
-            )];
+            let mut steps = firefox_profile_steps();
             steps.extend(insights_steps(browser));
             steps.push((
                 "pause_on_load",

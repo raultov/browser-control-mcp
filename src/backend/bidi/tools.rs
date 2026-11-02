@@ -1366,6 +1366,31 @@ mod tests {
         ts::stop(&handler).await;
     }
 
+    /// ISSUE-58 (Firefox): a reload aborted as NS_BINDING_ABORTED (a page
+    /// mounting iframes right after load) is retried once after a pause.
+    #[tokio::test]
+    async fn aborted_reload_is_retried_once() {
+        // Given a Firefox that aborts the first reload and answers the second
+        let mock = MockFirefox::start(false).await.unwrap();
+        let first = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let aborted = first.clone();
+        mock.bidi().respond_with("browsingContext.reload", move |_| {
+            if aborted.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                json!({"type": "error", "error": "unknown error", "message": "Error: NS_BINDING_ABORTED"})
+            } else {
+                json!({"navigation": "n2", "url": "http://127.0.0.1:8/page"})
+            }
+        });
+        mock.bidi().respond_with("browsingContext.getTree", |_| {
+            json!({"contexts": [{"context": "ctx-0", "url": "http://127.0.0.1:8/page", "children": null}]})
+        });
+        let handler = ts::handler(&mock);
+        // When reload runs, Then it answers the second attempt, only two sent
+        let reply = reload(call("reload", json!({})), &handler).await.unwrap();
+        assert!(ts::text(&reply).starts_with("Page reloaded."));
+        assert_eq!(mock.bidi().count("browsingContext.reload"), 2);
+    }
+
     /// NAV-05: reload answers the same shape as navigate.
     #[tokio::test]
     async fn reload_reports_url() {
