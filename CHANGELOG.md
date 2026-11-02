@@ -58,6 +58,10 @@ from a copy of its code: entries describe the differences from that release.
   such as `#/contact`) answers the new URL; it often answered the previous
   one, read from a history entry Chrome had not updated yet. The URL now
   comes from the page's `Page.navigatedWithinDocument`. (#70)
+- Firefox: `step_over` and `resume` that stop at the same place again (a
+  breakpoint in a loop, hit on the next iteration) report the pause with
+  its location, instead of waiting 2 s and answering `paused: false` while
+  the page was paused. (#63)
 
 ## [0.11.0-beta.16] - 2026-11-02
 

@@ -48,7 +48,13 @@ pub(crate) struct PauseInfo {
     pub(crate) why: String,
     /// Source actor, 1-based line and 0-based column of the top frame (RDP's).
     pub(crate) location: Option<(String, u32, u32)>,
+    /// Which pause this is: a thread that resumes and stops at the same
+    /// place again (a breakpoint in a loop) pauses anew (ISSUE-63).
+    pub(crate) seq: u64,
 }
+
+/// The number of the last pause, across tabs (see [`PauseInfo::seq`]).
+static PAUSES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// A debugger attached to one tab.
 pub(crate) struct TabDebugger {
@@ -81,7 +87,7 @@ pub(crate) fn apply_states(
     for state in states {
         match state {
             ThreadState::Paused { why, frame } => {
-                *slot = Some(PauseInfo {
+                let mut next = PauseInfo {
                     target: target.map(str::to_string),
                     frame: frame.as_ref().map(|f| f.actor.clone()),
                     why: why
@@ -92,7 +98,21 @@ pub(crate) fn apply_states(
                     location: frame
                         .and_then(|f| f.location)
                         .map(|l| (l.actor, l.line, l.column)),
-                });
+                    seq: 0,
+                };
+                // Firefox announces a pause twice: the second is the same one.
+                next.seq = match slot.as_ref() {
+                    Some(now)
+                        if PauseInfo {
+                            seq: now.seq,
+                            ..next.clone()
+                        } == *now =>
+                    {
+                        now.seq
+                    }
+                    _ => PAUSES.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1,
+                };
+                *slot = Some(next);
             }
             ThreadState::Resumed => {
                 if slot.as_ref().is_some_and(|p| p.target.as_deref() == target) {
@@ -877,6 +897,32 @@ mod tests {
             parse_thread_states(&resumed),
         );
         assert!(pause.lock().unwrap().is_none());
+    }
+
+    /// ISSUE-63 (Firefox): a step or resume that stops at the same place
+    /// again (the same breakpoint in the next iteration of a loop) is a new
+    /// pause, so `step_over` and `resume` report it instead of waiting and
+    /// answering `paused: false`.
+    #[test]
+    fn pausing_again_at_the_same_place_is_a_new_pause() {
+        // Given a thread paused at a breakpoint
+        let pause = StdMutex::new(None);
+        let paused = packet(include_str!(
+            "../../../tests/fixtures/rdp/resources-thread-state-paused.json"
+        ));
+        let resumed = packet(include_str!(
+            "../../../tests/fixtures/rdp/resources-thread-state-resumed.json"
+        ));
+        let apply = |p: &RdpPacket| apply_states(&pause, p.from.as_deref(), parse_thread_states(p));
+        apply(&paused);
+        let first = pause.lock().unwrap().clone();
+        // When it resumes and stops at the same breakpoint
+        apply(&resumed);
+        apply(&paused);
+        // Then the pause differs from the first one
+        let second = pause.lock().unwrap().clone();
+        assert!(first.is_some() && second.is_some());
+        assert_ne!(first, second);
     }
 
     use super::super::test_support::{self as ts, WAIT};

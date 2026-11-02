@@ -101,7 +101,7 @@ mod e2e {
     /// ISSUE-36: the script of the frame of another origin, to debug.
     const XO_INNER_JS: &str =
         "function xoInner(n) {\n  const doubled = n * 2;\n  return doubled;\n}\n";
-    const APP_JS: &str = "function appTarget(x) {\n  const y = x * 2;\n  return y + 1;\n}\nwindow.appTarget = appTarget;\nfetch('/api');\n";
+    const APP_JS: &str = "function appTarget(x) {\n  const y = x * 2;\n  return y + 1;\n}\nwindow.appTarget = appTarget;\nfetch('/api');\nfunction appLoop(n) {\n  let s = 0;\n  for (let k = 0; k < n; k++) {\n    s += k;\n  }\n  return s;\n}\nwindow.appLoop = appLoop;\n";
 
     /// The WebSocket page: sends `hello-ws` to the echo server on `port`.
     fn ws_page(port: u16) -> String {
@@ -2122,7 +2122,51 @@ mod e2e {
         steps.extend(click_into_breakpoint_steps(&i));
         steps.extend(async_click_into_breakpoint_steps(&i));
         steps.extend(pause_on_navigate_steps(&i, base));
+        steps.extend(loop_breakpoint_steps(&i, base));
         steps
+    }
+
+    /// ISSUE-63: a step or resume that stops at the same breakpoint again
+    /// (the next iteration of a loop) reports the pause (Firefox answered
+    /// `paused: false` after 2 s).
+    fn loop_breakpoint_steps(i: &Value, base: &str) -> Vec<Step> {
+        let bp = json!({"instance_id": i, "url": format!("{base}/app.js"), "line_number": 9});
+        let trigger =
+            json!({"instance_id": i, "expression": "setTimeout(() => appLoop(4), 50); 1"});
+        vec![
+            (
+                "ISSUE-63 a breakpoint in a loop",
+                "set_breakpoint",
+                bp,
+                "Breakpoint set",
+            ),
+            ("ISSUE-63 run the loop", "evaluate_js", trigger, ""),
+            ("ISSUE-63 wait for the pause", "sleep", json!({}), ""),
+            (
+                "ISSUE-63 step_over in the loop stays paused",
+                "step_over",
+                json!({"instance_id": i}),
+                "\"paused\": true",
+            ),
+            (
+                "ISSUE-63 resume stops at the breakpoint again",
+                "resume",
+                json!({"instance_id": i}),
+                "\"paused\": true",
+            ),
+            (
+                "ISSUE-63 remove the breakpoint",
+                "remove_breakpoint",
+                json!({"instance_id": i, "breakpoint_id": "bp-4"}),
+                "removed",
+            ),
+            (
+                "ISSUE-63 resume to the end",
+                "resume",
+                json!({"instance_id": i}),
+                "\"paused\": false",
+            ),
+        ]
     }
 
     /// Tools on the paused page answer at once (ISSUE-16, ISSUE-64), then
