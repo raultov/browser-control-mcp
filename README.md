@@ -27,7 +27,9 @@ Measured on 2026-10-31 with browser-control-mcp built from the current
 sources, `@playwright/mcp` 0.0.83 and `chrome-devtools-mcp` 1.12.0, driven by
 the same stdio client through the same tasks on Chrome 156 (headless,
 Linux). Every outcome was checked in the page, not taken from the reply.
-Tokens are estimated as characters / 4 for every server.
+Tokens are estimated as characters / 4 for every server. browser-control's
+tool lists and the HTTP authentication row were measured again on
+2026-11-02, after the fixes of #46 to #51.
 
 **What each one can do**
 
@@ -41,6 +43,7 @@ Tokens are estimated as characters / 4 for every server.
 | Snapshot of a long page | **bounded at 50 000 characters**, `find_in_snapshot` searches the rest | unbounded | unbounded |
 | Waits for the page to react after an action | ✓ ~50 ms when nothing reacts | ✓ ~500 ms | ✓ ~200 ms |
 | Clicking a covered or hidden element | **fails at once, naming the overlay** | fails after a 5 s timeout | reports success (the overlay gets the click) |
+| Page behind HTTP authentication (401) | **fails at once naming its scheme and realm and how to log in** (credentials in the URL), on Chrome and Firefox | fails with `net::ERR_INVALID_AUTH_CREDENTIALS` | reports success, with `net::ERR_INVALID_AUTH_CREDENTIALS` in the text |
 | Mock requests, offline mode | ✓ | ✓ | offline only |
 | PDF | ✓ file or inline | ✓ file | ✗ |
 | Cookies and web storage | ✓ values hidden unless asked | ✓ values shown | ✗ |
@@ -55,8 +58,8 @@ Tokens are estimated as characters / 4 for every server.
 
 | Task | browser-control-mcp | Playwright MCP | chrome-devtools-mcp |
 | --- | --- | --- | --- |
-| Tool list in context, default tools | 6 450 tokens | 5 330 tokens | 7 770 tokens |
-| Tool list in context, every opt-in tool on | 9 910 tokens | 12 040 tokens | not measured (optional categories) |
+| Tool list in context, default tools | 6 730 tokens | 5 330 tokens | 7 770 tokens |
+| Tool list in context, every opt-in tool on | 10 390 tokens | 12 040 tokens | not measured (optional categories) |
 | Snapshot of Hacker News | **4 588 tokens** | 12 356 tokens | 6 869 tokens |
 | Snapshot of Wikipedia "Web browser" | **12 643 tokens** (cut, searchable) | 34 349 tokens | 27 656 tokens |
 | Snapshot of MDN `<input>` | **12 625 tokens** (cut, searchable) | 158 077 tokens | 76 654 tokens |
