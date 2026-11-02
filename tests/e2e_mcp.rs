@@ -165,8 +165,16 @@ mod e2e {
         let request = String::from_utf8_lossy(&buf[..n]).to_string();
         let path = request.split_whitespace().nth(1).unwrap_or("/").to_string();
         let (kind, body) = page(&path, &ws);
+        // `/auth` asks for HTTP authentication (Basic, user:pass) until it gets it
+        let authorized = request
+            .to_ascii_lowercase()
+            .contains("authorization: basic dxnlcjpwyxnz");
+        let status = match path.starts_with("/auth") && !authorized {
+            true => "401 Unauthorized\r\nWWW-Authenticate: Basic realm=\"e2e\"",
+            false => "200 OK",
+        };
         let reply = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: {kind}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            "HTTP/1.1 {status}\r\nContent-Type: {kind}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
             body.len()
         );
         let _ = socket.write_all(reply.as_bytes()).await;
@@ -1753,10 +1761,33 @@ mod e2e {
         )]
     }
 
+    /// ISSUE-50: a page behind HTTP authentication fails at once saying so
+    /// on both browsers (Firefox waited 30 s on its prompt), and the
+    /// credentials in the URL log in.
+    fn auth_steps(instance: &str, base: &str) -> Vec<Step> {
+        let to = |url: String| json!({"instance_id": instance, "url": url});
+        let with_credentials = base.replace("http://", "http://user:pass@");
+        vec![
+            (
+                "ISSUE-50 a page behind authentication says so",
+                "navigate",
+                to(format!("{base}/auth")),
+                "!the page asks for HTTP authentication (Basic, realm \"e2e\")",
+            ),
+            (
+                "ISSUE-50 credentials in the URL log in",
+                "navigate",
+                to(format!("{with_credentials}/auth")),
+                "Navigated to",
+            ),
+        ]
+    }
+
     /// The steps that leave the test page and come back to it.
     fn other_page_steps(instance: &str, base: &str) -> Vec<Step> {
         [
             download_steps(instance, base),
+            auth_steps(instance, base),
             drag_steps(instance, base),
             cross_origin_steps(instance, base),
             frame_observation_steps(instance),

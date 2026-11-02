@@ -14,7 +14,7 @@ use tokio::sync::Mutex;
 
 #[macros::mcp_tool(
     name = "navigate",
-    description = "Loads a URL in the tab, or goes back or forward in its history ('history' instead of 'url'), and waits for load (at most 30 s; a page that pauses at a breakpoint or opens a dialog while loading fails at once saying so). Returns {url (after redirects), tab_id, browser, status?, notes?}; a network error or a download fails with 'Navigation failed: <reason> (<url>)'. With --local only local addresses are allowed. Note: copy_cookies imports the user's real Chrome cookies: ask the user first. On a running instance it relaunches it, closing its tabs: the call first fails listing them, then re-issue it with confirm_restart: true."
+    description = "Loads a URL in the tab, or goes back or forward in its history ('history' instead of 'url'), and waits for load (at most 30 s; a page that pauses at a breakpoint or opens a dialog while loading fails at once saying so). Returns {url (after redirects), tab_id, browser, status?, notes?}; a network error, a download or a page behind HTTP authentication (log in with http://user:password@host/path) fails with 'Navigation failed: <reason> (<url>)'. With --local only local addresses are allowed. Note: copy_cookies imports the user's real Chrome cookies: ask the user first. On a running instance it relaunches it, closing its tabs: the call first fails listing them, then re-issue it with confirm_restart: true."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct NavigateTool {
@@ -310,6 +310,16 @@ async fn check_error(
             .is_some();
     if answered {
         return Ok(());
+    }
+    if reason == "net::ERR_INVALID_AUTH_CREDENTIALS" {
+        let document = document_response(network, text("loaderId"), url).await;
+        let challenge = document
+            .as_ref()
+            .and_then(|d| d.response_header("www-authenticate"));
+        return Err(navigation_failed(
+            &crate::handler::navigation::auth_required(challenge),
+            url,
+        ));
     }
     Err(navigation_failed(reason, url))
 }
@@ -708,6 +718,42 @@ pub(crate) mod tests {
             error.to_string(),
             format!("Navigation failed: {DOWNLOAD} (http://127.0.0.1:8/a.bin)")
         );
+    }
+
+    /// ISSUE-50: a page behind HTTP authentication fails saying so, with
+    /// its challenge from the logged response (Chrome only said
+    /// net::ERR_INVALID_AUTH_CREDENTIALS).
+    #[tokio::test]
+    async fn authentication_fails_saying_so() {
+        // Given a page answering 401 with a Basic challenge
+        let mock = spawn_recording_mock().await;
+        let url = "http://127.0.0.1:8/auth";
+        mock.respond_with("Page.navigate", |_| {
+            json!({"frameId": "F1", "loaderId": "L1", "errorText": "net::ERR_INVALID_AUTH_CREDENTIALS"})
+        });
+        let headers = json!({"WWW-Authenticate": "Basic realm=\"bench\""});
+        fire_events_after(
+            mock,
+            "Page.navigate",
+            vec![
+                (
+                    "Network.requestWillBeSent",
+                    json!({"requestId": "L1", "loaderId": "L1", "type": "Document", "request": {"url": url, "method": "GET", "headers": {}}}),
+                ),
+                (
+                    "Network.responseReceived",
+                    json!({"requestId": "L1", "loaderId": "L1", "type": "Document", "response": {"url": url, "status": 401, "statusText": "Unauthorized", "headers": headers}}),
+                ),
+            ],
+        );
+        let handler = mock_handler(mock.http_port);
+        // When navigate runs, Then it names the authentication
+        let error = NavigateTool::handle(call("navigate", json!({"url": url})), &handler)
+            .await
+            .unwrap_err()
+            .to_string();
+        let expected = crate::handler::navigation::auth_required(Some("Basic realm=\"bench\""));
+        assert_eq!(error, format!("Navigation failed: {expected} ({url})"));
     }
 
     /// NAV-03: a network error fails the call (Chrome reports it inside a

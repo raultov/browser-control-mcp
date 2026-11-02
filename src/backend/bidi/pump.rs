@@ -31,7 +31,8 @@ pub(crate) const EVENTS: &[&str] = &[
 
 /// Events subscribed when Firefox knows them: an older one refuses the
 /// whole subscription that names them, which is then made without.
-pub(crate) const OPTIONAL_EVENTS: &[&str] = &["browsingContext.downloadWillBegin"];
+pub(crate) const OPTIONAL_EVENTS: &[&str] =
+    &["browsingContext.downloadWillBegin", "network.authRequired"];
 
 /// What the pump shares with its session.
 #[derive(Clone)]
@@ -346,6 +347,11 @@ pub(crate) fn on_network(method: &str, params: &Value, network: &mut crate::hand
         );
         return;
     }
+    // A navigation behind HTTP authentication: Firefox shows its prompt and
+    // the navigation waits (`navigate` ends on it, see `tools::unless_auth`).
+    if method == "network.authRequired" && str_field(params, "navigation").is_some() {
+        network.note_auth(id);
+    }
     let Some(entry) = network.find_request_mut(id) else {
         return;
     };
@@ -579,6 +585,36 @@ mod tests {
         let entry = network.find_request_mut("R1").unwrap();
         assert_eq!(entry.error.as_deref(), Some("NS_ERROR_UNKNOWN_HOST"));
         assert_eq!(entry.response_status_text, None);
+    }
+
+    /// ISSUE-50: a navigation that asks for HTTP authentication is noted
+    /// (with the request, whose response has the challenge); a request of
+    /// a page script asking for it is not a navigation.
+    #[tokio::test]
+    async fn authentication_requests_are_noted() {
+        let mock = MockBidi::start(MockBidiBehavior::Ready).await.unwrap();
+        let (client, state) = one_tab(&mock).await;
+        let response = json!({"status": 401, "headers": [{"name": "WWW-Authenticate", "value": {"type": "string", "value": "Basic realm=\"bench\""}}],
+            "authChallenges": [{"scheme": "Basic", "realm": "bench"}]});
+        for (id, navigation) in [("R1", json!(null)), ("R2", json!("n7"))] {
+            let request = json!({"request": id, "url": "http://a/auth", "method": "GET"});
+            let sent = json!({"context": "ctx-0", "navigation": navigation, "request": request});
+            route(&event("network.beforeRequestSent", sent), &client, &state).await;
+            let asked = json!({"context": "ctx-0", "navigation": navigation, "request": request, "response": response, "isBlocked": false});
+            route(&event("network.authRequired", asked), &client, &state).await;
+        }
+        let tab = read(&state.tabs).tabs["tab-1"].clone();
+        let mut network = tab.network.lock().await;
+        let asked = network.auth_asked_since(0).unwrap();
+        assert_eq!(asked.url, "http://a/auth");
+        assert_eq!(
+            asked.response_header("www-authenticate"),
+            Some("Basic realm=\"bench\"")
+        );
+        assert!(
+            network.auth_asked_since(1).is_none(),
+            "the script's request counted"
+        );
     }
 
     /// ISSUE-39: a navigation Firefox turned into a download is noted in

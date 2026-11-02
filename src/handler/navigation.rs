@@ -20,6 +20,37 @@ pub(crate) const NOT_LOADED_NOTE: &str =
 /// `net::ERR_ABORTED`, Firefox "Navigated to" the previous page).
 pub(crate) const DOWNLOAD: &str = "the URL is a download: the browser saves it instead of opening a page, and the tab stays where it was";
 
+/// Why a navigation to a page behind HTTP authentication fails (401), from
+/// its `WWW-Authenticate` challenge when known, with how an agent logs in:
+/// Chrome failed with `net::ERR_INVALID_AUTH_CREDENTIALS`, and Firefox
+/// showed its prompt while `navigate` waited 30 s. Both browsers take the
+/// credentials in the URL and keep them for the session.
+pub(crate) fn auth_required(challenge: Option<&str>) -> String {
+    let described = challenge.map(describe_challenge).filter(|d| !d.is_empty());
+    let what = described.map_or_else(String::new, |d| format!(" ({d})"));
+    format!(
+        "the page asks for HTTP authentication{what} and the browser has no credentials for it or they were rejected: to log in, navigate to the URL with them in it (http://user:password@host/path), which the browser then keeps for the session"
+    )
+}
+
+/// The scheme of a `WWW-Authenticate` challenge and its realm when it
+/// names one: `Basic, realm "staging"`.
+fn describe_challenge(header: &str) -> String {
+    let scheme = header.split([' ', ',']).next().unwrap_or_default().trim();
+    let at = header.to_ascii_lowercase().find("realm=");
+    let realm = at.and_then(|at| {
+        let rest = &header[at + "realm=".len()..];
+        match rest.strip_prefix('"') {
+            Some(quoted) => quoted.split('"').next(),
+            None => rest.split([',', ' ']).next(),
+        }
+    });
+    match realm {
+        Some(realm) => format!("{scheme}, realm \"{realm}\""),
+        None => scheme.to_string(),
+    }
+}
+
 /// How long a document's response may take to reach the tab's request log
 /// after `load`: the log is fed by an event listener that runs apart from
 /// the tool.
@@ -129,6 +160,28 @@ pub(crate) fn open_tab_navigation_failed(message: &str, tab_id: &str) -> String 
 
 #[cfg(test)]
 mod tests {
+    /// ISSUE-50: a page behind HTTP authentication is named as such, with
+    /// the scheme and realm of its challenge, and how to log in.
+    #[test]
+    fn authentication_is_explained() {
+        let basic = super::auth_required(Some(r#"Basic realm="staging area", charset="UTF-8""#));
+        assert!(
+            basic.starts_with(r#"the page asks for HTTP authentication (Basic, realm "staging area") and the browser has no credentials for it or they were rejected"#),
+            "{basic}"
+        );
+        assert!(basic.contains("http://user:password@host/path"), "{basic}");
+        let bare = super::auth_required(Some("Negotiate"));
+        assert!(
+            bare.starts_with("the page asks for HTTP authentication (Negotiate) and"),
+            "{bare}"
+        );
+        let unknown = super::auth_required(None);
+        assert!(
+            unknown.starts_with("the page asks for HTTP authentication and"),
+            "{unknown}"
+        );
+    }
+
     use super::*;
 
     /// AUD-EV-03 / AUD-EV-04: after a navigation command timed out, `load`

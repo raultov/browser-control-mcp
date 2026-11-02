@@ -144,7 +144,7 @@ pub(crate) async fn navigate(params: CallToolRequestParams, handler: &McpHandler
     };
     check_local(handler, &url)?;
     let (session, id, tab) = target(handler, &ids(&args.instance_id, &args.tab_id)).await?;
-    let navigation = page::navigate(&tab.tab, &url);
+    let navigation = unless_auth(&tab, page::navigate(&tab.tab, &url));
     let outcome = unless_paused(&session, &id, "navigate", navigation).await?;
     let document = navigation_document(&tab, &outcome, &url).await;
     let attachment = document.as_ref().is_some_and(NetworkRequest::is_attachment);
@@ -174,8 +174,40 @@ async fn traverse_history(
     Ok(outcome.reply(&format!("{} {}.", step.went(), outcome.url), Some(&id)))
 }
 
-/// The logged document request of the navigation `outcome` reports (by
-/// its BiDi `navigation` id), when `url` is http(s).
+/// How often a navigation checks whether its page asked for HTTP
+/// authentication ([`unless_auth`]).
+const AUTH_POLL: std::time::Duration = std::time::Duration::from_millis(25);
+
+/// Runs `navigation` on `tab` unless its page asks for HTTP authentication
+/// first: Firefox then shows its prompt and the navigation waits for it
+/// (30 s, then "Navigated to" the previous page); it fails at once instead,
+/// with the challenge and the URL of the request that met it
+/// (`network.authRequired`, noted by the pump), as on Chrome.
+async fn unless_auth<T>(
+    tab: &super::session::FirefoxTab,
+    navigation: impl std::future::Future<Output = Result<T, BackendError>>,
+) -> Result<T, BackendError> {
+    let before = tab.network.lock().await.auth_asked();
+    let asked = async {
+        loop {
+            tokio::time::sleep(AUTH_POLL).await;
+            let mut network = tab.network.lock().await;
+            if let Some(request) = network.auth_asked_since(before) {
+                let challenge = request.response_header("www-authenticate");
+                return BackendError::Navigation {
+                    reason: crate::handler::navigation::auth_required(challenge),
+                    url: request.url.clone(),
+                };
+            }
+        }
+    };
+    tokio::select! {
+        biased;
+        outcome = navigation => outcome,
+        error = asked => Err(error),
+    }
+}
+
 /// How long a navigation that did not reach its URL waits for Firefox to
 /// say it became a download.
 const DOWNLOAD_WAIT: std::time::Duration = std::time::Duration::from_millis(300);
@@ -203,6 +235,8 @@ async fn became_download(
     }
 }
 
+/// The logged document request of the navigation `outcome` reports (by
+/// its BiDi `navigation` id), when `url` is http(s).
 async fn navigation_document(
     tab: &super::session::FirefoxTab,
     outcome: &NavigationOutcome,
@@ -216,7 +250,8 @@ async fn navigation_document(
 pub(crate) async fn reload(params: CallToolRequestParams, handler: &McpHandler) -> ToolResult {
     let ids: TargetArgs = parse_args(params)?;
     let (session, id, tab) = target(handler, &ids).await?;
-    let outcome = unless_paused(&session, &id, "reload", page::reload(&tab.tab)).await?;
+    let reload = unless_auth(&tab, page::reload(&tab.tab));
+    let outcome = unless_paused(&session, &id, "reload", reload).await?;
     let document = navigation_document(&tab, &outcome, &outcome.url).await;
     let outcome = outcome.with_status(document.and_then(|d| d.response_status));
     Ok(outcome.reply("Page reloaded.", Some(&id)))
@@ -1146,6 +1181,63 @@ mod tests {
             format!("Navigation failed: {download} (http://127.0.0.1:8/page)")
         );
         ts::stop(&handler).await;
+    }
+
+    /// The error of `tool` (`navigate` to `url`, or `reload`) on a Firefox
+    /// that will not finish the navigation (its prompt waits) and asks for
+    /// authentication at `url` a moment after it starts, failing if it took
+    /// more than a few seconds.
+    async fn asked_for_auth(tool: &str, url: &str) -> String {
+        let (mock, handler) = navigation_answered(200, json!([])).await;
+        mock.bidi().stop_replying();
+        let bidi = mock.bidi();
+        let asks = async {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            let request = json!({"request": "r9", "url": url, "method": "GET", "headers": []});
+            bidi.emit(
+                "network.beforeRequestSent",
+                json!({"context": "ctx-0", "navigation": "n9", "request": request}),
+            );
+            let header = json!([{"name": "WWW-Authenticate", "value": {"type": "string", "value": "Basic realm=\"bench\""}}]);
+            let response = json!({"status": 401, "headers": header, "authChallenges": [{"scheme": "Basic", "realm": "bench"}]});
+            bidi.emit("network.authRequired", json!({"context": "ctx-0", "navigation": "n9", "request": request, "response": response, "isBlocked": false}));
+        };
+        let started = std::time::Instant::now();
+        let navigation = async {
+            match tool {
+                "reload" => reload(call("reload", json!({})), &handler).await,
+                _ => navigate(call("navigate", json!({"url": url})), &handler).await,
+            }
+        };
+        let (outcome, ()) = tokio::join!(navigation, asks);
+        let elapsed = started.elapsed();
+        assert!(elapsed < std::time::Duration::from_secs(5), "{elapsed:?}");
+        outcome.unwrap_err().to_string()
+    }
+
+    /// ISSUE-50 (Firefox): a navigation that asks for HTTP authentication
+    /// fails at once saying so (Firefox showed its prompt, and navigate
+    /// waited 30 s and answered the previous page).
+    #[tokio::test]
+    async fn authentication_fails_at_once() {
+        // Given a page behind HTTP authentication
+        let url = "http://127.0.0.1:8/auth";
+        // When navigate goes there, Then it fails at once, naming it
+        let error = asked_for_auth("navigate", url).await;
+        let expected = crate::handler::navigation::auth_required(Some("Basic realm=\"bench\""));
+        assert_eq!(error, format!("Navigation failed: {expected} ({url})"));
+    }
+
+    /// ISSUE-50 (Firefox): a reload that meets HTTP authentication (the
+    /// page now asks for it) fails at once too, with the request's URL.
+    #[tokio::test]
+    async fn reload_behind_authentication_fails_at_once() {
+        // Given a page that now asks for HTTP authentication
+        let url = "http://127.0.0.1:8/page";
+        // When it is reloaded, Then the reload fails at once, naming it
+        let error = asked_for_auth("reload", url).await;
+        let expected = crate::handler::navigation::auth_required(Some("Basic realm=\"bench\""));
+        assert_eq!(error, format!("Navigation failed: {expected} ({url})"));
     }
 
     /// ISSUE-39 (Firefox): a navigation Firefox turns into a download (a

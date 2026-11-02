@@ -18,6 +18,12 @@ from a copy of its code: entries describe the differences from that release.
   learn the choices. `snapshot` lists the first 25 and says how many more;
   `find_in_snapshot` searches them all. Options have no ref: `fill_input`
   picks one by its label or value. (#46)
+- `navigate` and `reload` to a page behind HTTP authentication (401) fail at
+  once saying so, with the scheme and realm of its challenge and how to log
+  in (the credentials in the URL, which the browser keeps for the session):
+  Chrome only said `net::ERR_INVALID_AUTH_CREDENTIALS`, and Firefox showed
+  its prompt while the call waited 30 s and answered the previous page.
+  (#50)
 
 ## [0.10.0-beta.14] - 2026-11-01
 

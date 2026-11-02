@@ -176,6 +176,10 @@ pub(crate) struct NetworkState {
     /// The navigations the browser turned into downloads (Firefox's
     /// `browsingContext.downloadWillBegin`), with the URL saved.
     pub downloads: crate::util::bounded::BoundedMap<String, String, MAX_DOCUMENTS>,
+    /// How many navigations asked for HTTP authentication (Firefox's
+    /// `network.authRequired`), and the request of the last one.
+    auth_asked: u64,
+    last_auth: Option<String>,
 }
 
 /// URL schemes of the browser's own requests (the new-tab page, DevTools,
@@ -240,6 +244,8 @@ impl Default for NetworkState {
             documents: Default::default(),
             extra_headers: Default::default(),
             downloads: Default::default(),
+            auth_asked: 0,
+            last_auth: None,
         }
     }
 }
@@ -274,6 +280,27 @@ impl NetworkState {
     pub(crate) fn note_download(&mut self, navigation: &str, url: &str) {
         self.downloads
             .insert(navigation.to_string(), url.to_string());
+    }
+
+    /// Notes that the navigation request `id` asked for HTTP authentication.
+    pub(crate) fn note_auth(&mut self, id: &str) {
+        self.auth_asked += 1;
+        self.last_auth = Some(id.to_string());
+    }
+
+    /// How many navigations asked for HTTP authentication so far.
+    pub(crate) fn auth_asked(&self) -> u64 {
+        self.auth_asked
+    }
+
+    /// The request of the last navigation that asked for HTTP
+    /// authentication, if one did after `before` ([`Self::auth_asked`]).
+    pub(crate) fn auth_asked_since(&mut self, before: u64) -> Option<&NetworkRequest> {
+        if self.auth_asked <= before {
+            return None;
+        }
+        let id = self.last_auth.clone()?;
+        self.find_request_mut(&id).map(|request| &*request)
     }
 
     /// Whether navigation `navigation` became a download.

@@ -634,8 +634,12 @@ def _(a, c):
 
 @scenario("nav.auth", 4, "Say that a page needs HTTP authentication")
 def _(a, c):
-    result = a.goto(c.url("/auth"))
-    expect("401" in result.text, f"the reply does not say 401: {result.short()}")
+    # A reply with the status or an error naming the authentication will do
+    try:
+        said = a.goto(c.url("/auth")).text
+    except Fail as error:
+        said = str(error)
+    expect("401" in said or "authentication" in said.lower(), f"it does not say so: {said[:200]}")
 
 
 @scenario("console.csp", 4, "See a Content-Security-Policy violation")
