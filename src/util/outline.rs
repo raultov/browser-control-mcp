@@ -99,6 +99,7 @@ const OUTLINE: &str = r#"const outline = (root, maxDepth, maxChars, maxOptions) 
         }
         return layoutTables.get(table);
     };
+    const draggable = el => el.getAttribute('draggable') === 'true';
     const roleOf = el => {
         const explicit = firstRole(el);
         if (explicit === 'presentation' || explicit === 'none') return null;
@@ -111,7 +112,8 @@ const OUTLINE: &str = r#"const outline = (root, maxDepth, maxChars, maxOptions) 
         if (tag === 'IMG') return el.getAttribute('alt') === '' ? null : 'img';
         if (TAGS[tag]) return TAGS[tag];
         if (el.isContentEditable && !(el.parentElement && el.parentElement.isContentEditable)) return 'textbox';
-        return el.hasAttribute('onclick') || el.hasAttribute('tabindex') && el.tabIndex >= 0 ? 'clickable' : null;
+        return el.hasAttribute('onclick') || el.hasAttribute('tabindex') && el.tabIndex >= 0
+            || draggable(el) || el.hasAttribute('ondrop') || el.hasAttribute('ondragover') ? 'clickable' : null;
     };
     const LEAF = new Set(['button', 'link', 'heading', 'textbox', 'searchbox', 'combobox', 'checkbox', 'radio',
         'img', 'slider', 'spinbutton', 'option', 'switch', 'tab', 'menuitem', 'menuitemcheckbox', 'menuitemradio', 'clickable',
@@ -155,6 +157,7 @@ const OUTLINE: &str = r#"const outline = (root, maxDepth, maxChars, maxOptions) 
         flag(box ? el.checked : el.getAttribute('aria-checked') === 'true', 'checked');
         flag(el.disabled || el.getAttribute('aria-disabled') === 'true', 'disabled');
         flag(el.required, 'required');
+        flag(draggable(el), 'draggable');
         if (invalid(el)) {
             const why = idText(el, 'aria-errormessage') || idText(el, 'aria-describedby') || clean(el.validationMessage || '');
             out.push('[invalid]'); if (why) out.push('[error=' + JSON.stringify(cut(why, 100)) + ']');
@@ -420,6 +423,22 @@ mod tests {
             "{OUTLINE}"
         );
         assert!(OUTLINE.contains("valueOf(el, role, name)"), "{OUTLINE}");
+    }
+
+    /// ISSUE-48: an element made draggable, or a drop zone (a drop or
+    /// dragover handler attribute), has a role and a ref for `drag`; a
+    /// draggable one says so (links and images, draggable by default, not).
+    #[test]
+    fn drag_sources_and_targets_have_refs() {
+        assert!(
+            OUTLINE.contains("const draggable = el => el.getAttribute('draggable') === 'true';"),
+            "{OUTLINE}"
+        );
+        assert!(OUTLINE.contains("|| draggable(el) || el.hasAttribute('ondrop') || el.hasAttribute('ondragover') ? 'clickable' : null;"), "{OUTLINE}");
+        assert!(
+            OUTLINE.contains("flag(draggable(el), 'draggable');"),
+            "{OUTLINE}"
+        );
     }
 
     /// ISSUE-49: a field the page or the browser rejects is `[invalid]`

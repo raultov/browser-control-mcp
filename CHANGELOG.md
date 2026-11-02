@@ -37,6 +37,9 @@ from a copy of its code: entries describe the differences from that release.
   submit), with `[error="..."]` from its `aria-errormessage`,
   `aria-describedby` or the browser's validation message: after a submit an
   agent could not tell which fields were rejected. (#49)
+- `snapshot` gives a ref to an element made draggable (`draggable="true"`,
+  marked `[draggable]`) and to a drop zone (an `ondrop` or `ondragover`
+  attribute): both were plain text, so `drag` needed CSS selectors. (#48)
 
 ## [0.10.0-beta.14] - 2026-11-01
 

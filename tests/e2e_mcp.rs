@@ -750,6 +750,40 @@ mod e2e {
         ]
     }
 
+    /// ISSUE-48: a draggable element and a drop zone have refs in snapshot.
+    fn drag_ref_steps(instance: &str) -> Vec<Step> {
+        let i = json!(instance);
+        let run = |expression: &str| json!({"instance_id": i, "expression": expression});
+        let build = "document.body.insertAdjacentHTML('beforeend', '<div id=\"d48\"><div draggable=\"true\">D48 card</div><div ondragover=\"event.preventDefault()\">D48 zone</div></div>'); 1";
+        let outline = json!({"instance_id": i, "selector": "#d48"});
+        vec![
+            (
+                "ISSUE-48 a card and a drop zone",
+                "evaluate_js",
+                run(build),
+                "",
+            ),
+            (
+                "ISSUE-48 the card has a ref",
+                "snapshot",
+                outline.clone(),
+                "clickable \"D48 card\" [draggable] [ref=",
+            ),
+            (
+                "ISSUE-48 the zone has a ref",
+                "snapshot",
+                outline,
+                "clickable \"D48 zone\" [ref=",
+            ),
+            (
+                "ISSUE-48 remove them",
+                "evaluate_js",
+                run("document.getElementById('d48').remove(); 1"),
+                "",
+            ),
+        ]
+    }
+
     /// ISSUE-49: snapshot marks a field the page rejects [invalid], with
     /// its error message.
     fn invalid_field_steps(instance: &str) -> Vec<Step> {
@@ -1790,6 +1824,7 @@ mod e2e {
             widget_state_steps(instance),
             select_option_steps(instance),
             invalid_field_steps(instance),
+            drag_ref_steps(instance),
             opened_tab_steps(instance),
             late_element_steps(instance),
             valued_input_steps(instance),
