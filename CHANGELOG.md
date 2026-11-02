@@ -10,6 +10,15 @@ from a copy of its code: entries describe the differences from that release.
 
 ## [Unreleased]
 
+### Fixed
+
+- `snapshot` and `find_in_snapshot` list the options of a native `<select>`
+  under its combobox, with `[selected]` and `[disabled]` and optgroups as
+  groups: only the chosen one showed, so an agent had to guess a label to
+  learn the choices. `snapshot` lists the first 25 and says how many more;
+  `find_in_snapshot` searches them all. Options have no ref: `fill_input`
+  picks one by its label or value. (#46)
+
 ## [0.10.0-beta.14] - 2026-11-01
 
 Public **BETA**. `emulate` gains `user_agent`, `locale`, `timezone` and

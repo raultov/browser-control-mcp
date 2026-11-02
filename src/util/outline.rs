@@ -27,17 +27,28 @@ pub const FIND_MAX_CHARS: usize = 2_000_000;
 /// Most matches `find_in_snapshot` shows.
 pub const FIND_MAX_MATCHES: usize = 20;
 
+/// Most options of a native `<select>` that `snapshot` lists (a country
+/// list has ~250): then a line says how many more.
+pub const SNAPSHOT_MAX_OPTIONS: usize = 25;
+
+/// Most options of a `<select>` an outline searched by `find_in_snapshot`
+/// lists: all of them, in practice.
+pub const FIND_MAX_OPTIONS: usize = 10_000;
+
 /// Deepest level walked when no `depth` is given.
 const MAX_DEPTH: u32 = 1000;
 
-/// Declares `outline(root, maxDepth, maxChars)`: `{lines, truncated,
-/// foreign}` for `root` (the document, or an element and its subtree).
+/// Declares `outline(root, maxDepth, maxChars, maxOptions)`: `{lines,
+/// truncated, foreign}` for `root` (the document, or an element and its
+/// subtree). A native `<select>` combobox lists its options under it, at
+/// most `maxOptions` (its options have no box while it is closed, so the
+/// walk would skip them).
 /// Elements with a role get a ref, kept in the top window's map (the one
 /// `js::RESOLVE` reads); an element keeps its ref across outlines while it
 /// is in the page, and entries of removed elements are dropped. `foreign`
 /// lists the refs of the iframes of another origin it could not read, so
 /// the server can find each frame and outline it there (`handler::frames`).
-const OUTLINE: &str = r#"const outline = (root, maxDepth, maxChars) => {
+const OUTLINE: &str = r#"const outline = (root, maxDepth, maxChars, maxOptions) => {
     const refsKey = Symbol.for('browser-control-mcp.refs'), refKey = Symbol.for('browser-control-mcp.ref');
     const countKey = Symbol.for('browser-control-mcp.ref-count');
     const refs = window[refsKey] || (window[refsKey] = new Map());
@@ -157,6 +168,26 @@ const OUTLINE: &str = r#"const outline = (root, maxDepth, maxChars) => {
         if (role === 'combobox') { const shown = textOf(el); return shown !== name ? shown : ''; }
         return '';
     };
+    const listOptions = (select, depth) => {
+        let listed = 0, more = 0;
+        const option = (o, group, d) => {
+            if (o.hidden) return;
+            if (listed >= maxOptions) { more++; return; }
+            listed++;
+            const parts = ['option'], label = clean(o.label);
+            const flag = (on, name) => { if (on) parts.push('[' + name + ']'); };
+            if (label) parts.push(JSON.stringify(cut(label, 100)));
+            flag(o.selected, 'selected'); flag(o.disabled || group.disabled, 'disabled');
+            push(d, parts.join(' '));
+        };
+        for (const child of select.children) {
+            if (child.tagName === 'OPTION') option(child, select, depth);
+            if (child.tagName !== 'OPTGROUP') continue;
+            if (listed < maxOptions) push(depth, 'group ' + JSON.stringify(cut(clean(child.label), 100)));
+            for (const o of child.children) if (o.tagName === 'OPTION') option(o, child, depth + 1);
+        }
+        if (more) push(depth, 'text: … ' + more + ' more options (find_in_snapshot searches them; fill_input picks one by its label or value)');
+    };
     const childrenOf = node => {
         const shadow = node.shadowRoot || (typeof __bcm_closed_roots__ !== 'undefined' && __bcm_closed_roots__.get(node));
         if (shadow) return Array.from(shadow.childNodes);
@@ -203,6 +234,10 @@ const OUTLINE: &str = r#"const outline = (root, maxDepth, maxChars) => {
             else if (depth < maxDepth) { walk(doc.body, depth + 1); flush(); }
             return;
         }
+        if (role === 'combobox' && el.tagName === 'SELECT') {
+            if (depth < maxDepth) listOptions(el, depth + 1);
+            return;
+        }
         if ((LEAF.has(role) && !holder) || depth >= maxDepth) return;
         walk(el, depth + 1);
         flush();
@@ -220,11 +255,16 @@ const OUTLINE: &str = r#"const outline = (root, maxDepth, maxChars) => {
 pub fn snapshot(selector: Option<&str>, depth: Option<u32>, max_chars: usize) -> String {
     let target = selector.map_or_else(|| "null".to_string(), string_literal);
     let depth = depth.unwrap_or(MAX_DEPTH);
+    // A budget above the snapshot's is a whole page read for a search.
+    let options = match max_chars > SNAPSHOT_MAX_CHARS {
+        true => FIND_MAX_OPTIONS,
+        false => SNAPSHOT_MAX_OPTIONS,
+    };
     format!(
         "(() => {{ {RESOLVE} {OUTLINE} const target = {target}; \
          const root = target === null ? document : resolve(target); \
          if (!root) return {{ status: 'missing' }}; \
-         const result = outline(root, {depth}, {max_chars}); \
+         const result = outline(root, {depth}, {max_chars}, {options}); \
          return {{ status: 'ok', url: location.href, title: document.title, text: result.lines.join('\\n'), truncated: result.truncated, foreign: result.foreign }}; }})()"
     )
 }
@@ -236,7 +276,7 @@ pub fn snapshot(selector: Option<&str>, depth: Option<u32>, max_chars: usize) ->
 /// unreadable frames, see the outline). An invalid regex throws.
 pub fn find(text: Option<&str>, regex: Option<&str>) -> String {
     format!(
-        "(() => {{ {OUTLINE} const {{ lines, foreign }} = outline(document, {MAX_DEPTH}, {FIND_MAX_CHARS}); \
+        "(() => {{ {OUTLINE} const {{ lines, foreign }} = outline(document, {MAX_DEPTH}, {FIND_MAX_CHARS}, {FIND_MAX_OPTIONS}); \
          return Object.assign({}, {{ foreign }}); }})()",
         filter_call("lines", text, regex)
     )
@@ -311,7 +351,7 @@ mod tests {
         // The resolver reads the very map the outline fills
         let key = "Symbol.for('browser-control-mcp.refs')";
         assert!(RESOLVE.contains(key) && OUTLINE.contains(key));
-        assert!(expression.contains(&format!(", {SNAPSHOT_MAX_CHARS});")));
+        assert!(expression.contains(&format!(", {SNAPSHOT_MAX_CHARS}, {SNAPSHOT_MAX_OPTIONS});")));
         assert!(expression.contains("const target = null;"));
     }
 
@@ -373,6 +413,47 @@ mod tests {
         assert!(OUTLINE.contains("valueOf(el, role, name)"), "{OUTLINE}");
     }
 
+    /// ISSUE-46: a native `<select>` lists its options under its combobox
+    /// (labels, selected and disabled, optgroups as groups, no refs: they
+    /// are picked with fill_input), at most a few in `snapshot` with a line
+    /// saying how many more; the search sees them all.
+    #[test]
+    fn native_select_lists_its_options() {
+        assert!(
+            OUTLINE.contains("if (role === 'combobox' && el.tagName === 'SELECT') {"),
+            "{OUTLINE}"
+        );
+        assert!(
+            OUTLINE.contains(
+                "flag(o.selected, 'selected'); flag(o.disabled || group.disabled, 'disabled');"
+            ),
+            "{OUTLINE}"
+        );
+        assert!(
+            OUTLINE.contains(
+                "'text: … ' + more + ' more options (find_in_snapshot searches them; fill_input picks one by its label or value)'"
+            ),
+            "{OUTLINE}"
+        );
+        let snap = snapshot(None, None, SNAPSHOT_MAX_CHARS);
+        assert!(
+            snap.contains(&format!(
+                "outline(root, 1000, {SNAPSHOT_MAX_CHARS}, {SNAPSHOT_MAX_OPTIONS})"
+            )),
+            "{snap}"
+        );
+        let search = find(Some("x"), None);
+        assert!(
+            search.contains(&format!(
+                "outline(document, 1000, {FIND_MAX_CHARS}, {FIND_MAX_OPTIONS})"
+            )),
+            "{search}"
+        );
+        // The whole page read for a search across frames sees them all too
+        let whole = snapshot(None, None, FIND_MAX_CHARS);
+        assert!(whole.contains(&format!(", {FIND_MAX_OPTIONS})")), "{whole}");
+    }
+
     /// ISSUE-40: progress bars and meters show their value, a details'
     /// summary whether it is expanded, a modal dialog is marked, and what
     /// the page made inert (an inert subtree, everything outside an open
@@ -428,7 +509,7 @@ mod tests {
             "{OUTLINE}"
         );
         let budget = snapshot(None, None, 1234);
-        assert!(budget.contains("outline(root, 1000, 1234)"), "{budget}");
+        assert!(budget.contains("outline(root, 1000, 1234, "), "{budget}");
         assert!(budget.contains("foreign: result.foreign"), "{budget}");
         let lines = find_in_lines(&["- button \"a\" [ref=f2e1]"], Some("a"), None);
         assert!(

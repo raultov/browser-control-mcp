@@ -742,6 +742,41 @@ mod e2e {
         ]
     }
 
+    /// ISSUE-46: snapshot lists a native <select>'s options under its
+    /// combobox, the first ones only on a long list, which the search reaches.
+    fn select_option_steps(instance: &str) -> Vec<Step> {
+        let i = json!(instance);
+        let run = |expression: &str| json!({"instance_id": i, "expression": expression});
+        let build = "const s = document.createElement('select'); s.id = 's46'; s.setAttribute('aria-label', 'S46 pick'); for (let n = 0; n < 40; n++) s.add(new Option('S46 option ' + n)); s.options[3].disabled = true; document.body.append(s); 1";
+        vec![
+            ("ISSUE-46 a long select", "evaluate_js", run(build), ""),
+            (
+                "ISSUE-46 its options are listed",
+                "snapshot",
+                json!({"instance_id": i, "selector": "#s46"}),
+                "  - option \"S46 option 3\" [disabled]",
+            ),
+            (
+                "ISSUE-46 then how many more",
+                "snapshot",
+                json!({"instance_id": i, "selector": "#s46"}),
+                "… 15 more options",
+            ),
+            (
+                "ISSUE-46 the search reaches the last",
+                "find_in_snapshot",
+                json!({"instance_id": i, "text": "S46 option 39"}),
+                "1 matches",
+            ),
+            (
+                "ISSUE-46 remove it",
+                "evaluate_js",
+                run("document.getElementById('s46').remove(); 1"),
+                "",
+            ),
+        ]
+    }
+
     /// ISSUE-40: snapshot shows progress bars and meters with their value
     /// and whether a details is open; with a modal dialog open only the
     /// dialog is listed, marked modal.
@@ -1695,6 +1730,7 @@ mod e2e {
         [
             aria_value_steps(instance),
             widget_state_steps(instance),
+            select_option_steps(instance),
             opened_tab_steps(instance),
             late_element_steps(instance),
             valued_input_steps(instance),
