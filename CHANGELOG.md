@@ -10,6 +10,18 @@ from a copy of its code: entries describe the differences from that release.
 
 ## [Unreleased]
 
+## [0.10.0-beta.15] - 2026-11-02
+
+Public **BETA**. Fixes from a comparison round against Playwright MCP,
+chrome-devtools-mcp and a Puppeteer MCP (now repeatable with
+`make compare`): `snapshot` lists a native `<select>`'s options, marks
+rejected fields `[invalid]` with their error, and gives refs to draggable
+elements and drop zones; `fill_input` picks several options of a
+`<select multiple>`; `press_key` takes `Control+a`; `navigate` and `reload`
+name HTTP authentication (Firefox waited 30 s on its prompt). Behaviour
+changes: on a `<select multiple>`, `fill_input` selects exactly the options
+its text names (it added one); the error for a missing option names it.
+
 ### Fixed
 
 - `snapshot` and `find_in_snapshot` list the options of a native `<select>`
