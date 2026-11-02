@@ -3,8 +3,8 @@
 //! the tab that owns it (iframes included).
 
 use super::session::FirefoxTabs;
+use crate::handler::NetworkRequest;
 use crate::handler::cdp_domains::log::ConsoleMessage;
-use crate::handler::{CustomEvent, NetworkRequest};
 use crate::util::json::{opt_string, str_field, string_or_empty};
 use crate::util::sync::{read, write};
 use bidi_browser_lite::{BrowserClient, WsResponse};
@@ -69,11 +69,36 @@ pub(crate) fn event_context(params: &Value) -> Option<&str> {
         .or_else(|| params.get("source").and_then(|s| str_field(s, "context")))
 }
 
-/// Routes one event into the owning tab's state.
+/// Routes one event into the owning tab's state, and into its custom
+/// events when the agent subscribed to it (also the events the server
+/// handles itself: ISSUE-71).
 pub(crate) async fn route(event: &WsResponse, client: &BrowserClient, state: &PumpState) {
     let (Some(method), Some(params)) = (event.method.as_deref(), event.params.as_ref()) else {
         return;
     };
+    // Read before the handler: it forgets a closed tab.
+    let tab_lifecycle = is_tab_lifecycle(method, params, state);
+    handle(method, params, client, state).await;
+    on_custom(method, params, state, tab_lifecycle).await;
+}
+
+/// Whether `method` opens or closes a tab (a top-level context): an event
+/// about the browser's tabs rather than a page's, kept on the active tab.
+fn is_tab_lifecycle(method: &str, params: &Value, state: &PumpState) -> bool {
+    match method {
+        "browsingContext.contextCreated" => str_field(params, "parent").is_none(),
+        "browsingContext.contextDestroyed" => str_field(params, "context").is_some_and(|c| {
+            read(&state.tabs)
+                .tabs
+                .values()
+                .any(|t| t.tab.context_id() == c)
+        }),
+        _ => false,
+    }
+}
+
+/// The server's own handling of an event.
+async fn handle(method: &str, params: &Value, client: &BrowserClient, state: &PumpState) {
     match method {
         "browsingContext.contextCreated" => on_context_created(params, client, state).await,
         "browsingContext.contextDestroyed" => on_context_destroyed(params, state).await,
@@ -90,7 +115,7 @@ pub(crate) async fn route(event: &WsResponse, client: &BrowserClient, state: &Pu
                 on_network(method, params, &mut *network.lock().await);
             }
         }
-        _ => on_custom(method, params, state).await,
+        _ => {}
     }
 }
 
@@ -382,8 +407,11 @@ async fn on_context_destroyed(params: &Value, state: &PumpState) {
     }
 }
 
-/// Events of modules the agent subscribed to, kept per tab.
-async fn on_custom(method: &str, params: &Value, state: &PumpState) {
+/// Events of modules the agent subscribed to, kept per tab: the tab
+/// owning their context; the active tab for a tab opening or closing
+/// (`tab_lifecycle`) and for an event no tab owns (no context, such as
+/// `script.realmDestroyed`, or a context already gone).
+async fn on_custom(method: &str, params: &Value, state: &PumpState, tab_lifecycle: bool) {
     let module = method.split('.').next().unwrap_or_default();
     if !read(&state.custom_modules)
         .iter()
@@ -391,18 +419,23 @@ async fn on_custom(method: &str, params: &Value, state: &PumpState) {
     {
         return;
     }
-    let Some(custom) = tab_part(state, params, |t| t.custom.clone()) else {
+    let owner = match tab_lifecycle {
+        true => None,
+        false => tab_part(state, params, |t| t.custom.clone()),
+    };
+    let Some(custom) = owner.or_else(|| active_custom(state)) else {
         return;
     };
-    let mut custom = custom.lock().await;
-    if custom.events.len() >= crate::handler::cdp_domains::custom::MAX_CUSTOM_EVENTS {
-        custom.events.pop_front();
-    }
-    custom.events.push_back(CustomEvent {
-        method: method.to_string(),
-        params: crate::handler::cdp_domains::custom::bounded_params(params),
-        timestamp: chrono::Utc::now().to_rfc3339(),
-    });
+    crate::handler::cdp_domains::custom::push_event(&mut *custom.lock().await, method, params);
+}
+
+/// The active tab's custom events.
+fn active_custom(
+    state: &PumpState,
+) -> Option<Arc<tokio::sync::Mutex<crate::handler::CustomState>>> {
+    let tabs = read(&state.tabs);
+    let active = tabs.active.as_ref()?;
+    tabs.tabs.get(active).map(|t| t.custom.clone())
 }
 
 #[cfg(test)]
@@ -516,6 +549,55 @@ mod tests {
         )
         .await;
         assert_eq!(read(&state.tabs).tabs.len(), 1);
+    }
+
+    /// The methods in tab `id`'s custom buffer, in order.
+    async fn custom_methods(state: &PumpState, id: &str) -> Vec<String> {
+        let custom = read(&state.tabs).tabs[id].custom.clone();
+        let events = custom.lock().await.events.clone();
+        events.into_iter().map(|e| e.method).collect()
+    }
+
+    /// ISSUE-71 (Firefox): an event the agent subscribed to reaches
+    /// get_custom_events even when the server handles it too; an event no
+    /// tab owns (a tab opening or closing, a realm destroyed) goes to the
+    /// active tab instead of being dropped.
+    #[tokio::test]
+    async fn subscribed_events_reach_the_custom_buffer() {
+        // Given tab-1, active, and an agent subscribed to two modules
+        let mock = MockBidi::start(MockBidiBehavior::Ready).await.unwrap();
+        let (client, state) = one_tab(&mock).await;
+        write(&state.custom_modules).extend(["browsingContext".into(), "script".into()]);
+        // When tab-1 loads, a tab opens and closes, and a realm is destroyed
+        let load =
+            json!({"context": "ctx-0", "navigation": "n1", "timestamp": 1, "url": "http://a/"});
+        let events = [
+            ("browsingContext.load", load),
+            (
+                "browsingContext.contextCreated",
+                json!({"context": "ctx-7", "url": "about:blank"}),
+            ),
+            (
+                "browsingContext.contextDestroyed",
+                json!({"context": "ctx-7"}),
+            ),
+            ("script.realmDestroyed", json!({"realm": "r1"})),
+        ];
+        for (method, params) in events {
+            route(&event(method, params), &client, &state).await;
+        }
+        // Then the server handled them, and the agent sees them all on tab-1
+        assert_eq!(read(&state.tabs).tabs["tab-1"].url, "http://a/");
+        assert_eq!(read(&state.tabs).tabs.len(), 1);
+        assert_eq!(
+            custom_methods(&state, "tab-1").await,
+            [
+                "browsingContext.load",
+                "browsingContext.contextCreated",
+                "browsingContext.contextDestroyed",
+                "script.realmDestroyed"
+            ]
+        );
     }
 
     /// BID-08 / BID-09: iframe events route to their tab; iframes are not tabs.

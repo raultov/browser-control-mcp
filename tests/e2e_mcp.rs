@@ -2353,6 +2353,48 @@ mod e2e {
         ]
     }
 
+    /// ISSUE-71 (Firefox): a subscribed event the server also handles, and
+    /// the event packet an RDP request starts, reach get_custom_events.
+    fn firefox_custom_event_steps() -> Vec<Step> {
+        let i = json!("e2e");
+        let custom = |method: &str| json!({"instance_id": i, "filter_method": method});
+        let subscribe = json!({"instance_id": i, "method": "session.subscribe", "params": "{\"events\": [\"browsingContext.load\"]}"});
+        let evaluate = json!({"instance_id": i, "to": "console", "request_type": "evaluateJSAsync", "params": "{\"text\": \"6*7\"}"});
+        vec![
+            (
+                "ISSUE-71 subscribe to load",
+                "send_bidi_command",
+                subscribe,
+                "subscription",
+            ),
+            (
+                "ISSUE-71 reload",
+                "reload",
+                json!({"instance_id": i}),
+                "Page reloaded",
+            ),
+            (
+                "ISSUE-71 the load is a custom event",
+                "get_custom_events",
+                custom("browsingContext.load"),
+                "\"method\": \"browsingContext.load\"",
+            ),
+            (
+                "ISSUE-71 an async RDP evaluation",
+                "send_rdp_request",
+                evaluate,
+                "resultID",
+            ),
+            ("ISSUE-71 let its result come", "sleep", json!({}), ""),
+            (
+                "ISSUE-71 its evaluationResult is a custom event",
+                "get_custom_events",
+                custom("rdp.evaluationResult"),
+                "\"method\": \"rdp.evaluationResult\"",
+            ),
+        ]
+    }
+
     /// Firefox's profile steps: a reload, a cold reload bypassing the cache
     /// and a plain reload right after (ISSUE-58).
     fn firefox_profile_steps() -> Vec<Step> {
@@ -2392,6 +2434,7 @@ mod e2e {
         );
         if browser != "chrome" {
             let mut steps = firefox_profile_steps();
+            steps.extend(firefox_custom_event_steps());
             steps.extend(insights_steps(browser));
             steps.push((
                 "pause_on_load",

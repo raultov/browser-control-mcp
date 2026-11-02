@@ -6,7 +6,7 @@ use rust_mcp_sdk::{
 
 #[macros::mcp_tool(
     name = "get_custom_events",
-    description = "Returns events of the protocol domains or modules the agent enabled (with 'send_cdp_command' or 'send_bidi_command') that no other tool captures: {events, total, truncated}, newest last."
+    description = "Returns events of the protocol domains or modules the agent enabled (with 'send_cdp_command' or 'send_bidi_command'), also those other tools read, and on Firefox the event packets of actors addressed with 'send_rdp_request' (rdp.<type>): {events, total, truncated}, newest last."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct GetCustomEventsTool {

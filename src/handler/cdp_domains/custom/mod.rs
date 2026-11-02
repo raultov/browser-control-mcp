@@ -24,6 +24,19 @@ pub(crate) fn bounded_params(params: &serde_json::Value) -> serde_json::Value {
     serde_json::json!({"truncated": true, "characters": characters})
 }
 
+/// Appends the event `method` with `params` (bounded) to `state`, the oldest
+/// dropped past [`MAX_CUSTOM_EVENTS`] (shared by every browser).
+pub(crate) fn push_event(state: &mut CustomState, method: &str, params: &serde_json::Value) {
+    if state.events.len() >= MAX_CUSTOM_EVENTS {
+        state.events.pop_front();
+    }
+    state.events.push_back(CustomEvent {
+        method: method.to_string(),
+        params: bounded_params(params),
+        timestamp: chrono::Utc::now().to_rfc3339(),
+    });
+}
+
 /// Stores `event` if its domain is one the agent enabled through
 /// `send_cdp_command`.
 pub(crate) async fn process_custom_event(event: &WsResponse, state: &Arc<Mutex<CustomState>>) {
@@ -35,14 +48,7 @@ pub(crate) async fn process_custom_event(event: &WsResponse, state: &Arc<Mutex<C
         if !st.active_domains.contains(domain) {
             return;
         }
-        if st.events.len() >= MAX_CUSTOM_EVENTS {
-            st.events.pop_front();
-        }
-        st.events.push_back(CustomEvent {
-            method: method.to_string(),
-            params: bounded_params(params),
-            timestamp: chrono::Utc::now().to_rfc3339(),
-        });
+        push_event(&mut st, method, params);
     }
 }
 

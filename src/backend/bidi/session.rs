@@ -235,6 +235,9 @@ pub(crate) struct FirefoxSession {
     pub(crate) own_subscription: RwLock<Option<String>>,
     /// Modules the agent subscribed to through `send_bidi_command`.
     pub(crate) custom_modules: Arc<RwLock<Vec<String>>>,
+    /// The RDP actors whose event packets feed `get_custom_events` (one
+    /// task each, see `raw::forward_rdp_events`), oldest first.
+    pub(crate) rdp_forwards: Mutex<Vec<(String, ListenerHandles)>>,
     /// The `enable_proxy_auth` handler, replaced (aborted) on a new call.
     pub(crate) proxy_task: Mutex<ListenerHandles>,
     /// The `network.addIntercept` id of that handler, removed by the next call.
@@ -261,6 +264,7 @@ impl FirefoxSession {
             debuggers: Default::default(),
             own_subscription: RwLock::new(None),
             custom_modules: Default::default(),
+            rdp_forwards: Mutex::new(Vec::new()),
             proxy_task: Mutex::new(ListenerHandles::default()),
             proxy_intercept: Mutex::new(None),
             pump_client: RwLock::new(None),
@@ -447,6 +451,7 @@ impl FirefoxSession {
         *self.proxy_task.lock().await = ListenerHandles::default();
         *self.proxy_intercept.lock().await = None;
         write(&self.custom_modules).clear();
+        self.rdp_forwards.lock().await.clear();
         write(&self.tabs).clear();
         *write(&self.own_subscription) = None;
         *write(&self.pump_client) = None;

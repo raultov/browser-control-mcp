@@ -1,11 +1,15 @@
 //! Raw protocol access on Firefox: `send_bidi_command` and `send_rdp_request`.
 
 use super::session::FirefoxSession;
-use crate::handler::{McpHandler, parse_args};
+use crate::handler::cdp_domains::event_pump::ListenerHandles;
+use crate::handler::{CustomState, McpHandler, parse_args};
 use crate::util::sync::{read, write};
+use bidi_browser_lite::bidi_lite::rdp::client::RdpClient;
 use rust_mcp_sdk::macros;
 use rust_mcp_sdk::schema::{CallToolError, CallToolRequestParams, CallToolResult};
 use serde_json::{Value, json};
+use std::sync::Arc;
+use tokio_stream::StreamExt;
 
 /// BiDi commands that would break the instance's single shared session.
 const REFUSED: &[(&str, &str)] = &[
@@ -36,7 +40,7 @@ pub struct SendBidiCommandTool {
 
 #[macros::mcp_tool(
     name = "send_rdp_request",
-    description = "Sends a raw Firefox Remote Debugging Protocol request and returns the reply packet. 'to' is an actor id or 'thread', 'console' (the tab's debugger) or 'root'. With --local, non-local navigateTo URLs are refused. Needs the Firefox debugger port. Firefox only (not available on Chrome)."
+    description = "Sends a raw Firefox Remote Debugging Protocol request and returns the reply packet; the event packets the actor sends afterwards (e.g. evaluationResult after evaluateJSAsync) go to 'get_custom_events' as rdp.<type>. 'to' is an actor id or 'thread', 'console' (the tab's debugger) or 'root'. With --local, non-local navigateTo URLs are refused. Needs the Firefox debugger port. Firefox only (not available on Chrome)."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct SendRdpRequestTool {
@@ -159,6 +163,11 @@ pub(crate) async fn send_rdp_request(
     let to = super::debugger::resolve_actor(&session, args.tab_id.as_deref(), &args.to).await?;
     let browser = session.browser().await?;
     let rdp = browser.rdp_client().await.map_err(super::lifecycle_error)?;
+    // Watched before the request: its events can come with the reply.
+    let tab = session.tab(args.tab_id.as_deref()).await.ok();
+    if let Some((_, tab)) = tab {
+        forward_rdp_events(&session, &rdp, &to, &tab.custom).await;
+    }
     let reply = rdp
         .request(&to, &args.request_type, rdp_params)
         .await
@@ -168,6 +177,51 @@ pub(crate) async fn send_rdp_request(
             .unwrap_or_default()
             .into(),
     ]))
+}
+
+/// Most actors whose event packets are forwarded at once.
+const MAX_RDP_FORWARDS: usize = 16;
+
+/// Copies the event packets `actor` sends from now on (those with a
+/// `type`; replies have none) into `custom`, the addressed tab's custom
+/// events, as `rdp.<type>`: an agent's request can start events no other
+/// tool reads (`evaluationResult` after `evaluateJSAsync`, `pageError`
+/// after `startListeners`; ISSUE-71). One task per actor, the oldest
+/// dropped past [`MAX_RDP_FORWARDS`]; it holds the buffer weakly.
+async fn forward_rdp_events(
+    session: &FirefoxSession,
+    rdp: &RdpClient,
+    actor: &str,
+    custom: &Arc<tokio::sync::Mutex<CustomState>>,
+) {
+    let mut forwards = session.rdp_forwards.lock().await;
+    if forwards.iter().any(|(known, _)| known == actor) {
+        return;
+    }
+    if forwards.len() >= MAX_RDP_FORWARDS {
+        forwards.remove(0);
+    }
+    let mut packets = rdp.on_actor(actor);
+    let custom = Arc::downgrade(custom);
+    let mut handles = ListenerHandles::default();
+    handles.push(tokio::spawn(async move {
+        while let Some(packet) = packets.next().await {
+            let Ok(packet) = packet else { continue };
+            let Some(kind) = packet.r#type.as_deref() else {
+                continue;
+            };
+            let Some(custom) = custom.upgrade() else {
+                break;
+            };
+            let method = format!("rdp.{kind}");
+            crate::handler::cdp_domains::custom::push_event(
+                &mut *custom.lock().await,
+                &method,
+                &packet.body,
+            );
+        }
+    }));
+    forwards.push((actor.to_string(), handles));
 }
 
 #[cfg(test)]
@@ -215,6 +269,38 @@ mod tests {
         assert!(refusal(&session, "session.unsubscribe", &by_event).is_some());
         assert!(refusal(&session, "session.unsubscribe", &by_module).is_some());
         assert!(refusal(&session, "session.unsubscribe", &other).is_none());
+    }
+
+    /// ISSUE-71 (Firefox): the event packets an actor sends after an
+    /// agent's request to it (`evaluationResult` after `evaluateJSAsync`)
+    /// reach get_custom_events as `rdp.<type>`.
+    #[tokio::test]
+    async fn rdp_events_after_a_request_reach_custom_events() {
+        use super::super::test_support as ts;
+        // Given a Firefox tab with its debugger port
+        let mock = ts::firefox_with_debugger().await;
+        let handler = ts::handler(&mock);
+        // When the agent asks the tab's console for an async evaluation
+        let params = json!({"to": "console", "request_type": "evaluateJSAsync", "params": "{\"text\": \"6*7\"}"});
+        let reply = send_rdp_request(ts::call("send_rdp_request", params), &handler)
+            .await
+            .unwrap();
+        assert!(ts::text(&reply).contains("resultID"));
+        // Then its evaluationResult is among the tab's custom events
+        let mut found = String::new();
+        for _ in 0..100 {
+            let args = json!({"filter_method": "rdp.evaluationResult"});
+            let events =
+                super::super::tools::custom_events(ts::call("get_custom_events", args), &handler);
+            found = ts::text(&events.await.unwrap());
+            if found.contains("\"total\": 1") {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(found.contains("\"total\": 1"), "{found}");
+        assert!(found.contains("6*7"), "{found}");
+        ts::stop(&handler).await;
     }
 
     /// REV-17: `--local` also covers RDP `navigateTo`, before any browser use.

@@ -67,6 +67,16 @@ from a copy of its code: entries describe the differences from that release.
   blocks as they are, and `isError: true` as a tool error. Before, a failed
   page tool answered as a success with its error buried in the text, and
   its output came as JSON escaped inside a string. (#72)
+- Firefox: `get_custom_events` gets every event the agent subscribed to
+  with `send_bidi_command`, also those the server handles itself
+  (`browsingContext.load`, `contextCreated`, `log.entryAdded`,
+  `network.*`...), which were silently dropped. A tab opening or closing,
+  and an event without a context (`script.realmDestroyed`), go to the
+  active tab. The event packets an actor sends after a `send_rdp_request`
+  to it (`evaluationResult` after `evaluateJSAsync`, `pageError` after
+  `startListeners`) are kept too, as `rdp.<type>` (at most 16 actors
+  watched). Firefox itself sends `script.realmCreated` only for a new
+  tab's first document. (#71)
 
 ## [0.11.0-beta.16] - 2026-11-02
 
