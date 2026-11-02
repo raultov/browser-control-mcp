@@ -378,6 +378,18 @@ mod e2e {
                 "Page reloaded",
             ),
             (
+                "ISSUE-70 navigate to a hash route",
+                "navigate",
+                json!({"instance_id": i, "url": format!("{base}/#/e2e70")}),
+                "/#/e2e70.",
+            ),
+            (
+                "ISSUE-70 navigate to another hash route",
+                "navigate",
+                json!({"instance_id": i, "url": format!("{base}/#/e2e70b")}),
+                "/#/e2e70b.",
+            ),
+            (
                 "NAV-03 unknown host fails",
                 "navigate",
                 json!({"instance_id": i, "url": "http://nonexistent-host.invalid/"}),

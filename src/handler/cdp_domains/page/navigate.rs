@@ -228,10 +228,56 @@ pub(crate) async fn navigate_and_wait(
     };
     let browser = reply.result.unwrap_or_else(|| json!({}));
     check_error(&browser, network, url).await?;
-    // Same-document navigations (fragment, history) have no loader and fire no `load`.
-    let loaded = browser.get("loaderId").is_none() || wait_for_load(&mut page_events).await;
+    // Same-document navigations (fragment, history) have no loader and fire
+    // no `load`; their URL is the one `navigatedWithinDocument` gives: the
+    // history entry may still hold the previous one (ISSUE-70).
+    if browser.get("loaderId").is_none() {
+        let frame = browser.get("frameId").and_then(Value::as_str);
+        if let Some(moved) = moved_within_document(&mut page_events, frame).await {
+            let outcome = NavigationOutcome {
+                url: moved,
+                browser,
+                ..Default::default()
+            };
+            return Ok(with_status(outcome, target, network).await);
+        }
+        let outcome = finish(target, url, browser, true).await;
+        return Ok(with_status(outcome, target, network).await);
+    }
+    let loaded = wait_for_load(&mut page_events).await;
     let outcome = finish(target, url, browser, loaded).await;
     Ok(with_status(outcome, target, network).await)
+}
+
+/// How long a same-document navigation waits for Chrome's
+/// `navigatedWithinDocument` (it comes with or right after the reply).
+const WITHIN_DOCUMENT_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// The URL `Page.navigatedWithinDocument` gives for `frame` (the page's
+/// frame, from the `Page.navigate` reply; any frame when unknown), within
+/// [`WITHIN_DOCUMENT_WAIT`]; `None` when it does not come.
+async fn moved_within_document(
+    events: &mut cdp_browser_lite::EventFilter,
+    frame: Option<&str>,
+) -> Option<String> {
+    use tokio_stream::StreamExt;
+    let moved = async {
+        while let Some(event) = events.next().await {
+            let Ok(event) = event else { continue };
+            if event.method.as_deref() != Some("Page.navigatedWithinDocument") {
+                continue;
+            }
+            let params = event.params.unwrap_or_default();
+            if frame.is_none_or(|f| params["frameId"] == f) {
+                return params["url"].as_str().map(str::to_string);
+            }
+        }
+        None
+    };
+    tokio::time::timeout(WITHIN_DOCUMENT_WAIT, moved)
+        .await
+        .ok()
+        .flatten()
 }
 
 /// Moves `target` one entry `step` in its history and waits (at most
@@ -597,6 +643,41 @@ pub(crate) mod tests {
         assert!(body.get("notes").is_none(), "load fired: {body}");
     }
 
+    /// ISSUE-70: a navigation to a fragment of the current page answers
+    /// the URL Chrome's `navigatedWithinDocument` gives for the page's own
+    /// frame, not the history entry, which may still hold the previous URL.
+    #[tokio::test]
+    async fn fragment_navigation_reports_the_new_url() {
+        // Given a same-document navigation whose history entry is stale, and
+        // an iframe that also moves within its document
+        let mock = spawn_recording_mock().await;
+        mock.respond_with("Page.navigate", |_| json!({"frameId": "F1"}));
+        committed_url(mock, "http://127.0.0.1:8/page");
+        fire_events_after(
+            mock,
+            "Page.navigate",
+            vec![
+                (
+                    "Page.navigatedWithinDocument",
+                    json!({"frameId": "F2", "url": "http://127.0.0.1:8/frame#x"}),
+                ),
+                (
+                    "Page.navigatedWithinDocument",
+                    json!({"frameId": "F1", "url": "http://127.0.0.1:8/page#/contact"}),
+                ),
+            ],
+        );
+        let handler = mock_handler(mock.http_port);
+        // When navigate goes to the fragment
+        let args = json!({"url": "http://127.0.0.1:8/page#/contact"});
+        let reply = NavigateTool::handle(call("navigate", args), &handler)
+            .await
+            .unwrap();
+        // Then the reply has the page's new URL
+        assert_eq!(body(&reply)["url"], "http://127.0.0.1:8/page#/contact");
+        assert!(reply_text(&reply).starts_with("Navigated to http://127.0.0.1:8/page#/contact."));
+    }
+
     /// The `Debugger.paused` of a page stopped at line 2 of app.js while it
     /// loads, emitted after the next `command`.
     pub(crate) fn pause_after(
@@ -852,12 +933,13 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn test_navigate_local_only_addresses() {
+        use crate::handler::cdp_domains::tests::{fire_events_after, spawn_recording_mock};
         let mut handler = McpHandler::new_test();
         handler.flags.local = true;
-        let port = spawn_mock_chrome_server().await;
+        let mock = spawn_recording_mock().await;
         Arc::get_mut(&mut handler.default_session)
             .unwrap()
-            .chrome_manager = Arc::new(Mutex::new(MockChromeManager::new(port)));
+            .chrome_manager = Arc::new(Mutex::new(MockChromeManager::new(mock.http_port)));
 
         let local_urls = vec![
             "http://127.0.0.1:8080",
@@ -867,6 +949,13 @@ pub(crate) mod tests {
         ];
 
         for url in local_urls {
+            // The mock's navigations have no loader: same-document ones.
+            let moved = json!({"url": url});
+            fire_events_after(
+                mock,
+                "Page.navigate",
+                vec![("Page.navigatedWithinDocument", moved)],
+            );
             let params: CallToolRequestParams = serde_json::from_value(json!({
                 "name": "navigate",
                 "arguments": {

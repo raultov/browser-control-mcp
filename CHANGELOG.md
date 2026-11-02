@@ -54,6 +54,10 @@ from a copy of its code: entries describe the differences from that release.
   a plain success: the watch of the page settling ends at once and the
   reply notes `{paused, location}` or `{dialog}`, as for a handler that
   blocks right away. Both browsers. (#65)
+- Chrome: `navigate` to another fragment of the current page (a hash route
+  such as `#/contact`) answers the new URL; it often answered the previous
+  one, read from a history entry Chrome had not updated yet. The URL now
+  comes from the page's `Page.navigatedWithinDocument`. (#70)
 
 ## [0.11.0-beta.16] - 2026-11-02
 
