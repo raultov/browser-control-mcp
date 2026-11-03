@@ -2057,9 +2057,50 @@ mod e2e {
             frame_observation_steps(instance),
             frame_debugger_steps(instance, base),
             cross_origin_result_steps(instance, base),
+            beforeunload_steps(instance, base),
             history_steps(instance, base),
         ]
         .concat()
+    }
+
+    /// ISSUE-76: a navigate right after accepting a beforeunload lands
+    /// (Firefox cancelled it with "Beforeunload prompt was rejected").
+    fn beforeunload_steps(instance: &str, base: &str) -> Vec<Step> {
+        let i = json!(instance);
+        // Armed by a click: browsers ask only after a user gesture.
+        let button = "const b = document.createElement('button'); b.id = 'arm76'; b.textContent = 'arm'; b.onclick = () => { window.onbeforeunload = e => { e.preventDefault(); return ''; }; }; document.body.prepend(b); 1";
+        vec![
+            (
+                "ISSUE-76 a button arming beforeunload",
+                "evaluate_js",
+                json!({"instance_id": i, "expression": button}),
+                "",
+            ),
+            (
+                "ISSUE-76 arm it",
+                "click_element",
+                json!({"instance_id": i, "selector": "#arm76"}),
+                "Successfully",
+            ),
+            (
+                "ISSUE-76 navigate stops at the beforeunload",
+                "navigate",
+                json!({"instance_id": i, "url": format!("{base}/frame.html")}),
+                "!beforeunload",
+            ),
+            (
+                "ISSUE-76 accept it",
+                "handle_dialog",
+                json!({"instance_id": i, "accept": true}),
+                "Dialog accepted",
+            ),
+            (
+                "ISSUE-76 navigate right after lands",
+                "navigate",
+                json!({"instance_id": i, "url": format!("{base}/")}),
+                "Navigated to",
+            ),
+        ]
     }
 
     /// ISSUE-31: navigate moves back and forward in the tab's history and

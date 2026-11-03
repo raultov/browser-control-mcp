@@ -10,6 +10,15 @@ from a copy of its code: entries describe the differences from that release.
 
 ## [Unreleased]
 
+### Fixed
+
+- Accepting a `beforeunload` with `handle_dialog` returns once the
+  navigation it allowed committed, and the reply names the URL reached
+  (both browsers). A `navigate` right after used to race it: on Chrome it
+  met the dialog again and the tab stayed blocked; on Firefox it failed with
+  `Beforeunload prompt was rejected` while the tab ended on the page the
+  dialog let it go to. (#76)
+
 ## [0.11.0-beta.18] - 2026-11-03
 
 Public **BETA**. Consistency fixes on both browsers. `webmcp_cancel_invocation`

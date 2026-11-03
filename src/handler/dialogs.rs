@@ -25,6 +25,61 @@ pub(crate) fn interrupted(error: &cdp_browser_lite::CdpError) -> bool {
     matches!(error, cdp_browser_lite::CdpError::ProtocolError { code, .. } if *code == INTERRUPTED_ERROR_CODE)
 }
 
+/// How long accepting a `beforeunload` waits for the navigation it
+/// allowed: both browsers answer the dialog command before it commits, and
+/// a navigation started meanwhile meets the dialog again (Chrome) or
+/// cancels it (Firefox: "Beforeunload prompt was rejected"), ISSUE-76.
+pub(crate) const LEAVE_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Whether answering `dialog` with `accept` lets the page navigate away.
+pub(crate) fn leaving(accept: bool, dialog: Option<&OpenDialog>) -> bool {
+    accept && dialog.is_some_and(|d| d.kind == "beforeunload")
+}
+
+/// The URL of the first event of `events` that `committed` reads one from
+/// (the tab's navigation committing), within [`LEAVE_WAIT`]; shared by
+/// both browsers, each reading its own events.
+pub(crate) async fn left_to<I>(
+    mut events: impl Stream<Item = I> + Unpin,
+    committed: impl Fn(I) -> Option<String>,
+) -> Option<String> {
+    let first = async {
+        while let Some(event) = events.next().await {
+            if let Some(url) = committed(event) {
+                return Some(url);
+            }
+        }
+        None
+    };
+    tokio::time::timeout(LEAVE_WAIT, first).await.ok().flatten()
+}
+
+/// `handle_dialog`'s reply once an accepted `beforeunload` let the page
+/// go, naming the URL its navigation committed to (`None`: it did not
+/// within [`LEAVE_WAIT`]).
+pub(crate) fn handled_leaving(
+    dialog: Option<&OpenDialog>,
+    reached: Option<&str>,
+) -> rust_mcp_sdk::schema::CallToolResult {
+    let note = match reached {
+        Some(url) => format!("The tab navigated to {url}."),
+        None => format!(
+            "The tab did not commit a navigation within {} s: check it with list_tabs before navigating again.",
+            LEAVE_WAIT.as_secs()
+        ),
+    };
+    let mut reply = handled(true, dialog);
+    let first = reply.content.iter_mut().find_map(|block| match block {
+        rust_mcp_sdk::schema::ContentBlock::TextContent(text) => Some(text),
+        _ => None,
+    });
+    if let Some(text) = first {
+        text.text.push('\n');
+        text.text.push_str(&note);
+    }
+    reply
+}
+
 /// An open JavaScript dialog.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct OpenDialog {

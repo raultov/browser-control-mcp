@@ -102,9 +102,21 @@ pub(crate) async fn handle_dialog(
     }
     // Read first: closing it makes Firefox announce it closed.
     let dialog = tab.dialog.lock().await.open.clone();
+    let leaving = crate::handler::dialogs::leaving(args.accept, dialog.as_ref());
+    // Subscribed first: the navigation can commit before the reply is read.
+    let events = tab.tab.on_module("browsingContext");
     let reply = page::command(&tab.tab, "browsingContext.handleUserPrompt", prompt).await;
     tab.dialog.lock().await.open = None;
     match reply {
+        Ok(_) if leaving => {
+            // Firefox answers before the navigation commits; a navigation
+            // started meanwhile would cancel it (ISSUE-76).
+            let reached = crate::handler::dialogs::left_to(events, committed_url).await;
+            Ok(crate::handler::dialogs::handled_leaving(
+                dialog.as_ref(),
+                reached.as_deref(),
+            ))
+        }
         Ok(_) => Ok(crate::handler::dialogs::handled(
             args.accept,
             dialog.as_ref(),
@@ -114,6 +126,16 @@ pub(crate) async fn handle_dialog(
         )),
         Err(e) => Err(e.into()),
     }
+}
+
+/// The URL a `browsingContext.navigationCommitted` commits to.
+fn committed_url(
+    event: bidi_browser_lite::BidiResult<bidi_browser_lite::WsResponse>,
+) -> Option<String> {
+    let event = event.ok()?;
+    (event.method.as_deref() == Some("browsingContext.navigationCommitted"))
+        .then(|| event.params?["url"].as_str().map(str::to_string))
+        .flatten()
 }
 
 pub(crate) fn ids(instance_id: &Option<String>, tab_id: &Option<String>) -> TargetArgs {
@@ -1912,6 +1934,73 @@ mod tests {
             .params;
         assert_eq!(sent, &json!({"context": "ctx-0", "accept": false}));
         assert!(tab.dialog.lock().await.open.is_none());
+        ts::stop(&handler).await;
+    }
+
+    /// Waits until the pump recorded the dialog `tab` opened.
+    async fn opened(tab: &crate::backend::bidi::session::FirefoxTab) {
+        for _ in 0..100 {
+            if tab.dialog.lock().await.open.is_some() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }
+
+    /// ISSUE-76 (Firefox): accepting a `beforeunload` returns once the
+    /// navigation it allowed committed, so a navigation right after does
+    /// not cancel it ("Beforeunload prompt was rejected"); dismissing one,
+    /// or accepting another dialog, does not wait.
+    #[tokio::test]
+    async fn accepted_beforeunload_waits_for_the_navigation() {
+        // Given a tab with a beforeunload open, whose navigation commits 300 ms
+        // after the dialog is answered
+        let mock = std::sync::Arc::new(MockFirefox::start(false).await.unwrap());
+        mock.bidi()
+            .respond_with("browsingContext.handleUserPrompt", |_| json!({}));
+        let handler = ts::handler(&mock);
+        let session = handler.firefox(None).await.unwrap();
+        session.browser().await.unwrap();
+        let (_, tab) = session.tab(None).await.unwrap();
+        let open = |kind: &str| json!({"context": "ctx-0", "type": kind, "message": "Leave?", "handler": "ignore"});
+        mock.bidi()
+            .emit("browsingContext.userPromptOpened", open("beforeunload"));
+        opened(&tab).await;
+        let firefox = mock.clone();
+        tokio::spawn(async move {
+            let bidi = firefox.bidi();
+            while bidi.count("browsingContext.handleUserPrompt") == 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            let committed = json!({"context": "ctx-0", "navigation": "n9", "timestamp": 1, "url": "http://a/next"});
+            bidi.emit("browsingContext.navigationCommitted", committed);
+        });
+        // When it is accepted
+        let start = std::time::Instant::now();
+        let accept = call("handle_dialog", json!({"accept": true}));
+        let reply = handle_dialog(accept, &handler).await.unwrap();
+        // Then the call returned once the navigation committed, naming it
+        let waited = start.elapsed();
+        assert!(
+            waited >= std::time::Duration::from_millis(300),
+            "{waited:?}"
+        );
+        assert!(waited < std::time::Duration::from_secs(3), "{waited:?}");
+        assert!(
+            ts::text(&reply).contains("http://a/next"),
+            "{}",
+            ts::text(&reply)
+        );
+        // And a dismissed one answers at once
+        mock.bidi()
+            .emit("browsingContext.userPromptOpened", open("beforeunload"));
+        opened(&tab).await;
+        let start = std::time::Instant::now();
+        handle_dialog(call("handle_dialog", json!({"accept": false})), &handler)
+            .await
+            .unwrap();
+        assert!(start.elapsed() < std::time::Duration::from_millis(200));
         ts::stop(&handler).await;
     }
 

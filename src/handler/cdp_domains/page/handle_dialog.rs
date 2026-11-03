@@ -37,12 +37,23 @@ impl HandleDialogTool {
         }
         // Read first: closing it makes Chrome announce it closed.
         let dialog = state.lock().await.open.clone();
+        // Subscribed first: the navigation can commit before the reply.
+        let events = target.on_domain("Page");
         let reply = target
             .send_raw_command("Page.handleJavaScriptDialog", params)
             .await;
         // Closed or not, the tracked dialog is stale once Chrome answered.
         state.lock().await.open = None;
         match reply {
+            Ok(_) if dialogs::leaving(args.accept, dialog.as_ref()) => {
+                // Chrome answers before the navigation commits; a navigation
+                // started meanwhile would meet the dialog again (ISSUE-76).
+                let reached = dialogs::left_to(events, main_frame_url).await;
+                Ok(dialogs::handled_leaving(
+                    dialog.as_ref(),
+                    reached.as_deref(),
+                ))
+            }
             Ok(_) => Ok(dialogs::handled(args.accept, dialog.as_ref())),
             Err(cdp_browser_lite::CdpError::ProtocolError { message, .. })
                 if message.contains("No dialog is showing") =>
@@ -57,6 +68,18 @@ impl HandleDialogTool {
     }
 }
 
+/// The URL a main-frame `Page.frameNavigated` (no parent) commits to.
+fn main_frame_url(
+    event: cdp_browser_lite::CdpResult<cdp_browser_lite::WsResponse>,
+) -> Option<String> {
+    let event = event.ok()?;
+    let params = event.params?;
+    let main = params["frame"].get("parentId").is_none();
+    (event.method.as_deref() == Some("Page.frameNavigated") && main)
+        .then(|| params["frame"]["url"].as_str().map(str::to_string))
+        .flatten()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -64,6 +87,48 @@ mod tests {
     use crate::handler::cdp_domains::tests::{
         call, mock_handler, reply_text, spawn_recording_mock,
     };
+
+    /// ISSUE-76 (Chrome): accepting a `beforeunload` returns once the main
+    /// frame committed the navigation it allowed (a navigation right after
+    /// met the dialog again), naming the URL; an iframe's commit does not
+    /// count.
+    #[tokio::test]
+    async fn accepted_beforeunload_waits_for_the_main_frame() {
+        use crate::handler::cdp_domains::tests::fire_events_after;
+        // Given a page asking before it unloads, whose navigation commits
+        // (after an iframe's) once the dialog is answered
+        let mock = spawn_recording_mock().await;
+        let handler = mock_handler(mock.http_port);
+        let session = handler.session(None).await.unwrap();
+        session.target(None).await.unwrap();
+        let leave = json!({"type": "beforeunload", "message": ""});
+        session.dialog_state.lock().await.open = Some(dialogs::OpenDialog::from_chrome(&leave));
+        fire_events_after(
+            mock,
+            "Page.handleJavaScriptDialog",
+            vec![
+                (
+                    "Page.frameNavigated",
+                    json!({"frame": {"id": "C", "parentId": "F", "url": "http://a/ad"}}),
+                ),
+                (
+                    "Page.frameNavigated",
+                    json!({"frame": {"id": "F", "url": "http://a/next"}}),
+                ),
+            ],
+        );
+        // When it is accepted
+        let reply =
+            HandleDialogTool::handle(call("handle_dialog", json!({"accept": true})), &handler)
+                .await
+                .unwrap();
+        // Then the reply names the page's new URL
+        let text = reply_text(&reply);
+        assert!(
+            text.ends_with("The tab navigated to http://a/next."),
+            "{text}"
+        );
+    }
 
     /// AUD-EV-05: while a dialog is open, page tools fail at once naming it
     /// (nothing is sent); handle_dialog closes it and they work again.
