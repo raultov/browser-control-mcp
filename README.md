@@ -117,11 +117,11 @@ see the note.
 | `open_instance` | ✓ | partial | `features`, `copy_cookies` and `source_profile` are Chrome only |
 | `close_instance` | ✓ | ✓ | |
 | `list_instances` | ✓ | ✓ | each instance reports its `browser` and `capabilities` |
-| `restart_browser` | ✓ | ✓ | was `restart_chrome`; refused on a Chrome already running on the port (attached, not launched by the server) |
+| `restart_browser` | ✓ | ✓ | was `restart_chrome`; refused on a Chrome already running on the port (attached, not launched by the server); the new browser's first page is registered as a tab |
 | `stop_browser` | ✓ | ✓ | was `stop_chrome`; on an attached Chrome or Firefox it only disconnects (Firefox: ends the session), the browser keeps running and the reply says so |
 | `open_tab` | ✓ | ✓ | the new tab becomes the active one, in front |
-| `close_tab` | ✓ | ✓ | the next active tab is brought to the front |
-| `list_tabs` | ✓ | ✓ | |
+| `close_tab` | ✓ | ✓ | `tab_id` defaults to the active tab; the most recently active open tab (else the newest) becomes active and is brought to the front |
+| `list_tabs` | ✓ | ✓ | tabs in the order they were opened (`tab-2` before `tab-10`) |
 | `switch_tab` | ✓ | ✓ | |
 | `navigate` | ✓ | ✓ | `history: "back"` or `"forward"` instead of `url` moves one entry in the tab's history and waits for the page to load (also when it comes from the back-forward cache, which fires no `load`); at either end it fails without moving; a URL the browser saves instead of opening (a download: `Content-Disposition: attachment`, or a type such as CSV) fails saying so, and the tab stays where it was; a page behind HTTP authentication (401) fails at once naming its scheme and realm and how to log in (credentials in the URL, `http://user:password@host/path`, which the browser keeps for the session); a page that pauses at a breakpoint or opens a dialog while loading fails at once naming it (see `resume`, `handle_dialog`) |
 | `reload` | ✓ | ✓ | a pause, a dialog or HTTP authentication while loading fails at once, as with `navigate` |

@@ -89,11 +89,33 @@ impl RestartChromeTool {
             ));
         }
 
+        drop(manager);
         record_features(handler, tool.instance_id.as_deref(), &features);
+        first_tab_registered(&session).await;
         Ok(CallToolResult::text_content(vec![
             format!("Chrome instance restarted successfully. Features: {summary}.").into(),
         ]))
     }
+}
+
+/// How long `restart_browser` waits for the new browser's first page to be
+/// registered.
+const FIRST_TAB_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Registers the new browser's first page as a tab, as on Firefox: the
+/// session connection starts target discovery; waits (at most
+/// [`FIRST_TAB_WAIT`]) for it. Best effort: the restart itself succeeded,
+/// and the next tool connects anyway.
+async fn first_tab_registered(session: &crate::handler::BrowserSession) {
+    if session.get_or_connect().await.is_err() {
+        return;
+    }
+    let tabs = &session.tabs;
+    let deadline = tokio::time::Instant::now() + FIRST_TAB_WAIT;
+    while crate::util::sync::read(tabs).tabs.is_empty() && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    super::tab_lifecycle::registrations_done(tabs, FIRST_TAB_WAIT).await;
 }
 
 /// Updates the features of the instance's registry descriptor, if any.

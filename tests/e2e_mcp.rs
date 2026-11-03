@@ -458,6 +458,24 @@ mod e2e {
             (
                 "ISSUE-68 the next active tab is in front",
                 "evaluate_js",
+                visible.clone(),
+                "\"visible\"",
+            ),
+            (
+                "ISSUE-69 open another tab to close",
+                "open_tab",
+                json!({"instance_id": i, "label": "closing69"}),
+                "tab_id",
+            ),
+            (
+                "ISSUE-69 close_tab without tab_id closes the active tab",
+                "close_tab",
+                json!({"instance_id": i}),
+                "\"closed_tab_id\":\"$TAB\"",
+            ),
+            (
+                "ISSUE-69 the most recently active tab is back in front",
+                "evaluate_js",
                 visible,
                 "\"visible\"",
             ),

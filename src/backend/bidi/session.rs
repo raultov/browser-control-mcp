@@ -68,6 +68,9 @@ const FRONT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 pub(crate) struct FirefoxTabs {
     pub(crate) tabs: BTreeMap<String, FirefoxTab>,
     pub(crate) active: Option<String>,
+    /// Tabs in the order they were made active (most recent last), for
+    /// the tab that becomes active when the active one closes.
+    recent: Vec<String>,
     counter: usize,
     /// Child context → parent context (iframes).
     pub(crate) parents: HashMap<String, String>,
@@ -121,8 +124,17 @@ impl FirefoxTabs {
             routes: Default::default(),
         };
         self.tabs.insert(id.clone(), entry);
-        self.active.get_or_insert_with(|| id.clone());
+        if self.active.is_none() {
+            self.activate(&id);
+        }
         Ok(id)
+    }
+
+    /// Makes tab `id` the one the tools act on.
+    pub(crate) fn activate(&mut self, id: &str) {
+        self.recent.retain(|seen| seen != id);
+        self.recent.push(id.to_string());
+        self.active = Some(id.to_string());
     }
 
     /// Whether a new tab labelled `label` may be registered (under the cap,
@@ -148,6 +160,7 @@ impl FirefoxTabs {
     pub(crate) fn clear(&mut self) {
         self.tabs.clear();
         self.parents.clear();
+        self.recent.clear();
         self.active = None;
     }
 
@@ -167,8 +180,11 @@ impl FirefoxTabs {
     /// Forgets a tab; the active tab falls back to another one.
     pub(crate) fn remove(&mut self, id: &str) -> Option<FirefoxTab> {
         let removed = self.tabs.remove(id);
+        self.recent.retain(|seen| seen != id);
         if self.active.as_deref() == Some(id) {
-            self.active = self.tabs.keys().next_back().cloned();
+            let open = self.tabs.keys();
+            self.active =
+                crate::handler::chrome_instance::tab_registry::next_active(&self.recent, open);
         }
         removed
     }

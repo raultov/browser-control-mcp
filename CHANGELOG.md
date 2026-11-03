@@ -33,6 +33,16 @@ from a copy of its code: entries describe the differences from that release.
     (Firefox failed with `wrongState`, Chrome answered either way).
   - Firefox RDP failures say `Firefox (RDP) protocol error in <request>`;
     they were labelled BiDi.
+- Tab tools behave the same on both browsers (#69):
+  - `close_tab` without `tab_id` closes the active tab, as every other tool
+    omitting it acts on it (it failed with `missing field \`tab_id\``).
+  - Closing the active tab activates the most recently active tab still
+    open, else the newest one (by number: `tab-10` after `tab-9`). Chrome
+    picked an arbitrary tab when none had been active, Firefox the highest
+    id as text.
+  - `list_tabs` lists the tabs by number on both browsers.
+  - After `restart_browser`, Chrome registers the new browser's first tab
+    (it listed none until the next call), as Firefox does.
 
 ## [0.11.0-beta.17] - 2026-11-02
 

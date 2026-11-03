@@ -179,12 +179,7 @@ impl TabRegistry {
         let removed = self.tabs.remove(tab_id);
         self.recent.retain(|id| id != tab_id);
         if removed.is_some() && self.active_tab_id.as_deref() == Some(tab_id) {
-            // The most recently used remaining tab, else any remaining one.
-            self.active_tab_id = self
-                .recent
-                .last()
-                .cloned()
-                .or_else(|| self.tabs.keys().next().cloned());
+            self.active_tab_id = next_active(&self.recent, self.tabs.keys());
         }
         removed
     }
@@ -210,6 +205,30 @@ impl TabRegistry {
     }
 }
 
+/// The number of tab id `tab-N` (0 for any other id), so tabs sort in the
+/// order they were opened (`tab-10` after `tab-9`).
+pub(crate) fn tab_number(id: &str) -> u64 {
+    id.strip_prefix("tab-")
+        .and_then(|n| n.parse().ok())
+        .unwrap_or_default()
+}
+
+/// The tab that becomes active once the active one closed (the same rule on
+/// every browser): the most recently active one still `open` (`recent`,
+/// oldest first), else the newest open one.
+pub(crate) fn next_active<'a>(
+    recent: &[String],
+    open: impl Iterator<Item = &'a String>,
+) -> Option<String> {
+    let open: Vec<&String> = open.collect();
+    recent
+        .iter()
+        .rev()
+        .find(|id| open.contains(id))
+        .or_else(|| open.iter().copied().max_by_key(|id| tab_number(id)))
+        .cloned()
+}
+
 /// Refuses `label` if a tab other than `except` uses it; `labels` yields
 /// `(tab id, label)` (shared by the Chrome and Firefox registries).
 pub(crate) fn check_label<'a>(
@@ -229,6 +248,50 @@ pub(crate) fn check_label<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ISSUE-69: one rule for the next active tab on every browser: the
+    /// most recently active one still open, else the newest (by number:
+    /// tab-10 is newer than tab-9); and tabs are listed in that order.
+    #[test]
+    fn next_active_and_tab_order_are_shared() {
+        let ids = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let open = ids(&["tab-9", "tab-2", "tab-10"]);
+        // The most recently active open tab wins
+        let recent = ids(&["tab-9", "tab-2"]);
+        assert_eq!(next_active(&recent, open.iter()).as_deref(), Some("tab-2"));
+        // Without one, the newest
+        assert_eq!(next_active(&[], open.iter()).as_deref(), Some("tab-10"));
+        assert_eq!(next_active(&[], std::iter::empty()), None);
+        // And the order is the tabs' numbers
+        let mut sorted = open.clone();
+        sorted.sort_by_key(|id| tab_number(id));
+        assert_eq!(sorted, ids(&["tab-2", "tab-9", "tab-10"]));
+    }
+
+    /// ISSUE-69 (Chrome): closing the active opener of tabs a click opened
+    /// (never active) activates the newest one, as on Firefox.
+    #[tokio::test]
+    async fn closing_an_opener_activates_the_newest_tab() {
+        // Given tab-1 active and tab-2..tab-4 never made active
+        let port = crate::handler::cdp_domains::tests::spawn_mock_chrome_server().await;
+        let address = format!("127.0.0.1:{port}");
+        let timeout = std::time::Duration::from_secs(5);
+        let browser = cdp_browser_lite::BrowserClient::connect(&address, timeout)
+            .await
+            .unwrap();
+        let mut registry = TabRegistry::new(16);
+        for _ in 0..4 {
+            let tab = browser.new_tab("about:blank").await.unwrap();
+            registry
+                .register_tab(tab, NewTab::new(None, "about:blank"), false)
+                .unwrap();
+        }
+        registry.switch_tab("tab-1").unwrap();
+        // When tab-1 is closed
+        registry.remove_tab("tab-1");
+        // Then tab-4 becomes active
+        assert_eq!(registry.active_tab_id.as_deref(), Some("tab-4"));
+    }
 
     /// FIX-08: Closing the active tab activates the most recently used one.
     #[tokio::test]

@@ -907,7 +907,7 @@ pub(crate) async fn open_tab(params: CallToolRequestParams, handler: &McpHandler
         }
     };
     // The browser shows the new tab: it becomes the tab the tools act on.
-    write(&session.tabs).active = Some(tab_id.clone());
+    write(&session.tabs).activate(&tab_id);
     super::session::front_active(&session.tabs).await;
     // Watched before it loads anything, so the first WebSocket frames count.
     if let Ok((_, entry)) = session.tab(Some(&tab_id)).await {
@@ -937,7 +937,15 @@ pub(crate) async fn open_tab(params: CallToolRequestParams, handler: &McpHandler
 pub(crate) async fn close_tab(params: CallToolRequestParams, handler: &McpHandler) -> ToolResult {
     let args: crate::handler::chrome_instance::close_tab::CloseTabTool = parse_args(params)?;
     let session = handler.firefox(args.instance_id.as_deref()).await?;
-    let (id, tab) = session.tab(Some(&args.tab_id)).await?;
+    let (id, tab) = match args.tab_id.as_deref() {
+        Some(tab_id) => session.tab(Some(tab_id)).await?,
+        None if read(&session.tabs).active.is_none() => {
+            return Err(CallToolError::from_message(
+                crate::handler::chrome_instance::close_tab::NO_TAB,
+            ));
+        }
+        None => session.tab(None).await?,
+    };
     // Forgotten only once Firefox closed it: a tab whose close failed
     // stays reachable.
     tab.tab
@@ -959,9 +967,10 @@ pub(crate) async fn list_tabs(params: CallToolRequestParams, handler: &McpHandle
     let session = handler.firefox(ids.instance_id.as_deref()).await?;
     session.browser().await?;
     let tabs = read(&session.tabs);
-    let rows: Vec<Value> = tabs
-        .tabs
-        .iter()
+    let mut entries: Vec<_> = tabs.tabs.iter().collect();
+    entries.sort_by_key(|(id, _)| crate::handler::chrome_instance::tab_registry::tab_number(id));
+    let rows: Vec<Value> = entries
+        .into_iter()
         .map(|(id, t)| json!({"tab_id": id, "label": t.label, "target_id": t.tab.context_id(), "url": t.url}))
         .collect();
     Ok(text(
@@ -974,7 +983,7 @@ pub(crate) async fn switch_tab(params: CallToolRequestParams, handler: &McpHandl
     let args: switch_tab::SwitchTabTool = parse_args(params)?;
     let session = handler.firefox(args.instance_id.as_deref()).await?;
     let (id, tab) = session.tab(Some(&args.tab_id)).await?;
-    write(&session.tabs).active = Some(id.clone());
+    write(&session.tabs).activate(&id);
     let activate = args.activate.unwrap_or(true);
     if activate {
         tab.tab
@@ -2536,6 +2545,42 @@ mod tests {
         let session = handler.firefox(None).await.unwrap();
         assert_eq!(read(&session.tabs).active.as_deref(), Some("tab-1"));
         assert_eq!(activated(&mock).last(), Some(&first));
+        ts::stop(&handler).await;
+    }
+
+    /// ISSUE-69 (Firefox): close_tab without tab_id closes the active tab,
+    /// and the next active one is the most recently active (tab-2, not the
+    /// highest id), as on Chrome; list_tabs lists them by number.
+    #[tokio::test]
+    async fn close_tab_defaults_to_the_active_tab() {
+        // Given tab-1..tab-3, used in the order 1, 2, 3, 2
+        let mock = MockFirefox::start(false).await.unwrap();
+        let handler = ts::handler(&mock);
+        for _ in 0..2 {
+            open_tab(call("open_tab", json!({})), &handler)
+                .await
+                .unwrap();
+        }
+        let to = |id: &str| call("switch_tab", json!({"tab_id": id}));
+        switch_tab(to("tab-2"), &handler).await.unwrap();
+        // When close_tab runs without tab_id
+        let reply = close_tab(call("close_tab", json!({})), &handler).await;
+        // Then tab-2 is closed and tab-3, used before it, is active
+        let body = ts::json_of(&reply.unwrap());
+        assert_eq!(body["closed_tab_id"], "tab-2");
+        assert_eq!(body["active_tab_id"], "tab-3");
+        let listed = ts::json_of(
+            &list_tabs(call("list_tabs", json!({})), &handler)
+                .await
+                .unwrap(),
+        );
+        let ids: Vec<&str> = listed["tabs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|t| t["tab_id"].as_str())
+            .collect();
+        assert_eq!(ids, ["tab-1", "tab-3"]);
         ts::stop(&handler).await;
     }
 

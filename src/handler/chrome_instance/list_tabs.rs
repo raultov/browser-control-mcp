@@ -38,9 +38,10 @@ impl ListTabsTool {
         }
         let registry = crate::util::sync::read(&session.tabs);
 
-        let tabs: Vec<serde_json::Value> = registry
-            .tabs
-            .iter()
+        let mut entries: Vec<_> = registry.tabs.iter().collect();
+        entries.sort_by_key(|(id, _)| super::tab_registry::tab_number(id));
+        let tabs: Vec<serde_json::Value> = entries
+            .into_iter()
             .map(|(id, entry)| {
                 serde_json::json!({
                     "tab_id": id,
