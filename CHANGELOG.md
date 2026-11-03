@@ -10,6 +10,13 @@ from a copy of its code: entries describe the differences from that release.
 
 ## [Unreleased]
 
+### Fixed
+
+- Chrome: `emulate` measures what the page sees once a resize (or a reset)
+  landed: the next `resize` event or two animation frames, at most 500 ms.
+  Chrome answers the override before the renderer resizes, so the reply
+  could hold the previous size on a fresh instance. (#74)
+
 ## [0.11.0-beta.17] - 2026-11-02
 
 Public **BETA**. Fixes found probing the debugger, tab and raw protocol tools

@@ -230,6 +230,17 @@ const EMULATED: &str = "({ width: innerWidth, height: innerHeight, device_pixel_
     print: matchMedia('print').matches, touch: navigator.maxTouchPoints > 0, user_agent: navigator.userAgent, \
     locale: Intl.DateTimeFormat().resolvedOptions().locale, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone })";
 
+/// `measure` (an expression, maybe a promise) once a resize has landed: the
+/// next `resize` event or two animation frames, at most 500 ms (a tab in
+/// the background runs no frames).
+fn after_resize(measure: &str) -> String {
+    format!(
+        "(async () => {{ await new Promise(done => {{ addEventListener('resize', done, {{ once: true }}); \
+         requestAnimationFrame(() => requestAnimationFrame(done)); setTimeout(done, 500); }}); \
+         return await ({measure}); }})()"
+    )
+}
+
 /// The position the page reads (`{latitude, longitude, accuracy}`, or
 /// `{error}`), at most 3 s.
 const GEOLOCATED: &str = "Promise.race([new Promise(resolve => navigator.geolocation.getCurrentPosition( \
@@ -591,9 +602,13 @@ impl EmulateTool {
         // runs no microtask while the page is paused in the debugger, so it
         // is left out then (ISSUE-64).
         let paused = target.is_paused().await;
-        let (expression, awaited) = match paused {
-            true => (EMULATED.to_string(), false),
-            false => (args.measure(), args.geolocation.is_some()),
+        let resized = args.sets_viewport() || args.resets();
+        let (expression, awaited) = match (paused, resized) {
+            (true, _) => (EMULATED.to_string(), false),
+            // Chrome answers the override before the renderer resized: the
+            // page is measured once it did (ISSUE-74).
+            (false, true) => (after_resize(&args.measure()), true),
+            (false, false) => (args.measure(), args.geolocation.is_some()),
         };
         let read =
             json!({"expression": expression, "awaitPromise": awaited, "returnByValue": true});
@@ -655,6 +670,42 @@ mod tests {
         );
         let text = reply_text(&reply);
         assert!(text.contains("paused in the debugger"), "{text}");
+    }
+
+    /// ISSUE-74 (Chrome): a call that resizes the viewport (or resets it)
+    /// measures what the page sees once the resize landed: Chrome answers
+    /// the override before the renderer resized, so the reply could hold
+    /// the previous size. Other options are measured at once.
+    #[tokio::test]
+    async fn a_resize_is_measured_once_it_landed() {
+        use crate::handler::cdp_domains::tests::{call, mock_handler, spawn_recording_mock};
+        for (args, waits) in [
+            (json!({"width": 400, "height": 300}), true),
+            (json!({"reset": true}), true),
+            (json!({"color_scheme": "dark"}), false),
+        ] {
+            // Given a Chrome tab
+            let mock = spawn_recording_mock().await;
+            mock.respond_with(
+                "Runtime.evaluate",
+                |_| json!({"result": {"result": {"type": "object", "value": {"width": 400}}}}),
+            );
+            let handler = mock_handler(mock.http_port);
+            // When emulate runs
+            EmulateTool::handle(call("emulate", args.clone()), &handler)
+                .await
+                .unwrap();
+            // Then the measure waits for the resize only when it resized
+            let reads = mock.commands_named("Runtime.evaluate");
+            let read = &reads.last().unwrap().params;
+            let expression = read["expression"].as_str().unwrap();
+            assert_eq!(
+                expression.contains("requestAnimationFrame"),
+                waits,
+                "{args}"
+            );
+            assert_eq!(read["awaitPromise"] == json!(true), waits, "{args}");
+        }
     }
 
     /// ISSUE-9: options that make no sense are refused before any browser
