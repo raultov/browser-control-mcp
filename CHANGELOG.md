@@ -10,6 +10,20 @@ from a copy of its code: entries describe the differences from that release.
 
 ## [Unreleased]
 
+## [0.11.0-beta.18] - 2026-11-03
+
+Public **BETA**. Consistency fixes on both browsers. `webmcp_cancel_invocation`
+cancels a pending WebMCP invocation; `webmcp_invoke_tool` waits 10 s by
+default (`timeout_ms`), takes no `frameId` when one frame has the tool, and
+`webmcp_list_tools` is compact. Tab tools behave the same on Chrome and
+Firefox (`close_tab` defaults to the active tab, one rule for the next active
+tab, `list_tabs` in tab order, Chrome registers its first tab after
+`restart_browser`). Chrome `search_scripts` no longer counts or searches the
+server's snippets or a previous page's scripts; `resume` and the other
+debugger tools word "not paused" the same on both browsers. Chrome `emulate`
+measures the page once a resize landed. Behaviour changes: `webmcp_list_tools`
+answers `{frameId, tools}`; `webmcp_invoke_tool` waits 10 s instead of 30 s.
+
 ### Added
 
 - `webmcp_cancel_invocation` (`--enable-webmcp`, Chrome) cancels a pending
