@@ -10,6 +10,24 @@ from a copy of its code: entries describe the differences from that release.
 
 ## [Unreleased]
 
+## [0.11.0-beta.19] - 2026-11-03
+
+Public **BETA**. Downloads are saved per instance and reported on both
+browsers: an input action that downloads a file names the saved file,
+`list_downloads` lists them, and `--downloads-dir` keeps them after the
+instance closes. `get_network_logs` shows what it hid: sizes of bodies over
+2 MB, redirect hops, CORS reasons, streams the page closed, and on Firefox
+request types and bodies. Chrome watches dedicated workers (their requests
+and console). Accepting a `beforeunload` waits for the navigation it allowed.
+`snapshot` names tree items and shows descriptions, pressed, current and live
+states; console counters and timers, `(in promise)` rejections and prompt
+defaults behave the same on both browsers; a newline in a textarea is the
+Enter key, `scroll` can turn the mouse wheel, and input actions note file
+choosers and same-document URL changes. Behaviour changes: Chrome intercepts
+file choosers (none opens on screen); `redirects` in `get_network_logs` are
+`{url, status, location}` objects; an unset `same_site` is `null` on
+Firefox too.
+
 ### Added
 
 - Downloads are saved and reported on both browsers (#77). A click that
