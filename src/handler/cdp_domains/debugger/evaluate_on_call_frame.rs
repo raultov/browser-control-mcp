@@ -38,11 +38,7 @@ impl EvaluateOnCallFrameTool {
             .await
             .paused_call_frame_id
             .clone()
-            .ok_or_else(|| {
-                CallToolError::from_message(
-                    "No active call frame ID stored in debugger state.".to_string(),
-                )
-            })?;
+            .ok_or_else(|| CallToolError::from_message(debugging::NOT_PAUSED))?;
 
         let target = session.target(args.tab_id.clone()).await?;
         let paused = debugger_state.lock().await.paused_target(&target);
@@ -79,7 +75,7 @@ mod tests {
         let result = EvaluateOnCallFrameTool::handle(params, &handler).await;
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert!(err.to_string().contains("No active call frame ID stored"));
+        assert_eq!(err.to_string(), crate::handler::debugging::NOT_PAUSED);
     }
 
     /// Registers a real tab over the mock DevTools server so that explicit
@@ -136,7 +132,7 @@ mod tests {
             .await
             .unwrap_err();
         assert!(
-            err.to_string().contains("No active call frame ID stored"),
+            err.to_string() == crate::handler::debugging::NOT_PAUSED,
             "must read the TAB state (which has no paused frame), got: {err}"
         );
     }

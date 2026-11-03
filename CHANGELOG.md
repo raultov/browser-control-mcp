@@ -16,6 +16,23 @@ from a copy of its code: entries describe the differences from that release.
   landed: the next `resize` event or two animation frames, at most 500 ms.
   Chrome answers the override before the renderer resizes, so the reply
   could hold the previous size on a fresh instance. (#74)
+- Debugger tools no longer leak internals (#66):
+  - Chrome: `search_scripts` neither counts nor searches the server's own
+    snippets nor the scripts of a page the tab left. Its script list was
+    never cleared on navigation: after a change of process Chrome reuses
+    script ids, so a stale entry named the server's outline snippet, and a
+    page with 5 scripts counted 38. The list is now cleared when the page's
+    contexts are, and scripts created over the protocol (no URL and no
+    stack) are left out; a page's own `eval` stays.
+  - `search_scripts` with `debug` answers JSON (`{scripts, errors}`), not
+    Rust's `Debug` format.
+  - Chrome `evaluate_on_call_frame` on a page that is not paused fails with
+    `the debugger is not paused`, as on Firefox and as `step_over`.
+  - `resume` on a page that is not paused answers `The debugger was not
+    paused: nothing to resume.` with `{paused: false}` on both browsers
+    (Firefox failed with `wrongState`, Chrome answered either way).
+  - Firefox RDP failures say `Firefox (RDP) protocol error in <request>`;
+    they were labelled BiDi.
 
 ## [0.11.0-beta.17] - 2026-11-02
 

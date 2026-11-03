@@ -63,6 +63,11 @@ pub(crate) async fn process_debugger_event_in(
     };
     match method {
         Some("Debugger.scriptParsed") => on_script_parsed(&event.params, &mut st, number),
+        // The document (of the tab, or of this frame) was replaced: its
+        // scripts are gone, and Chrome may reuse their ids (ISSUE-66).
+        Some("Runtime.executionContextsCleared") => st
+            .scripts
+            .retain(|id, _| frames::split_script_id(id).0 != number),
         Some("Debugger.paused") => on_paused(&event.params, &mut st, frame),
         Some("Debugger.resumed") if st.paused_frame.as_deref() == frame => {
             st.paused_call_frame_id = None;
@@ -91,6 +96,14 @@ fn on_script_parsed(
     ) else {
         return;
     };
+    // A script a protocol client created (the server's snippets, the
+    // agent's evaluate_js) has no URL and no stack: not the page's, so not
+    // kept (ISSUE-66). A page's `eval` has the stack that ran it.
+    let url = extract_from_value(params, "url").unwrap_or_default();
+    let stack = params.as_ref().and_then(|p| p.get("stackTrace"));
+    if url.is_empty() && stack.is_none_or(serde_json::Value::is_null) {
+        return;
+    }
     let id = number.map_or_else(
         || script_id.to_string(),
         |number| frames::frame_script_id(number, script_id),
@@ -100,9 +113,7 @@ fn on_script_parsed(
         start_line: position(params, "startLine"),
         start_column: position(params, "startColumn"),
         end_line: position(params, "endLine"),
-        url: extract_from_value(params, "url")
-            .unwrap_or_default()
-            .to_string(),
+        url: url.to_string(),
     };
     st.scripts.insert(id, info);
 }
@@ -252,9 +263,21 @@ pub(crate) fn start_debugger_listener_in(
             }
         }
     };
-    crate::handler::cdp_domains::event_pump::spawn_state_listener(
-        target, "Debugger", state, process,
-    )
+    // Every event of the target, in order, so a navigation's
+    // `Runtime.executionContextsCleared` comes before its new scripts.
+    let relevant = move |event: WsResponse, state| {
+        let wanted = event
+            .method
+            .as_deref()
+            .is_some_and(|m| m.starts_with("Debugger.") || m == "Runtime.executionContextsCleared");
+        let processing = wanted.then(|| process(event, state));
+        async move {
+            if let Some(processing) = processing {
+                processing.await;
+            }
+        }
+    };
+    crate::handler::cdp_domains::event_pump::spawn_state_listener(target, "", state, relevant)
 }
 
 #[cfg(test)]
@@ -271,6 +294,7 @@ pub(crate) mod tests {
             json!({
                 "scriptId": "42",
                 "hash": "abc123",
+                "url": "http://a/app.js",
                 "startLine": "10",
                 "startColumn": "5"
             }),
@@ -293,7 +317,8 @@ pub(crate) mod tests {
             "Debugger.scriptParsed",
             json!({
                 "scriptId": "1",
-                "hash": "def456"
+                "hash": "def456",
+                "url": "http://a/app.js"
             }),
         );
 
@@ -420,6 +445,7 @@ pub(crate) mod tests {
                 json!({
                     "scriptId": format!("script-{}", i),
                     "hash": format!("hash-{}", i),
+                    "url": "http://a/app.js",
                     "startLine": i.to_string(),
                     "startColumn": "0"
                 }),
@@ -466,6 +492,58 @@ pub(crate) mod tests {
         );
     }
 
+    /// ISSUE-66 (Chrome): the scripts the server (or the agent's
+    /// evaluate_js) creates over CDP, with no URL and no stack, are not
+    /// kept: search_scripts neither counts nor searches them. A page's own
+    /// `eval` (no URL, but a stack) and a script with a URL are kept.
+    #[tokio::test]
+    async fn the_servers_own_scripts_are_not_kept() {
+        // Given a snippet, a page eval and a script file
+        let state = Arc::new(Mutex::new(DebuggerState::default()));
+        let stack = json!({"callFrames": [{"functionName": "onclick", "scriptId": "3", "url": "http://a/", "lineNumber": 0, "columnNumber": 0}]});
+        for parsed in [
+            json!({"scriptId": "1", "hash": "h1", "url": ""}),
+            json!({"scriptId": "2", "hash": "h2", "url": "", "stackTrace": stack}),
+            json!({"scriptId": "3", "hash": "h3", "url": "http://a/app.js"}),
+        ] {
+            // When Chrome announces them
+            process_debugger_event(&make_event("Debugger.scriptParsed", parsed), &state).await;
+        }
+        // Then only the page's scripts are kept
+        let st = state.lock().await;
+        let mut kept: Vec<&String> = st.scripts.keys().collect();
+        kept.sort();
+        assert_eq!(kept, ["2", "3"]);
+    }
+
+    /// ISSUE-66 (Chrome): a navigation clears the scripts of the document
+    /// it replaced: after a change of process Chrome reuses their ids, so a
+    /// kept one named another script (the server's snippet, found by
+    /// search_scripts), and the count held the first page's scripts. The
+    /// scripts of a frame of another origin stay (its session clears them).
+    #[tokio::test]
+    async fn a_navigation_clears_the_documents_scripts() {
+        // Given a script of the page and one of frame 2
+        let state = Arc::new(Mutex::new(DebuggerState::default()));
+        let parsed = json!({"scriptId": "6", "hash": "h", "url": "chrome://new-tab-page/app.js"});
+        process_debugger_event(&make_event("Debugger.scriptParsed", parsed), &state).await;
+        let framed = ScriptInfo {
+            hash: "h".into(),
+            start_line: 0,
+            start_column: 0,
+            end_line: 0,
+            url: "http://b/inner.js".into(),
+        };
+        state.lock().await.scripts.insert("2.7".into(), framed);
+        // When the page's contexts are cleared (it navigated)
+        let cleared = make_event("Runtime.executionContextsCleared", json!({}));
+        process_debugger_event(&cleared, &state).await;
+        // Then only the frame's script is left
+        let st = state.lock().await;
+        let kept: Vec<&String> = st.scripts.keys().collect();
+        assert_eq!(kept, ["2.7"]);
+    }
+
     /// FIX-01: Script start positions are read from integers.
     #[tokio::test]
     async fn script_positions_read_from_integers() {
@@ -473,7 +551,7 @@ pub(crate) mod tests {
         let state = Arc::new(Mutex::new(DebuggerState::default()));
         let event = make_event(
             "Debugger.scriptParsed",
-            serde_json::json!({"scriptId": "7", "hash": "h", "startLine": 12, "startColumn": 4}),
+            serde_json::json!({"scriptId": "7", "hash": "h", "url": "http://a/app.js", "startLine": 12, "startColumn": 4}),
         );
         // When it is processed
         process_debugger_event(&event, &state).await;

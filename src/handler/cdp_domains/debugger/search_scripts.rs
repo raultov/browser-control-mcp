@@ -175,7 +175,8 @@ impl SearchReport {
     /// The tool's text output.
     pub(crate) fn text(&self, query: &str) -> String {
         if query == "debug" {
-            format!("Results: {:?}\nErrors: {:?}", self.results, self.errors)
+            let report = json!({"scripts": self.results, "errors": self.errors});
+            serde_json::to_string_pretty(&report).unwrap_or_default()
         } else if self.results.is_empty() && self.errors.is_empty() {
             "No matches found.".to_string()
         } else if self.results.is_empty() {
@@ -189,6 +190,28 @@ impl SearchReport {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ISSUE-66: the `debug` report is JSON, as every other reply (it was
+    /// Rust's `Debug` format: `Object {"id": String("5")}`).
+    #[test]
+    fn debug_report_is_json() {
+        // Given one script read and one that failed
+        let mut report = SearchReport::default();
+        let script = ScriptText {
+            id: "5",
+            hash: "h",
+            source: "let a = 1;",
+            start: (0, 0),
+        };
+        report.add_source("debug", &script);
+        report.add_error("6", "boom".into());
+        // When the report is written
+        let text = report.text("debug");
+        // Then it is JSON with the lengths and errors
+        let body: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(body["scripts"], json!([{"id": "5", "source_len": 10}]));
+        assert_eq!(body["errors"], json!(["Err for 6: boom"]));
+    }
     use crate::handler::ScriptInfo;
     use crate::handler::cdp_domains::tests::spawn_mock_chrome_server;
     use crate::handler::chrome_instance::MockChromeManager;

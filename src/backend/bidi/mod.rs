@@ -42,7 +42,27 @@ pub(crate) fn lifecycle_error(error: bidi_browser_lite::BrowserError) -> Backend
 
 /// A BiDi command error as a tool error.
 pub(crate) fn protocol_error(method: &str, error: &bidi_browser_lite::BidiError) -> BackendError {
-    let message = match error {
+    BackendError::Protocol {
+        browser: BrowserKind::Firefox,
+        method: method.to_string(),
+        message: error_message(error),
+    }
+}
+
+/// The error of a failed RDP `request` (Firefox's debugger protocol).
+pub(crate) fn rdp_protocol_error(
+    request: &str,
+    error: &bidi_browser_lite::BidiError,
+) -> BackendError {
+    BackendError::RdpProtocol {
+        request: request.to_string(),
+        message: error_message(error),
+    }
+}
+
+/// What a protocol failure says, with advice for a dropped connection.
+fn error_message(error: &bidi_browser_lite::BidiError) -> String {
+    match error {
         // A message over the client's 256 MB limit (bidi-lite's
         // MAX_MESSAGE_SIZE) closes the WebSocket; the session reconnects on
         // the next call.
@@ -50,11 +70,6 @@ pub(crate) fn protocol_error(method: &str, error: &bidi_browser_lite::BidiError)
             "the connection to Firefox dropped. A reply over 256 MB (a huge evaluate_js result or page) closes it: keep results small (slice strings, query the DOM). The next call reconnects; tab ids are re-assigned (call list_tabs).".to_string()
         }
         other => other.to_string(),
-    };
-    BackendError::Protocol {
-        browser: BrowserKind::Firefox,
-        method: method.to_string(),
-        message,
     }
 }
 

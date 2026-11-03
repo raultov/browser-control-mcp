@@ -39,6 +39,10 @@ impl ResumeTool {
             .await
             .map_err(|e| e.to_string());
         if let Err(e) = resumed {
+            // Nothing paused, nothing pending: the same answer as Firefox.
+            if pause_script.is_none() && e.contains(NOT_PAUSED_REFUSAL) {
+                return Ok(debugging::nothing_to_resume());
+            }
             // Not paused yet (the reload has not reached it): the script
             // stays pending, so the pause still comes and the next resume
             // removes it.
@@ -54,6 +58,9 @@ impl ResumeTool {
         Ok(debugging::resumed(location.as_ref()))
     }
 }
+
+/// How Chrome refuses `Debugger.resume` when nothing is paused.
+const NOT_PAUSED_REFUSAL: &str = "Can only perform operation while paused";
 
 /// Removes the `debugger;` script `pause_on_load` installed, if any, once
 /// its pause was resumed: later navigations must not pause again.
@@ -145,6 +152,30 @@ mod tests {
                 .pause_on_load_script
                 .is_none()
         );
+    }
+
+    /// ISSUE-66 (Chrome): resume on a page that is not paused answers, as
+    /// on Firefox, that there was nothing to resume (`paused: false`), not
+    /// Chrome's raw refusal.
+    #[tokio::test]
+    async fn resume_when_not_paused_says_so() {
+        use crate::handler::cdp_domains::tests::{
+            call, mock_handler, reply_text, spawn_recording_mock,
+        };
+        // Given a Chrome that refuses to resume (nothing is paused)
+        let mock = spawn_recording_mock().await;
+        mock.respond_with("Debugger.resume", |_| {
+            json!({"error": {"code": -32000, "message": "Can only perform operation while paused."}})
+        });
+        let handler = mock_handler(mock.http_port);
+        // When the agent resumes
+        let reply = ResumeTool::handle(call("resume", json!({})), &handler)
+            .await
+            .unwrap();
+        // Then it succeeds saying nothing was paused
+        let text = reply_text(&reply);
+        assert!(text.starts_with(debugging::NOTHING_TO_RESUME), "{text}");
+        assert!(text.contains("\"paused\": false"), "{text}");
     }
 
     /// AUD-DB-05: a resume Chrome refuses (nothing paused yet) keeps the

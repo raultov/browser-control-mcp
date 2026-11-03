@@ -171,7 +171,7 @@ pub(crate) async fn send_rdp_request(
     let reply = rdp
         .request(&to, &args.request_type, rdp_params)
         .await
-        .map_err(|e| super::protocol_error(&format!("RDP {}", args.request_type), &e))?;
+        .map_err(|e| super::rdp_protocol_error(&args.request_type, &e))?;
     Ok(CallToolResult::text_content(vec![
         serde_json::to_string_pretty(&reply.body)
             .unwrap_or_default()

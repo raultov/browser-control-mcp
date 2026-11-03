@@ -156,10 +156,10 @@ see the note.
 | `audit_page` | ✓ | ✓ | `perf` group; accessibility (images without alt, fields, buttons and links without a name, `html lang`, heading order, duplicate ids, broken `aria-labelledby`/`aria-describedby`, `tabindex` > 0, targets under 24×24 px too close to another, text contrast under WCAG AA), SEO (title, meta description, viewport, vague link text, uncrawlable links, canonical, `noindex`) and best practices (doctype and quirks mode, HTTPS, mixed content, distorted images, console errors); the same script on both browsers; each failing check lists its first 10 elements with a snapshot ref, a selector, its start tag and a detail (the contrast ratio, the size...), then the ids that passed or did not apply; `categories` narrows it; not checked: text over background images or gradients, iframes, closed shadow roots, response headers |
 | `set_breakpoint` | ✓ | partial | Firefox: by URL only (no `script_id` / `script_hash`) |
 | `remove_breakpoint` | ✓ | ✓ | |
-| `resume` | ✓ | ✓ | |
+| `resume` | ✓ | ✓ | on a page that is not paused: `The debugger was not paused: nothing to resume.` with `{paused: false}` |
 | `step_over` | ✓ | ✓ | |
 | `evaluate_on_call_frame` | ✓ | ✓ | |
-| `search_scripts` | ✓ | ✓ | a long line's preview is 100 characters on each side of the match; inline scripts and modules included; frames of another origin too (Chrome ids such as `2.17`) |
+| `search_scripts` | ✓ | ✓ | a long line's preview is 100 characters on each side of the match; inline scripts and modules included, the server's own evaluations left out; `debug` answers `{scripts, errors}` as JSON; frames of another origin too (Chrome ids such as `2.17`) |
 | `pause_on_load` | ✓ | ✗ | TODO on Firefox, see [Limitations and TODO](#limitations-and-todo) |
 | `enable_proxy_auth` | ✓ | partial | needs `--proxy-server`; a request the proxy rejects twice is cancelled; untested on Firefox against a real proxy |
 | `send_cdp_command` | ✓ | ✗ | `raw` group; raw Chrome DevTools Protocol; refuses `Network`/`Page`/`Runtime`/`Log`/`Debugger.disable` and `Browser.close`; `Fetch.enable` comes with a note |

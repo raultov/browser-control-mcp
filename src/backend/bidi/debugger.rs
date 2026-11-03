@@ -302,7 +302,12 @@ async fn with_debugger<T>(
 }
 
 fn rdp_error(request: &str, error: &bidi_browser_lite::BidiError) -> BackendError {
-    super::protocol_error(&format!("RDP {request}"), error)
+    super::rdp_protocol_error(request, error)
+}
+
+/// Whether Firefox refused a resume because nothing is paused.
+fn not_paused_refusal(error: &BidiError) -> bool {
+    matches!(error, BidiError::ProtocolError { error, .. } if error == "wrongState")
 }
 
 fn current_pause(entry: &TabDebugger) -> Option<PauseInfo> {
@@ -691,14 +696,24 @@ pub(crate) async fn resume(params: CallToolRequestParams, handler: &McpHandler) 
     let session = handler.firefox(ids.instance_id.as_deref()).await?;
     let location = with_debugger(&session, ids.tab_id.as_deref(), async |entry| {
         let before = current_pause(entry);
-        paused_thread(&entry.debugger, before.as_ref())
+        match paused_thread(&entry.debugger, before.as_ref())
             .resume()
             .await
-            .map_err(|e| rdp_error("resume", &e))?;
-        Ok(next_pause(entry, before.as_ref(), debugging::RESUME_WAIT).await)
+        {
+            Ok(()) => {}
+            // Nothing paused: the same answer as Chrome (ISSUE-66).
+            Err(e) if not_paused_refusal(&e) => return Ok(None),
+            Err(e) => return Err(rdp_error("resume", &e)),
+        }
+        Ok(Some(
+            next_pause(entry, before.as_ref(), debugging::RESUME_WAIT).await,
+        ))
     })
     .await?;
-    Ok(debugging::resumed(location.as_ref()))
+    match location {
+        Some(location) => Ok(debugging::resumed(location.as_ref())),
+        None => Ok(debugging::nothing_to_resume()),
+    }
 }
 
 /// `step_over`: steps, then reports where the thread stopped (0-based).
@@ -1543,6 +1558,32 @@ mod tests {
             panic!("not ended by the dialog");
         };
         assert_eq!(opened.message, "Sure?");
+    }
+
+    /// ISSUE-66 (Firefox): Firefox refusing a resume because nothing is
+    /// paused (`wrongState`) answers as on Chrome; RDP failures are labelled
+    /// RDP, not BiDi.
+    #[test]
+    fn a_resume_refused_when_running_is_not_an_error() {
+        // Given Firefox's refusal, and another RDP failure
+        let refusal = BidiError::ProtocolError {
+            error: "wrongState".into(),
+            message: "Can't resume when debuggee isn't paused. Current state is 'running'".into(),
+            stacktrace: None,
+        };
+        let other = BidiError::ProtocolError {
+            error: "noSuchActor".into(),
+            message: "No such actor".into(),
+            stacktrace: None,
+        };
+        // Then only the refusal means "not paused", and errors say RDP
+        assert!(not_paused_refusal(&refusal));
+        assert!(!not_paused_refusal(&other));
+        let error = rdp_error("resume", &other).to_string();
+        assert!(
+            error.starts_with("Firefox (RDP) protocol error in resume:"),
+            "{error}"
+        );
     }
 
     /// RDP-10: Detaching removes breakpoints first.

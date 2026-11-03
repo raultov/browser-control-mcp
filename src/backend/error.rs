@@ -32,6 +32,15 @@ pub enum BackendError {
         /// What the browser (or the client library) said.
         message: String,
     },
+    /// A Firefox Remote Debugging Protocol request failed (the debugger's
+    /// protocol, not BiDi).
+    #[error("Firefox (RDP) protocol error in {request}: {message}")]
+    RdpProtocol {
+        /// The request type.
+        request: String,
+        /// What Firefox (or the client library) said.
+        message: String,
+    },
     /// The arguments do not make sense for this browser.
     #[error("{0}")]
     InvalidArgument(String),

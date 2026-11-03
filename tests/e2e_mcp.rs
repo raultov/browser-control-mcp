@@ -2123,7 +2123,46 @@ mod e2e {
         steps.extend(async_click_into_breakpoint_steps(&i));
         steps.extend(pause_on_navigate_steps(&i, base));
         steps.extend(loop_breakpoint_steps(&i, base));
+        steps.extend(debugger_wording_steps(&i));
         steps
+    }
+
+    /// ISSUE-66: search_scripts leaves out the server's own snippets (a
+    /// snapshot just ran one), and the debugger tools word "not paused" the
+    /// same on both browsers.
+    fn debugger_wording_steps(i: &Value) -> Vec<Step> {
+        vec![
+            (
+                "ISSUE-66 run the outline",
+                "snapshot",
+                json!({"instance_id": i}),
+                "[ref=e",
+            ),
+            (
+                "ISSUE-66 search_scripts skips the server's snippets",
+                "search_scripts",
+                json!({"instance_id": i, "query": "aria-labelledby"}),
+                "No matches found.",
+            ),
+            (
+                "ISSUE-66 the debug report is JSON",
+                "search_scripts",
+                json!({"instance_id": i, "query": "debug"}),
+                "\"source_len\":",
+            ),
+            (
+                "ISSUE-66 resume when not paused",
+                "resume",
+                json!({"instance_id": i}),
+                "The debugger was not paused: nothing to resume.",
+            ),
+            (
+                "ISSUE-66 evaluate_on_call_frame when not paused",
+                "evaluate_on_call_frame",
+                json!({"instance_id": i, "expression": "1"}),
+                "!the debugger is not paused",
+            ),
+        ]
     }
 
     /// ISSUE-63: a step or resume that stops at the same breakpoint again

@@ -12,6 +12,10 @@ use std::collections::BTreeMap;
 /// The error of a tool that needs a paused debugger.
 pub(crate) const NOT_PAUSED: &str = "the debugger is not paused";
 
+/// The first words of `resume`'s reply when nothing was paused (the same
+/// on every browser: Chrome answers it sometimes, Firefox refuses it).
+pub(crate) const NOTHING_TO_RESUME: &str = "The debugger was not paused: nothing to resume.";
+
 /// How long `step_over` waits for the thread to stop again.
 pub(crate) const STEP_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
 
@@ -186,6 +190,11 @@ pub(crate) fn stepped(location: Option<&PauseLocation>) -> CallToolResult {
 /// `resume`'s reply (`paused` true when it stopped again right away).
 pub(crate) fn resumed(location: Option<&PauseLocation>) -> CallToolResult {
     text("Debugger execution resumed.", &pause_json(location))
+}
+
+/// `resume`'s reply when the page was not paused.
+pub(crate) fn nothing_to_resume() -> CallToolResult {
+    text(NOTHING_TO_RESUME, &pause_json(None))
 }
 
 /// The error of a call the page interrupted by pausing in the debugger (its
