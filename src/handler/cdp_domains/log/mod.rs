@@ -58,9 +58,40 @@ pub(crate) struct LogState {
     /// When the last cross-site document committed (ms since the epoch):
     /// messages of the old site arriving late are dropped.
     cleared_before: Option<f64>,
+    /// Script URLs of the workers watched in their own session (Chrome,
+    /// see `frame_watch`): the tab's `Log` copies of their console messages
+    /// are dropped. At most `frame_watch::MAX_WATCHED` (one per watched
+    /// target).
+    workers: Vec<String>,
 }
 
 impl LogState {
+    /// Notes that the worker running `url` reports its console itself.
+    pub(crate) fn watch_worker(&mut self, url: &str) {
+        self.workers.push(url.to_string());
+    }
+
+    /// Forgets one watch of the worker running `url` (it detached).
+    pub(crate) fn forget_worker(&mut self, url: &str) {
+        if let Some(at) = self.workers.iter().position(|w| w == url) {
+            self.workers.remove(at);
+        }
+    }
+
+    /// Whether a worker running `url` is watched.
+    pub(crate) fn watches_worker(&self, url: &str) -> bool {
+        self.workers.iter().any(|w| w == url)
+    }
+
+    /// Whether `message` is the tab's copy of a watched worker's message.
+    fn is_watched_worker_copy(&self, message: &ConsoleMessage) -> bool {
+        message.source == "worker"
+            && message
+                .url
+                .as_deref()
+                .is_some_and(|url| self.watches_worker(url))
+    }
+
     pub(crate) fn push_message(&mut self, msg: ConsoleMessage) {
         self.push_bounded(bounded(msg));
     }
@@ -142,7 +173,10 @@ pub(crate) async fn process_log_event(event: &WsResponse, state: &Arc<Mutex<LogS
     if let Some(url) = main_frame_commit(method, params) {
         state.lock().await.on_document_committed(url, None);
     } else if let Some(message) = console_message(method, params) {
-        state.lock().await.push_message(message);
+        let mut state = state.lock().await;
+        if !state.is_watched_worker_copy(&message) {
+            state.push_message(message);
+        }
     }
 }
 
@@ -366,6 +400,37 @@ pub(crate) fn start_log_listener(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// ISSUE-75 (Chrome): a watched worker's console comes from its own
+    /// session (with its real level); the tab's `Log` copy of it (`source:
+    /// "worker"`, `console.log` as `info`) is dropped. Other workers' copies
+    /// are kept.
+    #[tokio::test]
+    async fn watched_workers_are_not_logged_twice() {
+        // Given a tab watching worker w.js
+        let state = Arc::new(Mutex::new(LogState::default()));
+        state.lock().await.watch_worker("http://a/w.js");
+        let entry = |url: &str| json!({"method": "Log.entryAdded", "params": {"entry": {"source": "worker", "level": "info", "text": "hi", "url": url, "timestamp": 1.0}}});
+        // When the tab reports both workers' messages
+        for url in ["http://a/w.js", "http://a/other.js"] {
+            let event: WsResponse = serde_json::from_value(entry(url)).unwrap();
+            process_log_event(&event, &state).await;
+        }
+        // Then only the unwatched worker's is kept
+        let urls: Vec<Option<String>> = state
+            .lock()
+            .await
+            .messages
+            .iter()
+            .map(|m| m.url.clone())
+            .collect();
+        assert_eq!(urls, [Some("http://a/other.js".to_string())]);
+        // And once it stops, its messages are kept again
+        state.lock().await.forget_worker("http://a/w.js");
+        let event: WsResponse = serde_json::from_value(entry("http://a/w.js")).unwrap();
+        process_log_event(&event, &state).await;
+        assert_eq!(state.lock().await.messages.len(), 2);
+    }
 
     /// ISSUE-19: console arguments print as the console shows them (object
     /// and array previews, not "Object"), and the call's location is kept

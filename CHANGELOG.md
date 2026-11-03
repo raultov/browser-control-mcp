@@ -18,6 +18,12 @@ from a copy of its code: entries describe the differences from that release.
   met the dialog again and the tab stayed blocked; on Firefox it failed with
   `Beforeunload prompt was rejected` while the tab ended on the page the
   dialog let it go to. (#76)
+- Chrome: what a dedicated worker does reaches the tab's logs. Its
+  requests were missing from `get_network_logs` and its script stayed
+  `pending`; its `console.log` read as `info` (Chrome's `Log` domain has no
+  `log` level). Each worker is now attached like a frame of another origin
+  (its own session, `Runtime` and `Network`; within the 50 watched targets
+  per tab), and the tab's copies of its console messages are dropped. (#75)
 
 ## [0.11.0-beta.18] - 2026-11-03
 

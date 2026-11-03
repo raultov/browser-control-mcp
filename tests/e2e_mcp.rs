@@ -136,18 +136,27 @@ mod e2e {
         port
     }
 
+    /// The scripts served (by path prefix).
+    const SCRIPTS: [(&str, &str); 3] = [
+        ("/app.js", APP_JS),
+        ("/xo-inner.js", XO_INNER_JS),
+        (
+            "/worker75.js",
+            "console.log('worker75-log'); fetch('/api?from=worker75').then(() => postMessage('done'));",
+        ),
+    ];
+
     /// The content type and body served for `path`.
     fn page(path: &str, ws: &str) -> (&'static str, String) {
+        if let Some((_, script)) = SCRIPTS.iter().find(|(at, _)| path.starts_with(at)) {
+            return ("application/javascript", (*script).to_string());
+        }
         match path {
-            p if p.starts_with("/app.js") => ("application/javascript", APP_JS.to_string()),
             p if p.starts_with("/data.csv") => ("text/csv", "a,b\n1,2\n".to_string()),
             p if p.starts_with("/self-close.html") => (
                 "text/html",
                 "<!doctype html><title>closing</title><script>setTimeout(() => window.close(), 2000)</script>".to_string(),
             ),
-            p if p.starts_with("/xo-inner.js") => {
-                ("application/javascript", XO_INNER_JS.to_string())
-            }
             p if p.starts_with("/api") => ("application/json", "{\"ok\":true}".to_string()),
             p if p.starts_with("/ws.html") => ("text/html", ws.to_string()),
             p if p.starts_with("/frame.html") => ("text/html", FRAME.to_string()),
@@ -1650,6 +1659,34 @@ mod e2e {
 
     /// ISSUE-12: a mocked route answers a fetch, counts its hit and goes;
     /// then offline.
+    /// ISSUE-75: a dedicated worker's request and console message reach
+    /// the tab's logs, the message with its own level (Chrome lost the
+    /// request and reported `console.log` as `info`).
+    fn worker_steps(instance: &str) -> Vec<Step> {
+        let i = json!(instance);
+        let start = "new Promise(r => { const w = new Worker('/worker75.js'); w.onmessage = () => r('worker done'); })";
+        vec![
+            (
+                "ISSUE-75 run a worker",
+                "evaluate_js",
+                json!({"instance_id": i, "expression": start}),
+                "worker done",
+            ),
+            (
+                "ISSUE-75 the worker's request is logged",
+                "get_network_logs",
+                json!({"instance_id": i, "url_filter": "from=worker75"}),
+                "=> 200",
+            ),
+            (
+                "ISSUE-75 the worker's console.log is a log",
+                "get_console_logs",
+                json!({"instance_id": i}),
+                "[log] worker75-log",
+            ),
+        ]
+    }
+
     fn network_steps(instance: &str) -> Vec<Step> {
         let i = json!(instance);
         let fetch = |url: &str| fresh_fetch(&i, url);
@@ -2643,6 +2680,7 @@ mod e2e {
             observation_steps("e2e"),
             memory_steps("e2e"),
             network_steps("e2e"),
+            worker_steps("e2e"),
             websocket_steps("e2e", &base),
             other_page_steps("e2e", &base),
             debugger_steps("e2e", &base),
@@ -2735,6 +2773,7 @@ mod e2e {
             emulate_steps("default", variable.contains("CHROME")),
             closed_root_steps("default", variable.contains("CHROME")),
             network_steps("default"),
+            worker_steps("default"),
             other_page_steps("default", &base),
             debugger_steps("default", &base),
         ];

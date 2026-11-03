@@ -31,6 +31,21 @@ pub(crate) const MAX_WATCHED: usize = 50;
 /// The domains enabled on a watched frame's session.
 const FRAME_DOMAINS: [&str; 4] = ["Runtime", "Log", "Network", "Debugger"];
 
+/// The domains enabled on a watched worker's session: not `Log`, whose
+/// worker messages the tab already reports (as `info` for `console.log`).
+const WORKER_DOMAINS: [&str; 2] = ["Runtime", "Network"];
+
+/// What an auto-attached target is watched as.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Watch {
+    /// A frame of another origin: console, network, debugger, its frames.
+    Frame,
+    /// A dedicated worker: its console and requests (ISSUE-75).
+    Worker,
+    /// Not watched (another kind, or past [`MAX_WATCHED`]): only released.
+    Released,
+}
+
 /// The auto-attach every watched session asks for.
 fn auto_attach() -> Value {
     json!({"autoAttach": true, "waitForDebuggerOnStart": true, "flatten": true})
@@ -90,7 +105,7 @@ pub(crate) fn start_frame_watcher(session: &Tab, sinks: FrameSinks) -> tokio::ta
 /// until it detaches, with whether it counts as watched (an iframe within
 /// [`MAX_WATCHED`]): only those give their place back.
 async fn watch(session: Tab, mut events: cdp_browser_lite::EventFilter, sinks: FrameSinks) {
-    let mut frames: HashMap<String, (ListenerHandles, bool)> = HashMap::new();
+    let mut frames: HashMap<String, Attached> = HashMap::new();
     while let Some(event) = events.next().await {
         let Ok(event) = event else { continue };
         let params = event.params.unwrap_or_default();
@@ -99,15 +114,12 @@ async fn watch(session: Tab, mut events: cdp_browser_lite::EventFilter, sinks: F
         };
         match event.method.as_deref() {
             Some("Target.attachedToTarget") => {
-                let watched = params["targetInfo"]["type"] == "iframe" && sinks.take_place();
-                let mut handles = ListenerHandles::default();
-                let setup = frame_setup(session.clone(), params, watched, sinks.clone());
-                handles.push(tokio::spawn(setup));
-                frames.insert(auto, (handles, watched));
+                let attached = attach(&session, params, &sinks).await;
+                frames.insert(auto, attached);
             }
             Some("Target.detachedFromTarget") => {
-                if frames.remove(&auto).is_some_and(|f| f.1) {
-                    sinks.watched.fetch_sub(1, Ordering::Relaxed);
+                if let Some(attached) = frames.remove(&auto) {
+                    attached.detach(&sinks).await;
                 }
                 if let Some(target_id) = params["targetId"].as_str() {
                     sinks.debugger.lock().await.forget_frame_target(target_id);
@@ -118,18 +130,78 @@ async fn watch(session: Tab, mut events: cdp_browser_lite::EventFilter, sinks: F
     }
 }
 
+/// An auto-attached target: its setup task (aborted when it detaches),
+/// what it is watched as, and its URL.
+struct Attached {
+    _setup: ListenerHandles,
+    kind: Watch,
+    url: String,
+}
+
+impl Attached {
+    /// Gives back its place and, for a worker, its console to the tab.
+    async fn detach(self, sinks: &FrameSinks) {
+        if self.kind == Watch::Released {
+            return;
+        }
+        sinks.watched.fetch_sub(1, Ordering::Relaxed);
+        if self.kind == Watch::Worker {
+            sinks.log.lock().await.forget_worker(&self.url);
+        }
+    }
+}
+
+/// What the target `attached` (a `Target.attachedToTarget`) is watched as:
+/// an iframe or a dedicated worker within [`MAX_WATCHED`], else released.
+fn watch_kind(attached: &Value, sinks: &FrameSinks) -> Watch {
+    let kind = match attached["targetInfo"]["type"].as_str() {
+        Some("iframe") => Watch::Frame,
+        Some("worker") => Watch::Worker,
+        _ => return Watch::Released,
+    };
+    match sinks.take_place() {
+        true => kind,
+        false => Watch::Released,
+    }
+}
+
+/// Starts the setup of the target `attached` announces.
+async fn attach(session: &Tab, attached: Value, sinks: &FrameSinks) -> Attached {
+    let kind = watch_kind(&attached, sinks);
+    let url = attached["targetInfo"]["url"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    if kind == Watch::Worker {
+        // Before it runs: its first messages come in its session.
+        sinks.log.lock().await.watch_worker(&url);
+    }
+    let mut setup = ListenerHandles::default();
+    let task = frame_setup(session.clone(), attached, kind, sinks.clone());
+    setup.push(tokio::spawn(task));
+    Attached {
+        _setup: setup,
+        kind,
+        url,
+    }
+}
+
 /// Sets up the frame `attached` (a `Target.attachedToTarget` of `session`)
-/// describes when `watched`, releases it, then keeps its listeners until
-/// aborted. Other targets (workers, frames past [`MAX_WATCHED`]) are only
+/// describes as `kind` says, releases it, then keeps its listeners until
+/// aborted. Other targets (other kinds, past [`MAX_WATCHED`]) are only
 /// released.
-async fn frame_setup(session: Tab, attached: Value, watched: bool, sinks: FrameSinks) {
+async fn frame_setup(session: Tab, attached: Value, kind: Watch, sinks: FrameSinks) {
     let auto = attached["sessionId"]
         .as_str()
         .unwrap_or_default()
         .to_string();
     let mut listeners = ListenerHandles::default();
-    if watched && let Some(target_id) = attached["targetInfo"]["targetId"].as_str() {
-        listeners = watch_frame(&session, target_id, sinks).await;
+    if let Some(target_id) = attached["targetInfo"]["targetId"].as_str() {
+        listeners = match kind {
+            Watch::Frame => watch_frame(&session, target_id, sinks).await,
+            Watch::Worker => watch_worker(&session, target_id, sinks).await,
+            Watch::Released => listeners,
+        };
     }
     release(&session, &auto).await;
     // Held until the frame detaches (the task is aborted then).
@@ -175,6 +247,36 @@ async fn watch_frame(session: &Tab, target_id: &str, sinks: FrameSinks) -> Liste
     }
     debugger::frames::prepare_frame(&frame, &sinks.debugger).await;
     listeners.push(start_frame_watcher(&frame, sinks));
+    listeners
+}
+
+/// Attaches a session of its own to worker `target_id`, starts its console
+/// and network listeners, then enables its domains (ISSUE-75: Chrome's tab
+/// session sees neither its requests nor its console levels).
+async fn watch_worker(session: &Tab, target_id: &str, sinks: FrameSinks) -> ListenerHandles {
+    let mut listeners = ListenerHandles::default();
+    let browser = BrowserClient::from_client(session.client().clone());
+    let Ok(worker) = browser.attach(target_id).await else {
+        return listeners;
+    };
+    let target = CdpTarget::tab(worker.clone());
+    // Subscribed before the domains are enabled: nothing is missed.
+    listeners.absorb(crate::handler::cdp_domains::log::start_log_listener(
+        &target,
+        sinks.log.clone(),
+    ));
+    listeners.push(
+        crate::handler::cdp_domains::network::start_frame_network_listener(
+            &target,
+            sinks.network.clone(),
+            worker.session_id().to_string(),
+        ),
+    );
+    for domain in WORKER_DOMAINS {
+        let _ = worker
+            .send_raw_command(&format!("{domain}.enable"), NoParams)
+            .await;
+    }
     listeners
 }
 
@@ -260,7 +362,7 @@ mod tests {
 
     /// ISSUE-36: a frame of another origin is attached, its domains are
     /// enabled, it is released, and its console messages reach the tab's
-    /// buffer; a worker is only released.
+    /// buffer; a worker is watched too (ISSUE-75).
     #[tokio::test]
     async fn frames_of_another_origin_feed_the_tab() {
         // Given a tab watching its frames
@@ -275,14 +377,21 @@ mod tests {
         attach(&watched, "AUTO-F", "iframe");
         attach(&watched, "AUTO-W", "worker");
         eventually(|| mock.commands_named("Runtime.runIfWaitingForDebugger").len() == 2).await;
-        // Then both are released, and only the iframe is attached and enabled
+        // Then both are released and attached
         let released = session_of(mock, "Runtime.runIfWaitingForDebugger");
         assert!(released.contains(&Some("AUTO-F".into())), "{released:?}");
         assert!(released.contains(&Some("AUTO-W".into())), "{released:?}");
         let attached = mock.commands_named("Target.attachToTarget");
-        assert_eq!(attached.len(), 2, "the tab and the iframe: {attached:?}");
-        assert_eq!(attached[1].params["targetId"], "T-iframe");
-        let frame = frame_session(&watched).await;
+        assert_eq!(
+            attached.len(),
+            3,
+            "the tab, the iframe and the worker: {attached:?}"
+        );
+        let frame = mock
+            .commands_named("Debugger.enable")
+            .into_iter()
+            .find_map(|c| c.session_id)
+            .unwrap();
         assert_ne!(frame, tab);
         // And the frame's console messages land in the tab's buffer
         let logged = json!({"type": "log", "args": [{"type": "string", "value": "inner log"}], "timestamp": 1.0});
@@ -295,13 +404,14 @@ mod tests {
         })
         .await;
         assert_eq!(sinks.log.lock().await.messages[0].text, "inner log");
-        assert_eq!(sinks.watched.load(Ordering::Relaxed), 1);
+        assert_eq!(sinks.watched.load(Ordering::Relaxed), 2);
         // When the worker detaches, then another iframe attaches
         let worker_gone = json!({"sessionId": "AUTO-W", "targetId": "T-worker"});
         mock.emit("Target.detachedFromTarget", worker_gone, Some(&tab));
         attach(&watched, "AUTO-G", "iframe");
         eventually(|| mock.commands_named("Runtime.runIfWaitingForDebugger").len() == 3).await;
-        // Then both iframes are counted (the worker never was)
+        // Then both iframes are counted (the worker gave its place back)
+        eventually(|| sinks.watched.load(Ordering::Relaxed) == 2).await;
         assert_eq!(sinks.watched.load(Ordering::Relaxed), 2);
         // When a frame detaches, it is no longer counted
         let gone = json!({"sessionId": "AUTO-F", "targetId": "T-iframe"});
@@ -320,6 +430,86 @@ mod tests {
             .map(|c| c.method)
             .filter(|m| m.starts_with("Debugger.") || m == release)
             .collect()
+    }
+
+    /// A worker attached to the watched tab, once released: its session.
+    async fn attached_worker(watched: &Watched) -> String {
+        attach(watched, "AUTO-W", "worker");
+        let mock = watched.mock;
+        eventually(|| {
+            !mock
+                .commands_named("Runtime.runIfWaitingForDebugger")
+                .is_empty()
+        })
+        .await;
+        frame_session(watched).await
+    }
+
+    /// ISSUE-75: a dedicated worker is attached too: its `Runtime` and
+    /// `Network` are enabled in its own session (not `Log`: the tab already
+    /// reports its console there), it is released, and its console messages
+    /// and requests reach the tab's buffers; the tab's log skips its copies.
+    #[tokio::test]
+    async fn workers_feed_the_tab() {
+        // Given a tab watching its frames, When a worker attaches
+        let watched = watched_tab().await;
+        let worker = attached_worker(&watched).await;
+        let (mock, sinks) = (watched.mock, &watched.sinks);
+        // Then it was readied in its own session
+        let readied: Vec<String> = mock
+            .commands()
+            .into_iter()
+            .filter(|c| c.session_id.as_deref() == Some(worker.as_str()))
+            .map(|c| c.method)
+            .collect();
+        assert_eq!(readied, ["Runtime.enable", "Network.enable"]);
+        assert!(sinks.log.lock().await.watches_worker("http://b/"));
+        // And its console messages and requests reach the tab's buffers
+        let logged = json!({"type": "log", "args": [{"type": "string", "value": "worker log"}], "timestamp": 1.0});
+        mock.emit("Runtime.consoleAPICalled", logged, Some(&worker));
+        let sent = json!({"requestId": "W1", "request": {"url": "http://b/api", "method": "GET", "headers": {}}, "type": "Fetch"});
+        mock.emit("Network.requestWillBeSent", sent, Some(&worker));
+        eventually(|| {
+            sinks
+                .log
+                .try_lock()
+                .is_ok_and(|log| log.messages.len() == 1)
+        })
+        .await;
+        let message = sinks.log.lock().await.messages[0].clone();
+        assert_eq!(
+            (message.level.as_str(), message.text.as_str()),
+            ("log", "worker log")
+        );
+        eventually(|| {
+            sinks
+                .network
+                .try_lock()
+                .is_ok_and(|n| n.known_ids().contains("W1"))
+        })
+        .await;
+        assert!(sinks.network.lock().await.known_ids().contains("W1"));
+    }
+
+    /// ISSUE-75: once a worker detaches, the tab's log reports its URL's
+    /// messages again, and its place is given back.
+    #[tokio::test]
+    async fn detached_workers_log_through_the_tab() {
+        let watched = watched_tab().await;
+        attached_worker(&watched).await;
+        let sinks = &watched.sinks;
+        let gone = json!({"sessionId": "AUTO-W", "targetId": "T-worker"});
+        let tab = Some(watched.tab.session_id());
+        watched.mock.emit("Target.detachedFromTarget", gone, tab);
+        eventually(|| {
+            sinks
+                .log
+                .try_lock()
+                .is_ok_and(|log| !log.watches_worker("http://b/"))
+        })
+        .await;
+        assert!(!sinks.log.lock().await.watches_worker("http://b/"));
+        assert_eq!(sinks.watched.load(Ordering::Relaxed), 0);
     }
 
     /// ISSUE-36: a frame's debugger is ready before the frame runs: it is
