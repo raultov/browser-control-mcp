@@ -281,20 +281,23 @@ async fn on_navigation(method: &str, params: &Value, state: &PumpState) {
 pub(crate) fn console_message(params: &Value) -> ConsoleMessage {
     let javascript = str_field(params, "type") == Some("javascript");
     let frame = params.pointer("/stackTrace/callFrames/0");
+    // A script error always has the stack of the script that threw;
+    // Firefox's own messages (a cookie rejected, a CSP report) have none
+    // and are not uncaught exceptions (ISSUE-80).
+    let source = match (javascript, frame.is_some()) {
+        (true, true) => "exception",
+        (true, false) => "other",
+        (false, _) => "console-api",
+    };
     ConsoleMessage {
-        source: if javascript {
-            "exception"
-        } else {
-            "console-api"
-        }
-        .to_string(),
+        source: source.to_string(),
         level: if javascript {
             "error".to_string()
         } else {
             let method = str_field(params, "method").or_else(|| str_field(params, "level"));
             crate::handler::cdp_domains::log::canonical_level(method.unwrap_or_default())
         },
-        text: args_text(params).unwrap_or_else(|| string_or_empty(params, "text")),
+        text: console_text(params),
         timestamp: params
             .get("timestamp")
             .and_then(Value::as_f64)
@@ -321,6 +324,18 @@ fn args_text(params: &Value) -> Option<String> {
     }
     let printed: Option<Vec<String>> = args.iter().map(|arg| bidi_value(arg, true)).collect();
     Some(printed?.join(" "))
+}
+
+/// The text of a `log.entryAdded`: its arguments as Chrome prints them,
+/// except for `console.count` and the timers, whose arguments are only the
+/// label: Firefox's text has the count or the time (ISSUE-80).
+fn console_text(params: &Value) -> String {
+    const OWN_TEXT: [&str; 4] = ["count", "countReset", "timeEnd", "timeLog"];
+    let own = str_field(params, "method").is_some_and(|method| OWN_TEXT.contains(&method));
+    match own {
+        true => string_or_empty(params, "text"),
+        false => args_text(params).unwrap_or_else(|| string_or_empty(params, "text")),
+    }
 }
 
 /// A BiDi remote value as the console prints it: at the top level strings
@@ -588,6 +603,37 @@ mod tests {
         assert_eq!(messages.len(), 1);
         assert!(messages[0].text.contains("hello from probe"));
         assert_eq!(messages[0].source, "console-api");
+    }
+
+    /// ISSUE-80 (Firefox): `console.count` and `console.timeEnd` keep
+    /// Firefox's text, with the count and the time (the arguments are only
+    /// the label), so two counts are two messages; Firefox's own messages
+    /// (a cookie rejected, a CSP report), a `javascript` entry with no
+    /// stack, are not uncaught exceptions.
+    #[test]
+    fn counters_timers_and_browser_messages() {
+        let entry = |method: &str, text: &str| {
+            json!({"type": "console", "method": method, "level": "info", "text": text,
+            "args": [{"type": "string", "value": "counter"}], "source": {"realm": "r", "context": "c"}, "timestamp": 1})
+        };
+        assert_eq!(
+            console_message(&entry("count", "counter: 2")).text,
+            "counter: 2"
+        );
+        assert_eq!(
+            console_message(&entry("timeEnd", "timer-a: 3ms - timer ended")).text,
+            "timer-a: 3ms - timer ended"
+        );
+        assert_eq!(console_message(&entry("log", "counter")).text, "counter");
+        let cookie = json!({"type": "javascript", "level": "error", "text": "Cookie \u{201c}srv\u{201d} has been rejected", "source": {"realm": "r", "context": "c"}, "timestamp": 1});
+        let cookie = console_message(&cookie);
+        assert_eq!(
+            (cookie.source.as_str(), cookie.level.as_str()),
+            ("other", "error")
+        );
+        let thrown = json!({"type": "javascript", "level": "error", "text": "Error: x", "source": {"realm": "r", "context": "c"}, "timestamp": 1,
+            "stackTrace": {"callFrames": [{"url": "http://a/", "lineNumber": 1, "columnNumber": 0, "functionName": ""}]}});
+        assert_eq!(console_message(&thrown).source, "exception");
     }
 
     /// AUD-OB-02: `console.warn` is level `warning`, as on Chrome and as

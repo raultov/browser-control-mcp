@@ -537,7 +537,7 @@ mod e2e {
     fn dialog_and_wait_steps(instance: &str) -> Vec<Step> {
         let i = json!(instance);
         let late = "setTimeout(() => document.body.insertAdjacentHTML('beforeend', '<p id=\"late\">late-arrival</p>'), 700); 1";
-        vec![
+        let mut steps = vec![
             (
                 "ISSUE-11 click that opens a dialog succeeds, noting it",
                 "click_element",
@@ -579,6 +579,58 @@ mod e2e {
                 "wait_for",
                 json!({"instance_id": i, "text": "never-there", "timeout_ms": 300}),
                 "!waiting for the text \"never-there\" to appear",
+            ),
+        ];
+        steps.extend(console_detail_steps(instance));
+        steps
+    }
+
+    /// ISSUE-80: counters keep their count, an unhandled rejection says
+    /// `(in promise)`, and accepting a prompt answers its default (both
+    /// browsers).
+    fn console_detail_steps(instance: &str) -> Vec<Step> {
+        let i = json!(instance);
+        let logs = json!({"instance_id": i});
+        let log = "console.count('counter80'); console.count('counter80'); Promise.reject(new Error('rej80')); 1";
+        let ask = "setTimeout(() => { window.__p80 = prompt('Name?', 'default80'); }); 1";
+        vec![
+            (
+                "ISSUE-80 count twice and reject",
+                "evaluate_js",
+                json!({"instance_id": i, "expression": log}),
+                "",
+            ),
+            ("ISSUE-80 wait for the messages", "sleep", json!({}), ""),
+            (
+                "ISSUE-80 the second count",
+                "get_console_logs",
+                logs.clone(),
+                "counter80: 2",
+            ),
+            (
+                "ISSUE-80 the rejection says in promise",
+                "get_console_logs",
+                logs,
+                "Uncaught (in promise) Error: rej80",
+            ),
+            (
+                "ISSUE-80 a prompt with a default",
+                "evaluate_js",
+                json!({"instance_id": i, "expression": ask}),
+                "",
+            ),
+            ("ISSUE-80 wait for the prompt", "sleep", json!({}), ""),
+            (
+                "ISSUE-80 accept it without text",
+                "handle_dialog",
+                json!({"instance_id": i, "accept": true}),
+                "Dialog accepted",
+            ),
+            (
+                "ISSUE-80 the page got the default",
+                "evaluate_js",
+                json!({"instance_id": i, "expression": "window.__p80"}),
+                "default80",
             ),
         ]
     }

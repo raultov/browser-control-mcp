@@ -122,7 +122,7 @@ impl LogState {
             .take(DUPLICATE_LOOKBACK)
             .find(|m| {
                 m.channel != msg.channel
-                    && m.text == msg.text
+                    && without_in_promise(&m.text) == without_in_promise(&msg.text)
                     && (m.timestamp - msg.timestamp).abs() <= DUPLICATE_WINDOW_MS
             });
         match twin {
@@ -361,12 +361,29 @@ fn arg_text(arg: &Value) -> Option<String> {
     }
 }
 
+/// How an unhandled promise rejection's text starts, on both browsers
+/// (Chrome's `exceptionDetails.text`; Firefox's watcher flags it).
+pub(crate) const IN_PROMISE: &str = "Uncaught (in promise) ";
+
+/// `text` without [`IN_PROMISE`]: Firefox reports a rejection twice, only
+/// its watcher knowing it is one.
+fn without_in_promise(text: &str) -> &str {
+    text.strip_prefix(IN_PROMISE).unwrap_or(text)
+}
+
 fn exception(params: &Value, details: &Value) -> ConsoleMessage {
-    let text = details
+    let description = details
         .get("exception")
-        .and_then(|e| str_field(e, "description"))
-        .map(str::to_string)
-        .unwrap_or_else(|| string_or_empty(details, "text"));
+        .and_then(|e| str_field(e, "description"));
+    let rejection =
+        str_field(details, "text").is_some_and(|t| t.starts_with(IN_PROMISE.trim_end()));
+    let text = match description {
+        Some(described) if rejection && !described.starts_with("Uncaught") => {
+            format!("{IN_PROMISE}{described}")
+        }
+        Some(described) => described.to_string(),
+        None => string_or_empty(details, "text"),
+    };
     ConsoleMessage {
         source: "exception".to_string(),
         level: "error".to_string(),
@@ -529,6 +546,19 @@ mod tests {
             "Uncaught"
         );
         assert!(console_message("Runtime.executionContextCreated", &bare).is_none());
+    }
+
+    /// ISSUE-80 (Chrome): an unhandled rejection says `(in promise)`
+    /// (Chrome's `text`), not only `Uncaught`.
+    #[test]
+    fn rejections_say_in_promise() {
+        let params = json!({"exceptionDetails": {"text": "Uncaught (in promise)",
+            "exception": {"description": "Error: rej\n    at x (http://a/:1:1)"}}});
+        let m = console_message("Runtime.exceptionThrown", &params).unwrap();
+        assert_eq!(
+            m.text,
+            "Uncaught (in promise) Error: rej\n    at x (http://a/:1:1)"
+        );
     }
 
     fn message(text: &str) -> ConsoleMessage {

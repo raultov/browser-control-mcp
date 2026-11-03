@@ -152,7 +152,8 @@ fn message_lines(message: &super::ConsoleMessage, repeats: usize) -> String {
     // watcher labels them `javascript`; console.error is `console-api`).
     let thrown =
         message.source == "exception" || (message.source == "javascript" && level == "error");
-    let uncaught = if thrown && !first.starts_with("Uncaught") {
+    // Firefox says `uncaught exception: x` for a thrown value.
+    let uncaught = if thrown && !first.to_ascii_lowercase().starts_with("uncaught") {
         "Uncaught "
     } else {
         ""
@@ -194,6 +195,22 @@ fn cut(text: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ISSUE-80: Firefox's `uncaught exception: x` (a thrown string) is not
+    /// prefixed `Uncaught` again.
+    #[test]
+    fn uncaught_is_not_repeated() {
+        let thrown = super::super::ConsoleMessage {
+            source: "exception".into(),
+            level: "error".into(),
+            text: "uncaught exception: str".into(),
+            timestamp: 0.0,
+            url: None,
+            line_number: None,
+            channel: Default::default(),
+        };
+        assert_eq!(message_lines(&thrown, 1), "[error] uncaught exception: str");
+    }
 
     /// AUD-OB-30: get_console_logs and get_network_logs connect first, so
     /// on an instance nothing has connected to yet (an attached Chrome)

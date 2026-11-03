@@ -31,12 +31,14 @@ impl HandleDialogTool {
         let session = handler.session(args.instance_id.clone()).await?;
         let target = session.target_ignoring_dialogs(args.tab_id.clone()).await?;
         let state = session.dialog_state(args.tab_id.clone())?;
-        let mut params = json!({"accept": args.accept});
-        if let Some(text) = &args.prompt_text {
-            params["promptText"] = json!(text);
-        }
         // Read first: closing it makes Chrome announce it closed.
         let dialog = state.lock().await.open.clone();
+        let mut params = json!({"accept": args.accept});
+        let answer =
+            dialogs::prompt_answer(args.accept, args.prompt_text.as_deref(), dialog.as_ref());
+        if let Some(text) = answer {
+            params["promptText"] = json!(text);
+        }
         // Subscribed first: the navigation can commit before the reply.
         let events = target.on_domain("Page");
         let reply = target
@@ -87,6 +89,30 @@ mod tests {
     use crate::handler::cdp_domains::tests::{
         call, mock_handler, reply_text, spawn_recording_mock,
     };
+
+    /// ISSUE-80 (Chrome): accepting a `prompt` without `prompt_text` answers
+    /// its default, as a user pressing OK does (it answered `""`); a given
+    /// text still wins.
+    #[tokio::test]
+    async fn accepted_prompts_answer_their_default() {
+        let mock = spawn_recording_mock().await;
+        let handler = mock_handler(mock.http_port);
+        let session = handler.session(None).await.unwrap();
+        session.target(None).await.unwrap();
+        let prompt = json!({"type": "prompt", "message": "Name?", "defaultPrompt": "default-name"});
+        for (args, answered) in [
+            (json!({"accept": true}), "default-name"),
+            (json!({"accept": true, "prompt_text": "mine"}), "mine"),
+        ] {
+            session.dialog_state.lock().await.open =
+                Some(dialogs::OpenDialog::from_chrome(&prompt));
+            HandleDialogTool::handle(call("handle_dialog", args), &handler)
+                .await
+                .unwrap();
+            let sent = mock.commands_named("Page.handleJavaScriptDialog");
+            assert_eq!(sent.last().unwrap().params["promptText"], answered);
+        }
+    }
 
     /// ISSUE-76 (Chrome): accepting a `beforeunload` returns once the main
     /// frame committed the navigation it allowed (a navigation right after

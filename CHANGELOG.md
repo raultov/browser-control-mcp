@@ -28,6 +28,14 @@ from a copy of its code: entries describe the differences from that release.
 
 ### Fixed
 
+- Console and dialog details (#80). On Firefox, `console.count` and the
+  timers keep their count and time (`counter: 2`, not `counter [x2]`), and
+  its own messages (a rejected cookie, a CSP report) no longer read
+  `Uncaught`. An unhandled rejection reads `Uncaught (in promise) …` on
+  both browsers (Firefox: with its debugger port). Accepting a `prompt`
+  without `prompt_text` answers its default, as a user pressing OK does (it
+  answered `""`). A cookie without `SameSite` has `same_site: null` on both
+  browsers (Firefox said `"Default"`).
 - `snapshot` shows more of what assistive technology reads (#79), the same
   on both browsers: a tree item is named by its own text (`treeitem "src"`,
   not its nested items' text; it had no name), the cells of a `grid` are

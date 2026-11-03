@@ -116,7 +116,11 @@ impl Cookie {
     /// From a BiDi `network.Cookie` (a binary value is shown as base64).
     pub(crate) fn from_bidi(raw: &Value) -> Self {
         let text = |key: &str| raw[key].as_str().unwrap_or_default().to_string();
-        let same_site = raw["sameSite"].as_str().map(|s| {
+        // `default`: no attribute, which Chrome reports as no `sameSite`.
+        let set = raw["sameSite"]
+            .as_str()
+            .filter(|s| !s.eq_ignore_ascii_case("default"));
+        let same_site = set.map(|s| {
             let mut name: Vec<char> = s.chars().collect();
             if let Some(first) = name.first_mut() {
                 *first = first.to_ascii_uppercase();
@@ -363,6 +367,19 @@ pub(crate) fn deleted_reply(deleted: &[Cookie]) -> CallToolResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ISSUE-80: a cookie without `SameSite` has `same_site: null` on both
+    /// browsers (Firefox said `"Default"`).
+    #[test]
+    fn unset_same_site_is_null() {
+        let bidi = |same_site: &str| json!({"name": "a", "value": {"type": "string", "value": "1"}, "domain": "a", "path": "/", "sameSite": same_site});
+        assert_eq!(Cookie::from_bidi(&bidi("default")).same_site, None);
+        assert_eq!(
+            Cookie::from_bidi(&bidi("lax")).same_site.as_deref(),
+            Some("Lax")
+        );
+        assert_eq!(Cookie::from_cdp(&json!({"name": "a"})).same_site, None);
+    }
 
     fn cookie(name: &str, domain: &str, path: &str, secure: bool) -> Cookie {
         Cookie {

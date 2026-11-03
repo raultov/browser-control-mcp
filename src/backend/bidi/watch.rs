@@ -140,7 +140,7 @@ pub(crate) fn console_message(kind: &str, resource: &Value) -> Option<ConsoleMes
     Some(ConsoleMessage {
         source: source_label(kind, category).into(),
         level: level.into(),
-        text: error.get("errorMessage")?.as_str()?.to_string(),
+        text: error_text(error)?,
         timestamp: error
             .get("timeStamp")
             .and_then(Value::as_f64)
@@ -157,6 +157,17 @@ pub(crate) fn console_message(kind: &str, resource: &Value) -> Option<ConsoleMes
             .filter(|&l| l > 0)
             .map(|l| l - 1),
         channel: Channel::Watcher,
+    })
+}
+
+/// A page error's text; an unhandled rejection's starts with
+/// `Uncaught (in promise)`, as on Chrome (ISSUE-80).
+fn error_text(error: &Value) -> Option<String> {
+    let text = error.get("errorMessage")?.as_str()?;
+    let rejection = error.get("isPromiseRejection").and_then(Value::as_bool) == Some(true);
+    Some(match rejection {
+        true => format!("{}{text}", crate::handler::cdp_domains::log::IN_PROMISE),
+        false => text.to_string(),
     })
 }
 
@@ -196,6 +207,7 @@ fn source_label(kind: &str, category: &str) -> &'static str {
 mod tests {
     use super::*;
     use bidi_browser_lite::test_support::fixtures;
+    use serde_json::json;
 
     fn resources(fixture: &str) -> Vec<Value> {
         let packet: Value = serde_json::from_str(fixture).unwrap();
@@ -245,6 +257,25 @@ mod tests {
         on_websocket(&mut network, &long);
         let frames = network.ws_frames.get("38").unwrap();
         assert_eq!(frames[0].payload_data, "abc…(70000 chars)");
+    }
+
+    /// ISSUE-80 (Firefox): an unhandled rejection the watcher reports says
+    /// `Uncaught (in promise)`, as on Chrome, and replaces BiDi's copy.
+    #[test]
+    fn promise_rejections_say_so() {
+        let mut errors = resources(fixtures::RDP_RESOURCES_ERROR_MESSAGE);
+        errors[0]["pageError"]["isPromiseRejection"] = json!(true);
+        errors[0]["pageError"]["errorMessage"] = json!("Error: rej");
+        let rejected = console_message("error-message", &errors[0]).unwrap();
+        assert_eq!(rejected.text, "Uncaught (in promise) Error: rej");
+        let mut log = crate::handler::cdp_domains::log::LogState::default();
+        let mut bidi = rejected.clone();
+        (bidi.text, bidi.source, bidi.channel) =
+            ("Error: rej".into(), "exception".into(), Channel::Primary);
+        log.push_deduplicated(bidi);
+        log.push_deduplicated(rejected);
+        let texts: Vec<&str> = log.messages.iter().map(|m| m.text.as_str()).collect();
+        assert_eq!(texts, ["Uncaught (in promise) Error: rej"]);
     }
 
     /// FWS-03 (F-04): page errors and CSS warnings become console messages

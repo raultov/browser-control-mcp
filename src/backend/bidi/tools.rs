@@ -96,12 +96,17 @@ pub(crate) async fn handle_dialog(
     let args: HandleDialogTool = parse_args(params)?;
     let session = handler.firefox(args.instance_id.as_deref()).await?;
     let (_, tab) = session.tab(args.tab_id.as_deref()).await?;
-    let mut prompt = json!({"context": tab.tab.context_id(), "accept": args.accept});
-    if let Some(text) = &args.prompt_text {
-        prompt["userText"] = json!(text);
-    }
     // Read first: closing it makes Firefox announce it closed.
     let dialog = tab.dialog.lock().await.open.clone();
+    let mut prompt = json!({"context": tab.tab.context_id(), "accept": args.accept});
+    let answer = crate::handler::dialogs::prompt_answer(
+        args.accept,
+        args.prompt_text.as_deref(),
+        dialog.as_ref(),
+    );
+    if let Some(text) = answer {
+        prompt["userText"] = json!(text);
+    }
     let leaving = crate::handler::dialogs::leaving(args.accept, dialog.as_ref());
     // Subscribed first: the navigation can commit before the reply is read.
     let events = tab.tab.on_module("browsingContext");
@@ -1962,6 +1967,30 @@ mod tests {
             }
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
+    }
+
+    /// ISSUE-80 (Firefox): accepting a `prompt` without `prompt_text`
+    /// answers its default (`userText`), as a user pressing OK does.
+    #[tokio::test]
+    async fn accepted_prompts_answer_their_default() {
+        let mock = MockFirefox::start(false).await.unwrap();
+        mock.bidi()
+            .respond_with("browsingContext.handleUserPrompt", |_| json!({}));
+        let handler = ts::handler(&mock);
+        let session = handler.firefox(None).await.unwrap();
+        session.browser().await.unwrap();
+        let (_, tab) = session.tab(None).await.unwrap();
+        let prompt = json!({"context": "ctx-0", "type": "prompt", "message": "Name?", "handler": "ignore", "defaultValue": "default-name"});
+        mock.bidi().emit("browsingContext.userPromptOpened", prompt);
+        opened(&tab).await;
+        handle_dialog(call("handle_dialog", json!({"accept": true})), &handler)
+            .await
+            .unwrap();
+        let sent = mock
+            .bidi()
+            .commands_named("browsingContext.handleUserPrompt");
+        assert_eq!(sent[0].params["userText"], "default-name");
+        ts::stop(&handler).await;
     }
 
     /// ISSUE-76 (Firefox): accepting a `beforeunload` returns once the

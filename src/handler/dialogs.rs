@@ -25,6 +25,23 @@ pub(crate) fn interrupted(error: &cdp_browser_lite::CdpError) -> bool {
     matches!(error, cdp_browser_lite::CdpError::ProtocolError { code, .. } if *code == INTERRUPTED_ERROR_CODE)
 }
 
+/// The text answering `dialog`: `prompt_text`, else a `prompt`'s default
+/// when accepted, as a user pressing OK sends it (ISSUE-80: it was `""`).
+pub(crate) fn prompt_answer(
+    accept: bool,
+    prompt_text: Option<&str>,
+    dialog: Option<&OpenDialog>,
+) -> Option<String> {
+    if let Some(text) = prompt_text {
+        return Some(text.to_string());
+    }
+    let prompt = dialog.filter(|d| accept && d.kind == "prompt")?;
+    prompt
+        .default_prompt
+        .clone()
+        .filter(|text| !text.is_empty())
+}
+
 /// How long accepting a `beforeunload` waits for the navigation it
 /// allowed: both browsers answer the dialog command before it commits, and
 /// a navigation started meanwhile meets the dialog again (Chrome) or
