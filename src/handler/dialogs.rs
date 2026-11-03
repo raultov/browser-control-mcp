@@ -113,6 +113,11 @@ pub(crate) struct OpenDialog {
 pub(crate) struct DialogState {
     /// The dialog open now, if any.
     pub(crate) open: Option<OpenDialog>,
+    /// File choosers the page opened so far, so an action can tell the
+    /// ones it opened (ISSUE-81).
+    pub(crate) file_choosers: u64,
+    /// Whether the last file chooser takes several files.
+    pub(crate) chooser_multiple: bool,
 }
 
 impl OpenDialog {

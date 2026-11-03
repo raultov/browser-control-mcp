@@ -1538,7 +1538,7 @@ mod e2e {
     fn key_and_pointer_steps(instance: &str) -> Vec<Step> {
         let i = json!(instance);
         let effects = "window.__hovered + '|' + window.__keys + '|' + document.querySelector('#pk').value + '|' + window.__dbl + ':' + window.__ctx";
-        vec![
+        let mut steps = vec![
             (
                 "ISSUE-7 hover",
                 "hover",
@@ -1574,6 +1574,92 @@ mod e2e {
                 "evaluate_js",
                 json!({"instance_id": i, "expression": effects}),
                 "true|a;Control^;Enter^;|a|1:true",
+            ),
+        ];
+        steps.extend(input_effect_steps(instance));
+        steps
+    }
+
+    /// ISSUE-81: the widgets of `input_effect_steps`, recording the Enter
+    /// keys of the textarea and the wheel over the canvas.
+    fn input_widgets_js() -> String {
+        let html = r#"<div id="ie81"><textarea id="ta81"></textarea><canvas id="cv81" width="200" height="60"></canvas><input type="file" id="f81"><button id="p81" onclick="history.pushState({}, '', '/pushed81')">push81</button></div>"#;
+        format!(
+            "document.body.insertAdjacentHTML('afterbegin', {}); window.__url81 = location.href; window.__enter81 = 0; window.__wheel81 = 0; \
+             ta81.addEventListener('keydown', e => {{ if (e.key === 'Enter') __enter81++; }}); \
+             cv81.addEventListener('wheel', e => {{ __wheel81 += e.deltaY; e.preventDefault(); }}); 1",
+            json!(html)
+        )
+    }
+
+    /// ISSUE-81: a newline in a textarea is the Enter key, `wheel` turns
+    /// the mouse wheel over a canvas, and a click that opens a file chooser
+    /// or changes the URL without loading a page says so (both browsers).
+    fn input_effect_steps(instance: &str) -> Vec<Step> {
+        let i = json!(instance);
+        let eval = |expression: &str| json!({"instance_id": i, "expression": expression});
+        let mut steps = vec![
+            (
+                "ISSUE-81 input widgets",
+                "evaluate_js",
+                eval(&input_widgets_js()),
+                "",
+            ),
+            (
+                "ISSUE-81 a newline in a textarea",
+                "fill_input",
+                json!({"instance_id": i, "selector": "#ta81", "text": "l1\nl2"}),
+                "Successfully filled",
+            ),
+            (
+                "ISSUE-81 two lines, one Enter key",
+                "evaluate_js",
+                eval("ta81.value.split('\\n').length + ':' + __enter81"),
+                "2:1",
+            ),
+            (
+                "ISSUE-81 the wheel over a canvas",
+                "scroll",
+                json!({"instance_id": i, "selector": "#cv81", "wheel": true, "y": 120}),
+                "Dispatched a wheel event (deltaX 0, deltaY 120)",
+            ),
+            (
+                "ISSUE-81 the canvas got it",
+                "evaluate_js",
+                eval("__wheel81"),
+                "120",
+            ),
+        ];
+        steps.extend(input_note_steps(instance));
+        steps
+    }
+
+    /// ISSUE-81: a click that opens a file chooser, or changes the URL
+    /// without loading a page, says so; the page's URL is put back.
+    fn input_note_steps(instance: &str) -> Vec<Step> {
+        let i = json!(instance);
+        let eval = |expression: &str| json!({"instance_id": i, "expression": expression});
+        let on = |selector: &str| json!({"instance_id": i, "selector": selector});
+        let back =
+            "history.replaceState({}, '', __url81); document.getElementById('ie81').remove(); 1";
+        vec![
+            (
+                "ISSUE-81 a click opening a file chooser",
+                "click_element",
+                on("#f81"),
+                "The action opened a file chooser",
+            ),
+            (
+                "ISSUE-81 a click changing the URL",
+                "click_element",
+                on("#p81"),
+                "The URL changed to ",
+            ),
+            (
+                "ISSUE-81 back to the page's URL",
+                "evaluate_js",
+                eval(back),
+                "",
             ),
         ]
     }

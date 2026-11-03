@@ -538,7 +538,7 @@ const PREPARE_FILL: &str = "const W = el.ownerDocument.defaultView; \
         selection.removeAllRanges(); selection.addRange(range); \
         if (!append && text === '' && el.textContent !== '') doc.execCommand('delete'); \
     } \
-    return { status: 'ready', prefix, keys: field ? [] : keys };";
+    return { status: 'ready', prefix, keys: field ? [] : keys, multiline: !(el instanceof W.HTMLInputElement) };";
 
 /// What the element matching `selector` holds after `text` was typed:
 /// `{status: 'missing'}` or `{status: 'done', matches, empty}` (the value
@@ -557,7 +557,9 @@ pub fn fill_result(selector: &str, text: &str, mode: FillMode) -> String {
              if (field && !el.ownerDocument.hasFocus() && value !== before) el.dispatchEvent(new Event('change', {{ bubbles: true }})); \
              const expected = append ? (before || '') + text : text; \
              const rejected = text !== '' && value === (append ? (before || '') : ''); \
-             return {{ status: 'done', matches: value === expected, empty: value === '', rejected, append }};"
+             const lines = field ? value : (el.innerText || '').replace(/\\u00A0/g, ' ').replace(/\\n+$/, ''); \
+             const matches = value === expected || lines === expected; \
+             return {{ status: 'done', matches, empty: value === '', rejected, append }};"
     );
     fill_snippet(selector, text, mode, &body)
 }
@@ -1170,6 +1172,27 @@ mod tests {
         }
     }
 
+    /// ISSUE-81: an editable element whose lines are blocks (Enter makes a
+    /// `<div>`: its text content "ab" for "a\nb" typed) matches by its
+    /// rendered lines too; it was reported as reformatted.
+    #[test]
+    fn editable_lines_match_the_text() {
+        let check = fill_result("#ce", "a\nb", FillMode::Replace);
+        let matching = "const matches = value === expected || lines === expected;";
+        assert!(check.contains(matching), "{check}");
+    }
+
+    /// ISSUE-81: the preparation says whether the field takes several
+    /// lines (a textarea or contenteditable), where a newline is Enter.
+    #[test]
+    fn multiline_fields_are_said() {
+        let prepare = prepare_fill("#t", "a", FillMode::Replace);
+        assert!(
+            prepare.contains("multiline: !(el instanceof W.HTMLInputElement)"),
+            "{prepare}"
+        );
+    }
+
     /// ISSUE-34: a contenteditable element also gets the keys after the
     /// range (an editor may put its own selection back, as CodeMirror 6
     /// does on Firefox); a form field gets none.
@@ -1177,7 +1200,7 @@ mod tests {
     fn contenteditable_elements_get_the_keys_too() {
         let prepare = prepare_fill("#rich", "x", FillMode::Replace);
         assert!(
-            prepare.contains("return { status: 'ready', prefix, keys: field ? [] : keys };"),
+            prepare.contains("return { status: 'ready', prefix, keys: field ? [] : keys, multiline: !(el instanceof W.HTMLInputElement) };"),
             "{prepare}"
         );
     }

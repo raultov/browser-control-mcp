@@ -359,6 +359,15 @@ pub(crate) async fn find_in_snapshot(
 pub(crate) async fn scroll(params: CallToolRequestParams, handler: &McpHandler) -> ToolResult {
     let args: ScrollTool = parse_args(params)?;
     let ids = ids(&args.instance_id, &args.tab_id);
+    if args.wheel() {
+        let deltas = args.wheel_deltas()?;
+        return on_input(handler, ids, args.selector.as_deref(), async |on| {
+            let point = on.wheel_point(args.selector.as_deref()).await?;
+            page::wheel_at(on.tab, point, deltas).await?;
+            Ok(args.wheel_reply(point, deltas))
+        })
+        .await;
+    }
     on_page(
         handler,
         (&ids, args.selector.as_deref()),
@@ -632,6 +641,16 @@ pub(crate) struct OnTab<'a> {
 impl OnTab<'_> {
     /// The viewport point where `selector`'s element can be `action`
     /// (clicked, hovered, dragged), checked as on Chrome (`ready_point`).
+    /// Where a wheel turns: the element's checked point, or the viewport's
+    /// centre without a `selector` (ISSUE-81).
+    async fn wheel_point(&self, selector: Option<&str>) -> Result<(f64, f64), CallToolError> {
+        use crate::handler::cdp_domains::page::scroll::{VIEWPORT_CENTRE, centre};
+        match selector {
+            Some(selector) => self.point(selector, "scrolled with the wheel").await,
+            None => Ok(centre(&page::run_snippet(self.tab, VIEWPORT_CENTRE).await?)),
+        }
+    }
+
     async fn point(&self, selector: &str, action: &str) -> Result<(f64, f64), CallToolError> {
         let expression = crate::util::js::click_point(selector);
         let check = PointOnTab {
@@ -733,12 +752,13 @@ impl OnTab<'_> {
         let filling = async {
             let prepare = crate::util::js::prepare_fill(selector, text, mode);
             let prepared = page::run_snippet(self.tab, &prepare).await?;
-            let (click, prefix, keys) = match fill_start(&prepared, selector)? {
+            let (click, prefix, keys, multiline) = match fill_start(&prepared, selector)? {
                 FillStart::Type {
                     click,
                     prefix,
                     keys,
-                } => (click, prefix, keys),
+                    multiline,
+                } => (click, prefix, keys, multiline),
                 FillStart::Done(reply) => return Ok(reply),
             };
             if let Some(point) = click {
@@ -747,7 +767,7 @@ impl OnTab<'_> {
             for (key, held) in &keys {
                 page::press_key(self.tab, key, held).await?;
             }
-            page::type_text(self.tab, &format!("{prefix}{text}")).await?;
+            page::type_text(self.tab, &format!("{prefix}{text}"), multiline).await?;
             let check = crate::util::js::fill_result(selector, text, mode);
             fill_reply(&page::run_snippet(self.tab, &check).await?, selector)
         };
@@ -1539,6 +1559,27 @@ mod tests {
             };
             evaluate_success(ts::remote(&value))
         });
+    }
+
+    /// ISSUE-81 (Firefox): `wheel: true` dispatches a BiDi wheel action at
+    /// the element's point.
+    #[tokio::test]
+    async fn wheel_dispatches_a_wheel_action() {
+        let mock = MockFirefox::start(false).await.unwrap();
+        drag_page(&mock, json!(false));
+        let handler = ts::handler(&mock);
+        let args = json!({"selector": "#map", "wheel": true, "x": 5, "y": -120});
+        let reply = scroll(call("scroll", args), &handler).await.unwrap();
+        let sent = mock.bidi().commands_named("input.performActions");
+        let wheel = &sent[0].params["actions"][0];
+        assert_eq!(
+            (wheel["type"].clone(), wheel["id"].clone()),
+            (json!("wheel"), json!("wheel"))
+        );
+        let expected = json!({"type": "scroll", "x": 10, "y": 20, "deltaX": 5, "deltaY": -120, "origin": "viewport"});
+        assert_eq!(wheel["actions"][0], expected);
+        assert!(ts::text(&reply).starts_with("Dispatched a wheel event (deltaX 5, deltaY -120)"));
+        ts::stop(&handler).await;
     }
 
     /// The pointer actions of every `input.performActions` the mock got.

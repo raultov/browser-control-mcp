@@ -194,6 +194,21 @@ pub(crate) mod tests {
         }
     }
 
+    /// ISSUE-81 (Chrome): a tab intercepts its file choosers, so Chrome
+    /// reports them (`Page.fileChooserOpened`) instead of opening its own.
+    #[tokio::test]
+    async fn tabs_intercept_file_choosers() {
+        let mock = spawn_recording_mock().await;
+        let addr = format!("127.0.0.1:{}", mock.http_port);
+        let browser = cdp_browser_lite::BrowserClient::connect(&addr, Duration::from_secs(2))
+            .await
+            .unwrap();
+        let tab = browser.attach("T-tab-1").await.unwrap();
+        super::enable_tab_domains(&tab, &Default::default()).await;
+        let sent = mock.commands_named("Page.setInterceptFileChooserDialog");
+        assert_eq!(sent[0].params, serde_json::json!({"enabled": true}));
+    }
+
     #[tokio::test]
     async fn given_enable_tab_domains_when_webmcp_enable_succeeds_then_availability_is_enabled() {
         use cdp_browser_lite::BrowserClient;
@@ -239,6 +254,12 @@ pub(crate) async fn enable_tab_domains(tab: &Tab, webmcp_state: &Arc<Mutex<webmc
     ] {
         let _ = tab.send_raw_command(cmd, NoParams).await;
     }
+    // Chrome then reports a page's file chooser instead of opening its own
+    // (ISSUE-81); `upload_file` sets the files.
+    let intercept = serde_json::json!({"enabled": true});
+    let _ = tab
+        .send_raw_command("Page.setInterceptFileChooserDialog", intercept)
+        .await;
     // A new tab has no breakpoint: the page's `debugger;` statements are
     // skipped until one is set (`DebuggerState::skips_pauses`).
     let skip = serde_json::json!({ "skip": true });

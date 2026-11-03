@@ -58,6 +58,13 @@ pub(crate) struct LogState {
     /// When the last cross-site document committed (ms since the epoch):
     /// messages of the old site arriving late are dropped.
     cleared_before: Option<f64>,
+    /// Same-document navigations of the tab (history API, fragment) so
+    /// far, and the URL the last reached, so an action can say it changed
+    /// the URL (ISSUE-81).
+    pub(crate) same_document: u64,
+    pub(crate) same_document_url: Option<String>,
+    /// Chrome's id of the tab's main frame, once a navigation named it.
+    main_frame: Option<String>,
     /// Script URLs of the workers watched in their own session (Chrome,
     /// see `frame_watch`): the tab's `Log` copies of their console messages
     /// are dropped. At most `frame_watch::MAX_WATCHED` (one per watched
@@ -66,6 +73,12 @@ pub(crate) struct LogState {
 }
 
 impl LogState {
+    /// Notes a same-document navigation of the tab to `url`.
+    pub(crate) fn note_same_document(&mut self, url: &str) {
+        self.same_document += 1;
+        self.same_document_url = Some(url.to_string());
+    }
+
     /// Notes that the worker running `url` reports its console itself.
     pub(crate) fn watch_worker(&mut self, url: &str) {
         self.workers.push(url.to_string());
@@ -171,7 +184,16 @@ pub(crate) async fn process_log_event(event: &WsResponse, state: &Arc<Mutex<LogS
         return;
     };
     if let Some(url) = main_frame_commit(method, params) {
-        state.lock().await.on_document_committed(url, None);
+        let mut state = state.lock().await;
+        state.main_frame = params["frame"]["id"].as_str().map(str::to_string);
+        state.on_document_committed(url, None);
+    } else if method == "Page.navigatedWithinDocument" {
+        let mut state = state.lock().await;
+        let frame = params["frameId"].as_str();
+        let main = state.main_frame.is_none() || state.main_frame.as_deref() == frame;
+        if let (true, Some(url)) = (main, params["url"].as_str()) {
+            state.note_same_document(url);
+        }
     } else if let Some(message) = console_message(method, params) {
         let mut state = state.lock().await;
         if !state.is_watched_worker_copy(&message) {
@@ -546,6 +568,41 @@ mod tests {
             "Uncaught"
         );
         assert!(console_message("Runtime.executionContextCreated", &bare).is_none());
+    }
+
+    /// ISSUE-81 (Chrome): the main frame's same-document navigations
+    /// (history API, fragment) are counted with the URL reached; an
+    /// iframe's are not.
+    #[tokio::test]
+    async fn same_document_navigations_are_counted() {
+        let state = Arc::new(Mutex::new(LogState::default()));
+        let events = [
+            (
+                "Page.frameNavigated",
+                json!({"frame": {"id": "F", "url": "http://a/"}}),
+            ),
+            (
+                "Page.navigatedWithinDocument",
+                json!({"frameId": "F", "url": "http://a/pushed", "navigationType": "historyApi"}),
+            ),
+            (
+                "Page.navigatedWithinDocument",
+                json!({"frameId": "C", "url": "http://a/ad#x", "navigationType": "fragment"}),
+            ),
+        ];
+        for (method, params) in events {
+            let event = WsResponse {
+                method: Some(method.into()),
+                params: Some(params),
+                ..Default::default()
+            };
+            process_log_event(&event, &state).await;
+        }
+        let st = state.lock().await;
+        assert_eq!(
+            (st.same_document, st.same_document_url.as_deref()),
+            (1, Some("http://a/pushed"))
+        );
     }
 
     /// ISSUE-80 (Chrome): an unhandled rejection says `(in promise)`

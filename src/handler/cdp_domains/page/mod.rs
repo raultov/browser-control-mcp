@@ -152,6 +152,13 @@ pub(crate) async fn process_dialog_event(
             .as_ref()
             .map(crate::handler::dialogs::OpenDialog::from_chrome),
         Some("Page.javascriptDialogClosed") => None,
+        Some("Page.fileChooserOpened") => {
+            let mode = event.params.as_ref().and_then(|p| p["mode"].as_str());
+            let mut state = state.lock().await;
+            state.file_choosers += 1;
+            state.chooser_multiple = mode == Some("selectMultiple");
+            return;
+        }
         _ => return,
     };
     state.lock().await.open = opened;
@@ -226,6 +233,22 @@ mod tests {
         assert_eq!(current.order, ["L2"]);
         assert!(!st.navigations[1].requests.contains_key("L2"));
         assert!(st.navigations[1].requests.contains_key("old"));
+    }
+
+    /// ISSUE-81 (Chrome): the file choosers a page opens are counted, with
+    /// whether they take several files.
+    #[tokio::test]
+    async fn file_choosers_are_counted() {
+        use crate::handler::cdp_domains::tests::make_event;
+        let state = Arc::new(Mutex::new(crate::handler::dialogs::DialogState::default()));
+        let opened =
+            serde_json::json!({"frameId": "F", "mode": "selectMultiple", "backendNodeId": 15});
+        process_dialog_event(&make_event("Page.fileChooserOpened", opened), &state).await;
+        let st = state.lock().await;
+        assert_eq!(
+            (st.file_choosers, st.chooser_multiple, st.open.is_none()),
+            (1, true, true)
+        );
     }
 
     /// AUD-EV-05: the tab's open dialog follows Chrome's events.

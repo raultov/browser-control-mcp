@@ -28,6 +28,17 @@ from a copy of its code: entries describe the differences from that release.
 
 ### Fixed
 
+- Input actions miss fewer effects (#81), the same on both browsers: in a
+  textarea or contenteditable, `fill_input` types a newline as the Enter key
+  (Chrome inserted it as text with no key; Firefox sent a key named `\n`),
+  and a contenteditable whose new line is a block no longer reads as
+  reformatted. `scroll` with `wheel: true` dispatches a real mouse wheel
+  event at an element or the viewport's centre, for a canvas or map that
+  listens to `wheel`. An action that opens a file chooser says so (Chrome
+  now intercepts file choosers: none opens on screen; `upload_file` sets
+  the files), and one that changes the URL without loading a page
+  (`history.pushState`, a `#fragment`) names the new URL; on Firefox,
+  `list_tabs` follows such URL changes too.
 - Console and dialog details (#80). On Firefox, `console.count` and the
   timers keep their count and time (`counter: 2`, not `counter [x2]`), and
   its own messages (a rejected cookie, a CSP report) no longer read

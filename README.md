@@ -126,7 +126,7 @@ see the note.
 | `switch_tab` | ✓ | ✓ | |
 | `navigate` | ✓ | ✓ | `history: "back"` or `"forward"` instead of `url` moves one entry in the tab's history and waits for the page to load (also when it comes from the back-forward cache, which fires no `load`); at either end it fails without moving; a URL the browser saves instead of opening (a download: `Content-Disposition: attachment`, or a type such as CSV) fails saying so, and the tab stays where it was; a page behind HTTP authentication (401) fails at once naming its scheme and realm and how to log in (credentials in the URL, `http://user:password@host/path`, which the browser keeps for the session); a page that pauses at a breakpoint or opens a dialog while loading fails at once naming it (see `resume`, `handle_dialog`) |
 | `reload` | ✓ | ✓ | a pause, a dialog or HTTP authentication while loading fails at once, as with `navigate` |
-| `scroll` | ✓ | ✓ | reports the window positions before and after |
+| `scroll` | ✓ | ✓ | reports the window positions before and after; `wheel: true` dispatches a real mouse wheel event instead (`x`/`y` pixels, default 100 down) at `selector` or the viewport's centre, for a canvas or map listening to `wheel` (Chrome `Input.dispatchMouseEvent` `mouseWheel`, Firefox a BiDi `wheel` action) |
 | `emulate` | ✓ | partial | `emulation` group; `width`/`height`, `device_scale_factor`, `mobile` (touch), `color_scheme`, `reduced_motion`, `forced_colors`, `media` (`print`), `user_agent`, `locale`, `timezone` (checked by the page's `Intl` first), `geolocation` (the page is granted the permission to read it), `cpu_throttling` (1–20×), `network_throttling` (`slow-3g`, `fast-3g`, `4g`, `none`), `reset`; each call adds to the earlier ones; answers what the page now sees (with the position it reads and the active throttling); Firefox: no `mobile`, media or throttling options (BiDi has no media, touch or throttling emulation yet; they fail naming them) |
 | `wait_for` | ✓ | ✓ | waits (checking every 100 ms, at most 30 s) until a visible text appears or is gone, a selector is `visible` / `hidden` / `attached` / `detached`, or the URL contains a text; a dialog or debugger pause ends the wait at once |
 | `inspect_dom` | ✓ | ✓ | includes open shadow roots and same-origin iframes (cross-origin ones are noted); at most 100 000 characters without `query` (cut in the page) |
@@ -182,7 +182,12 @@ after 134 ms.`, or says the page was still changing after 1 s. A click that
 navigates waits for the new page's requests. Use `wait_for` for anything
 slower (a timer, a long request). An action that opened tabs (a
 `target=_blank` link, `window.open`) says so: `The action opened tab tab-3
-(https://…): call switch_tab with its tab_id to act in it.`
+(https://…): call switch_tab with its tab_id to act in it.` So does one
+that downloaded a file (`The action downloaded data.csv (8 bytes) to …`),
+opened a file chooser (`set its files with upload_file`; Chrome intercepts
+file choosers, so none opens on screen) or changed the URL without loading
+a page (`history.pushState`, a `#fragment`). In a textarea or
+contenteditable, `fill_input` types a newline as the Enter key.
 
 The JavaScript debugger tools on Firefox need its debugger (RDP) port: on by
 default for a launched Firefox, `--firefox-rdp-port` for an attached one. The

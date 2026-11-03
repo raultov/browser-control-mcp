@@ -487,6 +487,21 @@ pub(crate) async fn hover_at(tab: &Tab, point: (f64, f64)) -> Result<(), Backend
     perform(tab, actions).await.map(|_| ())
 }
 
+/// Turns the mouse wheel by `(dx, dy)` pixels at `point` (a BiDi `wheel`
+/// input source, ISSUE-81).
+pub(crate) async fn wheel_at(
+    tab: &Tab,
+    (x, y): (f64, f64),
+    (dx, dy): (i32, i32),
+) -> Result<(), BackendError> {
+    // BiDi wants whole viewport pixels.
+    let (x, y) = (x.round() as i64, y.round() as i64);
+    let turn =
+        json!({"type": "scroll", "x": x, "y": y, "deltaX": dx, "deltaY": dy, "origin": "viewport"});
+    let actions = json!([{"type": "wheel", "id": "wheel", "actions": [turn]}]);
+    perform(tab, actions).await.map(|_| ())
+}
+
 /// Presses `key` with `held` down in the focused element; the dialog it
 /// opened, if any (the key was pressed).
 pub(crate) async fn press_key(
@@ -537,14 +552,24 @@ async fn perform_then(
         .map(|_| None)
 }
 
+/// The WebDriver key value typing `c`: a newline in a textarea or
+/// contenteditable (`multiline`) is the Enter key (ISSUE-81: Firefox sent a
+/// key named `"\n"`).
+pub(crate) fn key_value(c: char, multiline: bool) -> String {
+    match (c, multiline) {
+        ('\n', true) => "\u{E007}".to_string(),
+        _ => c.to_string(),
+    }
+}
+
 /// Characters typed per `input.performActions`: Firefox types about a
 /// thousand a second, and one command must end within the command timeout
 /// (20 000 characters at once timed out half typed).
 pub(crate) const KEYS_PER_ACTION: usize = 500;
 
 /// Types `text` key by key into the focused element (spike H8), in
-/// batches of [`KEYS_PER_ACTION`] characters.
-pub(crate) async fn type_text(tab: &Tab, text: &str) -> Result<(), BackendError> {
+/// batches of [`KEYS_PER_ACTION`] characters; see [`key_value`].
+pub(crate) async fn type_text(tab: &Tab, text: &str, multiline: bool) -> Result<(), BackendError> {
     if text.is_empty() {
         return Ok(());
     }
@@ -553,7 +578,7 @@ pub(crate) async fn type_text(tab: &Tab, text: &str) -> Result<(), BackendError>
         let keys: Vec<Value> = batch
             .iter()
             .flat_map(|c| {
-                let value = c.to_string();
+                let value = key_value(*c, multiline);
                 [
                     json!({"type": "keyDown", "value": value}),
                     json!({"type": "keyUp", "value": value}),
@@ -623,6 +648,15 @@ pub(crate) async fn screenshot(tab: &Tab, req: &ShotRequest<'_>) -> Result<Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ISSUE-81 (Firefox): a newline in a textarea or contenteditable is the
+    /// Enter key; elsewhere it is typed as it was.
+    #[test]
+    fn newlines_are_enter_in_multiline_fields() {
+        assert_eq!(key_value('\n', true), "\u{E007}");
+        assert_eq!(key_value('\n', false), "\n");
+        assert_eq!(key_value('a', true), "a");
+    }
 
     /// BID-15 / EVL-04: A script exception is a tool error with its text and
     /// position, worded as on Chrome.

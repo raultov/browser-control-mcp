@@ -481,6 +481,114 @@ struct NetworkBefore {
     /// The instance's downloads and how many had begun, to tell the ones
     /// the action started (#77).
     downloads: (Arc<Mutex<DownloadState>>, u64),
+    /// The tab's dialogs and log, with how many file choosers and
+    /// same-document navigations they had seen (ISSUE-81).
+    page: PageBefore,
+}
+
+/// What the tab's page had done before an input action (ISSUE-81).
+struct PageBefore {
+    dialog: Arc<Mutex<super::dialogs::DialogState>>,
+    file_choosers: u64,
+    log: Arc<Mutex<cdp_domains::log::LogState>>,
+    same_document: u64,
+}
+
+impl PageBefore {
+    async fn of(
+        dialog: Arc<Mutex<super::dialogs::DialogState>>,
+        log: Arc<Mutex<cdp_domains::log::LogState>>,
+    ) -> Self {
+        let file_choosers = dialog.lock().await.file_choosers;
+        let same_document = log.lock().await.same_document;
+        Self {
+            dialog,
+            file_choosers,
+            log,
+            same_document,
+        }
+    }
+
+    /// The notes for what the page did since: a file chooser it opened, the
+    /// URL it moved to without loading a page.
+    async fn notes(&self) -> Vec<String> {
+        let (opened, multiple) = {
+            let dialog = self.dialog.lock().await;
+            (
+                dialog.file_choosers.saturating_sub(self.file_choosers),
+                dialog.chooser_multiple,
+            )
+        };
+        let (moved, url) = {
+            let log = self.log.lock().await;
+            (
+                log.same_document.saturating_sub(self.same_document),
+                log.same_document_url.clone(),
+            )
+        };
+        [
+            chooser_note(opened, multiple),
+            moved_note(moved, url.as_deref()),
+        ]
+        .into_iter()
+        .flatten()
+        .collect()
+    }
+}
+
+/// The sentence for the file choosers an action opened (`opened`).
+fn chooser_note(opened: u64, multiple: bool) -> Option<String> {
+    let several = if multiple {
+        " (several files allowed)"
+    } else {
+        ""
+    };
+    (opened > 0).then(|| {
+        format!("The action opened a file chooser{several}: set its files with upload_file on the file input.")
+    })
+}
+
+/// The sentence for the same-document navigations an action made (`moved`).
+fn moved_note(moved: u64, url: Option<&str>) -> Option<String> {
+    let url = url.filter(|_| moved > 0)?;
+    Some(format!(
+        "The URL changed to {url} without loading a new page (history API or #fragment)."
+    ))
+}
+
+/// The tab's request log, the instance's downloads and the tab's page
+/// state, for [`network_before`].
+type TabStates = (
+    Arc<Mutex<NetworkState>>,
+    Arc<Mutex<DownloadState>>,
+    PageBefore,
+);
+
+/// The states of the tab `ids` address on `browser`.
+async fn tab_states(
+    handler: &McpHandler,
+    browser: BrowserKind,
+    ids: &TargetArgs,
+) -> Option<TabStates> {
+    Some(match browser {
+        BrowserKind::Chrome => {
+            let session = handler.session(ids.instance_id.clone()).await.ok()?;
+            let network = session.network_state(ids.tab_id.clone()).ok()?;
+            let dialog = session.dialog_state(ids.tab_id.clone()).ok()?;
+            let log = session.log_state(ids.tab_id.clone()).ok()?;
+            (
+                network,
+                session.downloads.clone(),
+                PageBefore::of(dialog, log).await,
+            )
+        }
+        BrowserKind::Firefox => {
+            let session = handler.firefox(ids.instance_id.as_deref()).await.ok()?;
+            let tab = session.tab(ids.tab_id.as_deref()).await.ok()?.1;
+            let page = PageBefore::of(tab.dialog.clone(), tab.log.clone()).await;
+            (tab.network, session.downloads.clone(), page)
+        }
+    })
 }
 
 /// The request log of the tab `ids` address, read before an input action;
@@ -490,18 +598,7 @@ async fn network_before(
     browser: BrowserKind,
     ids: TargetArgs,
 ) -> Option<NetworkBefore> {
-    let (network, downloads) = match browser {
-        BrowserKind::Chrome => {
-            let session = handler.session(ids.instance_id.clone()).await.ok()?;
-            let network = session.network_state(ids.tab_id.clone()).ok()?;
-            (network, session.downloads.clone())
-        }
-        BrowserKind::Firefox => {
-            let session = handler.firefox(ids.instance_id.as_deref()).await.ok()?;
-            let network = session.tab(ids.tab_id.as_deref()).await.ok()?.1.network;
-            (network, session.downloads.clone())
-        }
-    };
+    let (network, downloads, page) = tab_states(handler, browser, &ids).await?;
     let known = network.lock().await.known_ids();
     let begun = downloads.lock().await.begun();
     let tabs = tabs_now(handler, browser, &ids)
@@ -516,6 +613,7 @@ async fn network_before(
         known,
         tabs,
         downloads: (downloads, begun),
+        page,
     })
 }
 
@@ -720,6 +818,7 @@ async fn settled(
     let (downloads, begun) = &before.downloads;
     let started = crate::handler::downloads::wait_ended(downloads, *begun, ACTION_WAIT).await;
     let downloaded = crate::handler::downloads::action_note(&started);
+    let page_notes = before.page.notes().await;
     let first_text = result.content.iter_mut().find_map(|block| match block {
         rust_mcp_sdk::schema::ContentBlock::TextContent(text) => Some(text),
         _ => None,
@@ -728,7 +827,8 @@ async fn settled(
         if let Some(interruption) = interruption {
             text.text = interruption.appended_to(&text.text);
         }
-        for note in [reacted, opened, downloaded].into_iter().flatten() {
+        let notes = [reacted, opened, downloaded].into_iter().flatten();
+        for note in notes.chain(page_notes) {
             text.text.push('\n');
             text.text.push_str(&note);
         }
@@ -944,6 +1044,32 @@ mod tests {
             )
         );
         assert_eq!(opened_note(&named(Vec::new())), None);
+    }
+
+    /// ISSUE-81: an action that opened a file chooser, or changed the URL
+    /// without loading a page, says so.
+    #[test]
+    fn page_event_notes() {
+        assert_eq!(
+            chooser_note(1, true).as_deref(),
+            Some(
+                "The action opened a file chooser (several files allowed): set its files with upload_file on the file input."
+            )
+        );
+        assert_eq!(
+            chooser_note(1, false).as_deref(),
+            Some(
+                "The action opened a file chooser: set its files with upload_file on the file input."
+            )
+        );
+        assert_eq!(chooser_note(0, true), None);
+        assert_eq!(
+            moved_note(1, Some("http://a/pushed")).as_deref(),
+            Some(
+                "The URL changed to http://a/pushed without loading a new page (history API or #fragment)."
+            )
+        );
+        assert_eq!(moved_note(0, Some("http://a/")), None);
     }
 
     /// ISSUE-77 (Chrome): a click that downloads a file says where the

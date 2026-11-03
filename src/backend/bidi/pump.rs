@@ -34,6 +34,9 @@ pub(crate) const EVENTS: &[&str] = &[
 pub(crate) const OPTIONAL_EVENTS: &[&str] = &[
     "browsingContext.downloadWillBegin",
     "browsingContext.downloadEnd",
+    "browsingContext.historyUpdated",
+    "browsingContext.fragmentNavigated",
+    "input.fileDialogOpened",
     "network.authRequired",
 ];
 
@@ -105,6 +108,28 @@ fn is_tab_lifecycle(method: &str, params: &Value, state: &PumpState) -> bool {
 /// The server's own handling of an event.
 async fn handle(method: &str, params: &Value, client: &BrowserClient, state: &PumpState) {
     match method {
+        _ if method.starts_with("browsingContext.") => {
+            on_browsing_context(method, params, client, state).await;
+        }
+        "input.fileDialogOpened" => on_file_dialog(params, state).await,
+        "log.entryAdded" => on_log(params, state).await,
+        _ if method.starts_with("network.") => {
+            if let Some(network) = tab_part(state, params, |t| t.network.clone()) {
+                on_network(method, params, &mut *network.lock().await);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The server's own handling of a `browsingContext` event.
+async fn on_browsing_context(
+    method: &str,
+    params: &Value,
+    client: &BrowserClient,
+    state: &PumpState,
+) {
+    match method {
         "browsingContext.contextCreated" => on_context_created(params, client, state).await,
         "browsingContext.contextDestroyed" => on_context_destroyed(params, state).await,
         "browsingContext.navigationStarted"
@@ -115,11 +140,8 @@ async fn handle(method: &str, params: &Value, client: &BrowserClient, state: &Pu
         }
         "browsingContext.downloadWillBegin" => on_download(params, state).await,
         "browsingContext.downloadEnd" => on_download_end(params, state).await,
-        "log.entryAdded" => on_log(params, state).await,
-        _ if method.starts_with("network.") => {
-            if let Some(network) = tab_part(state, params, |t| t.network.clone()) {
-                on_network(method, params, &mut *network.lock().await);
-            }
+        "browsingContext.historyUpdated" | "browsingContext.fragmentNavigated" => {
+            on_same_document(params, state).await;
         }
         _ => {}
     }
@@ -200,6 +222,40 @@ async fn on_download_end(params: &Value, state: &PumpState) {
     } else {
         download.state = DownloadStatus::Canceled;
     }
+}
+
+/// Counts a file chooser the tab's page opened (ISSUE-81).
+async fn on_file_dialog(params: &Value, state: &PumpState) {
+    if let Some(dialog) = tab_part(state, params, |t| t.dialog.clone()) {
+        let mut dialog = dialog.lock().await;
+        dialog.file_choosers += 1;
+        dialog.chooser_multiple = params["multiple"].as_bool() == Some(true);
+    }
+}
+
+/// A same-document navigation (history API, fragment) of a tab: its URL
+/// and its log follow it (ISSUE-81); an iframe's is not the tab's.
+async fn on_same_document(params: &Value, state: &PumpState) {
+    let (Some(context), Some(url)) = (str_field(params, "context"), str_field(params, "url"))
+    else {
+        return;
+    };
+    let log = {
+        let mut tabs = write(&state.tabs);
+        let Some(id) = tabs.tab_of(context) else {
+            return;
+        };
+        let Some(tab) = tabs
+            .tabs
+            .get_mut(&id)
+            .filter(|t| t.tab.context_id() == context)
+        else {
+            return;
+        };
+        tab.url = url.to_string();
+        tab.log.clone()
+    };
+    log.lock().await.note_same_document(url);
 }
 
 /// Keeps the open JavaScript dialog of the tab owning the event's context.
@@ -940,6 +996,43 @@ mod tests {
         let network = tab.network.lock().await;
         assert!(network.is_download("n7"));
         assert!(!network.is_download("n8"));
+    }
+
+    /// ISSUE-81 (Firefox): a file chooser and a same-document navigation
+    /// (history API, fragment) of the tab are counted; an iframe's
+    /// navigation is not.
+    #[tokio::test]
+    async fn file_choosers_and_url_changes_are_counted() {
+        let mock = MockBidi::start(MockBidiBehavior::Ready).await.unwrap();
+        let (client, state) = one_tab(&mock).await;
+        write(&state.tabs)
+            .parents
+            .insert("frame-1".into(), "ctx-0".into());
+        let events = [
+            (
+                "input.fileDialogOpened",
+                json!({"context": "ctx-0", "multiple": false}),
+            ),
+            (
+                "browsingContext.historyUpdated",
+                json!({"context": "ctx-0", "url": "http://a/pushed", "timestamp": 1}),
+            ),
+            (
+                "browsingContext.fragmentNavigated",
+                json!({"context": "frame-1", "navigation": "n", "url": "http://b/#x", "timestamp": 2}),
+            ),
+        ];
+        for (method, params) in events {
+            route(&event(method, params), &client, &state).await;
+        }
+        let tab = read(&state.tabs).tabs["tab-1"].clone();
+        let dialog = tab.dialog.lock().await;
+        assert_eq!((dialog.file_choosers, dialog.chooser_multiple), (1, false));
+        let log = tab.log.lock().await;
+        assert_eq!(
+            (log.same_document, log.same_document_url.as_deref()),
+            (1, Some("http://a/pushed"))
+        );
     }
 
     /// ISSUE-77 (Firefox): a download is recorded when it begins, with its

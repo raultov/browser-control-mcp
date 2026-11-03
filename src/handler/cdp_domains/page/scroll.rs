@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 
 #[macros::mcp_tool(
     name = "scroll",
-    description = "Scrolls the window by x/y pixels or by viewport heights ('pages'), or brings 'selector' into view. Returns the window positions {before, after, element_in_view?} and says when nothing moved (on a page that scrolls an inner element, pass a 'selector' inside it)."
+    description = "Scrolls the window by x/y pixels or by viewport heights ('pages'), or brings 'selector' into view. Returns the window positions {before, after, element_in_view?} and says when nothing moved (on a page that scrolls an inner element, pass a 'selector' inside it). wheel: true dispatches a real mouse wheel event instead (x/y pixels, default 100 down) at 'selector' or the viewport's centre, for a canvas or map that listens to wheel events."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct ScrollTool {
@@ -23,9 +23,71 @@ pub struct ScrollTool {
     pub pages: Option<f64>,
     /// Element to bring into view (CSS, 'host >>> inner' or a snapshot ref); overrides x, y and pages.
     pub selector: Option<String>,
+    /// Dispatch a real mouse wheel event instead (deltaX = x, deltaY = y pixels; default 100 down) at 'selector', or at the viewport's centre, for a canvas or map that listens to `wheel`. Default: false.
+    pub wheel: Option<bool>,
 }
 
+/// The viewport's centre, where a wheel without a `selector` turns.
+pub(crate) const VIEWPORT_CENTRE: &str =
+    "({ x: Math.round(innerWidth / 2), y: Math.round(innerHeight / 2) })";
+
 impl ScrollTool {
+    /// Whether a real wheel event is asked for (ISSUE-81).
+    pub(crate) fn wheel(&self) -> bool {
+        self.wheel == Some(true)
+    }
+
+    /// The wheel's `(deltaX, deltaY)`: `x` and `y`, 100 px down when
+    /// neither is given; `pages` does not apply (a wheel turns by pixels).
+    pub(crate) fn wheel_deltas(&self) -> Result<(i32, i32), CallToolError> {
+        if self.pages.is_some() {
+            return Err(CallToolError::from_message(
+                "'pages' does not apply with wheel: give the wheel's turn in pixels with 'y' (and 'x').",
+            ));
+        }
+        let down = if self.x.is_none() { 100 } else { 0 };
+        Ok((self.x.unwrap_or(0), self.y.unwrap_or(down)))
+    }
+
+    /// The reply once a wheel event was dispatched at `point`.
+    pub(crate) fn wheel_reply(&self, (x, y): (f64, f64), (dx, dy): (i32, i32)) -> CallToolResult {
+        let at = self
+            .selector
+            .as_deref()
+            .map_or_else(|| "the viewport's centre".to_string(), |s| format!("'{s}'"));
+        CallToolResult::text_content(vec![
+            format!("Dispatched a wheel event (deltaX {dx}, deltaY {dy}) at {at} ({x}, {y}).")
+                .into(),
+        ])
+    }
+
+    /// `scroll` with `wheel` on Chrome: `Input.dispatchMouseEvent`
+    /// `mouseWheel` at the element's checked point, or the viewport's centre.
+    async fn wheel_on_chrome(
+        params: CallToolRequestParams,
+        handler: &McpHandler,
+    ) -> Result<CallToolResult, CallToolError> {
+        let ids = |a: &Self| (a.instance_id.clone(), a.tab_id.clone());
+        let (args, target) =
+            crate::handler::args_and_target(params, handler, ids, |a: &Self| a.selector.clone())
+                .await?;
+        let deltas = args.wheel_deltas()?;
+        let point = match &args.selector {
+            Some(selector) => {
+                let checked = crate::handler::cdp_domains::input::click_element::checked_point(
+                    &target,
+                    selector,
+                    "scrolled with the wheel",
+                );
+                checked.await?
+            }
+            None => centre(&crate::handler::snippet_value(&target, VIEWPORT_CENTRE).await?),
+        };
+        let wheel = json!({"type": "mouseWheel", "x": point.0, "y": point.1, "deltaX": deltas.0, "deltaY": deltas.1});
+        crate::handler::send_or(&target, "Input.dispatchMouseEvent", wheel, "CDP Error").await?;
+        Ok(args.wheel_reply(point, deltas))
+    }
+
     /// The JavaScript that performs the scroll (shared by every browser).
     /// Precedence: selector, then pages, then x/y.
     pub(crate) fn expression(&self) -> String {
@@ -87,8 +149,18 @@ impl ScrollTool {
         params: CallToolRequestParams,
         handler: &McpHandler,
     ) -> Result<CallToolResult, CallToolError> {
+        let args: Self = crate::handler::parse_args(params.clone())?;
+        if args.wheel() {
+            return Self::wheel_on_chrome(params, handler).await;
+        }
         crate::handler::handle_snippet_tool::<Self>(params, handler).await
     }
+}
+
+/// The `(x, y)` of [`VIEWPORT_CENTRE`]'s answer.
+pub(crate) fn centre(value: &Value) -> (f64, f64) {
+    let at = |key: &str| value[key].as_f64().unwrap_or(0.0);
+    (at("x"), at("y"))
 }
 
 impl crate::handler::SnippetTool for ScrollTool {
@@ -117,6 +189,47 @@ mod tests {
     use super::*;
     use rust_mcp_sdk::schema::CallToolRequestParams;
     use serde_json::json;
+
+    /// ISSUE-81 (Chrome): `wheel: true` dispatches a real wheel event at
+    /// the element (a canvas or map listening to `wheel` got nothing from
+    /// a scroll of the window); without deltas it scrolls 100 px down, and
+    /// `pages` does not apply.
+    #[tokio::test]
+    async fn wheel_dispatches_a_wheel_event() {
+        use crate::handler::cdp_domains::tests::{mock_handler, reply_text, spawn_recording_mock};
+        let mock = spawn_recording_mock().await;
+        mock.respond_with("Runtime.evaluate", |_| {
+            let value = json!({"status": "ok", "x": 30, "y": 40});
+            json!({"result": {"result": {"type": "object", "value": value}}})
+        });
+        let handler = mock_handler(mock.http_port);
+        let wheel = |args: Value| {
+            ScrollTool::handle(
+                crate::handler::cdp_domains::tests::call("scroll", args),
+                &handler,
+            )
+        };
+        let reply = wheel(json!({"selector": "#map", "wheel": true, "y": 120}))
+            .await
+            .unwrap();
+        let sent = mock.commands_named("Input.dispatchMouseEvent");
+        assert_eq!(
+            sent[0].params,
+            json!({"type": "mouseWheel", "x": 30.0, "y": 40.0, "deltaX": 0, "deltaY": 120})
+        );
+        assert_eq!(
+            reply_text(&reply),
+            "Dispatched a wheel event (deltaX 0, deltaY 120) at '#map' (30, 40)."
+        );
+        wheel(json!({"wheel": true})).await.unwrap();
+        let sent = mock.commands_named("Input.dispatchMouseEvent");
+        assert_eq!(sent[1].params["deltaY"], 100);
+        let error = wheel(json!({"wheel": true, "pages": 1}))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("'pages' does not apply"), "{error}");
+    }
 
     #[tokio::test]
     async fn test_scroll_params_deserialization() {

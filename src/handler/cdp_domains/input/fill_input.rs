@@ -39,6 +39,8 @@ pub(crate) enum FillStart {
         click: Option<(f64, f64)>,
         prefix: String,
         keys: Vec<Shortcut>,
+        /// A textarea or contenteditable: a newline is the Enter key.
+        multiline: bool,
     },
     /// Nothing to type: a `<select>` option was picked, or a value set
     /// (date, time, range, colour); the reply.
@@ -55,6 +57,7 @@ pub(crate) fn fill_start(value: &Value, selector: &str) -> Result<FillStart, Cal
                 .zip(value["click"]["y"].as_f64()),
             prefix: value["prefix"].as_str().unwrap_or_default().to_string(),
             keys: shortcuts(value)?,
+            multiline: value["multiline"].as_bool().unwrap_or(false),
         }),
         Some("selected") => Ok(FillStart::Done(selected_reply(
             value["count"].as_u64(),
@@ -169,11 +172,25 @@ pub(crate) fn fill_reply(value: &Value, selector: &str) -> Result<CallToolResult
 /// The CDP commands that type `c`: the key press that types it, so the
 /// page sees keydown, keypress, beforeinput, input and keyup and its
 /// handlers can cancel the key, as on Firefox (BiDi key actions;
-/// `Input.insertText` skipped every key event). A control character
-/// (newline, tab) is inserted as text instead: as a key, Chrome would press
-/// Tab or Enter, moving the focus or submitting the form.
-fn typing(c: char) -> Vec<(&'static str, Value)> {
+/// `Input.insertText` skipped every key event). In a textarea or
+/// contenteditable (`multiline`) a newline is the Enter key, as a user
+/// types it (ISSUE-81). Another control character (a tab, a newline in a
+/// one-line field) is inserted as text: as a key, Chrome would press Tab or
+/// Enter, moving the focus or submitting the form.
+fn typing(c: char, multiline: bool) -> Vec<(&'static str, Value)> {
     let key = c.to_string();
+    if c == '\n' && multiline {
+        let enter = json!({"key": "Enter", "code": "Enter", "windowsVirtualKeyCode": 13});
+        let mut down = enter.clone();
+        down["type"] = json!("keyDown");
+        (down["text"], down["unmodifiedText"]) = (json!("\r"), json!("\r"));
+        let mut up = enter;
+        up["type"] = json!("keyUp");
+        return vec![
+            ("Input.dispatchKeyEvent", down),
+            ("Input.dispatchKeyEvent", up),
+        ];
+    }
     if c.is_control() {
         return vec![("Input.insertText", json!({"text": key}))];
     }
@@ -222,12 +239,13 @@ pub(crate) async fn fill(
 ) -> Result<CallToolResult, CallToolError> {
     let prepare = crate::util::js::prepare_fill(selector, text, mode);
     let prepared = crate::handler::snippet_value(target, &prepare).await?;
-    let (click, prefix, keys) = match fill_start(&prepared, selector)? {
+    let (click, prefix, keys, multiline) = match fill_start(&prepared, selector)? {
         FillStart::Type {
             click,
             prefix,
             keys,
-        } => (click, prefix, keys),
+            multiline,
+        } => (click, prefix, keys, multiline),
         FillStart::Done(reply) => return Ok(reply),
     };
     if let Some(point) = click {
@@ -239,7 +257,7 @@ pub(crate) async fn fill(
         super::keys::holding(target, held, pressing).await?;
     }
     for c in prefix.chars().chain(text.chars()) {
-        for (method, params) in typing(c) {
+        for (method, params) in typing(c, multiline) {
             crate::handler::send_or(target, method, params, "CDP Error").await?;
         }
     }
@@ -255,6 +273,32 @@ mod tests {
     use super::*;
     use rust_mcp_sdk::schema::CallToolRequestParams;
     use serde_json::json;
+
+    /// ISSUE-81 (Chrome): a newline in a textarea or contenteditable is the
+    /// Enter key, so the page sees it; in a one-line field it stays text
+    /// (Enter would submit the form).
+    #[test]
+    fn newlines_are_enter_in_multiline_fields() {
+        let enter = typing('\n', true);
+        assert_eq!(enter.len(), 2);
+        assert_eq!(enter[0].1["key"], "Enter");
+        assert_eq!(enter[0].1["text"], "\r");
+        assert_eq!(enter[0].1["windowsVirtualKeyCode"], 13);
+        assert_eq!(enter[1].1["type"], "keyUp");
+        assert_eq!(
+            typing('\n', false),
+            vec![("Input.insertText", json!({"text": "\n"}))]
+        );
+        assert_eq!(typing('a', true)[0].1["key"], "a");
+        let ready = json!({"status": "ready", "prefix": "", "keys": [], "multiline": true});
+        assert!(matches!(
+            fill_start(&ready, "#t"),
+            Ok(FillStart::Type {
+                multiline: true,
+                ..
+            })
+        ));
+    }
 
     #[tokio::test]
     async fn test_fill_input_params_deserialization() {
