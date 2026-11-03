@@ -78,6 +78,10 @@ pub struct NetworkRequest {
     pub resource_type: Option<String>,
     pub request_headers: Option<serde_json::Value>,
     pub request_post_data: Option<String>,
+    /// `"base64"` when `request_post_data` is base64 (a binary body; only
+    /// Firefox reports one).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_post_data_encoding: Option<String>,
     pub response_status: Option<i64>,
     pub response_status_text: Option<String>,
     pub response_headers: Option<serde_json::Value>,
@@ -85,13 +89,26 @@ pub struct NetworkRequest {
     /// `"base64"` when `response_body` is base64 (a binary body).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub response_body_encoding: Option<String>,
+    /// Why the response body is not in the reply, when the browser was not
+    /// asked for it (over `get_network_logs::BODY_LIMIT`): without it the
+    /// body read as a bare null (ISSUE-78).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_body_omitted: Option<String>,
     /// Why the request failed (the browser's network error), when it did:
     /// without it a failed request looked like one still waiting.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
-    /// URLs this request was redirected from, oldest first.
+    /// The page canceled the request after its response arrived (an
+    /// `EventSource` it closed): the status stands, it did not fail.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub canceled_by_page: bool,
+    /// The hops this request was redirected through, oldest first.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub redirects: Vec<String>,
+    pub redirects: Vec<RedirectHop>,
+    /// The request carries a body the browser can be asked for (Firefox:
+    /// `bodySize`; Chrome reports the body itself).
+    #[serde(skip)]
+    pub has_request_body: bool,
     /// The response finished loading (or failed): only then is its body
     /// asked for (an open stream never finishes).
     #[serde(skip)]
@@ -100,6 +117,17 @@ pub struct NetworkRequest {
     /// request: its body is only known there.
     #[serde(skip)]
     pub session: Option<String>,
+}
+
+/// One hop of a redirect chain: the URL redirected from, with the status
+/// and `Location` of its response (ISSUE-78: the hops were bare URLs).
+#[derive(Clone, Debug, Default, PartialEq, Eq, ::serde::Serialize, ::serde::Deserialize)]
+pub struct RedirectHop {
+    pub url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub location: Option<String>,
 }
 
 #[derive(Clone, Debug, ::serde::Serialize, ::serde::Deserialize)]
@@ -256,8 +284,13 @@ impl NetworkState {
         // A redirect reuses the request id: keep one entry, remember the hop.
         if let Some(existing) = self.find_request_mut(&id) {
             let previous = std::mem::replace(existing, req);
+            let hop = RedirectHop {
+                location: previous.response_header("location").map(str::to_string),
+                status: previous.response_status,
+                url: previous.url,
+            };
             existing.redirects = previous.redirects;
-            existing.redirects.push(previous.url);
+            existing.redirects.push(hop);
             return;
         }
         if is_internal_url(&req.url) {
@@ -357,6 +390,25 @@ impl NetworkState {
         self.navigations
             .iter()
             .find_map(|bucket| bucket.requests.get(request_id))
+    }
+
+    /// Marks the latest request to `url` without an error as failed with
+    /// `error`: Firefox answers a cross-origin request the page may not
+    /// read and says so only in the console (ISSUE-78).
+    pub(crate) fn note_blocked(&mut self, url: &str, error: &str) {
+        let latest = self.navigations.iter_mut().find_map(|bucket| {
+            let id = bucket.order.iter().rev().find(|id| {
+                bucket
+                    .requests
+                    .get(*id)
+                    .is_some_and(|r| r.url == url && r.error.is_none())
+            })?;
+            let id = id.clone();
+            bucket.requests.get_mut(&id)
+        });
+        if let Some(request) = latest {
+            request.error = Some(error.to_string());
+        }
     }
 
     pub(crate) fn find_request_mut(&mut self, id: &str) -> Option<&mut NetworkRequest> {

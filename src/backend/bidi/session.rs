@@ -381,9 +381,10 @@ impl FirefoxSession {
         let mut handles = ListenerHandles::default();
         handles.push(pump);
         *self.pump.lock().await = handles;
-        // Response bodies are only kept for requests made after a collector
-        // exists (spike H11). Best effort: older Firefox versions lack it.
-        let collector = serde_json::json!({"dataTypes": ["response"], "maxEncodedDataSize": crate::handler::cdp_domains::network::get_network_logs::BODY_LIMIT});
+        // Bodies are only kept for requests made after a collector exists
+        // (spike H11); request bodies too (ISSUE-78). Best effort: older
+        // Firefox versions lack it.
+        let collector = serde_json::json!({"dataTypes": ["request", "response"], "maxEncodedDataSize": crate::handler::cdp_domains::network::get_network_logs::BODY_LIMIT});
         let _ = client
             .send_raw_command("network.addDataCollector", collector)
             .await;

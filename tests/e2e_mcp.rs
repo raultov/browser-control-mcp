@@ -167,6 +167,22 @@ mod e2e {
         }
     }
 
+    /// The status line (and extra headers) answering `request` for `path`:
+    /// `/auth` asks for HTTP authentication (Basic, user:pass) until it
+    /// gets it; `/hop78` redirects to `/api?after-hop78` (ISSUE-78).
+    fn status_line(path: &str, request: &str) -> &'static str {
+        let authorized = request
+            .to_ascii_lowercase()
+            .contains("authorization: basic dxnlcjpwyxnz");
+        if path.starts_with("/auth") && !authorized {
+            return "401 Unauthorized\r\nWWW-Authenticate: Basic realm=\"e2e\"";
+        }
+        if path.starts_with("/hop78") {
+            return "302 Found\r\nLocation: /api?after-hop78";
+        }
+        "200 OK"
+    }
+
     /// Answers one HTTP request.
     async fn respond(mut socket: tokio::net::TcpStream, ws: String) {
         let mut buf = vec![0u8; 4096];
@@ -174,14 +190,7 @@ mod e2e {
         let request = String::from_utf8_lossy(&buf[..n]).to_string();
         let path = request.split_whitespace().nth(1).unwrap_or("/").to_string();
         let (kind, body) = page(&path, &ws);
-        // `/auth` asks for HTTP authentication (Basic, user:pass) until it gets it
-        let authorized = request
-            .to_ascii_lowercase()
-            .contains("authorization: basic dxnlcjpwyxnz");
-        let status = match path.starts_with("/auth") && !authorized {
-            true => "401 Unauthorized\r\nWWW-Authenticate: Basic realm=\"e2e\"",
-            false => "200 OK",
-        };
+        let status = status_line(&path, &request);
         let reply = format!(
             "HTTP/1.1 {status}\r\nContent-Type: {kind}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
             body.len()
@@ -1687,6 +1696,50 @@ mod e2e {
         ]
     }
 
+    /// ISSUE-78: a redirected request is found by its first URL and says
+    /// it was redirected; a request body is kept (Firefox lost it); a CORS
+    /// block names its reason (Chrome said only net::ERR_FAILED, Firefox
+    /// showed 200 OK).
+    fn request_detail_steps(instance: &str) -> Vec<Step> {
+        let i = json!(instance);
+        let run = "(async () => { const r = await fetch('/hop78'); await fetch('/api?post78', {method: 'POST', body: 'body-78'}); \
+            let cors = 'read'; try { await fetch('http://localhost:' + location.port + '/api?cors78'); } catch (e) { cors = 'blocked'; } \
+            return r.status + ' ' + cors; })()";
+        let shown = json!({"instance_id": i, "url_filter": "post78", "include_details": true, "include_sensitive_headers": true});
+        vec![
+            (
+                "ISSUE-78 a redirect, a POST and a CORS block",
+                "evaluate_js",
+                json!({"instance_id": i, "expression": run}),
+                "200 blocked",
+            ),
+            (
+                "ISSUE-78 the redirect is found by its first URL",
+                "get_network_logs",
+                json!({"instance_id": i, "url_filter": "/hop78"}),
+                "after-hop78 => 200",
+            ),
+            (
+                "ISSUE-78 the summary says it was redirected",
+                "get_network_logs",
+                json!({"instance_id": i, "url_filter": "/hop78"}),
+                "(after 1 redirect from ",
+            ),
+            (
+                "ISSUE-78 the request body is kept",
+                "get_network_logs",
+                shown,
+                "\"request_post_data\": \"body-78\"",
+            ),
+            (
+                "ISSUE-78 the CORS block names its reason",
+                "get_network_logs",
+                json!({"instance_id": i, "url_filter": "cors78"}),
+                "blocked by CORS: ",
+            ),
+        ]
+    }
+
     fn network_steps(instance: &str) -> Vec<Step> {
         let i = json!(instance);
         let fetch = |url: &str| fresh_fetch(&i, url);
@@ -2681,6 +2734,7 @@ mod e2e {
             memory_steps("e2e"),
             network_steps("e2e"),
             worker_steps("e2e"),
+            request_detail_steps("e2e"),
             websocket_steps("e2e", &base),
             other_page_steps("e2e", &base),
             debugger_steps("e2e", &base),
@@ -2774,6 +2828,7 @@ mod e2e {
             closed_root_steps("default", variable.contains("CHROME")),
             network_steps("default"),
             worker_steps("default"),
+            request_detail_steps("default"),
             other_page_steps("default", &base),
             debugger_steps("default", &base),
         ];

@@ -861,7 +861,8 @@ fn frames_note(has_debugger: bool) -> &'static str {
 }
 
 /// Response bodies of the requests `get_network_logs::wants_body` picks
-/// (spike H11); how many are still loading (Firefox answers
+/// (spike H11), and request bodies of the current navigation's requests
+/// that have one (ISSUE-78); how many are still loading (Firefox answers
 /// `network.getData` for those only once they end).
 async fn fetch_bodies(
     tab: &bidi_browser_lite::Tab,
@@ -870,23 +871,38 @@ async fn fetch_bodies(
     let current = &snapshot.current_ids;
     let loading = get_network_logs::still_loading(&snapshot.requests, current);
     for (id, request) in snapshot.requests.iter_mut() {
-        if !get_network_logs::wants_body(id, request, current) {
-            continue;
+        let sent = current.contains(id) && request.has_request_body;
+        if sent && request.request_post_data.is_none() {
+            let (body, encoding) = get_data(tab, id, "request").await.unzip();
+            request.request_post_data = body;
+            request.request_post_data_encoding = encoding.flatten();
         }
-        let params = json!({"dataType": "response", "request": id});
-        let ask = page::command(tab, "network.getData", params);
-        match tokio::time::timeout(get_network_logs::BODY_WAIT, ask).await {
-            Ok(Ok(reply)) => {
-                let body = reply.pointer("/bytes/value").and_then(Value::as_str);
-                request.response_body = body.map(str::to_string);
-                let base64 = reply.pointer("/bytes/type").and_then(Value::as_str) == Some("base64");
-                request.response_body_encoding = base64.then(|| "base64".to_string());
-            }
-            // Kind only: the error text could quote the request.
-            _ => tracing::debug!(request = %id, "no response body kept by Firefox"),
+        if get_network_logs::wants_body(id, request, current) {
+            let (body, encoding) = get_data(tab, id, "response").await.unzip();
+            request.response_body = body;
+            request.response_body_encoding = encoding.flatten();
         }
     }
     loading
+}
+
+/// The `kind` body (`request` or `response`) Firefox kept for request
+/// `id`, with `Some("base64")` when it is binary.
+async fn get_data(
+    tab: &bidi_browser_lite::Tab,
+    id: &str,
+    kind: &str,
+) -> Option<(String, Option<String>)> {
+    let params = json!({"dataType": kind, "request": id});
+    let ask = page::command(tab, "network.getData", params);
+    let Ok(Ok(reply)) = tokio::time::timeout(get_network_logs::BODY_WAIT, ask).await else {
+        // Kind only: the error text could quote the request.
+        tracing::debug!(request = %id, kind, "no body kept by Firefox");
+        return None;
+    };
+    let body = reply.pointer("/bytes/value").and_then(Value::as_str)?;
+    let base64 = reply.pointer("/bytes/type").and_then(Value::as_str) == Some("base64");
+    Some((body.to_string(), base64.then(|| "base64".to_string())))
 }
 
 /// `get_custom_events`: events of modules subscribed with `send_bidi_command`.
@@ -2341,6 +2357,75 @@ mod tests {
             .unwrap();
         ts::stop(&handler).await;
         (mock, reply)
+    }
+
+    /// What the mock Firefox kept: request `BIN`'s body is binary.
+    fn kept_body(params: &Value) -> Value {
+        let bytes = match params["dataType"].as_str() {
+            Some("request") if params["request"] == "BIN" => {
+                json!({"type": "base64", "value": "AP8B"})
+            }
+            Some("request") => json!({"type": "string", "value": "{\"a\":1}"}),
+            _ => json!({"type": "string", "value": "ok"}),
+        };
+        json!({"bytes": bytes})
+    }
+
+    /// ISSUE-78 (Firefox): request bodies are collected too and fetched
+    /// with `network.getData {dataType: "request"}` for a request that has
+    /// one (it was always null); a binary one says it is base64.
+    #[tokio::test]
+    async fn request_bodies_are_fetched() {
+        // Given a session collecting request and response bodies
+        let mock = MockFirefox::start(false).await.unwrap();
+        mock.bidi().respond_with("network.getData", kept_body);
+        let handler = ts::handler(&mock);
+        let session = handler.firefox(None).await.unwrap();
+        let (_, tab) = session.tab(None).await.unwrap();
+        let collectors = mock.bidi().commands_named("network.addDataCollector");
+        assert_eq!(
+            collectors[0].params["dataTypes"],
+            json!(["request", "response"])
+        );
+        // And two answered POSTs with a body, and a GET without one
+        {
+            let mut network = tab.network.lock().await;
+            for (id, method, size) in [("TXT", "POST", 7), ("BIN", "POST", 3), ("GET", "GET", 0)] {
+                let request = json!({"request": id, "url": "http://a/echo", "method": method, "headers": [], "bodySize": size});
+                let answer =
+                    json!({"request": request, "response": {"status": 200, "headers": []}});
+                super::super::pump::on_network(
+                    "network.beforeRequestSent",
+                    &json!({"request": request}),
+                    &mut network,
+                );
+                super::super::pump::on_network("network.responseCompleted", &answer, &mut network);
+            }
+        }
+        // When get_network_logs asks for details with the bodies shown
+        let args = json!({"include_details": true, "type_filter": "rest", "include_sensitive_headers": true});
+        let reply = network_logs(call("get_network_logs", args), &handler)
+            .await
+            .unwrap();
+        // Then each request body was asked once, and is in the reply
+        let asked: Vec<String> = mock
+            .bidi()
+            .commands_named("network.getData")
+            .into_iter()
+            .filter(|c| c.params["dataType"] == "request")
+            .map(|c| c.params["request"].as_str().unwrap_or_default().to_string())
+            .collect();
+        assert_eq!(asked.len(), 2, "{asked:?}");
+        let requests = &ts::json_of(&reply)["requests"];
+        assert_eq!(requests["TXT"]["request_post_data"], "{\"a\":1}");
+        assert_eq!(requests["BIN"]["request_post_data"], "AP8B");
+        assert_eq!(requests["BIN"]["request_post_data_encoding"], "base64");
+        assert!(
+            requests["GET"]
+                .get("request_post_data")
+                .is_none_or(Value::is_null)
+        );
+        ts::stop(&handler).await;
     }
 
     /// BID-22: response bodies are fetched with network.getData (spike H11 ✅).

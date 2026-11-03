@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 #[macros::mcp_tool(
     name = "get_network_logs",
-    description = "Returns the tab's HTTP requests (one line each: id, method, URL, status, type; the last 3 navigations, oldest first) and WebSocket frames, filtered. 'request_id' gives one request's headers and body; include_details: true gives them for every request (bodies cut at 64000 characters; none over 2 MB). Credential headers and request bodies are redacted unless include_sensitive_headers. 'clear' removes what was returned."
+    description = "Returns the tab's HTTP requests (one line each: id, method, URL, status, type; the last 3 navigations, oldest first) and WebSocket frames, filtered. 'request_id' gives one request's headers and body; include_details: true gives them for every request (bodies cut at 64000 characters; one over 2 MB is omitted, saying its size). A redirected request is one line, found by any hop's URL, its hops with status and Location in its details. Credential headers and request bodies are redacted unless include_sensitive_headers. 'clear' removes what was returned."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct GetNetworkLogsTool {
@@ -90,6 +90,16 @@ impl Filters {
 
     fn url_matches(&self, url: &str) -> bool {
         self.url.is_empty() || url.to_lowercase().contains(&self.url)
+    }
+
+    /// Whether the request's URL, or that of a hop it was redirected
+    /// through, matches.
+    fn request_matches(&self, request: &NetworkRequest) -> bool {
+        self.url_matches(&request.url)
+            || request
+                .redirects
+                .iter()
+                .any(|hop| self.url_matches(&hop.url))
     }
 
     fn frame_matches(&self, frame: &WebSocketFrame) -> bool {
@@ -192,7 +202,7 @@ impl Filters {
             let one = filters.request_id.as_deref();
             snapshot
                 .requests
-                .retain(|id, req| filters.url_matches(&req.url) && one.is_none_or(|one| one == id));
+                .retain(|id, req| filters.request_matches(req) && one.is_none_or(|one| one == id));
         } else {
             snapshot.requests.clear();
         }
@@ -305,10 +315,16 @@ fn summary(filters: &Filters, snapshot: &NetworkSnapshot, notes: &[String]) -> S
 fn summary_line(id: &str, request: &NetworkRequest) -> String {
     let outcome = match (&request.error, request.response_status) {
         (Some(error), _) => format!("failed: {error}"),
-        (None, Some(status)) => match request.response_status_text.as_deref() {
-            Some(text) if !text.is_empty() => format!("{status} {text}"),
-            _ => status.to_string(),
-        },
+        (None, Some(status)) => {
+            let status = match request.response_status_text.as_deref() {
+                Some(text) if !text.is_empty() => format!("{status} {text}"),
+                _ => status.to_string(),
+            };
+            match request.canceled_by_page {
+                true => format!("{status}, canceled by the page"),
+                false => status,
+            }
+        }
         (None, None) => "pending".to_string(),
     };
     let kind = request
@@ -317,7 +333,22 @@ fn summary_line(id: &str, request: &NetworkRequest) -> String {
         .map(|kind| format!(" [{kind}]"))
         .unwrap_or_default();
     let url = one_line(&request.url, URL_MAX_CHARS);
-    format!("{id} {} {url} => {outcome}{kind}", request.method)
+    let redirected = redirected_from(request);
+    format!(
+        "{id} {} {url} => {outcome}{kind}{redirected}",
+        request.method
+    )
+}
+
+/// ` (after N redirects from <first URL>)` for a redirected request.
+fn redirected_from(request: &NetworkRequest) -> String {
+    let Some(first) = request.redirects.first() else {
+        return String::new();
+    };
+    let count = request.redirects.len();
+    let plural = if count == 1 { "redirect" } else { "redirects" };
+    let from = one_line(&first.url, URL_MAX_CHARS);
+    format!(" (after {count} {plural} from {from})")
 }
 
 /// One WebSocket frame: `id sent|received url (bytes): payload preview`.
@@ -450,7 +481,8 @@ fn content_length(request: &NetworkRequest) -> Option<u64> {
         .ok()
 }
 
-/// The requests with their details, bodies cut at [`BODY_MAX_CHARS`].
+/// The requests with their details, bodies cut at [`BODY_MAX_CHARS`]; a
+/// body over [`BODY_LIMIT`] (never asked for) says so with its size.
 fn requests_json(mut requests: Requests) -> serde_json::Value {
     let cap = |body: &mut Option<String>| {
         if let Some(text) = body {
@@ -460,6 +492,12 @@ fn requests_json(mut requests: Requests) -> serde_json::Value {
     for request in requests.values_mut() {
         cap(&mut request.response_body);
         cap(&mut request.request_post_data);
+        let length = content_length(request).filter(|length| *length > BODY_LIMIT);
+        if let (None, Some(length)) = (&request.response_body, length) {
+            request.response_body_omitted = Some(format!(
+                "{length} bytes, over the {BODY_LIMIT}-byte limit of get_network_logs"
+            ));
+        }
     }
     serde_json::to_value(&requests).unwrap_or_default()
 }
@@ -776,6 +814,20 @@ mod tests {
         };
         let line = summary_line("r3", &long);
         assert!(line.len() < 260 && line.contains("… => 204"), "{line}");
+        // ISSUE-78: a stream the page closed is not a failure
+        let closed = NetworkRequest {
+            url: "http://a/sse".into(),
+            method: "GET".into(),
+            response_status: Some(200),
+            response_status_text: Some("OK".into()),
+            resource_type: Some("EventSource".into()),
+            canceled_by_page: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            summary_line("r4", &closed),
+            "r4 GET http://a/sse => 200 OK, canceled by the page [EventSource]"
+        );
     }
 
     /// ISSUE-18: request_id expands one request (headers, body); an id the
@@ -801,6 +853,65 @@ mod tests {
         assert!(
             error.contains("'nope'") && error.contains("summary"),
             "{error}"
+        );
+    }
+
+    /// ISSUE-78: a body over the limit says so with its size, instead of a
+    /// bare null (both browsers).
+    #[test]
+    fn bodies_over_the_limit_say_their_size() {
+        let args: GetNetworkLogsTool =
+            serde_json::from_value(json!({"include_details": true})).unwrap();
+        let big = answered(json!({"Content-Length": "3000000"}), None);
+        let snapshot = NetworkSnapshot {
+            requests: HashMap::from([("r1".to_string(), big)]),
+            frames: HashMap::new(),
+            current_ids: HashSet::from(["r1".to_string()]),
+            order: vec!["r1".to_string()],
+        };
+        let reply = args.finish(snapshot, Vec::new()).unwrap();
+        let text = crate::handler::cdp_domains::tests::reply_text(&reply);
+        let output: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(
+            output["requests"]["r1"]["response_body_omitted"],
+            "3000000 bytes, over the 2000000-byte limit of get_network_logs"
+        );
+    }
+
+    /// ISSUE-78: a redirected request is found by the URL of any hop, and
+    /// its summary line says where it started.
+    #[tokio::test]
+    async fn redirect_hops_are_matched_and_summarized() {
+        let state = std::sync::Arc::new(tokio::sync::Mutex::new(
+            crate::handler::NetworkState::default(),
+        ));
+        let hop = |url: &str, location: &str| crate::handler::RedirectHop {
+            url: url.into(),
+            status: Some(302),
+            location: Some(location.into()),
+        };
+        let request = NetworkRequest {
+            url: "http://a/api/json".into(),
+            method: "GET".into(),
+            response_status: Some(200),
+            redirects: vec![
+                hop("http://a/redirect?n=2", "/redirect?n=1"),
+                hop("http://a/redirect?n=1", "/api/json"),
+            ],
+            ..Default::default()
+        };
+        state.lock().await.insert_request("R1".into(), request);
+        let args: GetNetworkLogsTool =
+            serde_json::from_value(json!({"url_filter": "/REDIRECT"})).unwrap();
+        let snapshot = args.collect(&state).await;
+        let text = crate::handler::cdp_domains::tests::reply_text(
+            &args.finish(snapshot, Vec::new()).unwrap(),
+        );
+        assert!(
+            text.contains(
+                "R1 GET http://a/api/json => 200 (after 2 redirects from http://a/redirect?n=2)"
+            ),
+            "{text}"
         );
     }
 

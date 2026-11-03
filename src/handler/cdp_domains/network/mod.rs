@@ -45,6 +45,12 @@ fn on_request(st: &mut NetworkState, request_id: &str, params: &serde_json::Valu
     let Some(req) = params.get("request") else {
         return;
     };
+    // A redirect: the hop's response comes with the next request only.
+    if let Some(hop) = params.get("redirectResponse")
+        && let Some(previous) = st.find_request_mut(request_id)
+    {
+        answer(previous, hop);
+    }
     st.insert_request(
         request_id.to_string(),
         NetworkRequest {
@@ -65,25 +71,41 @@ fn on_response(st: &mut NetworkState, request_id: &str, params: &serde_json::Val
     let Some(req) = st.find_request_mut(request_id) else {
         return;
     };
-    req.response_status = res.get("status").and_then(|v| v.as_i64());
-    req.response_status_text = str_field(res, "statusText").map(str::to_string);
-    req.response_headers = res.get("headers").cloned();
+    answer(req, res);
     if req.resource_type.is_none() {
         req.resource_type = str_field(params, "type").map(str::to_string);
     }
     st.apply_extra_headers(request_id);
 }
 
-/// Records why a request failed (`errorText`, plus why it was blocked).
+/// Records a CDP `Response`'s status and headers on `req`.
+fn answer(req: &mut NetworkRequest, response: &serde_json::Value) {
+    req.response_status = response.get("status").and_then(serde_json::Value::as_i64);
+    req.response_status_text = str_field(response, "statusText").map(str::to_string);
+    req.response_headers = response.get("headers").cloned();
+}
+
+/// Records why a request failed (`errorText`, plus why it was blocked or
+/// which CORS check failed). One the page canceled after its response
+/// arrived (an `EventSource` it closed) did not fail: it keeps its status.
 fn on_failure(st: &mut NetworkState, request_id: &str, params: &serde_json::Value) {
     let Some(req) = st.find_request_mut(request_id) else {
         return;
     };
     req.finished = true;
+    let canceled = params.get("canceled").and_then(serde_json::Value::as_bool) == Some(true);
+    if canceled && req.response_status.is_some() {
+        req.canceled_by_page = true;
+        return;
+    }
     let text = str_field(params, "errorText").unwrap_or("failed");
-    req.error = Some(match str_field(params, "blockedReason") {
-        Some(reason) => format!("{text} (blocked: {reason})"),
-        None => text.to_string(),
+    let cors = params
+        .get("corsErrorStatus")
+        .and_then(|status| str_field(status, "corsError"));
+    req.error = Some(match (str_field(params, "blockedReason"), cors) {
+        (_, Some(cors)) => format!("{text} (blocked by CORS: {cors})"),
+        (Some(reason), None) => format!("{text} (blocked: {reason})"),
+        (None, None) => text.to_string(),
     });
 }
 
@@ -336,7 +358,7 @@ mod tests {
         let state = Arc::new(Mutex::new(NetworkState::default()));
         let first = json!({"requestId": "R1", "request": {"url": "http://a/old", "method": "GET"}});
         let second = json!({"requestId": "R1", "request": {"url": "http://a/new", "method": "GET"},
-            "redirectResponse": {"status": 302}});
+            "redirectResponse": {"status": 302, "statusText": "Found", "headers": {"location": "/new"}}});
         for params in [first, second] {
             process_network_event(&make_event("Network.requestWillBeSent", params), &state).await;
         }
@@ -350,6 +372,67 @@ mod tests {
             "id must not be duplicated"
         );
         assert_eq!(all["R1"].url, "http://a/new");
-        assert_eq!(all["R1"].redirects, vec!["http://a/old".to_string()]);
+        // ISSUE-78: each hop keeps its status and Location
+        let hop = crate::handler::RedirectHop {
+            url: "http://a/old".into(),
+            status: Some(302),
+            location: Some("/new".into()),
+        };
+        assert_eq!(all["R1"].redirects, vec![hop]);
+        assert_eq!(
+            all["R1"].response_status, None,
+            "the final response is not in yet"
+        );
+    }
+
+    /// ISSUE-78: a request blocked by CORS says why (`corsErrorStatus`),
+    /// not only `net::ERR_FAILED`.
+    #[tokio::test]
+    async fn cors_failures_name_the_reason() {
+        let state = Arc::new(Mutex::new(NetworkState::default()));
+        let sent = json!({"requestId": "r1", "request": {"url": "http://b/api", "method": "GET", "headers": {}}});
+        process_network_event(&make_event("Network.requestWillBeSent", sent), &state).await;
+        let failed = json!({"requestId": "r1", "errorText": "net::ERR_FAILED", "canceled": false,
+            "corsErrorStatus": {"corsError": "MissingAllowOriginHeader", "failedParameter": ""}});
+        process_network_event(&make_event("Network.loadingFailed", failed), &state).await;
+        let mut st = state.lock().await;
+        assert_eq!(
+            st.find_request_mut("r1").unwrap().error.as_deref(),
+            Some("net::ERR_FAILED (blocked by CORS: MissingAllowOriginHeader)")
+        );
+    }
+
+    /// ISSUE-78: a response the page canceled after it arrived (an
+    /// `EventSource` it closed) keeps its status and says it was canceled,
+    /// instead of reading as failed; one canceled before any response
+    /// still fails.
+    #[tokio::test]
+    async fn requests_canceled_after_their_response_keep_the_status() {
+        let state = Arc::new(Mutex::new(NetworkState::default()));
+        for id in ["sse", "early"] {
+            let sent = json!({"requestId": id, "request": {"url": "http://a/sse", "method": "GET", "headers": {}}});
+            process_network_event(&make_event("Network.requestWillBeSent", sent), &state).await;
+        }
+        let answered = json!({"requestId": "sse", "response": {"status": 200, "headers": {}}});
+        process_network_event(&make_event("Network.responseReceived", answered), &state).await;
+        for id in ["sse", "early"] {
+            let canceled =
+                json!({"requestId": id, "errorText": "net::ERR_ABORTED", "canceled": true});
+            process_network_event(&make_event("Network.loadingFailed", canceled), &state).await;
+        }
+        let mut st = state.lock().await;
+        let sse = st.find_request_mut("sse").unwrap().clone();
+        assert_eq!(
+            (
+                sse.error,
+                sse.response_status,
+                sse.canceled_by_page,
+                sse.finished
+            ),
+            (None, Some(200), true, true)
+        );
+        let early = st.find_request_mut("early").unwrap().clone();
+        assert_eq!(early.error.as_deref(), Some("net::ERR_ABORTED"));
+        assert!(!early.canceled_by_page);
     }
 }

@@ -119,11 +119,31 @@ async fn handle(method: &str, params: &Value, client: &BrowserClient, state: &Pu
     }
 }
 
-/// Keeps a console message in the tab owning the event's context.
+/// Keeps a console message in the tab owning the event's context; a
+/// CORS block it reports marks the request (see [`cors_block`]).
 async fn on_log(params: &Value, state: &PumpState) {
-    if let Some(log) = tab_part(state, params, |t| t.log.clone()) {
-        log.lock().await.push_deduplicated(console_message(params));
+    let message = console_message(params);
+    if let Some((url, reason)) = cors_block(&message.text)
+        && let Some(network) = tab_part(state, params, |t| t.network.clone())
+    {
+        let error = format!("blocked by CORS: {reason}");
+        network.lock().await.note_blocked(url, &error);
     }
+    if let Some(log) = tab_part(state, params, |t| t.log.clone()) {
+        log.lock().await.push_deduplicated(message);
+    }
+}
+
+/// The URL and reason of Firefox's console error for a cross-origin
+/// response the page may not read (`Cross-Origin Request Blocked: … the
+/// remote resource at <URL>. (Reason: <reason>). …`): Firefox reports the
+/// request answered, with its body, and says so nowhere else (ISSUE-78).
+fn cors_block(text: &str) -> Option<(&str, &str)> {
+    let rest = text.strip_prefix("Cross-Origin Request Blocked:")?;
+    let (_, rest) = rest.split_once("remote resource at ")?;
+    let (url, rest) = rest.split_once(". (Reason: ")?;
+    let (reason, _) = rest.split_once(')')?;
+    Some((url, reason))
 }
 
 /// Notes in the tab owning the event's context that a navigation became a
@@ -344,6 +364,14 @@ fn headers(list: Option<&Value>) -> Option<Value> {
     Some(Value::Object(map))
 }
 
+/// A BiDi request's type: its `destination` (`document`, `script`...),
+/// else its `initiatorType` (`fetch`, `xmlhttprequest`), which a fetch or
+/// an XHR has with an empty `destination` (ISSUE-78).
+fn resource_type(request: &Value) -> Option<String> {
+    let non_empty = |key: &str| opt_string(request, key).filter(|value| !value.is_empty());
+    non_empty("destination").or_else(|| non_empty("initiatorType"))
+}
+
 /// Applies one `network.*` event to a tab's request log (spike H13).
 pub(crate) fn on_network(method: &str, params: &Value, network: &mut crate::handler::NetworkState) {
     let Some(request) = params.get("request") else {
@@ -361,8 +389,9 @@ pub(crate) fn on_network(method: &str, params: &Value, network: &mut crate::hand
             NetworkRequest {
                 url: string_or_empty(request, "url"),
                 method: string_or_empty(request, "method"),
-                resource_type: opt_string(request, "destination").filter(|d| !d.is_empty()),
+                resource_type: resource_type(request),
                 request_headers: headers(request.get("headers")),
+                has_request_body: request.get("bodySize").and_then(Value::as_u64) > Some(0),
                 ..Default::default()
             },
         );
@@ -644,6 +673,96 @@ mod tests {
         assert!(!network.find_request_mut("R1").unwrap().finished);
         on_network("network.responseCompleted", &answer, &mut network);
         assert!(network.find_request_mut("R1").unwrap().finished);
+    }
+
+    /// ISSUE-78 (Firefox): each redirect hop keeps its status and
+    /// `Location` (Firefox reuses the request id: a 302 `responseCompleted`,
+    /// then a `beforeRequestSent` with `redirectCount` 1).
+    #[test]
+    fn redirect_hops_keep_status_and_location() {
+        let mut network = crate::handler::NetworkState::default();
+        let request = |url: &str| json!({"request": "R1", "url": url, "method": "GET", "headers": [], "destination": "", "initiatorType": "fetch"});
+        let sent = |url: &str, count: u64| json!({"request": request(url), "redirectCount": count});
+        let location =
+            json!([{"name": "Location", "value": {"type": "string", "value": "/api/json"}}]);
+        let hop = json!({"request": request("http://a/redirect"), "redirectCount": 0, "response": {"status": 302, "statusText": "Found", "headers": location}});
+        on_network(
+            "network.beforeRequestSent",
+            &sent("http://a/redirect", 0),
+            &mut network,
+        );
+        on_network("network.responseCompleted", &hop, &mut network);
+        on_network(
+            "network.beforeRequestSent",
+            &sent("http://a/api/json", 1),
+            &mut network,
+        );
+        let entry = network.find_request_mut("R1").unwrap().clone();
+        assert_eq!(entry.url, "http://a/api/json");
+        let expected = crate::handler::RedirectHop {
+            url: "http://a/redirect".into(),
+            status: Some(302),
+            location: Some("/api/json".into()),
+        };
+        assert_eq!(entry.redirects, [expected]);
+        assert_eq!((entry.response_status, entry.finished), (None, false));
+    }
+
+    /// ISSUE-78 (Firefox): a fetch or XHR has a resource type (its
+    /// `initiatorType`; `destination` is empty), and a request with a body
+    /// says so (`bodySize`), so the body is asked for.
+    #[test]
+    fn fetches_have_a_resource_type() {
+        let mut network = crate::handler::NetworkState::default();
+        let request = |id: &str, initiator: Value, size: u64| json!({"request": {"request": id, "url": "http://a/x", "method": "POST", "headers": [], "destination": "", "initiatorType": initiator, "bodySize": size}});
+        on_network(
+            "network.beforeRequestSent",
+            &request("F", json!("fetch"), 7),
+            &mut network,
+        );
+        on_network(
+            "network.beforeRequestSent",
+            &request("X", json!("xmlhttprequest"), 0),
+            &mut network,
+        );
+        on_network(
+            "network.beforeRequestSent",
+            &request("B", Value::Null, 2),
+            &mut network,
+        );
+        let mut kind = |id: &str| {
+            let entry = network.find_request_mut(id).unwrap();
+            (entry.resource_type.clone(), entry.has_request_body)
+        };
+        assert_eq!(kind("F"), (Some("fetch".into()), true));
+        assert_eq!(kind("X"), (Some("xmlhttprequest".into()), false));
+        assert_eq!(kind("B"), (None, true));
+    }
+
+    /// ISSUE-78 (Firefox): Firefox answers a cross-origin request the page
+    /// may not read with its status and body, and says so only in the
+    /// console: that message marks the request as blocked.
+    #[test]
+    fn cors_console_errors_mark_the_request() {
+        let text = "Cross-Origin Request Blocked: The Same Origin Policy disallows reading the remote resource at http://b/api/cors. (Reason: CORS header \u{2018}Access-Control-Allow-Origin\u{2019} missing). Status code: 200.";
+        let (url, reason) = cors_block(text).unwrap();
+        assert_eq!(url, "http://b/api/cors");
+        assert_eq!(
+            reason,
+            "CORS header \u{2018}Access-Control-Allow-Origin\u{2019} missing"
+        );
+        assert_eq!(cors_block("Uncaught TypeError: x"), None);
+        let mut network = crate::handler::NetworkState::default();
+        let sent = json!({"request": {"request": "R1", "url": "http://b/api/cors", "method": "GET", "headers": []}});
+        on_network("network.beforeRequestSent", &sent, &mut network);
+        network.note_blocked(url, &format!("blocked by CORS: {reason}"));
+        let entry = network.find_request_mut("R1").unwrap();
+        assert_eq!(
+            entry.error.as_deref(),
+            Some(
+                "blocked by CORS: CORS header \u{2018}Access-Control-Allow-Origin\u{2019} missing"
+            )
+        );
     }
 
     /// AUD-OB-17 (Firefox): repeated headers (several Set-Cookie) are kept,

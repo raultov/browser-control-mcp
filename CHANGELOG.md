@@ -24,6 +24,23 @@ from a copy of its code: entries describe the differences from that release.
   `log` level). Each worker is now attached like a frame of another origin
   (its own session, `Runtime` and `Network`; within the 50 watched targets
   per tab), and the tab's copies of its console messages are dropped. (#75)
+- `get_network_logs` shows what it used to hide (#78):
+  - A response body over 2 MB has `response_body_omitted` with its size,
+    instead of a bare `null`.
+  - A redirected request is still one line, but it says
+    `(after N redirects from <first URL>)` and `url_filter` matches any
+    hop. Its `redirects` are now `{url, status, location}` objects instead
+    of bare URLs.
+  - A CORS block names its reason: Chrome
+    `net::ERR_FAILED (blocked by CORS: MissingAllowOriginHeader)`. Firefox
+    showed the response as `200 OK`; the request now fails with
+    `blocked by CORS: <reason>`, read from Firefox's console error.
+  - On Chrome, a request the page canceled after its response arrived (an
+    `EventSource` it closed) keeps its status, with
+    `canceled_by_page: true`, instead of `failed: net::ERR_ABORTED`.
+  - Firefox: fetches and XHRs have a `resource_type` (`fetch`,
+    `xmlhttprequest`), and request bodies are kept (`request_post_data`, with
+    `request_post_data_encoding: "base64"` for a binary one).
 
 ## [0.11.0-beta.18] - 2026-11-03
 
