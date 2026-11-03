@@ -15,9 +15,9 @@ pub struct InvokeWebmcpToolTool {
     pub instance_id: Option<String>,
     /// Tab id; omit for the active tab.
     pub tab_id: Option<String>,
-    /// Frame id from webmcp_list_tools.
+    /// Frame id from webmcp_list_tools; omit it when one frame registers the tool.
     #[serde(rename = "frameId")]
-    pub frame_id: String,
+    pub frame_id: Option<String>,
 
     /// Name of the page's tool.
     #[serde(rename = "toolName")]
@@ -26,6 +26,39 @@ pub struct InvokeWebmcpToolTool {
     /// JSON object string matching its inputSchema. Default: '{}'.
     #[serde(default = "default_empty_json_object")]
     pub input: String,
+
+    /// How long to wait for the page tool's answer, 1 to 60000. Default: 10000.
+    pub timeout_ms: Option<u64>,
+}
+
+/// How long `webmcp_invoke_tool` waits by default: a tool waiting for the
+/// user's consent answers much later, and the invocation goes on.
+const DEFAULT_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// The longest wait `timeout_ms` may ask for.
+const MAX_WAIT_MS: u64 = 60_000;
+
+/// How often the invocation's state is read while waiting.
+const POLL: std::time::Duration = std::time::Duration::from_millis(100);
+
+impl InvokeWebmcpToolTool {
+    /// How long to wait for the page tool's answer.
+    pub(crate) fn wait(&self) -> std::time::Duration {
+        self.timeout_ms.map_or(DEFAULT_WAIT, |ms| {
+            std::time::Duration::from_millis(ms.clamp(1, MAX_WAIT_MS))
+        })
+    }
+}
+
+/// The error of an invocation still pending after `waited`.
+fn still_pending(tool_name: &str, invocation_id: &str, waited: std::time::Duration) -> String {
+    let waited = match waited.as_millis() {
+        ms if ms % 1000 == 0 => format!("{} s", ms / 1000),
+        ms => format!("{ms} ms"),
+    };
+    format!(
+        "Invocation '{tool_name}' is still pending after {waited} (the page tool may be waiting for user consent, e.g. a confirmation dialog). It has NOT been canceled: poll it with webmcp_get_invocation with invocationId=\"{invocation_id}\", or cancel it with webmcp_cancel_invocation."
+    )
 }
 
 fn default_empty_json_object() -> String {
@@ -66,8 +99,10 @@ impl InvokeWebmcpToolTool {
         let session = handler.session(tool.instance_id.clone()).await?;
         let input_obj = parse_input_object(&tool.input)?;
         let target = session.target(tool.tab_id.clone()).await?;
+        let webmcp_state = session.webmcp_state(tool.tab_id.clone())?;
+        let frame_id = tool.frame(&webmcp_state).await?;
         let invoke_params = serde_json::json!({
-            "frameId": tool.frame_id,
+            "frameId": frame_id,
             "toolName": tool.tool_name,
             "input": input_obj
         });
@@ -84,13 +119,37 @@ impl InvokeWebmcpToolTool {
             .ok_or_else(|| CallToolError::from_message("Did not receive invocationId"))?
             .to_string();
 
-        // Wait for the toolResponded event in the same tab's state
-        let webmcp_state = session.webmcp_state(tool.tab_id.clone())?;
-        // Timeout after 30 seconds (300 * 100ms)
-        for _ in 0..300 {
-            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-            let st = webmcp_state.lock().await;
-            let status = st.invocations.get(&invocation_id).and_then(|inv| {
+        tool.answer(&webmcp_state, &invocation_id).await
+    }
+
+    /// The frame to invoke the tool in: `frameId`, or the only frame
+    /// registering the tool.
+    async fn frame(
+        &self,
+        state: &tokio::sync::Mutex<super::WebmcpState>,
+    ) -> Result<String, CallToolError> {
+        match &self.frame_id {
+            Some(frame_id) => Ok(frame_id.clone()),
+            None => state
+                .lock()
+                .await
+                .frame_of(&self.tool_name)
+                .map_err(CallToolError::from_message),
+        }
+    }
+
+    /// Waits (at most [`Self::wait`]) for the `toolResponded` of
+    /// `invocation_id` in the tab's state, and gives its outcome.
+    async fn answer(
+        &self,
+        state: &tokio::sync::Mutex<super::WebmcpState>,
+        invocation_id: &str,
+    ) -> Result<CallToolResult, CallToolError> {
+        let deadline = tokio::time::Instant::now() + self.wait();
+        while tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(POLL).await;
+            let st = state.lock().await;
+            let status = st.invocations.get(invocation_id).and_then(|inv| {
                 inv.status
                     .as_deref()
                     .and_then(|status| invocation_outcome(status, inv))
@@ -99,9 +158,10 @@ impl InvokeWebmcpToolTool {
                 return outcome;
             }
         }
-        Err(CallToolError::from_message(format!(
-            "Invocation '{}' is still pending after 30s (the page tool may be waiting for user consent, e.g. a confirmation dialog). It has NOT been canceled: use webmcp_get_invocation with invocationId=\"{}\" to poll its status, or webmcp_list_invocations to see all pending invocations.",
-            tool.tool_name, invocation_id
+        Err(CallToolError::from_message(still_pending(
+            &self.tool_name,
+            invocation_id,
+            self.wait(),
         )))
     }
 }
@@ -247,6 +307,27 @@ mod tests {
         );
     }
 
+    /// ISSUE-73: frameId is optional, the wait defaults to 10 s and
+    /// timeout_ms bounds it; the pending reply names the way to cancel.
+    #[test]
+    fn frame_is_optional_and_the_wait_is_bounded() {
+        let tool = |args: serde_json::Value| -> InvokeWebmcpToolTool {
+            serde_json::from_value(args).unwrap()
+        };
+        let plain = tool(json!({"toolName": "t"}));
+        assert_eq!(plain.frame_id, None);
+        assert_eq!(plain.wait(), std::time::Duration::from_secs(10));
+        let quick = tool(json!({"toolName": "t", "timeout_ms": 500}));
+        assert_eq!(quick.wait(), std::time::Duration::from_millis(500));
+        let long = tool(json!({"toolName": "t", "timeout_ms": 999_999}));
+        assert_eq!(long.wait(), std::time::Duration::from_secs(60));
+        let note = still_pending("copy", "id-1", plain.wait());
+        assert!(
+            note.contains("after 10 s") && note.contains("webmcp_cancel_invocation"),
+            "{note}"
+        );
+    }
+
     /// AUD-RW-17: the output of a tool declaring untrusted content comes
     /// with a note saying to treat it as data.
     #[test]
@@ -345,6 +426,7 @@ mod tests {
             output: Some(json!({ "from": from })),
             error_text: None,
             untrusted_content: false,
+            note: None,
         }
     }
 

@@ -352,7 +352,9 @@ fn firefox_tools() -> Vec<ToolEntry> {
 
 fn gated_tools() -> Vec<ToolEntry> {
     use cdp_domains::fetch::enable_proxy_auth::EnableProxyAuthTool;
-    use cdp_domains::webmcp::{GetWebmcpInvocationTool, InvokeWebmcpToolTool};
+    use cdp_domains::webmcp::{
+        CancelWebmcpInvocationTool, GetWebmcpInvocationTool, InvokeWebmcpToolTool,
+    };
     use cdp_domains::webmcp::{ListWebmcpInvocationsTool, ListWebmcpToolsTool};
     const WEBMCP: &[Capability] = &[Capability::Webmcp];
     vec![
@@ -366,6 +368,7 @@ fn gated_tools() -> Vec<ToolEntry> {
         entry!(InvokeWebmcpToolTool, Gate::Webmcp, WEBMCP),
         entry!(GetWebmcpInvocationTool, Gate::Webmcp, WEBMCP),
         entry!(ListWebmcpInvocationsTool, Gate::Webmcp, WEBMCP),
+        entry!(CancelWebmcpInvocationTool, Gate::Webmcp, WEBMCP),
     ]
 }
 
@@ -1209,7 +1212,7 @@ The page reacted (the DOM changed) and settled after ",
         handler.flags.enable_webmcp = true;
         handler.tool_groups = vec![crate::cli::ToolGroup::All];
         let listed = names(listed_tools(&handler));
-        assert_eq!(listed.len(), 55);
+        assert_eq!(listed.len(), 56);
         assert!(listed.contains("restart_browser") && listed.contains("stop_browser"));
         assert!(!listed.contains("restart_chrome") && !listed.contains("stop_chrome"));
     }

@@ -2114,8 +2114,8 @@ mod tests {
         assert!(result.is_ok());
         let tools = result.unwrap().tools;
 
-        // With webmcp configured (34 + 4 = 38 tools)
-        assert_eq!(tools.len(), 38);
+        // With webmcp configured (34 + 5 = 39 tools)
+        assert_eq!(tools.len(), 39);
         let tool_names: Vec<String> = tools.into_iter().map(|t| t.name).collect();
         assert!(tool_names.contains(&"webmcp_list_tools".to_string()));
         assert!(tool_names.contains(&"webmcp_invoke_tool".to_string()));

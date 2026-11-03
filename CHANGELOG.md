@@ -10,6 +10,12 @@ from a copy of its code: entries describe the differences from that release.
 
 ## [Unreleased]
 
+### Added
+
+- `webmcp_cancel_invocation` (`--enable-webmcp`, Chrome) cancels a pending
+  WebMCP invocation with `WebMCP.cancelInvocation`; one Chrome no longer
+  knows (its page navigated away) is marked `Canceled`. (#73)
+
 ### Fixed
 
 - Chrome: `emulate` measures what the page sees once a resize (or a reset)
@@ -43,6 +49,18 @@ from a copy of its code: entries describe the differences from that release.
   - `list_tabs` lists the tabs by number on both browsers.
   - After `restart_browser`, Chrome registers the new browser's first tab
     (it listed none until the next call), as Firefox does.
+- WebMCP tools are easier to drive (#73):
+  - `webmcp_invoke_tool` waits 10 s by default (it blocked 30 s), or
+    `timeout_ms` (at most 60 000); the pending reply says how to poll or
+    cancel the invocation. `frameId` is optional when one frame registers
+    the tool (a clear error names the frames otherwise).
+  - A pending invocation whose page navigated away carries a `note` in
+    `webmcp_get_invocation` and `webmcp_list_invocations` (it showed
+    `Pending` forever).
+  - `webmcp_list_invocations` takes `status` in any case.
+  - `webmcp_list_tools` is compact JSON: `{frameId, tools}` with the frame
+    once when shared, no empty `required` and no false annotations (on
+    knot.kz, 789 tokens instead of ~1700).
 
 ## [0.11.0-beta.17] - 2026-11-02
 

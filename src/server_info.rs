@@ -24,7 +24,7 @@ pub const INSTRUCTIONS: &str = concat!(
     "- Tool groups: some tools are listed only when the server runs with --tool-groups: storage (cookies, web_storage), files (upload_file, save_pdf), raw (send_cdp_command, send_bidi_command, send_rdp_request, get_custom_events), perf (get_performance_metrics, profile_page_performance, audit_page), emulation (emulate), network (mock_route, list_routes, remove_route, set_offline), or all. A tool of a group that is off fails naming the flag.\n",
     "- Cookie import: with --allow-cookie-import, navigate, open_instance and restart_browser accept copy_cookies: true (Chrome only). Always ask the user before copying their real cookies.\n",
     "- Proxy: with --proxy-server, instances use the proxy and enable_proxy_auth answers proxy (407) authentication challenges.\n",
-    "- WebMCP: with --enable-webmcp, Chrome instances expose webmcp_list_tools, webmcp_invoke_tool, webmcp_get_invocation and webmcp_list_invocations."
+    "- WebMCP: with --enable-webmcp, Chrome instances expose webmcp_list_tools, webmcp_invoke_tool, webmcp_get_invocation, webmcp_list_invocations and webmcp_cancel_invocation."
 );
 
 /// The `initialize` result: name and version from Cargo, title, description,

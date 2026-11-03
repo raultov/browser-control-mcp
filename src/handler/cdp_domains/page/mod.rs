@@ -603,6 +603,7 @@ mod tests {
             output: None,
             error_text: None,
             untrusted_content: false,
+            note: None,
         }
     }
 

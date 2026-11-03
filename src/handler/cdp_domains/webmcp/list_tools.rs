@@ -4,6 +4,7 @@ use rust_mcp_sdk::{
     macros,
     schema::{CallToolError, CallToolRequestParams, CallToolResult},
 };
+use serde_json::{Value, json};
 
 #[macros::mcp_tool(
     name = "webmcp_list_tools",
@@ -15,6 +16,54 @@ pub struct ListWebmcpToolsTool {
     pub instance_id: Option<String>,
     /// Tab id; omit for the active tab.
     pub tab_id: Option<String>,
+}
+
+/// The tools as compact JSON (ISSUE-73: 7 tools cost ~1700 tokens):
+/// `{frameId, tools}` when they share one frame, else `{tools}`, each with
+/// its own;
+/// no empty `required`, no false annotations.
+pub(crate) fn listing(tools: &[crate::handler::cdp_domains::webmcp::WebmcpTool]) -> Value {
+    let shared = tools
+        .first()
+        .map(|t| &t.frame_id)
+        .filter(|frame| tools.iter().all(|t| &t.frame_id == *frame));
+    let rows: Vec<Value> = tools
+        .iter()
+        .map(|tool| {
+            let mut row = serde_json::to_value(tool).unwrap_or_default();
+            if let Some(row) = row.as_object_mut() {
+                compact(row, shared.is_some());
+            }
+            row
+        })
+        .collect();
+    match shared {
+        Some(frame) => json!({"frameId": frame, "tools": rows}),
+        None => json!({"tools": rows}),
+    }
+}
+
+/// Drops from a tool's JSON what says nothing: its frame when shared, an
+/// empty `required`, false annotations (and the annotations when none is
+/// left).
+fn compact(row: &mut serde_json::Map<String, Value>, shared_frame: bool) {
+    if shared_frame {
+        row.remove("frameId");
+    }
+    if let Some(schema) = row.get_mut("inputSchema").and_then(Value::as_object_mut)
+        && schema
+            .get("required")
+            .and_then(Value::as_array)
+            .is_some_and(Vec::is_empty)
+    {
+        schema.remove("required");
+    }
+    if let Some(annotations) = row.get_mut("annotations").and_then(Value::as_object_mut) {
+        annotations.retain(|_, flag| flag != &Value::Bool(false));
+        if annotations.is_empty() {
+            row.remove("annotations");
+        }
+    }
 }
 
 impl ListWebmcpToolsTool {
@@ -37,10 +86,12 @@ impl ListWebmcpToolsTool {
                 all_tools.push(tool.clone());
             }
         }
+        all_tools.sort_by(|a, b| (&a.frame_id, &a.name).cmp(&(&b.frame_id, &b.name)));
 
-        let content = serde_json::to_string_pretty(&all_tools).map_err(|e| {
-            CallToolError::from_message(format!("Failed to serialize tools: {}", e))
-        })?;
+        let content = match all_tools.is_empty() {
+            true => "[]".to_string(),
+            false => listing(&all_tools).to_string(),
+        };
 
         let mut content_list = vec![content.into()];
 
@@ -86,6 +137,35 @@ mod tests {
     fn extract_text(result: &CallToolResult) -> String {
         let content_val = serde_json::to_value(&result.content).unwrap();
         content_val[0]["text"].as_str().unwrap().to_string()
+    }
+
+    /// ISSUE-73: the listing is compact: one frameId when the tools share
+    /// it, no empty `required`, no false annotations.
+    #[test]
+    fn listing_is_compact() {
+        // Given two tools of one frame, with empty and false fields
+        let mut tool = make_tool("a", "F1");
+        tool.input_schema = Some(json!({"type": "object", "properties": {}, "required": []}));
+        tool.annotations = serde_json::from_value(
+            json!({"readOnly": true, "untrustedContent": false, "consequential": false}),
+        )
+        .ok();
+        let other = make_tool("b", "F1");
+        // When they are listed
+        let listed = listing(&[tool.clone(), other]);
+        // Then the frame is said once and the empty fields are gone
+        assert_eq!(listed["frameId"], "F1");
+        let first = &listed["tools"][0];
+        assert!(first.get("frameId").is_none());
+        assert_eq!(
+            first["inputSchema"],
+            json!({"type": "object", "properties": {}})
+        );
+        assert_eq!(first["annotations"], json!({"readOnly": true}));
+        // And tools of several frames keep their own
+        let listed = listing(&[tool, make_tool("c", "F2")]);
+        assert!(listed.get("frameId").is_none());
+        assert_eq!(listed["tools"][1]["frameId"], "F2");
     }
 
     #[tokio::test]

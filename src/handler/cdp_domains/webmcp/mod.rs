@@ -1,8 +1,10 @@
+pub mod cancel_invocation;
 pub mod get_invocation;
 pub mod invoke_tool;
 pub mod list_invocations;
 pub mod list_tools;
 
+pub use cancel_invocation::CancelWebmcpInvocationTool;
 pub use get_invocation::GetWebmcpInvocationTool;
 pub use invoke_tool::InvokeWebmcpToolTool;
 pub use list_invocations::ListWebmcpInvocationsTool;
@@ -86,7 +88,15 @@ pub struct WebmcpInvocation {
     /// replies with its output say to treat it as data.
     #[serde(skip)]
     pub untrusted_content: bool,
+    /// Why a pending invocation may never complete (its page navigated
+    /// away); cleared when its answer still comes (ISSUE-73).
+    #[serde(skip)]
+    pub note: Option<String>,
 }
+
+/// The note of a pending invocation whose page navigated away.
+pub(crate) const PAGE_GONE: &str =
+    "its page navigated away, so it may never complete: cancel it with webmcp_cancel_invocation";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ::serde::Serialize, ::serde::Deserialize, Default)]
 pub enum WebmcpAvailability {
@@ -130,6 +140,43 @@ impl WebmcpState {
     /// `webmcp_get_invocation` must keep working.
     pub(crate) fn clear_frame_tools(&mut self, frame_id: &str) {
         self.tools.remove(frame_id);
+        self.note_gone(|invocation| invocation.frame_id == frame_id);
+    }
+
+    /// Notes the pending invocations `of` selects that their page is gone
+    /// (they stayed `Pending` forever, ISSUE-73).
+    fn note_gone(&mut self, of: impl Fn(&WebmcpInvocation) -> bool) {
+        for invocation in self.invocations.values_mut() {
+            if invocation.status.is_none() && of(invocation) {
+                invocation.note = Some(PAGE_GONE.to_string());
+            }
+        }
+    }
+
+    /// The frame registering the tool `name`, for a call without
+    /// `frameId`: an error names the frames when several have it, or how
+    /// to list the tools when none has.
+    pub(crate) fn frame_of(&self, name: &str) -> Result<String, String> {
+        let mut frames: Vec<&String> = self
+            .tools
+            .iter()
+            .filter(|(_, tools)| tools.contains_key(name))
+            .map(|(frame, _)| frame)
+            .collect();
+        frames.sort();
+        match frames.as_slice() {
+            [one] => Ok((*one).clone()),
+            [] => Err(format!(
+                "No frame registered the WebMCP tool '{name}': call webmcp_list_tools to see the page's tools."
+            )),
+            many => Err(format!(
+                "Several frames register the WebMCP tool '{name}' ({}): pass frameId.",
+                many.iter()
+                    .map(|f| f.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )),
+        }
     }
 
     /// Drops every cached tool across all frames.
@@ -140,6 +187,7 @@ impl WebmcpState {
     /// reason as in [`Self::clear_frame_tools`].
     pub(crate) fn clear_all_tools(&mut self) {
         self.tools.clear();
+        self.note_gone(|_| true);
     }
 }
 
@@ -213,6 +261,7 @@ impl WebmcpState {
                 .get("errorText")
                 .and_then(|v| v.as_str())
                 .map(String::from);
+            inv.note = None;
         }
     }
 }
@@ -393,6 +442,75 @@ mod tests {
         }
     }
 
+    /// A pending invocation of `frame`.
+    fn pending(id: &str, frame: &str) -> WebmcpInvocation {
+        WebmcpInvocation {
+            tool_name: "toolA".into(),
+            frame_id: frame.into(),
+            invocation_id: id.into(),
+            ..Default::default()
+        }
+    }
+
+    /// ISSUE-73: a pending invocation whose page navigated away is noted
+    /// (it may never complete); its answer, if it still comes, replaces the
+    /// note. Finished invocations and other frames' are untouched.
+    #[test]
+    fn pending_invocations_of_a_gone_page_are_noted() {
+        // Given pending invocations in two frames and a finished one
+        let mut st = WebmcpState::default();
+        seed_tools(&mut st);
+        for invocation in [
+            pending("p-main", "frame-main"),
+            pending("p-frame", "frame-iframe"),
+        ] {
+            st.invocations
+                .insert(invocation.invocation_id.clone(), invocation);
+        }
+        let mut done = pending("done", "frame-main");
+        done.status = Some("Completed".into());
+        st.invocations.insert("done".into(), done);
+        let noted = |st: &WebmcpState, id: &str| st.invocations.get(id).unwrap().note.is_some();
+        // When the iframe navigates, then only its pending invocation is noted
+        st.clear_frame_tools("frame-iframe");
+        assert!(noted(&st, "p-frame") && !noted(&st, "p-main"));
+        // When the page navigates, its pending one is noted, not the finished one
+        st.clear_all_tools();
+        assert!(noted(&st, "p-main") && !noted(&st, "done"));
+        // And an answer that still comes replaces the note
+        st.record_response(&json!({"invocationId": "p-main", "status": "Completed"}));
+        assert!(!noted(&st, "p-main"));
+    }
+
+    /// ISSUE-73: the frame of a tool named without frameId: the only frame
+    /// registering it; none or several fail naming what to do.
+    #[test]
+    fn a_tool_name_finds_its_frame() {
+        // Given toolA in frame-main, and toolB in two frames
+        let mut st = WebmcpState::default();
+        seed_tools(&mut st);
+        let mut twice = st.tools["frame-main"]["toolA"].clone();
+        twice.name = "toolB".into();
+        for frame in ["frame-main", "frame-iframe"] {
+            let mut tool = twice.clone();
+            tool.frame_id = frame.into();
+            st.tools
+                .get_mut(frame)
+                .unwrap()
+                .insert("toolB".into(), tool);
+        }
+        // Then a single one is found, the others fail naming the way out
+        assert_eq!(st.frame_of("toolA").unwrap(), "frame-main");
+        let ambiguous = st.frame_of("toolB").unwrap_err();
+        assert!(
+            ambiguous.contains("frame-iframe") && ambiguous.contains("frame-main"),
+            "{ambiguous}"
+        );
+        assert!(ambiguous.contains("frameId"), "{ambiguous}");
+        let missing = st.frame_of("nope").unwrap_err();
+        assert!(missing.contains("webmcp_list_tools"), "{missing}");
+    }
+
     #[tokio::test]
     async fn given_clear_frame_tools_then_only_that_frame_is_dropped() {
         let mut st = WebmcpState::default();
@@ -423,6 +541,7 @@ mod tests {
                 output: None,
                 error_text: None,
                 untrusted_content: false,
+                note: None,
             },
         );
 

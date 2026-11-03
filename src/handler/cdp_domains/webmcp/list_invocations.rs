@@ -18,6 +18,16 @@ pub struct ListWebmcpInvocationsTool {
     pub status: Option<String>,
 }
 
+/// The statuses of a WebMCP invocation.
+const STATUSES: [&str; 4] = ["Pending", "Completed", "Error", "Canceled"];
+
+/// The status `given` names, in any case (ISSUE-73).
+pub(crate) fn canonical_status(given: &str) -> Option<&'static str> {
+    STATUSES
+        .into_iter()
+        .find(|status| status.eq_ignore_ascii_case(given))
+}
+
 impl ListWebmcpInvocationsTool {
     pub async fn handle(
         params: CallToolRequestParams,
@@ -28,16 +38,15 @@ impl ListWebmcpInvocationsTool {
         ))
         .map_err(|e| CallToolError::from_message(format!("Failed to parse arguments: {}", e)))?;
 
-        if let Some(filter) = &tool.status {
-            const VALID: [&str; 4] = ["Pending", "Completed", "Error", "Canceled"];
-            if !VALID.contains(&filter.as_str()) {
-                return Err(CallToolError::from_message(format!(
-                    "Invalid status filter '{}'. Must be one of: {}",
-                    filter,
-                    VALID.join(", ")
-                )));
-            }
-        }
+        let filter = match tool.status.as_deref() {
+            None => None,
+            Some(given) => Some(canonical_status(given).ok_or_else(|| {
+                CallToolError::from_message(format!(
+                    "Invalid status filter '{given}'. Must be one of: {} (any case)",
+                    STATUSES.join(", ")
+                ))
+            })?),
+        };
 
         let session = handler.session(tool.instance_id.clone()).await?;
         let webmcp_state = session.webmcp_state(tool.tab_id.clone())?;
@@ -50,19 +59,21 @@ impl ListWebmcpInvocationsTool {
                 .clone()
                 .unwrap_or_else(|| "Pending".to_string());
 
-            if let Some(filter) = &tool.status
-                && filter != &status
-            {
+            if filter.is_some_and(|filter| filter != status) {
                 continue;
             }
 
-            invocations.push(serde_json::json!({
+            let mut row = serde_json::json!({
                 "invocationId": invocation.invocation_id,
                 "toolName": invocation.tool_name,
                 "frameId": invocation.frame_id,
                 "input": invocation.input,
                 "status": status,
-            }));
+            });
+            if let Some(note) = &invocation.note {
+                row["note"] = serde_json::Value::String(note.clone());
+            }
+            invocations.push(row);
         }
 
         invocations.sort_by(|a, b| {
@@ -94,12 +105,22 @@ mod tests {
             output: None,
             error_text: None,
             untrusted_content: false,
+            note: None,
         }
     }
 
     fn extract_text(result: &CallToolResult) -> String {
         let content_val = serde_json::to_value(&result.content).unwrap();
         content_val[0]["text"].as_str().unwrap().to_string()
+    }
+
+    /// ISSUE-73: the status filter takes any case.
+    #[test]
+    fn status_filter_takes_any_case() {
+        assert_eq!(canonical_status("pending"), Some("Pending"));
+        assert_eq!(canonical_status("CANCELED"), Some("Canceled"));
+        assert_eq!(canonical_status("Completed"), Some("Completed"));
+        assert_eq!(canonical_status("Bogus"), None);
     }
 
     #[tokio::test]

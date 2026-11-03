@@ -44,6 +44,11 @@ impl<K: Eq + Hash + Clone, V, const CAP: usize> BoundedMap<K, V, CAP> {
         self.map.get_mut(key)
     }
 
+    /// Mutable access to every value (keys and the cap stay as they are).
+    pub fn values_mut(&mut self) -> impl Iterator<Item = &mut V> {
+        self.map.values_mut()
+    }
+
     /// Removes `key`.
     pub fn remove(&mut self, key: &K) -> Option<V> {
         self.order.retain(|k| k != key);

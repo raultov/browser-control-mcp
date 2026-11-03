@@ -58,6 +58,9 @@ impl GetWebmcpInvocationTool {
         if let Some(error_text) = &invocation.error_text {
             result["errorText"] = serde_json::Value::String(error_text.clone());
         }
+        if let Some(note) = &invocation.note {
+            result["note"] = serde_json::Value::String(note.clone());
+        }
         if invocation.untrusted_content {
             result["untrustedContent"] = serde_json::Value::Bool(true);
         }

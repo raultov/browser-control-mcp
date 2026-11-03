@@ -165,10 +165,11 @@ see the note.
 | `send_cdp_command` | ✓ | ✗ | `raw` group; raw Chrome DevTools Protocol; refuses `Network`/`Page`/`Runtime`/`Log`/`Debugger.disable` and `Browser.close`; `Fetch.enable` comes with a note |
 | `send_bidi_command` | ✗ | ✓ | `raw` group; raw WebDriver BiDi; refuses `session.new`, `session.end`, `browser.close` |
 | `send_rdp_request` | ✗ | ✓ | `raw` group; raw Firefox RDP request to an actor (`thread`, `console`, `root` shortcuts); the event packets that actor sends afterwards go to `get_custom_events` (at most 16 actors watched) |
-| `webmcp_list_tools` | ✓ | ✗ | needs `--enable-webmcp`; WebMCP is a Chrome testing feature; every annotation Chrome reports is listed (`readOnly`, `consequential`, `untrustedContent`, `debugging`, `autosubmit`, newer ones as they are) |
-| `webmcp_invoke_tool` | ✓ | ✗ | needs `--enable-webmcp`; a tool answering in MCP shape (`{content, isError}`) gives its own text and image blocks, and its `isError` makes the reply an error; other output comes as JSON; the output of an `untrustedContent` tool comes with a note to treat it as data |
-| `webmcp_get_invocation` | ✓ | ✗ | needs `--enable-webmcp` |
-| `webmcp_list_invocations` | ✓ | ✗ | needs `--enable-webmcp` |
+| `webmcp_list_tools` | ✓ | ✗ | needs `--enable-webmcp`; WebMCP is a Chrome testing feature; every annotation Chrome reports is listed (`readOnly`, `consequential`, `untrustedContent`, `debugging`, `autosubmit`, newer ones as they are); compact JSON `{frameId, tools}` (`frameId` once when the tools share it), without empty `required` or false annotations |
+| `webmcp_invoke_tool` | ✓ | ✗ | needs `--enable-webmcp`; `frameId` optional when one frame registers the tool; waits `timeout_ms` (default 10 000, at most 60 000) for the answer, then says how to poll or cancel it; a tool answering in MCP shape (`{content, isError}`) gives its own text and image blocks, and its `isError` makes the reply an error; other output comes as JSON; the output of an `untrustedContent` tool comes with a note to treat it as data |
+| `webmcp_get_invocation` | ✓ | ✗ | needs `--enable-webmcp`; a pending invocation whose page navigated away carries a `note` |
+| `webmcp_list_invocations` | ✓ | ✗ | needs `--enable-webmcp`; `status` in any case |
+| `webmcp_cancel_invocation` | ✓ | ✗ | needs `--enable-webmcp`; cancels a pending invocation (`WebMCP.cancelInvocation`); one Chrome no longer knows (its page is gone) is marked `Canceled` |
 
 After `click_element`, `hover`, `drag`, `fill_input`, `fill_form` and
 `press_key` the server waits for the page to settle before answering: until its DOM
@@ -617,8 +618,9 @@ incompatible:
 - Firefox WebSocket frames and page errors need the Firefox debugger port
   (WebDriver BiDi has no WebSocket frame events); binary frames are reported
   as Firefox gives them, not base64 as on Chrome.
-- `webmcp_list_tools`, `webmcp_invoke_tool`, `webmcp_get_invocation` and
-  `webmcp_list_invocations` are Chrome only (a Chrome testing feature).
+- `webmcp_list_tools`, `webmcp_invoke_tool`, `webmcp_get_invocation`,
+  `webmcp_list_invocations` and `webmcp_cancel_invocation` are Chrome only
+  (a Chrome testing feature).
 - `send_cdp_command` is Chrome only; `send_bidi_command` and
   `send_rdp_request` are Firefox only.
 - Cookie import (`--allow-cookie-import`) and launch presets (`features`) are
