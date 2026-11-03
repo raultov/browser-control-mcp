@@ -266,12 +266,17 @@ pub(crate) struct FirefoxSession {
     /// The frames of another origin `snapshot` read, per tab (see
     /// `handler::frames`).
     pub(crate) frames: crate::handler::frames::FrameTables,
+    /// The files the instance's pages downloaded, and where (#77).
+    pub(crate) downloads: Arc<tokio::sync::Mutex<crate::handler::downloads::DownloadState>>,
 }
 
 impl FirefoxSession {
     /// A session that has not launched anything yet.
     pub(crate) fn new(spec: FirefoxSpec) -> Self {
+        let downloads =
+            crate::handler::downloads::DownloadState::with_root(spec.downloads_dir.clone());
         Self {
+            downloads: Arc::new(tokio::sync::Mutex::new(downloads)),
             spec: Mutex::new(spec),
             browser: Mutex::new(None),
             tabs: Default::default(),
@@ -372,6 +377,7 @@ impl FirefoxSession {
             tabs: self.tabs.clone(),
             lagged: self.lagged.clone(),
             custom_modules: self.custom_modules.clone(),
+            downloads: self.downloads.clone(),
         };
         let pump = super::pump::spawn(
             events,
@@ -388,7 +394,33 @@ impl FirefoxSession {
         let _ = client
             .send_raw_command("network.addDataCollector", collector)
             .await;
+        self.save_downloads(browser, &client).await;
         self.register_initial_tabs(browser).await
+    }
+
+    /// Has Firefox save downloads in the instance's directory (#77). Best
+    /// effort: without it Firefox saves them where its profile says, and
+    /// they are still reported.
+    async fn save_downloads(&self, browser: &Browser, client: &bidi_browser_lite::BidiClient) {
+        let profile = browser.profile_dir().await;
+        let dir = match self.downloads.lock().await.prepare(profile.as_deref()) {
+            Ok(dir) => dir,
+            Err(e) => {
+                tracing::warn!(error = %e.kind(), "could not create the downloads directory");
+                return;
+            }
+        };
+        let behavior =
+            serde_json::json!({"downloadBehavior": {"type": "allowed", "destinationFolder": dir}});
+        if client
+            .send_raw_command("browser.setDownloadBehavior", behavior)
+            .await
+            .is_err()
+        {
+            tracing::warn!(
+                "Firefox refused browser.setDownloadBehavior: downloads go to its default folder"
+            );
+        }
     }
 
     /// Attaches the debugger of every registered tab (WebSocket frames and
@@ -473,6 +505,8 @@ impl FirefoxSession {
         *write(&self.own_subscription) = None;
         *write(&self.pump_client) = None;
         self.lagged.store(0, Ordering::Relaxed);
+        // A relaunched browser may have another profile (#77).
+        self.downloads.lock().await.reset();
     }
 
     /// `(host, BiDi port, profile dir)` of the running browser.

@@ -122,6 +122,7 @@ see the note.
 | `open_tab` | ✓ | ✓ | the new tab becomes the active one, in front |
 | `close_tab` | ✓ | ✓ | `tab_id` defaults to the active tab; the most recently active open tab (else the newest) becomes active and is brought to the front |
 | `list_tabs` | ✓ | ✓ | tabs in the order they were opened (`tab-2` before `tab-10`) |
+| `list_downloads` | ✓ | ✓ | the files the instance's pages downloaded, oldest first (`id`, `url`, `file_name`, `path` once complete, `state` `in_progress` / `completed` / `canceled`, sizes, `tab_id`), and the `directory` they are saved in; an input action that starts a download says where the file went. Chrome: saved under its guid (`Browser.setDownloadBehavior` `allowAndName`), then given its name without replacing a file (`data (1).csv`); Firefox: `browser.setDownloadBehavior`, numbered by Firefox (`data(1).csv`), sizes read from the saved file |
 | `switch_tab` | ✓ | ✓ | |
 | `navigate` | ✓ | ✓ | `history: "back"` or `"forward"` instead of `url` moves one entry in the tab's history and waits for the page to load (also when it comes from the back-forward cache, which fires no `load`); at either end it fails without moving; a URL the browser saves instead of opening (a download: `Content-Disposition: attachment`, or a type such as CSV) fails saying so, and the tab stays where it was; a page behind HTTP authentication (401) fails at once naming its scheme and realm and how to log in (credentials in the URL, `http://user:password@host/path`, which the browser keeps for the session); a page that pauses at a breakpoint or opens a dialog while loading fails at once naming it (see `resume`, `handle_dialog`) |
 | `reload` | ✓ | ✓ | a pause, a dialog or HTTP authentication while loading fails at once, as with `navigate` |
@@ -397,7 +398,7 @@ claude mcp add browser-control-mcp -- npx -y @raultov/browser-control-mcp
   pages (an error status, 400 and up, also adds a note; an error page with
   an empty body is reported the same way on both browsers). A URL the
   browser downloads fails with `Navigation failed: the URL is a
-  download...`. `open_tab` answers `{tab_id, target_id, url, label}` with the
+  download...`; the file is still saved (see `list_downloads`). `open_tab` answers `{tab_id, target_id, url, label}` with the
   final URL. A network error (unknown host, refused connection...) fails with
   `Navigation failed: <browser's code> (<url>)`, e.g.
   `net::ERR_NAME_NOT_RESOLVED` on Chrome and `NS_ERROR_UNKNOWN_HOST` on
@@ -471,6 +472,7 @@ claude mcp add browser-control-mcp -- npx -y @raultov/browser-control-mcp
 | `--secrets <FILE>` | none | dotenv file (`NAME=value`, at least 4 characters per value) whose values every tool result and error shows as `<secret:NAME>`; `fill_input` and `fill_form` type the value of a `<secret:NAME>` (see [Security notes](#security-notes)) | same |
 | `--tool-groups <GROUPS>` | none | lists the opt-in tool groups, comma separated: `storage`, `files`, `raw`, `perf`, `emulation`, `network` or `all` (see [Tool groups](#tool-groups)) | same |
 | `--upload-root <DIR>` | working + temp dir | directory `upload_file` may read files from and `save_pdf` may write PDFs to (repeatable; replaces the defaults) | same |
+| `--downloads-dir <DIR>` | inside the instance's profile | each instance saves downloads in `<DIR>/<instance id>` (kept after the instance closes); without it, in a `downloads` folder of the instance's temporary profile (deleted with it), or a new folder in the system temp directory for an attached browser or `--user-profile` | same; snap Firefox can only write to non-hidden folders of `$HOME` (not `~/.local/...`): it cancels the download otherwise |
 | `--enable-webmcp` | off | WebMCP switches and `webmcp_*` tools | capability error |
 | `--proxy-server <URL>` | none | proxy for every instance; exposes `enable_proxy_auth` | `http://` and `socks5://` proxies |
 | `--proxy-username <USER>` | none | answers proxy (407) challenges | same (untested) |
@@ -663,6 +665,10 @@ incompatible:
   profile; the agent must ask you before using `copy_cookies`.
 - `cookies` and `web_storage` hide values (often session tokens) unless
   `show_values: true`; values never reach the logs.
+- Downloads are written only to the instance's downloads directory (see
+  `--downloads-dir`): a suggested name keeps only its file name, an
+  instance label only letters, digits, `-` and `_`, and an existing file is
+  never replaced.
 - `upload_file` hands the page a file's contents: it only reads files under
   the upload roots (the server's working directory and the system temp
   directory, or the `--upload-root` directories), resolved so `..` and

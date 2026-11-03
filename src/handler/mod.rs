@@ -3,6 +3,7 @@ pub mod cdp_domains;
 pub mod chrome_instance;
 pub(crate) mod debugging;
 pub(crate) mod dialogs;
+pub(crate) mod downloads;
 pub(crate) mod evaluation;
 pub(crate) mod frames;
 pub(crate) mod insights;
@@ -849,6 +850,8 @@ pub(crate) struct BrowserSession {
     fallback_debugger: std::sync::atomic::AtomicBool,
     /// The frames of another origin `snapshot` read, per tab (`frames`).
     pub(crate) frames: frames::FrameTables,
+    /// The files the instance's pages downloaded, and where (#77).
+    pub(crate) downloads: Arc<Mutex<downloads::DownloadState>>,
 }
 
 impl BrowserSession {
@@ -893,6 +896,16 @@ impl BrowserSession {
             first_tab_pending: Default::default(),
             fallback_debugger: Default::default(),
             frames: Default::default(),
+            downloads: Default::default(),
+        }
+    }
+
+    /// The session saving its downloads in `root` (`--downloads-dir`'s
+    /// folder of the instance) when given.
+    pub(crate) fn with_downloads_root(self, root: Option<std::path::PathBuf>) -> Self {
+        Self {
+            downloads: Arc::new(Mutex::new(downloads::DownloadState::with_root(root))),
+            ..self
         }
     }
 
@@ -910,6 +923,8 @@ impl BrowserSession {
         *self.route_state.lock().await = Default::default();
         cdp_domains::custom::clear_custom_listeners(&self.custom_state).await;
         crate::util::sync::write(&self.tabs).clear();
+        // A relaunched browser may have another profile (#77).
+        self.downloads.lock().await.reset();
     }
 
     /// Returns the browser-level CDP client used for tab management.
@@ -972,22 +987,38 @@ impl BrowserSession {
         cdp_domains::debugger::sync_pauses(&target, &self.debugger_state).await;
         self.fallback_debugger
             .store(true, std::sync::atomic::Ordering::SeqCst);
-        // Start the tab lifecycle listener (Target.*)
-        if let Ok(browser_client) = {
-            let manager = self.chrome_manager.lock().await;
-            manager.browser_client().await
-        } {
-            handles.push(
-                chrome_instance::tab_lifecycle::start_tab_lifecycle_listener(
-                    browser_client,
-                    self.tabs.clone(),
-                    self.enable_webmcp,
-                ),
-            );
-            self.first_tab_pending
-                .store(true, std::sync::atomic::Ordering::SeqCst);
-        }
+        self.start_browser_listeners(&mut handles).await;
         *self.session_listeners.lock().await = handles;
+    }
+
+    /// Starts the listeners of the browser-level connection: downloads
+    /// (#77) and the tab lifecycle (`Target.*`).
+    async fn start_browser_listeners(
+        &self,
+        handles: &mut cdp_domains::event_pump::ListenerHandles,
+    ) {
+        let Ok(browser_client) = self.chrome_manager.lock().await.browser_client().await else {
+            return;
+        };
+        let profile = self.chrome_manager.lock().await.profile_dir().await;
+        let downloads = chrome_instance::downloads::start_download_listener(
+            &browser_client,
+            self.downloads.clone(),
+            self.tabs.clone(),
+            profile.as_deref(),
+        );
+        if let Some(downloads) = downloads.await {
+            handles.push(downloads);
+        }
+        handles.push(
+            chrome_instance::tab_lifecycle::start_tab_lifecycle_listener(
+                browser_client,
+                self.tabs.clone(),
+                self.enable_webmcp,
+            ),
+        );
+        self.first_tab_pending
+            .store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// `WebMCP.enable` when the flag is on; records the resulting availability.
@@ -1333,13 +1364,41 @@ pub struct McpHandler {
     pub(crate) firefox_spec: crate::backend::bidi::launch::FirefoxSpec,
     /// `--upload-root` directories (empty: the defaults of `upload_file`).
     pub(crate) upload_roots: Vec<std::path::PathBuf>,
+    /// `--downloads-dir`: each instance saves downloads in a folder of it.
+    pub(crate) downloads_dir: Option<std::path::PathBuf>,
     /// `--tool-groups`: the opt-in groups listed and callable.
     pub(crate) tool_groups: Vec<crate::cli::ToolGroup>,
     /// `--secrets`: masked in every tool outcome, typed by `<secret:NAME>`.
     pub(crate) secrets: crate::secrets::Secrets,
 }
 
+/// The session of the default Chrome instance, launched in `pool`.
+fn default_chrome_session(
+    params: &chrome_instance::launch::LaunchParams,
+    pool: &Arc<cdp_browser_lite::BrowserPool>,
+    enable_webmcp: bool,
+    downloads_dir: Option<&std::path::Path>,
+) -> Arc<BrowserSession> {
+    let manager = chrome_instance::cdp_browser_manager::CdpBrowserManager::new(
+        params.clone(),
+        Box::new(chrome_instance::cdp_browser_manager::RealLauncher { pool: pool.clone() }),
+    );
+    let downloads_root = downloads_dir.map(|dir| downloads::instance_folder(dir, "default"));
+    let session = BrowserSession::new(
+        Arc::new(Mutex::new(manager)),
+        cdp_domains::webmcp::WebmcpAvailability::initial(enable_webmcp),
+        enable_webmcp,
+    );
+    Arc::new(session.with_downloads_root(downloads_root))
+}
+
 impl McpHandler {
+    /// Where instance `id` saves downloads when `--downloads-dir` is given.
+    pub(crate) fn downloads_root(&self, id: &str) -> Option<std::path::PathBuf> {
+        let dir = self.downloads_dir.as_deref()?;
+        Some(downloads::instance_folder(dir, id))
+    }
+
     /// The Firefox instance `id` (`None` = the default instance, created on
     /// first use when `--browser firefox`).
     pub(crate) async fn firefox(
@@ -1364,7 +1423,9 @@ impl McpHandler {
                 ids.join(", ")
             )));
         }
-        let session = Arc::new(FirefoxSession::new(self.firefox_spec.clone()));
+        let mut spec = self.firefox_spec.clone();
+        spec.downloads_dir = self.downloads_root(id);
+        let session = Arc::new(FirefoxSession::new(spec));
         let mut desc = chrome_instance::registry::InstanceDescriptor::default_instance(
             self.firefox_spec.firefox.firefox_port.unwrap_or(0),
             Vec::new(),
@@ -1468,16 +1529,9 @@ impl McpHandler {
         let pool = Arc::new(cdp_browser_lite::BrowserPool::new());
         let registry = Arc::new(chrome_instance::registry::Registry::new(8)); // max 8 instances
 
-        let manager = chrome_instance::cdp_browser_manager::CdpBrowserManager::new(
-            params.clone(),
-            Box::new(chrome_instance::cdp_browser_manager::RealLauncher { pool: pool.clone() }),
-        );
-        let enable_webmcp = options.server.enable_webmcp;
-        let session = Arc::new(BrowserSession::new(
-            Arc::new(Mutex::new(manager)),
-            cdp_domains::webmcp::WebmcpAvailability::initial(enable_webmcp),
-            enable_webmcp,
-        ));
+        let downloads_dir = options.upload.downloads_dir.as_deref();
+        let session =
+            default_chrome_session(&params, &pool, options.server.enable_webmcp, downloads_dir);
 
         let features = params.features().iter().map(|f| f.as_name().to_string());
         let mut default = chrome_instance::registry::InstanceDescriptor::default_instance(
@@ -1494,6 +1548,7 @@ impl McpHandler {
             browser: options.browser,
             proxy: options.proxy.proxy_server.clone(),
             firefox: options.firefox,
+            downloads_dir: None,
         };
 
         Self {
@@ -1507,6 +1562,7 @@ impl McpHandler {
             default_browser: options.default_browser,
             firefox_spec,
             upload_roots: options.upload.upload_roots,
+            downloads_dir: options.upload.downloads_dir,
             tool_groups: options.tools.tool_groups,
             secrets: options.secrets,
         }
@@ -1548,6 +1604,7 @@ impl McpHandler {
             default_browser: Default::default(),
             firefox_spec: Default::default(),
             upload_roots: Vec::new(),
+            downloads_dir: None,
             tool_groups: Vec::new(),
             secrets: Default::default(),
         }
@@ -2116,8 +2173,8 @@ mod tests {
         assert!(result.is_ok());
         let tools = result.unwrap().tools;
 
-        // Without proxy, webmcp and tool groups, 34 tools are listed
-        assert_eq!(tools.len(), 34);
+        // Without proxy, webmcp and tool groups, 35 tools are listed
+        assert_eq!(tools.len(), 35);
         let tool_names: Vec<String> = tools.into_iter().map(|t| t.name).collect();
         assert!(tool_names.contains(&"scroll".to_string()));
         assert!(tool_names.contains(&"capture_screenshot".to_string()));
@@ -2147,8 +2204,8 @@ mod tests {
         assert!(result.is_ok());
         let tools = result.unwrap().tools;
 
-        // With proxy configured (and webmcp disabled), 35 tools are listed
-        assert_eq!(tools.len(), 35);
+        // With proxy configured (and webmcp disabled), 36 tools are listed
+        assert_eq!(tools.len(), 36);
         let tool_names: Vec<String> = tools.into_iter().map(|t| t.name).collect();
         assert!(tool_names.contains(&"enable_proxy_auth".to_string()));
     }
@@ -2166,8 +2223,8 @@ mod tests {
         assert!(result.is_ok());
         let tools = result.unwrap().tools;
 
-        // With webmcp configured (34 + 5 = 39 tools)
-        assert_eq!(tools.len(), 39);
+        // With webmcp configured (35 + 5 = 40 tools)
+        assert_eq!(tools.len(), 40);
         let tool_names: Vec<String> = tools.into_iter().map(|t| t.name).collect();
         assert!(tool_names.contains(&"webmcp_list_tools".to_string()));
         assert!(tool_names.contains(&"webmcp_invoke_tool".to_string()));

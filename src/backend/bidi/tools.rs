@@ -1051,6 +1051,7 @@ pub(crate) async fn open_instance(
     spec.browser.user_profile = false;
     spec.firefox.firefox_port = None;
     spec.firefox.firefox_rdp_port = None;
+    spec.downloads_dir = handler.downloads_root(&id);
     if let Some(proxy) = &args.proxy {
         spec.proxy = Some(proxy.clone());
     }

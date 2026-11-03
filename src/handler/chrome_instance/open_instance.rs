@@ -82,11 +82,8 @@ impl OpenInstanceTool {
             handler.base_params.browser.user_profile,
         )
         .map_err(CallToolError::from_message)?;
-        let session = Arc::new(BrowserSession::new(
-            new_manager(handler, &child_params, seed_report),
-            cdp_domains::webmcp::WebmcpAvailability::NotRequested,
-            handler.flags.enable_webmcp,
-        ));
+        let manager = new_manager(handler, &child_params, seed_report);
+        let session = new_session(handler, manager, &instance_id);
         let desc = launch(&session, instance_id, &args, &child_params).await?;
         if let Err(e) = handler.registry.add_session(desc.clone(), session.clone()) {
             // Lost a race with a concurrent open_instance.
@@ -134,6 +131,20 @@ impl OpenInstanceTool {
         }
         params
     }
+}
+
+/// The session of the new Chrome instance `id`, launched by `manager`.
+fn new_session(
+    handler: &McpHandler,
+    manager: Arc<Mutex<dyn ChromeManager>>,
+    id: &str,
+) -> Arc<BrowserSession> {
+    let session = BrowserSession::new(
+        manager,
+        cdp_domains::webmcp::WebmcpAvailability::NotRequested,
+        handler.flags.enable_webmcp,
+    );
+    Arc::new(session.with_downloads_root(handler.downloads_root(id)))
 }
 
 fn new_manager(

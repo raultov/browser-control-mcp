@@ -31,8 +31,11 @@ pub(crate) const EVENTS: &[&str] = &[
 
 /// Events subscribed when Firefox knows them: an older one refuses the
 /// whole subscription that names them, which is then made without.
-pub(crate) const OPTIONAL_EVENTS: &[&str] =
-    &["browsingContext.downloadWillBegin", "network.authRequired"];
+pub(crate) const OPTIONAL_EVENTS: &[&str] = &[
+    "browsingContext.downloadWillBegin",
+    "browsingContext.downloadEnd",
+    "network.authRequired",
+];
 
 /// What the pump shares with its session.
 #[derive(Clone)]
@@ -40,6 +43,8 @@ pub(crate) struct PumpState {
     pub(crate) tabs: Arc<RwLock<FirefoxTabs>>,
     pub(crate) lagged: Arc<AtomicU64>,
     pub(crate) custom_modules: Arc<RwLock<Vec<String>>>,
+    /// The instance's downloads (#77).
+    pub(crate) downloads: Arc<tokio::sync::Mutex<crate::handler::downloads::DownloadState>>,
 }
 
 /// Starts the pump task.
@@ -109,6 +114,7 @@ async fn handle(method: &str, params: &Value, client: &BrowserClient, state: &Pu
             on_prompt(method, params, state).await;
         }
         "browsingContext.downloadWillBegin" => on_download(params, state).await,
+        "browsingContext.downloadEnd" => on_download_end(params, state).await,
         "log.entryAdded" => on_log(params, state).await,
         _ if method.starts_with("network.") => {
             if let Some(network) = tab_part(state, params, |t| t.network.clone()) {
@@ -147,12 +153,52 @@ fn cors_block(text: &str) -> Option<(&str, &str)> {
 }
 
 /// Notes in the tab owning the event's context that a navigation became a
-/// download (`navigate` then fails saying so).
+/// download (`navigate` then fails saying so), and records the download
+/// (#77).
 async fn on_download(params: &Value, state: &PumpState) {
     let url = string_or_empty(params, "url");
     let network = tab_part(state, params, |t| t.network.clone());
     if let (Some(navigation), Some(network)) = (str_field(params, "navigation"), network) {
         network.lock().await.note_download(navigation, &url);
+    }
+    let Some(id) = download_id(params) else {
+        return;
+    };
+    let tab = event_context(params).and_then(|context| read(&state.tabs).tab_of(context));
+    let name = str_field(params, "suggestedFilename").unwrap_or(id);
+    let download = crate::handler::downloads::Download::begun(id, &url, name, tab);
+    state.downloads.lock().await.begin(download);
+}
+
+/// A download's id: `download`, or the id of the navigation that became
+/// one where Firefox names no download.
+fn download_id(params: &Value) -> Option<&str> {
+    str_field(params, "download").or_else(|| str_field(params, "navigation"))
+}
+
+/// Completes (with its file and size) or cancels a download that ended.
+async fn on_download_end(params: &Value, state: &PumpState) {
+    use crate::handler::downloads::DownloadStatus;
+    let Some(id) = download_id(params) else {
+        return;
+    };
+    let path = str_field(params, "filepath").map(std::path::PathBuf::from);
+    // Firefox reports no size: the file's, when the server can see it.
+    let size = match &path {
+        Some(path) => tokio::fs::metadata(path).await.ok().map(|m| m.len()),
+        None => None,
+    };
+    let mut downloads = state.downloads.lock().await;
+    let Some(download) = downloads.get_mut(id) else {
+        return;
+    };
+    if str_field(params, "status") == Some("complete") {
+        download.state = DownloadStatus::Completed;
+        download.path = path;
+        download.received_bytes = size;
+        download.total_bytes = size;
+    } else {
+        download.state = DownloadStatus::Canceled;
     }
 }
 
@@ -512,6 +558,7 @@ mod tests {
             tabs: Default::default(),
             lagged: Default::default(),
             custom_modules: Default::default(),
+            downloads: Default::default(),
         };
         let tab = client.attach("ctx-0").await.unwrap();
         write(&state.tabs)
@@ -847,6 +894,45 @@ mod tests {
         let network = tab.network.lock().await;
         assert!(network.is_download("n7"));
         assert!(!network.is_download("n8"));
+    }
+
+    /// ISSUE-77 (Firefox): a download is recorded when it begins, with its
+    /// tab, and completed with its file and size (or canceled) when it ends.
+    #[tokio::test]
+    async fn downloads_are_recorded_until_they_end() {
+        use crate::handler::downloads::DownloadStatus;
+        let mock = MockBidi::start(MockBidiBehavior::Ready).await.unwrap();
+        let (client, state) = one_tab(&mock).await;
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("data.csv");
+        std::fs::write(&file, "a,b\n1,2\n").unwrap();
+        let begin = |id: &str| json!({"context": "ctx-0", "download": id, "navigation": "n1", "url": "http://a/download", "suggestedFilename": "data.csv"});
+        let events = [
+            ("browsingContext.downloadWillBegin", begin("d1")),
+            ("browsingContext.downloadWillBegin", begin("d2")),
+            (
+                "browsingContext.downloadEnd",
+                json!({"context": "ctx-0", "download": "d1", "navigation": "n1", "status": "complete", "filepath": file}),
+            ),
+            (
+                "browsingContext.downloadEnd",
+                json!({"context": "ctx-0", "download": "d2", "navigation": "n1", "status": "canceled", "filepath": null}),
+            ),
+        ];
+        for (method, params) in events {
+            route(&event(method, params), &client, &state).await;
+        }
+        let downloads = state.downloads.lock().await.since(0);
+        let first = &downloads[0];
+        assert_eq!(
+            (first.state, first.tab_id.as_deref()),
+            (DownloadStatus::Completed, Some("tab-1"))
+        );
+        assert_eq!(
+            (first.path.as_deref(), first.received_bytes),
+            (Some(file.as_path()), Some(8))
+        );
+        assert_eq!(downloads[1].state, DownloadStatus::Canceled);
     }
 
     /// BID-11: A top-level navigation starts a new bucket and updates the URL.

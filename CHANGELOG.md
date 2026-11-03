@@ -10,6 +10,22 @@ from a copy of its code: entries describe the differences from that release.
 
 ## [Unreleased]
 
+### Added
+
+- Downloads are saved and reported on both browsers (#77). A click that
+  downloads a file used to say only that the page reacted, and the agent
+  could not find the file. Now each instance saves downloads in a directory
+  of its own, the input action's reply says
+  `The action downloaded data.csv (8 bytes) to <path>.` (or that the file
+  is still downloading, or was canceled), and the new `list_downloads` tool
+  lists them with their state, sizes and tab. The directory is
+  `--downloads-dir <DIR>/<instance id>` (new flag), else a `downloads`
+  folder inside the instance's temporary profile (deleted with it), else a
+  new folder in the system temp directory (an attached browser, or
+  `--user-profile`). A file is never replaced: Chrome saves each download
+  under its guid, then the server names it `data.csv`, `data (1).csv`...;
+  Firefox numbers them itself (`data(1).csv`).
+
 ### Fixed
 
 - Accepting a `beforeunload` with `handle_dialog` returns once the

@@ -1,6 +1,7 @@
 pub mod cdp_browser_manager;
 pub mod close_tab;
 pub(crate) mod cookie_seed;
+pub(crate) mod downloads;
 #[cfg(test)]
 pub mod integration_tests;
 pub mod launch;

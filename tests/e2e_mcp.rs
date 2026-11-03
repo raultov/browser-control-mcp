@@ -2106,13 +2106,42 @@ mod e2e {
     /// ISSUE-39: a URL the browser saves (a CSV, without
     /// Content-Disposition) fails as a download on both browsers.
     fn download_steps(instance: &str, base: &str) -> Vec<Step> {
-        let to = json!({"instance_id": instance, "url": format!("{base}/data.csv")});
-        vec![(
-            "ISSUE-39 a saved type is a download",
-            "navigate",
-            to,
-            "!the URL is a download",
-        )]
+        let i = json!(instance);
+        let to = json!({"instance_id": i, "url": format!("{base}/data.csv")});
+        let link = "{ const link = document.createElement('a'); link.id = 'dl77'; link.href = '/data.csv?e2e77'; link.textContent = 'save'; document.body.prepend(link); } 1";
+        vec![
+            (
+                "ISSUE-39 a saved type is a download",
+                "navigate",
+                to,
+                "!the URL is a download",
+            ),
+            // ISSUE-77: a click that downloads a file says where it went
+            (
+                "ISSUE-77 a download link",
+                "evaluate_js",
+                json!({"instance_id": i, "expression": link}),
+                "",
+            ),
+            (
+                "ISSUE-77 the click names the saved file",
+                "click_element",
+                json!({"instance_id": i, "selector": "#dl77"}),
+                "The action downloaded data",
+            ),
+            (
+                "ISSUE-77 list_downloads lists it",
+                "list_downloads",
+                json!({"instance_id": i}),
+                "e2e77",
+            ),
+            (
+                "ISSUE-77 it is complete",
+                "list_downloads",
+                json!({"instance_id": i}),
+                "\"state\": \"completed\"",
+            ),
+        ]
     }
 
     /// ISSUE-50: a page behind HTTP authentication fails at once saying so
@@ -2704,7 +2733,7 @@ mod e2e {
         // Every opt-in tool group: the suite drives them all.
         let secrets = secrets_file(browser);
         let mut mcp = Mcp::start(&["--tool-groups", "all", "--secrets", &secrets]).await;
-        mcp.list_tools(50).await;
+        mcp.list_tools(51).await;
         let all = [
             page_steps(browser, &base),
             tab_steps("e2e", &base),

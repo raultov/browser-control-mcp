@@ -7,6 +7,7 @@ use super::TargetArgs;
 use super::cdp_domains;
 use super::chrome_instance;
 use super::debugging::{self, Paused};
+use super::downloads::{ACTION_WAIT, DownloadState};
 use super::{NetworkState, settle};
 use crate::backend::{BrowserKind, Capability};
 #[cfg(test)]
@@ -277,6 +278,12 @@ fn instance_tools() -> Vec<ToolEntry> {
         entry!(list_tabs::ListTabsTool, Always, &[Tabs], ff::list_tabs),
         entry!(close_tab::CloseTabTool, Always, &[Tabs], ff::close_tab),
         entry!(switch_tab::SwitchTabTool, Always, &[Tabs], ff::switch_tab),
+        entry!(
+            crate::handler::downloads::ListDownloadsTool,
+            Always,
+            &[Tabs],
+            crate::handler::downloads::list_firefox
+        ),
     ]
 }
 
@@ -471,6 +478,9 @@ struct NetworkBefore {
     known: HashSet<String>,
     /// The ids of the instance's tabs, to tell the tabs the action opened.
     tabs: HashSet<String>,
+    /// The instance's downloads and how many had begun, to tell the ones
+    /// the action started (#77).
+    downloads: (Arc<Mutex<DownloadState>>, u64),
 }
 
 /// The request log of the tab `ids` address, read before an input action;
@@ -480,17 +490,20 @@ async fn network_before(
     browser: BrowserKind,
     ids: TargetArgs,
 ) -> Option<NetworkBefore> {
-    let network = match browser {
+    let (network, downloads) = match browser {
         BrowserKind::Chrome => {
             let session = handler.session(ids.instance_id.clone()).await.ok()?;
-            session.network_state(ids.tab_id.clone()).ok()?
+            let network = session.network_state(ids.tab_id.clone()).ok()?;
+            (network, session.downloads.clone())
         }
         BrowserKind::Firefox => {
             let session = handler.firefox(ids.instance_id.as_deref()).await.ok()?;
-            session.tab(ids.tab_id.as_deref()).await.ok()?.1.network
+            let network = session.tab(ids.tab_id.as_deref()).await.ok()?.1.network;
+            (network, session.downloads.clone())
         }
     };
     let known = network.lock().await.known_ids();
+    let begun = downloads.lock().await.begun();
     let tabs = tabs_now(handler, browser, &ids)
         .await
         .into_iter()
@@ -502,6 +515,7 @@ async fn network_before(
         network,
         known,
         tabs,
+        downloads: (downloads, begun),
     })
 }
 
@@ -703,6 +717,9 @@ async fn settled(
         front_active(handler, before.browser, &before.ids).await;
     }
     let opened = opened_note(&opened);
+    let (downloads, begun) = &before.downloads;
+    let started = crate::handler::downloads::wait_ended(downloads, *begun, ACTION_WAIT).await;
+    let downloaded = crate::handler::downloads::action_note(&started);
     let first_text = result.content.iter_mut().find_map(|block| match block {
         rust_mcp_sdk::schema::ContentBlock::TextContent(text) => Some(text),
         _ => None,
@@ -711,7 +728,7 @@ async fn settled(
         if let Some(interruption) = interruption {
             text.text = interruption.appended_to(&text.text);
         }
-        for note in [reacted, opened].into_iter().flatten() {
+        for note in [reacted, opened, downloaded].into_iter().flatten() {
             text.text.push('\n');
             text.text.push_str(&note);
         }
@@ -927,6 +944,44 @@ mod tests {
             )
         );
         assert_eq!(opened_note(&named(Vec::new())), None);
+    }
+
+    /// ISSUE-77 (Chrome): a click that downloads a file says where the
+    /// file went (it only said the page reacted).
+    #[tokio::test]
+    async fn input_actions_name_their_downloads() {
+        use crate::handler::cdp_domains::tests::{mock_handler, reply_text, spawn_recording_mock};
+        use crate::handler::downloads::{Download, DownloadStatus};
+        // Given a link whose click downloads data.csv while the page settles
+        let mock = spawn_recording_mock().await;
+        let handler = mock_handler(mock.http_port);
+        let session = handler.session(None).await.unwrap();
+        let downloads = session.downloads.clone();
+        mock.respond_with("Runtime.evaluate", move |params| {
+            let watching = params["expression"]
+                .to_string()
+                .contains("MutationObserver");
+            if let (true, Ok(mut state)) = (watching, downloads.try_lock()) {
+                let mut download = Download::begun("g1", "http://a/download", "data.csv", None);
+                download.state = DownloadStatus::Completed;
+                download.path = Some(std::path::PathBuf::from("/dl/data.csv"));
+                download.received_bytes = Some(8);
+                state.begin(download);
+            }
+            page_reacting(params, 0)
+        });
+        // When it is clicked
+        let args = serde_json::json!({"selector": "#dl"});
+        let reply = call(&handler, params("click_element", args)).await.unwrap();
+        // Then the reply names the file
+        let text = reply_text(&reply);
+        let path = std::path::Path::new("/dl/data.csv").display();
+        assert!(
+            text.ends_with(&format!(
+                "\nThe action downloaded data.csv (8 bytes) to {path}."
+            )),
+            "{text}"
+        );
     }
 
     /// ISSUE-21: after an input action the page is watched until it
@@ -1212,7 +1267,7 @@ The page reacted (the DOM changed) and settled after ",
         handler.flags.enable_webmcp = true;
         handler.tool_groups = vec![crate::cli::ToolGroup::All];
         let listed = names(listed_tools(&handler));
-        assert_eq!(listed.len(), 56);
+        assert_eq!(listed.len(), 57);
         assert!(listed.contains("restart_browser") && listed.contains("stop_browser"));
         assert!(!listed.contains("restart_chrome") && !listed.contains("stop_chrome"));
     }

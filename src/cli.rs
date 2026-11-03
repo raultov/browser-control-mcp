@@ -41,7 +41,7 @@ pub struct Args {
     #[command(flatten)]
     pub firefox: FirefoxArgs,
 
-    /// Where `upload_file` may read files from.
+    /// Where files are read from and saved to.
     #[command(flatten)]
     pub upload: UploadArgs,
 
@@ -115,6 +115,10 @@ pub struct UploadArgs {
     /// Directory `upload_file` may read files from and `save_pdf` may write PDFs to (repeatable). Default: the server's working directory and the system temp directory.
     #[arg(long = "upload-root")]
     pub upload_roots: Vec<std::path::PathBuf>,
+
+    /// Directory where each instance saves the files its pages download, in a folder named after the instance id. Default: a downloads folder inside the instance's temporary profile (deleted with it), or a new folder in the system temp directory for an attached browser or --user-profile. Snap Firefox can only write to non-hidden folders of $HOME.
+    #[arg(long = "downloads-dir")]
+    pub downloads_dir: Option<std::path::PathBuf>,
 }
 
 /// Firefox-only settings (ignored by Chrome instances).

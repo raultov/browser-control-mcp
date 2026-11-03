@@ -12,6 +12,9 @@ pub(crate) struct FirefoxSpec {
     pub(crate) proxy: Option<String>,
     /// Firefox-only command-line settings.
     pub(crate) firefox: FirefoxArgs,
+    /// Where this instance saves downloads (`--downloads-dir/<instance id>`);
+    /// `None`: inside its profile (#77).
+    pub(crate) downloads_dir: Option<std::path::PathBuf>,
 }
 
 impl FirefoxSpec {
