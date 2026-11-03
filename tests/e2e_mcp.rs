@@ -626,7 +626,7 @@ mod e2e {
     /// and a ref found in it works as a selector.
     fn snapshot_steps(instance: &str) -> Vec<Step> {
         let i = json!(instance);
-        vec![
+        let mut steps = vec![
             (
                 "ISSUE-4 snapshot",
                 "snapshot",
@@ -650,6 +650,53 @@ mod e2e {
                 "evaluate_js",
                 json!({"instance_id": i, "expression": "window.__pierced"}),
                 "frame;frame;",
+            ),
+        ];
+        steps.extend(a11y_state_steps(instance));
+        steps
+    }
+
+    /// ISSUE-79: a tree item is named by its own text, grid cells are
+    /// `gridcell`, and descriptions, pressed and current states and live
+    /// regions show (both browsers run the same outline).
+    fn a11y_state_steps(instance: &str) -> Vec<Step> {
+        let i = json!(instance);
+        let html = r##"<div id="w79"><a href="#d79" aria-current="page">Docs79</a><button aria-describedby="h79" aria-pressed="true">Toggle79</button><span id="h79">Turns it on</span><ul role="tree" aria-label="Files79"><li role="treeitem" aria-expanded="true">src79<ul role="group"><li role="treeitem">main79</li></ul></li></ul><table role="grid" aria-label="Grid79"><tr><th>H</th></tr><tr><td>c79</td></tr></table><div aria-live="polite">said79</div></div>"##;
+        let add = format!(
+            "document.body.insertAdjacentHTML('afterbegin', {}); 1",
+            json!(html)
+        );
+        let scoped = json!({"instance_id": i, "selector": "#w79"});
+        let seen = |name: &'static str, expected: &'static str| {
+            (name, "snapshot", scoped.clone(), expected)
+        };
+        vec![
+            (
+                "ISSUE-79 widgets with states",
+                "evaluate_js",
+                json!({"instance_id": i, "expression": add}),
+                "",
+            ),
+            seen(
+                "ISSUE-79 a tree item is named by its text",
+                "treeitem \"src79\" [expanded=true]",
+            ),
+            seen("ISSUE-79 a nested tree item", "treeitem \"main79\""),
+            seen(
+                "ISSUE-79 a description",
+                "[description=\"Turns it on\"] [pressed=true]",
+            ),
+            seen(
+                "ISSUE-79 the current link",
+                "link \"Docs79\" [current=page]",
+            ),
+            seen("ISSUE-79 a grid cell", "gridcell \"c79\""),
+            seen("ISSUE-79 a live region", "generic [live=polite]"),
+            (
+                "ISSUE-79 remove the widgets",
+                "evaluate_js",
+                json!({"instance_id": i, "expression": "document.getElementById('w79').remove(); 1"}),
+                "",
             ),
         ]
     }

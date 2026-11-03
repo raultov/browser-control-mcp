@@ -28,6 +28,13 @@ from a copy of its code: entries describe the differences from that release.
 
 ### Fixed
 
+- `snapshot` shows more of what assistive technology reads (#79), the same
+  on both browsers: a tree item is named by its own text (`treeitem "src"`,
+  not its nested items' text; it had no name), the cells of a `grid` are
+  `gridcell`, and elements show `[description="…"]` (`aria-describedby`,
+  `aria-description`), `[pressed=…]`, `[current=page]` and `[live=polite]`
+  (an `aria-live` element without a role is now listed, as `generic`;
+  `alert`, `status` and `log` are live regions).
 - Accepting a `beforeunload` with `handle_dialog` returns once the
   navigation it allowed committed, and the reply names the URL reached
   (both browsers). A `navigate` right after used to race it: on Chrome it

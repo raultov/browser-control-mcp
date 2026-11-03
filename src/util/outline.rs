@@ -44,7 +44,8 @@ const MAX_DEPTH: u32 = 1000;
 /// across outlines and audits while it is in the page (entries of removed
 /// elements are dropped); `nameOf(el, role)`, its accessible name
 /// (approximate: aria-labelledby, aria-label, labels, alt, an input
-/// button's value, the content for roles named by it, title, placeholder);
+/// button's value, the content for roles named by it, a tree item's own
+/// text without its nested items', title, placeholder);
 /// and the text helpers `clean`, `cut`, `textOf` (with the text slotted
 /// into a shadow tree, which `innerText` misses) and `idText`.
 pub(crate) const ELEMENT_HELPERS: &str = r#"const refsKey = Symbol.for('browser-control-mcp.refs'), refKey = Symbol.for('browser-control-mcp.ref');
@@ -77,6 +78,18 @@ const idText = (el, attribute) => {
     if (!ids || !root.getElementById) return '';
     return clean(ids.split(/\s+/).map(id => root.getElementById(id)).filter(Boolean).map(textOf).join(' '));
 };
+const ownText = el => {
+    const parts = [];
+    const take = node => {
+        if (node.nodeType === 3) { parts.push(node.data); return; }
+        if (node.nodeType !== 1 || ['SCRIPT', 'STYLE', 'TEMPLATE'].includes(node.tagName)) return;
+        const nested = (node.getAttribute('role') || '').trim().split(/\s+/)[0];
+        if (['group', 'tree', 'treeitem'].includes(nested) || (!nested && (node.tagName === 'UL' || node.tagName === 'OL'))) return;
+        node.childNodes.forEach(take);
+    };
+    el.childNodes.forEach(take);
+    return clean(parts.join(' '));
+};
 const nameOf = (el, role) => {
     const named = idText(el, 'aria-labelledby'); if (named) return named;
     const label = clean(el.getAttribute('aria-label')); if (label) return label;
@@ -84,6 +97,7 @@ const nameOf = (el, role) => {
     if (el.tagName === 'IMG' || el.tagName === 'AREA' || (el.tagName === 'INPUT' && el.type === 'image')) return clean(el.getAttribute('alt'));
     if (el.tagName === 'INPUT' && ['button', 'submit', 'reset'].includes(el.type)) return clean(el.value) || el.type;
     if (FROM_CONTENT.has(role)) { const named = textOf(el); if (named) return named; }
+    if (role === 'treeitem') { const own = ownText(el); if (own) return own; }
     return clean(el.getAttribute('title') || el.getAttribute('placeholder'));
 };"#;
 
@@ -134,6 +148,9 @@ const OUTLINE: &str = r#"const outline = (root, maxDepth, maxChars, maxOptions) 
         return layoutTables.get(table);
     };
     const draggable = el => el.getAttribute('draggable') === 'true';
+    const gridOf = el => { const table = el.closest('table'), role = table ? firstRole(table) : ''; return role === 'grid' || role === 'treegrid'; };
+    const LIVE = { alert: 'assertive', status: 'polite', log: 'polite' };
+    const live = el => { const politeness = el.getAttribute('aria-live'); return politeness && politeness !== 'off' ? politeness : LIVE[firstRole(el)] || ''; };
     const roleOf = el => {
         const explicit = firstRole(el);
         if (explicit === 'presentation' || explicit === 'none') return null;
@@ -144,8 +161,10 @@ const OUTLINE: &str = r#"const outline = (root, maxDepth, maxChars, maxOptions) 
         if (tag === 'INPUT') return el.type === 'hidden' ? null : INPUTS[el.type] || 'textbox';
         if (tag === 'SELECT') return el.multiple || el.size > 1 ? 'listbox' : 'combobox';
         if (tag === 'IMG') return el.getAttribute('alt') === '' ? null : 'img';
+        if (tag === 'TD' && gridOf(el)) return 'gridcell';
         if (TAGS[tag]) return TAGS[tag];
         if (el.isContentEditable && !(el.parentElement && el.parentElement.isContentEditable)) return 'textbox';
+        if (live(el)) return 'generic';
         return el.hasAttribute('onclick') || el.hasAttribute('tabindex') && el.tabIndex >= 0
             || draggable(el) || el.hasAttribute('ondrop') || el.hasAttribute('ondragover') ? 'clickable' : null;
     };
@@ -162,6 +181,10 @@ const OUTLINE: &str = r#"const outline = (root, maxDepth, maxChars, maxOptions) 
         size += line.length - lines[at].length - own.reduce((n, l) => n + l.length + 1, 0);
         lines.splice(at, lines.length - at, line);
     };
+    const dropText = (at, depth, text) => {
+        const line = '  '.repeat(depth + 1) + '- text: ' + cut(text, 300), index = lines.indexOf(line, at + 1);
+        if (index > at) { size -= line.length + 1; lines.splice(index, 1); }
+    };
     const INTERACTIVE = 'a[href], button, input, select, textarea, summary, [role], [onclick], [tabindex], [contenteditable]';
     const matches = (el, selector) => { try { return el.matches(selector); } catch (e) { return false; } };
     const invalid = el => {
@@ -175,10 +198,19 @@ const OUTLINE: &str = r#"const outline = (root, maxDepth, maxChars, maxOptions) 
         flag(el.disabled || el.getAttribute('aria-disabled') === 'true', 'disabled');
         flag(el.required, 'required');
         flag(draggable(el), 'draggable');
+        let why = '';
         if (invalid(el)) {
-            const why = idText(el, 'aria-errormessage') || idText(el, 'aria-describedby') || clean(el.validationMessage || '');
+            why = idText(el, 'aria-errormessage') || idText(el, 'aria-describedby') || clean(el.validationMessage || '');
             out.push('[invalid]'); if (why) out.push('[error=' + JSON.stringify(cut(why, 100)) + ']');
         }
+        const description = idText(el, 'aria-describedby') || clean(el.getAttribute('aria-description'));
+        if (description && description !== why) out.push('[description=' + JSON.stringify(cut(description, 100)) + ']');
+        const pressed = el.getAttribute('aria-pressed');
+        if (['true', 'false', 'mixed'].includes(pressed)) out.push('[pressed=' + pressed + ']');
+        const current = clean(el.getAttribute('aria-current'));
+        if (current && current !== 'false') out.push('[current=' + cut(current, 20) + ']');
+        const politeness = live(el);
+        if (politeness) out.push('[live=' + politeness + ']');
         flag((role === 'option' && el.selected) || el.getAttribute('aria-selected') === 'true', 'selected');
         const summary = el.tagName === 'SUMMARY' && el.parentElement && el.parentElement.tagName === 'DETAILS' && !el.hasAttribute('aria-expanded');
         const expanded = summary ? (el.parentElement.open ? 'true' : 'false') : el.getAttribute('aria-expanded');
@@ -271,6 +303,7 @@ const OUTLINE: &str = r#"const outline = (root, maxDepth, maxChars, maxOptions) 
         walk(el, depth + 1);
         flush();
         if (NAMED_BY_TEXT.has(role) && !name) foldText(at, depth, role);
+        if (role === 'treeitem' && name) dropText(at, depth, name);
     };
     if (root.nodeType === 9) walk(root.body || root.documentElement, 0); else visit(root, 0);
     flush();
@@ -488,7 +521,7 @@ mod tests {
             ),
             "{OUTLINE}"
         );
-        assert!(OUTLINE.contains("const why = idText(el, 'aria-errormessage') || idText(el, 'aria-describedby') || clean(el.validationMessage || '');"), "{OUTLINE}");
+        assert!(OUTLINE.contains("why = idText(el, 'aria-errormessage') || idText(el, 'aria-describedby') || clean(el.validationMessage || '');"), "{OUTLINE}");
         assert!(OUTLINE.contains("out.push('[invalid]'); if (why) out.push('[error=' + JSON.stringify(cut(why, 100)) + ']');"), "{OUTLINE}");
     }
 
@@ -560,6 +593,51 @@ mod tests {
             "{OUTLINE}"
         );
         assert!(OUTLINE.contains("if (child.nodeType === 3) { if (!outsideModal(child)) addText(child.data, depth); }"), "{OUTLINE}");
+    }
+
+    /// ISSUE-79: a tree item is named by its own text (not its nested
+    /// items'), the cells of a grid are `gridcell`, and the outline shows
+    /// descriptions, pressed and current states and live regions.
+    #[test]
+    fn names_descriptions_and_states_of_widgets() {
+        assert!(
+            ELEMENT_HELPERS.contains(
+                "if (role === 'treeitem') { const own = ownText(el); if (own) return own; }"
+            ),
+            "{ELEMENT_HELPERS}"
+        );
+        assert!(
+            ELEMENT_HELPERS.contains("['group', 'tree', 'treeitem'].includes(nested)"),
+            "{ELEMENT_HELPERS}"
+        );
+        assert!(
+            OUTLINE.contains("if (tag === 'TD' && gridOf(el)) return 'gridcell';"),
+            "{OUTLINE}"
+        );
+        assert!(
+            OUTLINE.contains(
+                "out.push('[description=' + JSON.stringify(cut(description, 100)) + ']');"
+            ),
+            "{OUTLINE}"
+        );
+        for state in ["pressed", "current", "live"] {
+            assert!(
+                OUTLINE.contains(&format!("out.push('[{state}=' + ")),
+                "{state}: {OUTLINE}"
+            );
+        }
+        assert!(
+            OUTLINE
+                .contains("const LIVE = { alert: 'assertive', status: 'polite', log: 'polite' };"),
+            "{OUTLINE}"
+        );
+        assert!(
+            OUTLINE.contains("if (live(el)) return 'generic';"),
+            "{OUTLINE}"
+        );
+        // The tree item's own text is its name, not a line of its own too
+        let dropped = "if (role === 'treeitem' && name) dropText(at, depth, name);";
+        assert!(OUTLINE.contains(dropped), "{OUTLINE}");
     }
 
     /// ISSUE-42: the outline walks the closed shadow roots it is handed
