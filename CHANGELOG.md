@@ -28,6 +28,13 @@ from a copy of its code: entries describe the differences from that release.
 
 ### Fixed
 
+- Chrome: `search_scripts` finds an inline script the debugger no longer
+  holds. One that had already run could be released while its page sat in
+  the back-forward cache, and Chrome does not announce it again when the
+  page comes back, so a search for code visible in the page found nothing
+  (an intermittent E2E failure). The page's `<script>` elements are now
+  searched too: such a match has `scriptId: null`, `lineInScript` and a note
+  to reload the page before setting a breakpoint in it. (#62)
 - Input actions miss fewer effects (#81), the same on both browsers: in a
   textarea or contenteditable, `fill_input` types a newline as the Enter key
   (Chrome inserted it as text with no key; Firefox sent a key named `\n`),

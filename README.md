@@ -160,7 +160,7 @@ see the note.
 | `resume` | ✓ | ✓ | on a page that is not paused: `The debugger was not paused: nothing to resume.` with `{paused: false}` |
 | `step_over` | ✓ | ✓ | |
 | `evaluate_on_call_frame` | ✓ | ✓ | |
-| `search_scripts` | ✓ | ✓ | a long line's preview is 100 characters on each side of the match; inline scripts and modules included, the server's own evaluations left out; `debug` answers `{scripts, errors}` as JSON; frames of another origin too (Chrome ids such as `2.17`) |
+| `search_scripts` | ✓ | ✓ | a long line's preview is 100 characters on each side of the match; inline scripts and modules included, the server's own evaluations left out (Chrome: an inline script the debugger no longer holds, released while its page sat in the back-forward cache, is found in the page's `<script>` elements, with `scriptId: null`, `lineInScript` and a note to reload before setting a breakpoint in it); `debug` answers `{scripts, errors}` as JSON; frames of another origin too (Chrome ids such as `2.17`) |
 | `pause_on_load` | ✓ | ✗ | TODO on Firefox, see [Limitations and TODO](#limitations-and-todo) |
 | `enable_proxy_auth` | ✓ | partial | needs `--proxy-server`; a request the proxy rejects twice is cancelled; untested on Firefox against a real proxy |
 | `send_cdp_command` | ✓ | ✗ | `raw` group; raw Chrome DevTools Protocol; refuses `Network`/`Page`/`Runtime`/`Log`/`Debugger.disable` and `Browser.close`; `Fetch.enable` comes with a note |

@@ -46,35 +46,38 @@ impl SearchScriptsTool {
                 .collect()
         };
         let mut report = SearchReport::default();
+        let mut known = std::collections::HashSet::new();
         for ((on, raw), script_id, script) in scripts {
             let reply = on
                 .send_raw_command("Debugger.getScriptSource", json!({"scriptId": raw}))
                 .await;
             match reply {
-                Ok(reply) => match extract_from_value(&reply.result, "scriptSource") {
-                    Some(source) => {
-                        let offset = |n: i32| u32::try_from(n).unwrap_or(0);
-                        let text = ScriptText {
-                            id: &script_id,
-                            hash: &script.hash,
-                            source,
-                            start: (offset(script.start_line), offset(script.start_column)),
-                        };
-                        report.add_source(&args.query, &text)
+                Ok(reply) => {
+                    let source = extract_from_value(&reply.result, "scriptSource");
+                    let read = (script_id.as_str(), &script, source);
+                    if let Some(source) = report.add_read(&args.query, read, &reply.result) {
+                        known.insert(source);
                     }
-                    None => report.errors.push(format!(
-                        "No scriptSource for {}: {:?}",
-                        script_id, reply.result
-                    )),
-                },
+                }
                 Err(e) => report.add_error(&script_id, format!("{:?}", e)),
             }
+        }
+        if !matches!(args.query.as_str(), "debug" | "@source")
+            && let Ok(page) = crate::handler::snippet_value(&target, INLINE_SCRIPTS).await
+        {
+            report.add_released_inline(&args.query, &page, &known);
         }
         Ok(CallToolResult::text_content(vec![
             report.text(&args.query).into(),
         ]))
     }
 }
+
+/// The page's inline scripts: `{url, texts}`.
+const INLINE_SCRIPTS: &str = "({ url: location.href, texts: Array.from(document.scripts).filter(s => !s.src).map(s => s.text) })";
+
+/// What a match in an inline script the debugger no longer holds says.
+const RELEASED_NOTE: &str = "an inline script of the page that the debugger no longer holds (it already ran and was released, as after coming back to the page from the back-forward cache): reload the page to set a breakpoint in it; the line counts from the script's first line";
 
 /// One script's id, content hash and source text.
 #[derive(Clone, Copy)]
@@ -163,6 +166,60 @@ impl SearchReport {
             }),
         };
         self.results.extend(row);
+    }
+
+    /// Applies `query` to the source the debugger gave for a cached script
+    /// (`read`: its id, its info, its source if any; `result`: the reply,
+    /// quoted when it has no source); the source, when there is one.
+    fn add_read(
+        &mut self,
+        query: &str,
+        (id, script, source): (&str, &crate::handler::ScriptInfo, Option<&str>),
+        result: &Option<serde_json::Value>,
+    ) -> Option<String> {
+        let Some(source) = source else {
+            self.errors
+                .push(format!("No scriptSource for {id}: {result:?}"));
+            return None;
+        };
+        let offset = |n: i32| u32::try_from(n).unwrap_or(0);
+        let text = ScriptText {
+            id,
+            hash: &script.hash,
+            source,
+            start: (offset(script.start_line), offset(script.start_column)),
+        };
+        self.add_source(query, &text);
+        Some(source.to_string())
+    }
+
+    /// Searches the page's inline scripts (`page`: [`INLINE_SCRIPTS`]'s
+    /// answer) whose text is none of the debugger's `known` sources: Chrome
+    /// does not announce again a script released while its page sat in the
+    /// back-forward cache, though its `<script>` is still there (ISSUE-62).
+    pub(crate) fn add_released_inline(
+        &mut self,
+        query: &str,
+        page: &serde_json::Value,
+        known: &std::collections::HashSet<String>,
+    ) {
+        let url = page["url"].as_str().unwrap_or_default();
+        let texts = page["texts"].as_array().into_iter().flatten();
+        for text in texts.filter_map(serde_json::Value::as_str) {
+            if known.contains(text) {
+                continue;
+            }
+            if let Some((line, column)) = find_line_column(text, query) {
+                self.results.push(json!({
+                    "scriptId": null,
+                    "url": url,
+                    "lineInScript": line,
+                    "columnNumber": column,
+                    "linePreview": line_preview(text, query),
+                    "note": RELEASED_NOTE,
+                }));
+            }
+        }
     }
 
     /// Records a failed source fetch; a script that no longer exists is not an error.
@@ -292,6 +349,63 @@ mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains("missing field `query`")
+        );
+    }
+
+    /// ISSUE-62 (Chrome): an inline script the debugger no longer holds
+    /// (it ran and was released while its page sat in the back-forward
+    /// cache: Chrome does not announce it again) is still found in the
+    /// page's `<script>` elements, marked so; one the debugger holds is
+    /// reported once, from the debugger.
+    #[tokio::test]
+    async fn released_inline_scripts_are_found_in_the_page() {
+        use crate::handler::cdp_domains::tests::{mock_handler, reply_text, spawn_recording_mock};
+        let mock = spawn_recording_mock().await;
+        mock.respond_with(
+            "Debugger.getScriptSource",
+            |_| json!({"result": {"scriptSource": "function keep() { return 'hello-kept'; }"}}),
+        );
+        mock.respond_with("Runtime.evaluate", |_| {
+            let page = json!({"url": "http://a/", "texts": ["function keep() { return 'hello-kept'; }", "\nconsole.log('hello-released');"]});
+            json!({"result": {"result": {"type": "object", "value": page}}})
+        });
+        let handler = mock_handler(mock.http_port);
+        let script = ScriptInfo {
+            hash: "h".into(),
+            start_line: 3,
+            start_column: 8,
+            end_line: 3,
+            url: "http://a/".into(),
+        };
+        handler
+            .default_session
+            .debugger_state
+            .lock()
+            .await
+            .scripts
+            .insert("7".into(), script);
+        let search = |query: &str| {
+            let params =
+                crate::handler::cdp_domains::tests::call("search_scripts", json!({"query": query}));
+            SearchScriptsTool::handle(params, &handler)
+        };
+        let found: serde_json::Value =
+            serde_json::from_str(&reply_text(&search("hello").await.unwrap())).unwrap();
+        let rows = found.as_array().unwrap();
+        assert_eq!(rows.len(), 2, "{found}");
+        assert_eq!(rows[0]["scriptId"], "7");
+        let released = &rows[1];
+        assert_eq!(released["scriptId"], serde_json::Value::Null);
+        assert_eq!(
+            (released["url"].clone(), released["lineInScript"].clone()),
+            (json!("http://a/"), json!(1))
+        );
+        assert!(
+            released["note"]
+                .as_str()
+                .unwrap()
+                .contains("reload the page"),
+            "{released}"
         );
     }
 
