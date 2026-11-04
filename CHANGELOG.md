@@ -10,6 +10,21 @@ from a copy of its code: entries describe the differences from that release.
 
 ## [Unreleased]
 
+## [0.11.0-beta.20] - 2026-11-04
+
+Public **BETA**. Deeper debugging and inspection on both browsers. The
+debugger steps into and out of calls (`step_into`, `step_out`), lists the
+paused stack (`call_stack`: frames, why it paused, what was thrown, and on
+Chrome the async callers), evaluates in any frame (`frame_index`) and pauses
+on exceptions (`pause_on_exceptions`). `get_css_styles` explains how an
+element is styled (matched rules in cascade order, overridden declarations,
+computed values). `get_issues` lists what the browser diagnosed that the
+console hides (blocked cookies, CORS, CSP, mixed content; Chrome's Issues
+panel). `emulate` takes `cpu_performance_tier` on Chrome. Behaviour changes:
+Chrome enables its `Audits` domain in every tab and frame; pausing on
+exceptions lets the page's `debugger;` statements pause it again, as a
+breakpoint does.
+
 ### Added
 
 - `get_css_styles` explains how an element is styled, on both browsers
