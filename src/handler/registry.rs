@@ -153,6 +153,7 @@ pub(crate) fn table() -> Vec<ToolEntry> {
     tools.extend(debugger_tools());
     tools.extend(instance_tools());
     tools.extend(observation_tools());
+    tools.extend(console_tools());
     tools.extend(firefox_tools());
     tools.extend(network_tools());
     tools.extend(gated_tools());
@@ -297,6 +298,23 @@ fn instance_tools() -> Vec<ToolEntry> {
     ]
 }
 
+/// The console and what the browser diagnosed (`get_issues`, ISSUE-60).
+fn console_tools() -> Vec<ToolEntry> {
+    use crate::backend::bidi::tools as ff;
+    use Capability::ConsoleLogs;
+    use Gate::Always;
+    use cdp_domains::log::get_console_logs::GetConsoleLogsTool as Console;
+    vec![
+        entry!(Console, Always, &[ConsoleLogs], ff::console_logs),
+        entry!(
+            crate::handler::issues::GetIssuesTool,
+            Always,
+            &[ConsoleLogs],
+            ff::issues
+        ),
+    ]
+}
+
 fn observation_tools() -> Vec<ToolEntry> {
     use crate::backend::bidi::storage as store;
     use crate::backend::bidi::tools as ff;
@@ -305,7 +323,7 @@ fn observation_tools() -> Vec<ToolEntry> {
     use cdp_domains::performance::get_performance_metrics as metrics;
     use cdp_domains::storage::{cookies::CookiesTool, web_storage::WebStorageTool};
     use cdp_domains::tracing::profile_page_performance as profile;
-    use cdp_domains::{custom, log, network};
+    use cdp_domains::{custom, network};
     vec![
         entry!(
             network::get_network_logs::GetNetworkLogsTool,
@@ -315,12 +333,6 @@ fn observation_tools() -> Vec<ToolEntry> {
         ),
         entry!(CookiesTool, STORAGE, &[Evaluate], store::cookies),
         entry!(WebStorageTool, STORAGE, &[Evaluate], store::web_storage),
-        entry!(
-            log::get_console_logs::GetConsoleLogsTool,
-            Always,
-            &[ConsoleLogs],
-            ff::console_logs
-        ),
         entry!(
             metrics::GetPerformanceMetricsTool,
             PERF,
@@ -1403,7 +1415,7 @@ The page reacted (the DOM changed) and settled after ",
         handler.flags.enable_webmcp = true;
         handler.tool_groups = vec![crate::cli::ToolGroup::All];
         let listed = names(listed_tools(&handler));
-        assert_eq!(listed.len(), 61);
+        assert_eq!(listed.len(), 62);
         assert!(listed.contains("restart_browser") && listed.contains("stop_browser"));
         assert!(!listed.contains("restart_chrome") && !listed.contains("stop_chrome"));
     }

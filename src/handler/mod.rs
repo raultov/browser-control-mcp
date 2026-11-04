@@ -8,6 +8,7 @@ pub(crate) mod evaluation;
 pub(crate) mod frames;
 pub(crate) mod insights;
 pub(crate) mod interruption;
+pub(crate) mod issues;
 pub(crate) mod navigation;
 mod registry;
 pub(crate) mod routes;
@@ -986,7 +987,7 @@ impl BrowserSession {
     /// First use of a session-level client: enable the domains, read the
     /// version, start the listeners. The order matters (see each step).
     async fn prepare_client(&self, client: &CdpClient) {
-        for domain in ["Runtime", "Page", "Network", "Log", "Performance"] {
+        for domain in ["Runtime", "Page", "Network", "Log", "Performance", "Audits"] {
             let _ = client
                 .send_raw_command(&format!("{domain}.enable"), cdp_browser_lite::NoParams)
                 .await;
@@ -2190,8 +2191,8 @@ mod tests {
         assert!(result.is_ok());
         let tools = result.unwrap().tools;
 
-        // Without proxy, webmcp and tool groups, 39 tools are listed
-        assert_eq!(tools.len(), 39);
+        // Without proxy, webmcp and tool groups, 40 tools are listed
+        assert_eq!(tools.len(), 40);
         let tool_names: Vec<String> = tools.into_iter().map(|t| t.name).collect();
         assert!(tool_names.contains(&"scroll".to_string()));
         assert!(tool_names.contains(&"capture_screenshot".to_string()));
@@ -2221,8 +2222,8 @@ mod tests {
         assert!(result.is_ok());
         let tools = result.unwrap().tools;
 
-        // With proxy configured (and webmcp disabled), 40 tools are listed
-        assert_eq!(tools.len(), 40);
+        // With proxy configured (and webmcp disabled), 41 tools are listed
+        assert_eq!(tools.len(), 41);
         let tool_names: Vec<String> = tools.into_iter().map(|t| t.name).collect();
         assert!(tool_names.contains(&"enable_proxy_auth".to_string()));
     }
@@ -2240,8 +2241,8 @@ mod tests {
         assert!(result.is_ok());
         let tools = result.unwrap().tools;
 
-        // With webmcp configured (39 + 5 = 44 tools)
-        assert_eq!(tools.len(), 44);
+        // With webmcp configured (40 + 5 = 45 tools)
+        assert_eq!(tools.len(), 45);
         let tool_names: Vec<String> = tools.into_iter().map(|t| t.name).collect();
         assert!(tool_names.contains(&"webmcp_list_tools".to_string()));
         assert!(tool_names.contains(&"webmcp_invoke_tool".to_string()));
@@ -2336,6 +2337,7 @@ mod tests {
                 "Network.enable",
                 "Log.enable",
                 "Performance.enable",
+                "Audits.enable",
                 "Browser.getVersion",
                 "Debugger.enable"
             ]

@@ -876,6 +876,23 @@ pub(crate) async fn network_logs(
     args.finish(snapshot, notes)
 }
 
+/// What `get_issues` says on Firefox, which has no Issues panel.
+const FIREFOX_ISSUES: &str = "Firefox has no Issues panel: these are its security console messages (cookies, Content-Security-Policy, mixed content, CORS); Chrome's other issue codes (LazyLoadImageIssue, DeprecationIssue...) have no Firefox equivalent";
+
+/// `get_issues`: the tab's security console messages, read as issues
+/// (ISSUE-60); they come from Firefox's debugger.
+pub(crate) async fn issues(params: CallToolRequestParams, handler: &McpHandler) -> ToolResult {
+    let args: crate::handler::issues::GetIssuesTool = parse_args(params)?;
+    let (session, id, tab) = target(handler, &ids(&args.instance_id, &args.tab_id)).await?;
+    let watched = super::debugger::watch_session_tab(&session, &id, &tab).await;
+    let found = crate::handler::issues::firefox_issues(&args, &mut *tab.log.lock().await);
+    let mut notes = vec![FIREFOX_ISSUES.to_string()];
+    if !watched {
+        notes.push("Firefox reports these messages through its debugger port, which this tab does not have: none can be listed".to_string());
+    }
+    Ok(args.reply(&found, &notes))
+}
+
 /// Why a Firefox tab has no WebSocket frames: they come from its debugger.
 fn frames_note(has_debugger: bool) -> &'static str {
     if has_debugger {

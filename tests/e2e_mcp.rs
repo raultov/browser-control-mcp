@@ -582,7 +582,45 @@ mod e2e {
             ),
         ];
         steps.extend(console_detail_steps(instance));
+        steps.extend(issue_steps(instance));
         steps
+    }
+
+    /// ISSUE-60: a cookie the browser rejects is an issue (Chrome's Issues
+    /// panel; Firefox's security console message), cleared on demand.
+    fn issue_steps(instance: &str) -> Vec<Step> {
+        let i = json!(instance);
+        let cookie = "document.cookie = 'nosecure60=1; SameSite=None'; 1";
+        let cookies = json!({"instance_id": i, "code": "Cookie"});
+        let clear = json!({"instance_id": i, "code": "Cookie", "clear": true});
+        vec![
+            (
+                "ISSUE-60 a cookie the browser rejects",
+                "evaluate_js",
+                json!({"instance_id": i, "expression": cookie}),
+                "",
+            ),
+            ("ISSUE-60 wait for the issue", "sleep", json!({}), ""),
+            (
+                "ISSUE-60 it is a cookie issue",
+                "get_issues",
+                cookies.clone(),
+                "[CookieIssue]",
+            ),
+            (
+                "ISSUE-60 naming the cookie",
+                "get_issues",
+                cookies.clone(),
+                "nosecure60",
+            ),
+            ("ISSUE-60 clear them", "get_issues", clear, "nosecure60"),
+            (
+                "ISSUE-60 they are gone",
+                "get_issues",
+                cookies,
+                "0 issue(s)",
+            ),
+        ]
     }
 
     /// ISSUE-80: counters keep their count, an unhandled rejection says
@@ -3020,7 +3058,7 @@ mod e2e {
         // Every opt-in tool group: the suite drives them all.
         let secrets = secrets_file(browser);
         let mut mcp = Mcp::start(&["--tool-groups", "all", "--secrets", &secrets]).await;
-        mcp.list_tools(55).await;
+        mcp.list_tools(56).await;
         let all = [
             page_steps(browser, &base),
             tab_steps("e2e", &base),

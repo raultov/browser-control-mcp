@@ -12,6 +12,15 @@ from a copy of its code: entries describe the differences from that release.
 
 ### Added
 
+- `get_issues` lists the problems the browser diagnosed in the tab that the
+  console hides or words vaguely: a cookie blocked or warned and why, a CORS
+  or Content-Security-Policy block, mixed content, one line each
+  (`[CookieIssue] ExcludeSameSiteNoneInsecure: SetCookie cookie "a" @ …`),
+  folded with their repeats, with `code`, `include_details` and `clear`. On
+  Chrome they are its DevTools Issues panel (the `Audits` domain, now
+  enabled in every tab and frame of another origin); Firefox has no such
+  panel, and its security console messages are read as issues. (#60)
+
 - The debugger goes deeper, on both browsers (#67): `step_into` and
   `step_out`; `call_stack` lists the paused frames (function, URL, 0-based
   line and column), why the page paused and what it threw, and on Chrome

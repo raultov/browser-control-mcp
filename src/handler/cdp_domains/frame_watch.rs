@@ -4,7 +4,8 @@
 //! nor its scripts. Each tab auto-attaches to its frames' targets
 //! (`Target.setAutoAttach`, each frame paused until released, so its first
 //! messages and scripts are kept). For each iframe the server attaches a
-//! session of its own, enables `Runtime`, `Log`, `Network` and `Debugger`
+//! session of its own, enables `Runtime`, `Log`, `Network`, `Debugger` and
+//! `Audits` (its issues, ISSUE-60)
 //! there, feeds the tab's buffers and debugger state from it (see
 //! `debugger::frames`: its breakpoints set before it runs) and
 //! auto-attaches to its own frames, then releases the frame. A frame is
@@ -29,7 +30,7 @@ use tokio_stream::StreamExt;
 pub(crate) const MAX_WATCHED: usize = 50;
 
 /// The domains enabled on a watched frame's session.
-const FRAME_DOMAINS: [&str; 4] = ["Runtime", "Log", "Network", "Debugger"];
+const FRAME_DOMAINS: [&str; 5] = ["Runtime", "Log", "Network", "Debugger", "Audits"];
 
 /// The domains enabled on a watched worker's session: not `Log`, whose
 /// worker messages the tab already reports (as `info` for `console.log`).

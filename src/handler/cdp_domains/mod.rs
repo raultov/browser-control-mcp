@@ -251,6 +251,8 @@ pub(crate) async fn enable_tab_domains(tab: &Tab, webmcp_state: &Arc<Mutex<webmc
         "Log.enable",
         "Performance.enable",
         "Debugger.enable",
+        // The issues of Chrome's Issues panel (ISSUE-60).
+        "Audits.enable",
     ] {
         let _ = tab.send_raw_command(cmd, NoParams).await;
     }

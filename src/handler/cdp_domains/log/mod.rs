@@ -58,6 +58,11 @@ pub(crate) struct LogState {
     /// When the last cross-site document committed (ms since the epoch):
     /// messages of the old site arriving late are dropped.
     cleared_before: Option<f64>,
+    /// The problems Chrome diagnosed in the tab (`Audits`, ISSUE-60).
+    pub(crate) issues: crate::handler::issues::IssueBuffer,
+    /// Firefox: by issue code, the time up to which `get_issues` with
+    /// `clear` returned that code's issues (they are read from messages).
+    pub(crate) issues_cleared_at: std::collections::BTreeMap<String, f64>,
     /// Same-document navigations of the tab (history API, fragment) so
     /// far, and the URL the last reached, so an action can say it changed
     /// the URL (ISSUE-81).
@@ -169,6 +174,8 @@ impl LogState {
                 ));
             }
             self.cleared_before = at;
+            // The old site's issues too (ISSUE-60).
+            self.issues.reset();
         }
         self.site = Some(site);
     }
@@ -187,6 +194,10 @@ pub(crate) async fn process_log_event(event: &WsResponse, state: &Arc<Mutex<LogS
         let mut state = state.lock().await;
         state.main_frame = params["frame"]["id"].as_str().map(str::to_string);
         state.on_document_committed(url, None);
+    } else if method == "Audits.issueAdded" {
+        if let Some(issue) = crate::handler::issues::from_chrome(params) {
+            state.lock().await.issues.push(issue);
+        }
     } else if method == "Page.navigatedWithinDocument" {
         let mut state = state.lock().await;
         let frame = params["frameId"].as_str();
@@ -568,6 +579,31 @@ mod tests {
             "Uncaught"
         );
         assert!(console_message("Runtime.executionContextCreated", &bare).is_none());
+    }
+
+    /// ISSUE-60 (Chrome): the tab keeps the issues Chrome reports
+    /// (`Audits.issueAdded`, folded), and forgets them on another site, as
+    /// its console messages.
+    #[tokio::test]
+    async fn issues_are_kept_until_another_site() {
+        let state = Arc::new(Mutex::new(LogState::default()));
+        let send = |method: &str, params: Value| WsResponse {
+            method: Some(method.into()),
+            params: Some(params),
+            ..Default::default()
+        };
+        let cors = json!({"issue": {"code": "CorsIssue", "details": {"corsIssueDetails": {"corsErrorStatus": {"corsError": "MissingAllowOriginHeader"}, "request": {"url": "http://b/api"}}}}});
+        let page = |url: &str| json!({"frame": {"id": "F", "url": url}});
+        process_log_event(&send("Page.frameNavigated", page("http://a/")), &state).await;
+        for _ in 0..2 {
+            process_log_event(&send("Audits.issueAdded", cors.clone()), &state).await;
+        }
+        let kept = state.lock().await.issues.list();
+        assert_eq!((kept.len(), kept[0].count), (1, 2));
+        process_log_event(&send("Page.frameNavigated", page("http://a/other")), &state).await;
+        assert_eq!(state.lock().await.issues.list().len(), 1, "same site");
+        process_log_event(&send("Page.frameNavigated", page("http://c.test/")), &state).await;
+        assert!(state.lock().await.issues.list().is_empty());
     }
 
     /// ISSUE-81 (Chrome): the main frame's same-document navigations
