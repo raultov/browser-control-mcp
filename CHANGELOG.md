@@ -12,6 +12,16 @@ from a copy of its code: entries describe the differences from that release.
 
 ### Added
 
+- `get_css_styles` explains how an element is styled, on both browsers
+  (#59): the rules that match it in cascade order, each with its selector,
+  stylesheet and 0-based line and column, the at-rules around it and its
+  declarations marked `important`, `invalid` or `overridden` (worked out
+  the same way on both browsers); its pseudo-elements; optionally its
+  ancestors' rules and the browser's own; and the computed values of what
+  it declares. `properties` narrows it to some properties and `max_rules`
+  bounds it. Chrome reads them with its `CSS` domain; Firefox with its
+  inspector, which needs its debugger port.
+
 - `get_issues` lists the problems the browser diagnosed in the tab that the
   console hides or words vaguely: a cookie blocked or warned and why, a CORS
   or Content-Security-Policy block, mixed content, one line each

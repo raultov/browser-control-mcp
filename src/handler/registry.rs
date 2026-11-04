@@ -153,7 +153,7 @@ pub(crate) fn table() -> Vec<ToolEntry> {
     tools.extend(debugger_tools());
     tools.extend(instance_tools());
     tools.extend(observation_tools());
-    tools.extend(console_tools());
+    tools.extend(inspection_tools());
     tools.extend(firefox_tools());
     tools.extend(network_tools());
     tools.extend(gated_tools());
@@ -298,10 +298,12 @@ fn instance_tools() -> Vec<ToolEntry> {
     ]
 }
 
-/// The console and what the browser diagnosed (`get_issues`, ISSUE-60).
-fn console_tools() -> Vec<ToolEntry> {
+/// What the browser reports about the page: the console, the problems it
+/// diagnosed (`get_issues`, ISSUE-60) and an element's styles
+/// (`get_css_styles`, ISSUE-59).
+fn inspection_tools() -> Vec<ToolEntry> {
     use crate::backend::bidi::tools as ff;
-    use Capability::ConsoleLogs;
+    use Capability::{ConsoleLogs, Dom};
     use Gate::Always;
     use cdp_domains::log::get_console_logs::GetConsoleLogsTool as Console;
     vec![
@@ -311,6 +313,12 @@ fn console_tools() -> Vec<ToolEntry> {
             Always,
             &[ConsoleLogs],
             ff::issues
+        ),
+        entry!(
+            crate::handler::css_styles::GetCssStylesTool,
+            Always,
+            &[Dom],
+            crate::backend::bidi::css::css_styles
         ),
     ]
 }
@@ -1415,7 +1423,7 @@ The page reacted (the DOM changed) and settled after ",
         handler.flags.enable_webmcp = true;
         handler.tool_groups = vec![crate::cli::ToolGroup::All];
         let listed = names(listed_tools(&handler));
-        assert_eq!(listed.len(), 62);
+        assert_eq!(listed.len(), 63);
         assert!(listed.contains("restart_browser") && listed.contains("stop_browser"));
         assert!(!listed.contains("restart_chrome") && !listed.contains("stop_chrome"));
     }

@@ -1,6 +1,7 @@
 pub(crate) mod audit;
 pub mod cdp_domains;
 pub mod chrome_instance;
+pub(crate) mod css_styles;
 pub(crate) mod debugging;
 pub(crate) mod dialogs;
 pub(crate) mod downloads;
@@ -2191,8 +2192,8 @@ mod tests {
         assert!(result.is_ok());
         let tools = result.unwrap().tools;
 
-        // Without proxy, webmcp and tool groups, 40 tools are listed
-        assert_eq!(tools.len(), 40);
+        // Without proxy, webmcp and tool groups, 41 tools are listed
+        assert_eq!(tools.len(), 41);
         let tool_names: Vec<String> = tools.into_iter().map(|t| t.name).collect();
         assert!(tool_names.contains(&"scroll".to_string()));
         assert!(tool_names.contains(&"capture_screenshot".to_string()));
@@ -2222,8 +2223,8 @@ mod tests {
         assert!(result.is_ok());
         let tools = result.unwrap().tools;
 
-        // With proxy configured (and webmcp disabled), 41 tools are listed
-        assert_eq!(tools.len(), 41);
+        // With proxy configured (and webmcp disabled), 42 tools are listed
+        assert_eq!(tools.len(), 42);
         let tool_names: Vec<String> = tools.into_iter().map(|t| t.name).collect();
         assert!(tool_names.contains(&"enable_proxy_auth".to_string()));
     }
@@ -2241,8 +2242,8 @@ mod tests {
         assert!(result.is_ok());
         let tools = result.unwrap().tools;
 
-        // With webmcp configured (40 + 5 = 45 tools)
-        assert_eq!(tools.len(), 45);
+        // With webmcp configured (41 + 5 = 46 tools)
+        assert_eq!(tools.len(), 46);
         let tool_names: Vec<String> = tools.into_iter().map(|t| t.name).collect();
         assert!(tool_names.contains(&"webmcp_list_tools".to_string()));
         assert!(tool_names.contains(&"webmcp_invoke_tool".to_string()));

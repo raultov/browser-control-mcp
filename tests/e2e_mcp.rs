@@ -743,7 +743,51 @@ mod e2e {
             ),
         ];
         steps.extend(a11y_state_steps(instance));
+        steps.extend(css_steps(instance));
         steps
+    }
+
+    /// ISSUE-59: an element's matched rules, with the overridden and
+    /// `!important` declarations marked, and its computed value (both
+    /// browsers).
+    fn css_steps(instance: &str) -> Vec<Step> {
+        let i = json!(instance);
+        let html = "<div id=\"w59\"><style>#c59 { color: red; } .k59 { color: green !important; }</style><p id=\"c59\" class=\"k59\">c59</p></div>";
+        let add = format!(
+            "document.body.insertAdjacentHTML('afterbegin', {}); 1",
+            json!(html)
+        );
+        let styles = json!({"instance_id": i, "selector": "#c59", "properties": ["color"]});
+        let seen = |name: &'static str, expected: &'static str| {
+            (name, "get_css_styles", styles.clone(), expected)
+        };
+        vec![
+            (
+                "ISSUE-59 a styled element",
+                "evaluate_js",
+                json!({"instance_id": i, "expression": add}),
+                "",
+            ),
+            seen(
+                "ISSUE-59 its rules",
+                "Styles of p#c59.k59: 2 matched rule(s)",
+            ),
+            seen(
+                "ISSUE-59 the overridden declaration",
+                "\"overridden\": true",
+            ),
+            seen("ISSUE-59 the important one", "\"important\": true"),
+            seen(
+                "ISSUE-59 the computed color",
+                "\"color\": \"rgb(0, 128, 0)\"",
+            ),
+            (
+                "ISSUE-59 remove it",
+                "evaluate_js",
+                json!({"instance_id": i, "expression": "document.getElementById('w59').remove(); 1"}),
+                "",
+            ),
+        ]
     }
 
     /// ISSUE-79: a tree item is named by its own text, grid cells are
@@ -3058,7 +3102,7 @@ mod e2e {
         // Every opt-in tool group: the suite drives them all.
         let secrets = secrets_file(browser);
         let mut mcp = Mcp::start(&["--tool-groups", "all", "--secrets", &secrets]).await;
-        mcp.list_tools(56).await;
+        mcp.list_tools(57).await;
         let all = [
             page_steps(browser, &base),
             tab_steps("e2e", &base),

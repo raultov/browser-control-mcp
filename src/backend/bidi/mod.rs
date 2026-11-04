@@ -5,6 +5,7 @@
 //! its single BiDi session), subscribes once to the events the tools need
 //! and routes them by browsing context into per-tab state (the pump).
 
+pub(crate) mod css;
 pub(crate) mod debugger;
 pub(crate) mod frames;
 pub(crate) mod grip;
