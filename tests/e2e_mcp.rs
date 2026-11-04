@@ -1743,6 +1743,17 @@ mod e2e {
 
     /// ISSUE-9: a phone-sized viewport at 2x, dark mode where the browser
     /// can emulate it, then a reset.
+    /// ISSUE-61: the CPU performance tier the page reads (Chrome), and a
+    /// capability error on Firefox, which has no navigator.cpuPerformance.
+    fn cpu_tier_steps(i: &Value, chrome: bool) -> Vec<Step> {
+        let read = match chrome {
+            true => "\"cpu_performance\": 1",
+            false => "!cpu_performance_tier not available on Firefox",
+        };
+        let low = json!({"instance_id": i, "cpu_performance_tier": "low"});
+        vec![("ISSUE-61 a low CPU performance tier", "emulate", low, read)]
+    }
+
     fn emulate_steps(instance: &str, chrome: bool) -> Vec<Step> {
         let i = json!(instance);
         let dark = if chrome {
@@ -1776,6 +1787,7 @@ mod e2e {
             ),
         ]
         .into_iter()
+        .chain(cpu_tier_steps(&i, chrome))
         .chain(emulate_identity_steps(&i))
         .chain([(
             "ISSUE-9 reset",

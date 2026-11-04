@@ -10,6 +10,16 @@ from a copy of its code: entries describe the differences from that release.
 
 ## [Unreleased]
 
+### Added
+
+- `emulate` takes `cpu_performance_tier` (`low`, `mid`, `high`, `ultra`,
+  `unknown`, or `none` to remove it) on Chrome: the tier
+  `navigator.cpuPerformance` reports, so a page that picks a lighter
+  experience on slow devices can be tested; it stays across calls, `reset`
+  removes it, and the reply shows the tier and what the page reads
+  (`cpu_performance`). Firefox has no `navigator.cpuPerformance`: the option
+  fails there naming it. (#61)
+
 ## [0.11.0-beta.19] - 2026-11-03
 
 Public **BETA**. Downloads are saved per instance and reported on both

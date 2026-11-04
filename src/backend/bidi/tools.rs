@@ -391,7 +391,7 @@ pub(crate) async fn emulate(params: CallToolRequestParams, handler: &McpHandler)
     let unsupported = args.chrome_only();
     if !unsupported.is_empty() {
         return Err(CallToolError::from_message(format!(
-            "{} not available on Firefox: WebDriver BiDi has no media, touch or throttling emulation yet (Firefox emulates the viewport, device_scale_factor, user_agent, locale, timezone and geolocation)",
+            "{} not available on Firefox: WebDriver BiDi has no media, touch, throttling or CPU performance tier emulation yet, and Firefox has no navigator.cpuPerformance (Firefox emulates the viewport, device_scale_factor, user_agent, locale, timezone and geolocation)",
             unsupported.join(", ")
         )));
     }

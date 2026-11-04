@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 
 #[macros::mcp_tool(
     name = "emulate",
-    description = "Emulates, in the tab, its viewport ('width' and 'height', device_scale_factor, 'mobile' with touch), CSS media (color_scheme, reduced_motion, forced_colors, 'media'), user_agent, locale, timezone, geolocation (the page is granted the permission to read it), cpu_throttling and network_throttling. Each call adds to the earlier ones (options it does not give keep their value); 'reset' removes every emulation. Returns what the page now sees. Firefox has no media, touch or throttling emulation (WebDriver BiDi): 'mobile', the media options, cpu_throttling and network_throttling fail there."
+    description = "Emulates, in the tab, its viewport ('width' and 'height', device_scale_factor, 'mobile' with touch), CSS media (color_scheme, reduced_motion, forced_colors, 'media'), user_agent, locale, timezone, geolocation (the page is granted the permission to read it), cpu_throttling, cpu_performance_tier (navigator.cpuPerformance) and network_throttling. Each call adds to the earlier ones (options it does not give keep their value); 'reset' removes every emulation. Returns what the page now sees. Firefox has no media, touch or throttling emulation (WebDriver BiDi): 'mobile', the media options, cpu_throttling, cpu_performance_tier and network_throttling fail there."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct EmulateTool {
@@ -42,6 +42,8 @@ pub struct EmulateTool {
     pub geolocation: Option<Geolocation>,
     /// CPU slowdown factor, 1 to 20 (4 = 4x slower, 1 = no throttling; Chrome only).
     pub cpu_throttling: Option<f64>,
+    /// The tier navigator.cpuPerformance reports ('low', 'mid', 'high', 'ultra', 'unknown', or 'none' to remove; Chrome only).
+    pub cpu_performance_tier: Option<CpuPerformanceTier>,
     /// Network preset ('slow-3g', 'fast-3g', '4g', or 'none' to remove; Chrome only; use set_offline for offline).
     pub network_throttling: Option<NetworkThrottling>,
     /// Remove every emulation; takes no other option.
@@ -95,6 +97,7 @@ pub(crate) struct Emulation {
     forced_colors: Option<bool>,
     media: Option<MediaType>,
     cpu_throttling: Option<f64>,
+    cpu_performance_tier: Option<CpuPerformanceTier>,
     network_throttling: Option<NetworkThrottling>,
 }
 
@@ -119,6 +122,10 @@ impl Emulation {
                 .cpu_throttling
                 .or(self.cpu_throttling)
                 .filter(|&rate| rate > 1.0),
+            cpu_performance_tier: args
+                .cpu_performance_tier
+                .or(self.cpu_performance_tier)
+                .filter(|&tier| tier != CpuPerformanceTier::None),
             network_throttling: args
                 .network_throttling
                 .or(self.network_throttling)
@@ -126,11 +133,15 @@ impl Emulation {
         }
     }
 
-    /// Adds the active CPU and network throttling (or the values `args`
-    /// just cleared them to) to `seen`, as the page cannot read them.
+    /// Adds the active CPU and network throttling and CPU performance tier
+    /// (or the values `args` just cleared them to) to `seen`, as the page
+    /// cannot read them (it reads the tier as a number).
     pub(crate) fn annotate(&self, args: &EmulateTool, seen: &mut Value) {
         if let Some(rate) = self.cpu_throttling.or(args.cpu_throttling) {
             seen["cpu_throttling"] = json!(rate);
+        }
+        if let Some(tier) = self.cpu_performance_tier.or(args.cpu_performance_tier) {
+            seen["cpu_performance_tier"] = json!(tier);
         }
         if let Some(net) = self.network_throttling.or(args.network_throttling) {
             seen["network_throttling"] = json!(net.as_str());
@@ -192,6 +203,43 @@ impl NetworkThrottling {
     }
 }
 
+/// `cpu_performance_tier` (Chrome's `Emulation.setCPUPerformanceOverride`;
+/// the page reads 0 for `unknown`, 1 for `low` ... 4 for `ultra`, ISSUE-61).
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema,
+)]
+#[serde(rename_all = "lowercase")]
+pub enum CpuPerformanceTier {
+    /// Unknown (navigator.cpuPerformance 0).
+    Unknown,
+    /// Low (1).
+    Low,
+    /// Mid (2).
+    Mid,
+    /// High (3).
+    High,
+    /// Ultra (4).
+    Ultra,
+    /// No override: the host's tier.
+    None,
+}
+
+impl CpuPerformanceTier {
+    /// Its `Emulation.setCPUPerformanceOverride` parameters (none removes
+    /// the override).
+    fn cdp_override(self) -> Value {
+        match self {
+            Self::None => json!({}),
+            // Its serde name is CDP's (`low`, `mid`...).
+            tier => json!({"performanceTier": tier}),
+        }
+    }
+}
+
+/// The CDP command a reset sends that older Chrome versions lack
+/// (experimental): its failure does not fail the reset.
+const BEST_EFFORT_ON_RESET: &str = "Emulation.setCPUPerformanceOverride";
+
 /// `color_scheme`.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema,
@@ -228,7 +276,8 @@ const EMULATED: &str = "({ width: innerWidth, height: innerHeight, device_pixel_
     reduced_motion: matchMedia('(prefers-reduced-motion: reduce)').matches, \
     forced_colors: matchMedia('(forced-colors: active)').matches, \
     print: matchMedia('print').matches, touch: navigator.maxTouchPoints > 0, user_agent: navigator.userAgent, \
-    locale: Intl.DateTimeFormat().resolvedOptions().locale, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone })";
+    locale: Intl.DateTimeFormat().resolvedOptions().locale, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone, \
+    ...('cpuPerformance' in navigator ? { cpu_performance: navigator.cpuPerformance } : {}) })";
 
 /// `measure` (an expression, maybe a promise) once a resize has landed: the
 /// next `resize` event or two animation frames, at most 500 ms (a tab in
@@ -294,6 +343,9 @@ impl EmulateTool {
         if self.cpu_throttling.is_some() {
             options.push("cpu_throttling");
         }
+        if self.cpu_performance_tier.is_some() {
+            options.push("cpu_performance_tier");
+        }
         if self.network_throttling.is_some() {
             options.push("network_throttling");
         }
@@ -308,6 +360,7 @@ impl EmulateTool {
             || !self.media_options().is_empty()
             || !self.identity_options().is_empty()
             || self.cpu_throttling.is_some()
+            || self.cpu_performance_tier.is_some()
             || self.network_throttling.is_some();
         if self.resets() {
             return if anything {
@@ -317,7 +370,7 @@ impl EmulateTool {
             };
         }
         if !anything {
-            return fail("emulate needs a viewport, media, user_agent, locale, timezone, geolocation, cpu_throttling or network_throttling option, or 'reset'".into());
+            return fail("emulate needs a viewport, media, user_agent, locale, timezone, geolocation, cpu_throttling, cpu_performance_tier or network_throttling option, or 'reset'".into());
         }
         self.check_texts().map_err(CallToolError::from_message)?;
         if let Some(place) = self.geolocation {
@@ -435,27 +488,7 @@ impl EmulateTool {
     /// with `state`, what the tab emulates with this call merged in.
     pub(crate) fn cdp_commands(&self, state: &Emulation) -> Vec<(&'static str, Value)> {
         if self.resets() {
-            return vec![
-                ("Emulation.clearDeviceMetricsOverride", json!({})),
-                (
-                    "Emulation.setTouchEmulationEnabled",
-                    json!({"enabled": false}),
-                ),
-                (
-                    "Emulation.setEmulatedMedia",
-                    json!({"media": "", "features": []}),
-                ),
-                ("Emulation.setUserAgentOverride", json!({"userAgent": ""})),
-                ("Emulation.setLocaleOverride", json!({})),
-                ("Emulation.setTimezoneOverride", json!({"timezoneId": ""})),
-                ("Emulation.clearGeolocationOverride", json!({})),
-                ("Browser.resetPermissions", json!({})),
-                ("Emulation.setCPUThrottlingRate", json!({"rate": 1})),
-                (
-                    "Network.emulateNetworkConditions",
-                    NetworkThrottling::None.cdp_conditions(),
-                ),
-            ];
+            return reset_commands();
         }
         let mut commands = Vec::new();
         if self.sets_viewport() {
@@ -476,6 +509,10 @@ impl EmulateTool {
         commands.extend(self.cdp_identity());
         if let Some(rate) = self.cpu_throttling {
             commands.push(("Emulation.setCPUThrottlingRate", json!({"rate": rate})));
+        }
+        if let Some(tier) = self.cpu_performance_tier {
+            let method = "Emulation.setCPUPerformanceOverride";
+            commands.push((method, tier.cdp_override()));
         }
         if let Some(net) = self.network_throttling {
             commands.push(("Network.emulateNetworkConditions", net.cdp_conditions()));
@@ -550,6 +587,32 @@ impl EmulateTool {
     }
 }
 
+/// The CDP commands of a reset: every emulation removed.
+fn reset_commands() -> Vec<(&'static str, Value)> {
+    vec![
+        ("Emulation.clearDeviceMetricsOverride", json!({})),
+        (
+            "Emulation.setTouchEmulationEnabled",
+            json!({"enabled": false}),
+        ),
+        (
+            "Emulation.setEmulatedMedia",
+            json!({"media": "", "features": []}),
+        ),
+        ("Emulation.setUserAgentOverride", json!({"userAgent": ""})),
+        ("Emulation.setLocaleOverride", json!({})),
+        ("Emulation.setTimezoneOverride", json!({"timezoneId": ""})),
+        ("Emulation.clearGeolocationOverride", json!({})),
+        ("Browser.resetPermissions", json!({})),
+        ("Emulation.setCPUThrottlingRate", json!({"rate": 1})),
+        (BEST_EFFORT_ON_RESET, json!({})),
+        (
+            "Network.emulateNetworkConditions",
+            NetworkThrottling::None.cdp_conditions(),
+        ),
+    ]
+}
+
 /// `Emulation.setEmulatedMedia` for the media `state` emulates.
 fn cdp_media(state: &Emulation) -> Value {
     {
@@ -595,7 +658,7 @@ impl EmulateTool {
         }
         let state = session.emulation_state(args.tab_id.clone())?;
         let merged = state.lock().await.merged(&args);
-        apply(&target, &args.cdp_commands(&merged)).await?;
+        apply(&target, &args.cdp_commands(&merged), args.resets()).await?;
         // Kept once Chrome took it all.
         *state.lock().await = merged.clone();
         // The position the page reads comes in a promise, awaited; Chrome
@@ -622,9 +685,21 @@ impl EmulateTool {
     }
 }
 
-async fn apply(target: &CdpTarget, commands: &[(&str, Value)]) -> Result<(), CallToolError> {
+/// Sends `commands` in order, failing at the first refused one, except, on
+/// a reset, [`BEST_EFFORT_ON_RESET`], which an older Chrome does not know.
+async fn apply(
+    target: &CdpTarget,
+    commands: &[(&str, Value)],
+    reset: bool,
+) -> Result<(), CallToolError> {
     for (method, params) in commands {
-        crate::handler::send_or(target, method, params.clone(), "CDP Error").await?;
+        let sent = crate::handler::send_or(target, method, params.clone(), "CDP Error").await;
+        match sent {
+            Err(_) if reset && *method == BEST_EFFORT_ON_RESET => {}
+            other => {
+                other?;
+            }
+        }
     }
     Ok(())
 }
@@ -755,7 +830,7 @@ mod tests {
             json!({"media": "print", "features": [{"name": "prefers-color-scheme", "value": "dark"}]})
         );
         let reset = tool(json!({"reset": true}));
-        assert_eq!(reset.cdp_commands(&Emulation::default()).len(), 10);
+        assert_eq!(reset.cdp_commands(&Emulation::default()).len(), 11);
         assert_eq!(phone.chrome_only(), ["color_scheme", "media", "mobile"]);
     }
 
@@ -862,6 +937,46 @@ mod tests {
         assert_eq!(
             cleared[3].1,
             json!({"coordinates": null, "contexts": ["C1"]})
+        );
+    }
+
+    /// ISSUE-61 (Chrome): the CPU performance tier becomes
+    /// `Emulation.setCPUPerformanceOverride`, stays across calls, shows in
+    /// the reply, is cleared by `none` (no tier: the override is removed) and
+    /// by `reset`, and is refused on Firefox (no `navigator.cpuPerformance`).
+    #[test]
+    fn cpu_performance_tier() {
+        let args = tool(json!({"cpu_performance_tier": "low"}));
+        args.check_arguments().unwrap();
+        assert_eq!(args.chrome_only(), ["cpu_performance_tier"]);
+        let state = Emulation::default().merged(&args);
+        assert_eq!(
+            args.cdp_commands(&state),
+            [(
+                "Emulation.setCPUPerformanceOverride",
+                json!({"performanceTier": "low"})
+            )]
+        );
+        let later = tool(json!({"color_scheme": "dark"}));
+        let state = state.merged(&later);
+        let mut seen = json!({});
+        state.annotate(&later, &mut seen);
+        assert_eq!(seen["cpu_performance_tier"], "low");
+        let clear = tool(json!({"cpu_performance_tier": "none"}));
+        let cleared = state.merged(&clear);
+        assert_eq!(
+            clear.cdp_commands(&cleared),
+            [("Emulation.setCPUPerformanceOverride", json!({}))]
+        );
+        let mut seen = json!({});
+        cleared.annotate(&clear, &mut seen);
+        assert_eq!(seen["cpu_performance_tier"], "none");
+        let reset = tool(json!({"reset": true}));
+        let commands = reset.cdp_commands(&Emulation::default());
+        assert!(commands.contains(&("Emulation.setCPUPerformanceOverride", json!({}))));
+        assert!(
+            EMULATED.contains("cpu_performance: navigator.cpuPerformance"),
+            "{EMULATED}"
         );
     }
 
