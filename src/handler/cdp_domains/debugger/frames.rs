@@ -174,8 +174,7 @@ impl DebuggerState {
             }
             if self.paused_frame.as_deref() == Some(&session) {
                 self.paused_frame = None;
-                self.paused_call_frame_id = None;
-                self.paused_at = None;
+                self.clear_pause();
             }
         }
     }
@@ -217,22 +216,22 @@ impl DebuggerState {
 }
 
 /// Readies the debugger of frame `frame` (already registered in `state`)
-/// before it runs: pauses skipped as on its tab, and the breakpoints by
-/// URL set there too.
+/// before it runs: it pauses as its tab does (see `pause_settings`), and
+/// the breakpoints by URL are set there too.
 pub(crate) async fn prepare_frame(frame: &Tab, state: &Arc<Mutex<DebuggerState>>) {
-    let (skip, by_url) = {
+    let (settings, by_url) = {
         let mut state = state.lock().await;
-        let skip = state.skips_pauses();
+        let settings = super::pause_settings(&state);
         let by_url: Vec<(String, Value)> = state
             .breakpoints
             .iter_mut()
             .filter_map(|(id, breakpoint)| Some((id.clone(), breakpoint.by_url.clone()?)))
             .collect();
-        (skip, by_url)
+        (settings, by_url)
     };
-    let _ = frame
-        .send_raw_command("Debugger.setSkipAllPauses", json!({ "skip": skip }))
-        .await;
+    for (method, params) in settings {
+        let _ = frame.send_raw_command(method, params).await;
+    }
     for (id, params) in by_url {
         let Some(native) = set_by_url(frame, params).await else {
             continue;

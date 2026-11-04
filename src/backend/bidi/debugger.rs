@@ -20,13 +20,14 @@ use crate::handler::cdp_domains::debugger::search_scripts::{
 };
 use crate::handler::cdp_domains::debugger::set_breakpoint::SetBreakpointTool;
 use crate::handler::cdp_domains::event_pump::ListenerHandles;
-use crate::handler::debugging::{self, BreakpointIds, BreakpointSet, PauseLocation, Paused};
+use crate::handler::debugging::{self, BreakpointIds, BreakpointSet, PauseLocation, Paused, Step};
 use crate::handler::interruption::Interruption;
 use crate::handler::{McpHandler, TargetArgs, parse_args};
 use bidi_browser_lite::bidi_lite::error::codes;
 use bidi_browser_lite::bidi_lite::rdp::debugger::{
     BreakpointLocation, SourceInfo, TargetThread, ThreadState, parse_thread_states,
 };
+use bidi_browser_lite::bidi_lite::rdp::resources::FrameInfo;
 use bidi_browser_lite::{BidiError, Browser, Debugger};
 use rust_mcp_sdk::schema::{CallToolError, CallToolRequestParams, CallToolResult};
 use serde_json::Value;
@@ -46,6 +47,8 @@ pub(crate) struct PauseInfo {
     pub(crate) frame: Option<String>,
     /// Why (`breakpoint`, `resumeLimit`, `debuggerStatement`...).
     pub(crate) why: String,
+    /// What was thrown, when it paused on an exception (ISSUE-67).
+    pub(crate) exception: Option<String>,
     /// Source actor, 1-based line and 0-based column of the top frame (RDP's).
     pub(crate) location: Option<(String, u32, u32)>,
     /// Which pause this is: a thread that resumes and stops at the same
@@ -63,6 +66,8 @@ pub(crate) struct TabDebugger {
     pub(crate) breakpoints: BreakpointIds<BreakpointLocation>,
     /// Current pause, kept by the state task.
     pub(crate) pause: Arc<StdMutex<Option<PauseInfo>>>,
+    /// When the tab pauses on exceptions (`pause_on_exceptions`).
+    pub(crate) pause_on_exceptions: debugging::PauseOnExceptions,
     _task: ListenerHandles,
     /// The resource watch (WebSocket frames, page errors), see `watch.rs`.
     _watch: ListenerHandles,
@@ -95,6 +100,9 @@ pub(crate) fn apply_states(
                         .and_then(Value::as_str)
                         .unwrap_or_default()
                         .to_string(),
+                    exception: why
+                        .get("exception")
+                        .map(|thrown| super::grip::thrown(&Value::Null, thrown)),
                     location: frame
                         .and_then(|f| f.location)
                         .map(|l| (l.actor, l.line, l.column)),
@@ -166,6 +174,7 @@ async fn attach(browser: &Browser, tab: &FirefoxTab) -> Result<TabDebugger, Back
         debugger,
         breakpoints: BreakpointIds::default(),
         pause,
+        pause_on_exceptions: debugging::PauseOnExceptions::None,
         _task: task,
         _watch: watch,
     };
@@ -174,12 +183,14 @@ async fn attach(browser: &Browser, tab: &FirefoxTab) -> Result<TabDebugger, Back
 }
 
 /// Pauses on the page's `debugger;` statements only while the tab has a
-/// breakpoint: the debugger is always attached, and anti-debugging pages
+/// breakpoint or pauses on exceptions, as on Chrome (ISSUE-67): the
+/// debugger is always attached, and anti-debugging pages
 /// loop on `debugger;` to freeze every tool (thread configuration
 /// `shouldPauseOnDebuggerStatement`; breakpoints and steps are unaffected).
 /// Best effort: an older Firefox without the option keeps pausing.
 async fn sync_pauses(entry: &TabDebugger) {
-    let pause = !entry.breakpoints.is_empty();
+    let pause = !entry.breakpoints.is_empty()
+        || entry.pause_on_exceptions != debugging::PauseOnExceptions::None;
     let params = serde_json::json!({
         "configuration": { "shouldPauseOnDebuggerStatement": pause }
     });
@@ -377,23 +388,78 @@ fn paused_thread(debugger: &Debugger, pause: Option<&PauseInfo>) -> TargetThread
 /// its source (the threads are asked only when it was not announced).
 async fn pause_location(debugger: &Debugger, pause: &PauseInfo) -> Option<PauseLocation> {
     let (actor, line, column) = pause.location.clone()?;
-    let announced = announced_sources(debugger)
-        .into_iter()
-        .find(|s| s.actor == actor);
-    let source = match announced {
-        Some(source) => Some(source),
-        None => every_source(debugger)
-            .await
-            .into_iter()
-            .find(|s| s.actor == actor),
-    };
-    let url = source.and_then(|s| s.url);
-    Some(PauseLocation {
+    let sources = sources_of(debugger, std::iter::once(actor.as_str())).await;
+    Some(located(&sources, &actor, line, column))
+}
+
+/// The sources the debugger knows, the threads asked too when one of
+/// `actors` was not announced.
+async fn sources_of<'a>(
+    debugger: &Debugger,
+    mut actors: impl Iterator<Item = &'a str>,
+) -> Vec<SourceInfo> {
+    let announced = announced_sources(debugger);
+    match actors.all(|actor| announced.iter().any(|s| s.actor == actor)) {
+        true => announced,
+        false => every_source(debugger).await,
+    }
+}
+
+/// RDP's place (`actor`, 1-based `line`, `column`) as every tool reports
+/// it: 0-based, with its source's URL from `sources`.
+fn located(sources: &[SourceInfo], actor: &str, line: u32, column: u32) -> PauseLocation {
+    let url = sources
+        .iter()
+        .find(|s| s.actor == actor)
+        .and_then(|s| s.url.clone());
+    PauseLocation {
         url,
         script_id: None,
         line: line.saturating_sub(1),
         column,
-    })
+    }
+}
+
+/// The paused stack (ISSUE-67): `frames` innermost first, a frame with an
+/// `asyncCause` starting an async caller.
+async fn stack_of(
+    debugger: &Debugger,
+    pause: &PauseInfo,
+    frames: &[FrameInfo],
+) -> debugging::CallStack {
+    let actors = frames
+        .iter()
+        .filter_map(|f| f.location.as_ref())
+        .map(|l| l.actor.as_str());
+    let sources = sources_of(debugger, actors).await;
+    let mut stack = debugging::CallStack {
+        reason: debugging::pause_reason(&pause.why),
+        exception: pause.exception.clone(),
+        truncated: frames.len() > debugging::MAX_STACK_FRAMES,
+        ..Default::default()
+    };
+    for frame in frames.iter().take(debugging::MAX_STACK_FRAMES) {
+        let Some(place) = &frame.location else {
+            continue;
+        };
+        let entry = debugging::StackFrame {
+            function_name: frame.display_name.clone().unwrap_or_default(),
+            location: located(&sources, &place.actor, place.line, place.column),
+        };
+        match frame.raw["asyncCause"].as_str() {
+            Some(cause) if stack.async_parents.len() < debugging::MAX_ASYNC_CALLERS => {
+                stack.async_parents.push(debugging::AsyncSegment {
+                    description: cause.to_string(),
+                    frames: vec![entry],
+                });
+            }
+            _ => match stack.async_parents.last_mut() {
+                Some(segment) => segment.frames.push(entry),
+                None => stack.frames.push(entry),
+            },
+        }
+    }
+    stack
 }
 
 /// Where tab `tab_id` of `session` is stopped in the debugger, if it is (a
@@ -718,35 +784,110 @@ pub(crate) async fn resume(params: CallToolRequestParams, handler: &McpHandler) 
 
 /// `step_over`: steps, then reports where the thread stopped (0-based).
 pub(crate) async fn step_over(params: CallToolRequestParams, handler: &McpHandler) -> ToolResult {
+    step(params, handler, Step::Over).await
+}
+
+/// `step_into`: RDP `resume` with `resumeLimit: step`.
+pub(crate) async fn step_into(params: CallToolRequestParams, handler: &McpHandler) -> ToolResult {
+    step(params, handler, Step::Into).await
+}
+
+/// `step_out`: RDP `resume` with `resumeLimit: finish`.
+pub(crate) async fn step_out(params: CallToolRequestParams, handler: &McpHandler) -> ToolResult {
+    step(params, handler, Step::Out).await
+}
+
+/// Steps the paused thread (`resumeLimit` `next`, `step` or `finish`), then
+/// reports where it stopped (0-based).
+async fn step(params: CallToolRequestParams, handler: &McpHandler, step: Step) -> ToolResult {
     let ids: TargetArgs = parse_args(params)?;
     let session = handler.firefox(ids.instance_id.as_deref()).await?;
     let location = with_debugger(&session, ids.tab_id.as_deref(), async |entry| {
         let before = current_pause(entry).ok_or_else(not_paused)?;
-        paused_thread(&entry.debugger, Some(&before))
-            .step_over()
-            .await
-            .map_err(|e| rdp_error("resume next", &e))?;
+        let thread = paused_thread(&entry.debugger, Some(&before));
+        let (stepping, limit) = match step {
+            Step::Over => (thread.step_over().await, "next"),
+            Step::Into => (thread.step_into().await, "step"),
+            Step::Out => (thread.step_out().await, "finish"),
+        };
+        stepping.map_err(|e| rdp_error(&format!("resume {limit}"), &e))?;
         Ok(next_pause(entry, Some(&before), debugging::STEP_WAIT).await)
     })
     .await?;
-    Ok(debugging::stepped(location.as_ref()))
+    Ok(debugging::stepped(step, location.as_ref()))
 }
 
-/// `evaluate_on_call_frame`: in the top frame of the current pause.
+/// `call_stack`: the paused thread's frames (RDP `frames`), at most
+/// `debugging::MAX_STACK_FRAMES`.
+pub(crate) async fn call_stack(params: CallToolRequestParams, handler: &McpHandler) -> ToolResult {
+    let ids: TargetArgs = parse_args(params)?;
+    let session = handler.firefox(ids.instance_id.as_deref()).await?;
+    let stack = with_debugger(&session, ids.tab_id.as_deref(), async |entry| {
+        let pause = current_pause(entry).ok_or_else(not_paused)?;
+        let thread = paused_thread(&entry.debugger, Some(&pause));
+        // One more than shown: to tell a stack that was cut.
+        let count = u32::try_from(debugging::MAX_STACK_FRAMES + 1).unwrap_or(u32::MAX);
+        let frames = thread
+            .frames(0, count)
+            .await
+            .map_err(|e| rdp_error("frames", &e))?;
+        Ok(stack_of(&entry.debugger, &pause, &frames).await)
+    })
+    .await?;
+    Ok(stack.reply())
+}
+
+/// `pause_on_exceptions`: the thread configuration's `pauseOnExceptions`
+/// and `ignoreCaughtExceptions`, for the tab and its frames.
+pub(crate) async fn pause_on_exceptions(
+    params: CallToolRequestParams,
+    handler: &McpHandler,
+) -> ToolResult {
+    use crate::handler::cdp_domains::debugger::call_stack::PauseOnExceptionsTool;
+    use bidi_browser_lite::bidi_lite::rdp::resources::PauseOnExceptions as Rdp;
+    let args: PauseOnExceptionsTool = parse_args(params)?;
+    let mode = match args.state {
+        debugging::PauseOnExceptions::None => Rdp::None,
+        debugging::PauseOnExceptions::Uncaught => Rdp::Uncaught,
+        debugging::PauseOnExceptions::All => Rdp::All,
+    };
+    let session = handler.firefox(args.instance_id.as_deref()).await?;
+    with_debugger(&session, args.tab_id.as_deref(), async |entry| {
+        let setting = entry.debugger.set_pause_on_exceptions(mode).await;
+        setting.map_err(|e| rdp_error("updateConfiguration", &e))?;
+        entry.pause_on_exceptions = args.state;
+        sync_pauses(entry).await;
+        Ok(())
+    })
+    .await?;
+    Ok(args.state.reply())
+}
+
+/// `evaluate_on_call_frame`: in the top frame of the current pause, or the
+/// frame `frame_index` names.
 pub(crate) async fn evaluate_on_call_frame(
     params: CallToolRequestParams,
     handler: &McpHandler,
 ) -> ToolResult {
+    use crate::handler::cdp_domains::debugger::evaluate_on_call_frame::no_such_frame;
     let args: EvaluateOnCallFrameTool = parse_args(params)?;
     let session = handler.firefox(args.instance_id.as_deref()).await?;
+    let index = args.index();
     let value = with_debugger(&session, args.tab_id.as_deref(), async |entry| {
         let pause = current_pause(entry).ok_or_else(not_paused)?;
         let thread = paused_thread(&entry.debugger, Some(&pause));
+        let count = u32::try_from(index.saturating_add(1)).unwrap_or(u32::MAX);
         let frames = thread
-            .frames(0, 1)
+            .frames(0, count)
             .await
             .map_err(|e| rdp_error("frames", &e))?;
-        let top = frames.first().ok_or_else(not_paused)?;
+        if index > 0 && frames.len() <= index {
+            return Err(BackendError::InvalidArgument(no_such_frame(
+                index,
+                frames.len(),
+            )));
+        }
+        let top = frames.get(index).ok_or_else(not_paused)?;
         let evaluation = thread
             .evaluate_on_frame(&top.actor, &args.expression)
             .await
@@ -1340,6 +1481,155 @@ mod tests {
         assert_eq!(
             error,
             format!("line_number 4 of {page} has no breakable position")
+        );
+        ts::stop(&handler).await;
+    }
+
+    /// ISSUE-67 (Firefox): step_into and step_out resume with their
+    /// `resumeLimit` (`step`, `finish`) and report the next pause.
+    #[tokio::test]
+    async fn step_into_and_out_use_their_limits() {
+        for (name, limit) in [("step_into", "step"), ("step_out", "finish")] {
+            let mock = ts::firefox_with_debugger().await;
+            let rdp = mock.rdp().unwrap();
+            let handler = ts::handler(&mock);
+            set_breakpoint(breakpoint(0, None), &handler).await.unwrap();
+            rdp.pause("breakpoint", None);
+            let session = handler.firefox(None).await.unwrap();
+            wait_paused(&session, "tab-1").await;
+            let params = ts::call(name, json!({}));
+            let reply = match name {
+                "step_into" => step_into(params, &handler).await,
+                _ => step_out(params, &handler).await,
+            };
+            assert_eq!(ts::json_of(&reply.unwrap())["paused"], true);
+            let step = rdp.wait_for_request("resume", WAIT).await.unwrap();
+            assert_eq!(step.params["resumeLimit"]["type"], limit);
+            ts::stop(&handler).await;
+        }
+    }
+
+    /// ISSUE-67 (Firefox): call_stack lists the thread's frames, innermost
+    /// first, 0-based, with their source's URL and why it paused;
+    /// `frame_index` evaluates in a caller's frame.
+    #[tokio::test]
+    async fn call_stack_and_frame_index() {
+        let mock = ts::firefox_with_debugger().await;
+        let rdp = mock.rdp().unwrap();
+        let handler = ts::handler(&mock);
+        let error = call_stack(ts::call("call_stack", json!({})), &handler)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains(debugging::NOT_PAUSED), "{error}");
+        set_breakpoint(breakpoint(0, None), &handler).await.unwrap();
+        rdp.pause("breakpoint", None);
+        let session = handler.firefox(None).await.unwrap();
+        wait_paused(&session, "tab-1").await;
+        let reply = call_stack(ts::call("call_stack", json!({})), &handler)
+            .await
+            .unwrap();
+        let stack = ts::json_of(&reply);
+        assert_eq!(stack["reason"], "breakpoint");
+        let top = &stack["frames"][0];
+        assert_eq!(
+            (
+                top["function_name"].clone(),
+                top["url"].clone(),
+                top["line_number"].clone()
+            ),
+            (json!("f"), json!(SCRIPT), json!(7))
+        );
+        assert_eq!(stack["frames"][1]["function_name"], "(global)");
+        let args = json!({"expression": "1", "frame_index": 1});
+        let _ = evaluate_on_call_frame(ts::call("evaluate_on_call_frame", args), &handler).await;
+        let consoles: Vec<_> = rdp
+            .requests_to(&session_console(&session).await)
+            .into_iter()
+            .filter(|r| r.request_type == "evaluateJSAsync")
+            .collect();
+        assert_eq!(
+            consoles[0].params["frameActor"],
+            "server1.conn1.watcher2.process7//frame25"
+        );
+        let args = json!({"expression": "1", "frame_index": 9});
+        let error = evaluate_on_call_frame(ts::call("evaluate_on_call_frame", args), &handler)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("frame_index 9 is past the paused stack, which has 2 frame(s)"),
+            "{error}"
+        );
+        ts::stop(&handler).await;
+    }
+
+    /// The console actor of the default tab's debugger.
+    async fn session_console(session: &FirefoxSession) -> String {
+        let shared = session
+            .debuggers
+            .lock()
+            .await
+            .get("tab-1")
+            .cloned()
+            .unwrap();
+        shared.lock().await.debugger.console_actor()
+    }
+
+    /// ISSUE-67 (Firefox): a pause on an exception keeps what was thrown.
+    #[test]
+    fn exception_pauses_keep_what_was_thrown() {
+        let pause = StdMutex::new(None);
+        let why = json!({"type": "exception", "exception": "boom"});
+        apply_states(
+            &pause,
+            Some("t"),
+            vec![ThreadState::Paused { why, frame: None }],
+        );
+        let kept = pause.lock().unwrap().clone().unwrap();
+        assert_eq!(
+            (kept.why.as_str(), kept.exception.as_deref()),
+            ("exception", Some("boom"))
+        );
+    }
+
+    /// ISSUE-67 (Firefox): pause_on_exceptions updates the thread
+    /// configuration (`pauseOnExceptions`, `ignoreCaughtExceptions`).
+    #[tokio::test]
+    async fn pause_on_exceptions_configures_the_thread() {
+        let mock = ts::firefox_with_debugger().await;
+        let rdp = mock.rdp().unwrap();
+        let handler = ts::handler(&mock);
+        let args = json!({"state": "uncaught"});
+        let reply = pause_on_exceptions(ts::call("pause_on_exceptions", args), &handler)
+            .await
+            .unwrap();
+        assert!(ts::text(&reply).contains("uncaught exceptions"));
+        let session = handler.firefox(None).await.unwrap();
+        let actor = {
+            let shared = session
+                .debuggers
+                .lock()
+                .await
+                .get("tab-1")
+                .cloned()
+                .unwrap();
+            shared
+                .lock()
+                .await
+                .debugger
+                .thread_configuration_actor()
+                .to_string()
+        };
+        let sent = rdp.requests_to(&actor);
+        let config = sent
+            .iter()
+            .rev()
+            .find(|r| r.params["configuration"].get("pauseOnExceptions").is_some())
+            .unwrap();
+        assert_eq!(
+            config.params["configuration"],
+            json!({"pauseOnExceptions": true, "ignoreCaughtExceptions": true})
         );
         ts::stop(&handler).await;
     }

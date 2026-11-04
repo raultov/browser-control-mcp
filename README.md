@@ -159,7 +159,11 @@ see the note.
 | `remove_breakpoint` | ✓ | ✓ | |
 | `resume` | ✓ | ✓ | on a page that is not paused: `The debugger was not paused: nothing to resume.` with `{paused: false}` |
 | `step_over` | ✓ | ✓ | |
-| `evaluate_on_call_frame` | ✓ | ✓ | |
+| `step_into` | ✓ | ✓ | enters the call on the paused line (Chrome `Debugger.stepInto`, Firefox `resumeLimit: step`) |
+| `step_out` | ✓ | ✓ | runs to the caller (Chrome `Debugger.stepOut`, Firefox `resumeLimit: finish`); `paused: false` when no caller stops |
+| `call_stack` | ✓ | ✓ | the paused stack, innermost first (at most 50 frames): `index`, `function_name`, `url`, 0-based `line_number` and `column_number`, `reason` (`breakpoint`, `step`, `exception`...) and the `exception` thrown; Chrome also lists `async_callers` (`setTimeout`, promises; recorded only while the tab is debugged); Firefox gives no async callers |
+| `pause_on_exceptions` | ✓ | ✓ | `state`: `none`, `uncaught` (and unhandled rejections) or `all`, per tab (Chrome `Debugger.setPauseOnExceptions`, Firefox thread configuration `pauseOnExceptions`) |
+| `evaluate_on_call_frame` | ✓ | ✓ | `frame_index` (from `call_stack`) evaluates in a caller's frame; past the stack it fails naming its size |
 | `search_scripts` | ✓ | ✓ | a long line's preview is 100 characters on each side of the match; inline scripts and modules included, the server's own evaluations left out (Chrome: an inline script the debugger no longer holds, released while its page sat in the back-forward cache, is found in the page's `<script>` elements, with `scriptId: null`, `lineInScript` and a note to reload before setting a breakpoint in it); `debug` answers `{scripts, errors}` as JSON; frames of another origin too (Chrome ids such as `2.17`) |
 | `pause_on_load` | ✓ | ✗ | TODO on Firefox, see [Limitations and TODO](#limitations-and-todo) |
 | `enable_proxy_auth` | ✓ | partial | needs `--proxy-server`; a request the proxy rejects twice is cancelled; untested on Firefox against a real proxy |
@@ -537,8 +541,11 @@ Chrome and Firefox take the same calls:
    `{"paused": true, "location": ...}`. Any other call the pause leaves
    unfinished (`evaluate_js`, `fill_input`, `navigate`...) fails at once
    with that location.
-5. `evaluate_on_call_frame` reads locals of the paused frame; `step_over`
-   moves one statement; `resume` continues. While paused, the input tools
+5. `call_stack` lists the paused frames and why the page paused;
+   `evaluate_on_call_frame` reads locals of the paused frame (or of a
+   caller, with `frame_index`); `step_over` moves one statement,
+   `step_into` enters a call, `step_out` returns to the caller; `resume`
+   continues. While paused, the input tools
    (`click_element`, `hover`, `drag`, `fill_input`, `fill_form`, `press_key`) fail
    at once naming the pause and do nothing: the page would handle their
    events only after `resume`. `evaluate_js` still answers
@@ -553,15 +560,18 @@ Both browsers answer the same replies, with 0-based lines everywhere:
 | --- | --- |
 | `set_breakpoint` | `{"breakpoint_id": "bp-N", "url", "line_number", "column_number", "resolved"}`: where the browser bound it; `resolved` is false until a script with that URL loads |
 | `remove_breakpoint` | `{"removed": "bp-N"}`; an unknown id fails listing the tab's ids |
-| `step_over`, `resume` | `{"paused", "location": {"url", "script_id"?, "line_number", "column_number"} \| null}`: where the thread stopped next (`script_id` on Chrome, for `set_breakpoint`) (`step_over` waits up to 2 s; `resume` reports a pause only if one follows within 250 ms) |
+| `step_over`, `step_into`, `step_out`, `resume` | `{"paused", "location": {"url", "script_id"?, "line_number", "column_number"} \| null}`: where the thread stopped next (`script_id` on Chrome, for `set_breakpoint`) (`step_over` waits up to 2 s; `resume` reports a pause only if one follows within 250 ms) |
 | `evaluate_on_call_frame` | the `evaluate_js` shape; an exception fails with `Evaluation threw: <what was thrown>` |
+| `call_stack` | `{"reason", "exception"?, "frames": [{"index", "function_name", "url", "line_number", "column_number"}], "async_callers"?}` |
+| `pause_on_exceptions` | `{"pause_on_exceptions": "none" \| "uncaught" \| "all"}` |
 
 Breakpoint ids are per tab and MCP-level (`bp-1`, `bp-2`...), like tab ids.
 
-While a tab has no breakpoint (and, on Chrome, no pending `pause_on_load`),
-the page's own `debugger;` statements do not pause it: the debugger is
-always attached, and anti-debugging pages loop on `debugger;` to freeze
-every tool. The first breakpoint turns them back on.
+While a tab has no breakpoint, does not pause on exceptions (and, on
+Chrome, has no pending `pause_on_load`), the page's own `debugger;`
+statements do not pause it: the debugger is always attached, and
+anti-debugging pages loop on `debugger;` to freeze every tool. The first
+breakpoint, or `pause_on_exceptions`, turns them back on.
 
 Chrome also offers `pause_on_load` (pause on the first statement of the next
 load). Firefox notes: breakpoints by URL only; without `column_number` the

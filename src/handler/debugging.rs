@@ -179,12 +179,197 @@ pub(crate) fn pause_json(location: Option<&PauseLocation>) -> Value {
     json!({"paused": location.is_some(), "location": location})
 }
 
-/// `step_over`'s reply.
-pub(crate) fn stepped(location: Option<&PauseLocation>) -> CallToolResult {
-    text(
-        "Stepped over to the next expression in the debugger.",
-        &pause_json(location),
-    )
+/// A step of a paused thread (`step_over`, `step_into`, `step_out`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Step {
+    /// Runs the paused line, stepping over calls.
+    Over,
+    /// Enters the call on the paused line.
+    Into,
+    /// Runs to the end of the paused function, stopping in its caller.
+    Out,
+}
+
+impl Step {
+    /// Its Chrome command.
+    pub(crate) fn cdp_method(self) -> &'static str {
+        match self {
+            Self::Over => "Debugger.stepOver",
+            Self::Into => "Debugger.stepInto",
+            Self::Out => "Debugger.stepOut",
+        }
+    }
+
+    /// The first line of its reply.
+    fn done(self) -> &'static str {
+        match self {
+            Self::Over => "Stepped over to the next expression in the debugger.",
+            Self::Into => "Stepped into the call in the debugger.",
+            Self::Out => "Stepped out to the caller in the debugger.",
+        }
+    }
+}
+
+/// The reply of `step` (`step_over`, `step_into`, `step_out`).
+pub(crate) fn stepped(step: Step, location: Option<&PauseLocation>) -> CallToolResult {
+    text(step.done(), &pause_json(location))
+}
+
+/// Most frames `call_stack` lists (the innermost), async callers included.
+pub(crate) const MAX_STACK_FRAMES: usize = 50;
+
+/// Most async callers (`setTimeout`, a promise...) `call_stack` lists.
+pub(crate) const MAX_ASYNC_CALLERS: usize = 5;
+
+/// One frame of a paused thread's stack.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct StackFrame {
+    /// Empty for an anonymous function.
+    pub(crate) function_name: String,
+    pub(crate) location: PauseLocation,
+}
+
+impl StackFrame {
+    fn to_json(&self) -> Value {
+        let mut out = self.location.to_json();
+        let name = match self.function_name.as_str() {
+            "" => "(anonymous)",
+            name => name,
+        };
+        out["function_name"] = json!(name);
+        out
+    }
+}
+
+/// An async caller of the stack: what scheduled it (`setTimeout`,
+/// `Promise.then`...) and its frames.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct AsyncSegment {
+    pub(crate) description: String,
+    pub(crate) frames: Vec<StackFrame>,
+}
+
+/// A paused thread's stack, innermost frame first (ISSUE-67).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub(crate) struct CallStack {
+    /// Why it paused (see [`pause_reason`]).
+    pub(crate) reason: String,
+    /// What was thrown, when it paused on an exception.
+    pub(crate) exception: Option<String>,
+    pub(crate) frames: Vec<StackFrame>,
+    pub(crate) async_parents: Vec<AsyncSegment>,
+    /// More frames than [`MAX_STACK_FRAMES`] were left out.
+    pub(crate) truncated: bool,
+}
+
+impl CallStack {
+    /// `{reason, exception?, frames: [{index, function_name, url,
+    /// script_id?, line_number, column_number}], async_callers?, truncated?}`.
+    pub(crate) fn to_json(&self) -> Value {
+        let frames: Vec<Value> = self
+            .frames
+            .iter()
+            .enumerate()
+            .map(|(index, frame)| {
+                let mut out = frame.to_json();
+                out["index"] = json!(index);
+                out
+            })
+            .collect();
+        let mut out = json!({"reason": self.reason, "frames": frames});
+        if let Some(thrown) = &self.exception {
+            out["exception"] = json!(thrown);
+        }
+        if !self.async_parents.is_empty() {
+            let parents: Vec<Value> = self
+                .async_parents
+                .iter()
+                .map(|segment| {
+                    let frames: Vec<Value> =
+                        segment.frames.iter().map(StackFrame::to_json).collect();
+                    json!({"description": segment.description, "frames": frames})
+                })
+                .collect();
+            out["async_callers"] = json!(parents);
+        }
+        if self.truncated {
+            out["truncated"] = json!(true);
+        }
+        out
+    }
+
+    /// `call_stack`'s reply.
+    pub(crate) fn reply(&self) -> CallToolResult {
+        let first = format!(
+            "Paused ({}): {} frame(s), innermost first; evaluate_on_call_frame takes a frame_index.",
+            self.reason,
+            self.frames.len()
+        );
+        text(&first, &self.to_json())
+    }
+}
+
+/// A pause's reason in the words both browsers share: `breakpoint`,
+/// `step`, `debugger_statement`, `exception`, `promise_rejection`...
+/// (Chrome's and Firefox's own names, in snake case).
+pub(crate) fn pause_reason(native: &str) -> String {
+    match native {
+        "resumeLimit" => "step".to_string(),
+        other => {
+            let mut out = String::new();
+            for c in other.chars() {
+                if c.is_ascii_uppercase() {
+                    out.push('_');
+                }
+                out.push(c.to_ascii_lowercase());
+            }
+            out
+        }
+    }
+}
+
+/// When the debugger pauses on exceptions (`pause_on_exceptions`).
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    Default,
+    PartialEq,
+    Eq,
+    ::serde::Deserialize,
+    ::serde::Serialize,
+    rust_mcp_sdk::macros::JsonSchema,
+)]
+#[serde(rename_all = "lowercase")]
+pub enum PauseOnExceptions {
+    /// Never.
+    #[default]
+    None,
+    /// On exceptions nothing catches (and unhandled promise rejections).
+    Uncaught,
+    /// On every exception, caught or not.
+    All,
+}
+
+impl PauseOnExceptions {
+    /// Its name (Chrome's `Debugger.setPauseOnExceptions` state too).
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Uncaught => "uncaught",
+            Self::All => "all",
+        }
+    }
+
+    /// `pause_on_exceptions`' reply.
+    pub(crate) fn reply(self) -> CallToolResult {
+        let first = match self {
+            Self::None => "The debugger does not pause on exceptions in this tab.",
+            Self::Uncaught => "The debugger pauses on uncaught exceptions in this tab.",
+            Self::All => "The debugger pauses on every exception, caught or not, in this tab.",
+        };
+        text(first, &json!({"pause_on_exceptions": self.as_str()}))
+    }
 }
 
 /// `resume`'s reply (`paused` true when it stopped again right away).
@@ -282,6 +467,95 @@ mod tests {
             json!({"paused": true, "location": {"url": null, "line_number": 7, "column_number": 0}})
         );
         assert_eq!(pause_json(None), json!({"paused": false, "location": null}));
+    }
+
+    /// ISSUE-67: the three steps word their reply alike on both browsers.
+    #[test]
+    fn steps_have_their_own_replies() {
+        let first = |step: Step| {
+            let reply = stepped(step, None);
+            match &reply.content[0] {
+                rust_mcp_sdk::schema::ContentBlock::TextContent(t) => {
+                    t.text.lines().next().unwrap_or_default().to_string()
+                }
+                _ => String::new(),
+            }
+        };
+        assert_eq!(
+            first(Step::Over),
+            "Stepped over to the next expression in the debugger."
+        );
+        assert_eq!(first(Step::Into), "Stepped into the call in the debugger.");
+        assert_eq!(
+            first(Step::Out),
+            "Stepped out to the caller in the debugger."
+        );
+        assert_eq!(
+            [Step::Over, Step::Into, Step::Out].map(Step::cdp_method),
+            ["Debugger.stepOver", "Debugger.stepInto", "Debugger.stepOut"]
+        );
+    }
+
+    /// ISSUE-67: the call stack, innermost first, with each frame's index
+    /// (what `evaluate_on_call_frame`'s `frame_index` takes), name (or
+    /// `(anonymous)`), 0-based place, the async callers, why it paused and
+    /// the exception it paused on.
+    #[test]
+    fn call_stacks_list_their_frames() {
+        let frame = |name: &str, line: u32| StackFrame {
+            function_name: name.into(),
+            location: PauseLocation {
+                url: Some("http://a/cart.js".into()),
+                script_id: None,
+                line,
+                column: 2,
+            },
+        };
+        let stack = CallStack {
+            reason: "exception".into(),
+            exception: Some("TypeError: x is null".into()),
+            frames: vec![frame("total", 3), frame("", 9)],
+            async_parents: vec![AsyncSegment {
+                description: "setTimeout".into(),
+                frames: vec![frame("schedule", 20)],
+            }],
+            truncated: false,
+        };
+        assert_eq!(
+            stack.to_json(),
+            json!({"reason": "exception", "exception": "TypeError: x is null",
+                "frames": [
+                    {"index": 0, "function_name": "total", "url": "http://a/cart.js", "line_number": 3, "column_number": 2},
+                    {"index": 1, "function_name": "(anonymous)", "url": "http://a/cart.js", "line_number": 9, "column_number": 2}],
+                "async_callers": [{"description": "setTimeout", "frames": [
+                    {"function_name": "schedule", "url": "http://a/cart.js", "line_number": 20, "column_number": 2}]}]})
+        );
+        let text = match &stack.reply().content[0] {
+            rust_mcp_sdk::schema::ContentBlock::TextContent(t) => t.text.clone(),
+            _ => String::new(),
+        };
+        assert!(text.starts_with("Paused (exception): 2 frame(s), innermost first; evaluate_on_call_frame takes a frame_index."), "{text}");
+        assert_eq!(pause_reason("debuggerStatement"), "debugger_statement");
+        assert_eq!(pause_reason("resumeLimit"), "step");
+        assert_eq!(pause_reason("promiseRejection"), "promise_rejection");
+    }
+
+    /// ISSUE-67: the pause-on-exceptions modes and their reply.
+    #[test]
+    fn pause_on_exceptions_modes() {
+        let mode: PauseOnExceptions = serde_json::from_value(json!("uncaught")).unwrap();
+        assert_eq!(
+            (mode.as_str(), PauseOnExceptions::default()),
+            ("uncaught", PauseOnExceptions::None)
+        );
+        let text = match &PauseOnExceptions::All.reply().content[0] {
+            rust_mcp_sdk::schema::ContentBlock::TextContent(t) => t.text.clone(),
+            _ => String::new(),
+        };
+        assert!(
+            text.starts_with("The debugger pauses on every exception, caught or not, in this tab."),
+            "{text}"
+        );
     }
 
     /// ISSUE-1: a call interrupted by a pause says where the page stopped

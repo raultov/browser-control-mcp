@@ -1,5 +1,5 @@
 use crate::handler::McpHandler;
-use crate::handler::debugging;
+use crate::handler::debugging::{self, Step};
 use rust_mcp_sdk::{
     macros,
     schema::{CallToolError, CallToolRequestParams, CallToolResult},
@@ -22,20 +22,73 @@ impl StepOverTool {
         params: CallToolRequestParams,
         handler: &McpHandler,
     ) -> Result<CallToolResult, CallToolError> {
-        let ids: crate::handler::TargetArgs = crate::handler::parse_args(params)?;
-        let session = handler.session(ids.instance_id.clone()).await?;
-        let state = session.debugger_state(ids.tab_id.clone())?;
-        if state.lock().await.paused_call_frame_id.is_none() {
-            return Err(CallToolError::from_message(debugging::NOT_PAUSED));
-        }
-        let target = session.target(ids.tab_id.clone()).await?;
-        let (paused, mut events) = super::frames::paused_with_events(&target, &state).await;
-        let params = serde_json::json!({});
-        let failure = "Failed to step over";
-        crate::handler::send_or(&paused, "Debugger.stepOver", params, failure).await?;
-        let location = super::wait_for_pause(&mut events, debugging::STEP_WAIT, &state).await;
-        Ok(debugging::stepped(location.as_ref()))
+        step(params, handler, Step::Over).await
     }
+}
+
+#[macros::mcp_tool(
+    name = "step_into",
+    description = "Enters the call on the paused line (as step_over when it calls nothing). Returns {paused, location: {url, line_number, column_number} | null} (0-based), waiting up to 2 s for the next pause."
+)]
+#[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
+pub struct StepIntoTool {
+    /// Instance id; omit for the default instance.
+    pub instance_id: Option<String>,
+    /// Tab id; omit for the active tab.
+    pub tab_id: Option<String>,
+}
+
+impl StepIntoTool {
+    pub async fn handle(
+        params: CallToolRequestParams,
+        handler: &McpHandler,
+    ) -> Result<CallToolResult, CallToolError> {
+        step(params, handler, Step::Into).await
+    }
+}
+
+#[macros::mcp_tool(
+    name = "step_out",
+    description = "Runs to the end of the paused function and stops in its caller. Returns {paused, location: {url, line_number, column_number} | null} (0-based; paused false when no caller stops it), waiting up to 2 s for the next pause."
+)]
+#[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
+pub struct StepOutTool {
+    /// Instance id; omit for the default instance.
+    pub instance_id: Option<String>,
+    /// Tab id; omit for the active tab.
+    pub tab_id: Option<String>,
+}
+
+impl StepOutTool {
+    pub async fn handle(
+        params: CallToolRequestParams,
+        handler: &McpHandler,
+    ) -> Result<CallToolResult, CallToolError> {
+        step(params, handler, Step::Out).await
+    }
+}
+
+/// Steps the paused thread of the tab `params` addresses (in the frame of
+/// another origin that paused, if it was one), then reports where it
+/// stopped next.
+async fn step(
+    params: CallToolRequestParams,
+    handler: &McpHandler,
+    step: Step,
+) -> Result<CallToolResult, CallToolError> {
+    let ids: crate::handler::TargetArgs = crate::handler::parse_args(params)?;
+    let session = handler.session(ids.instance_id.clone()).await?;
+    let state = session.debugger_state(ids.tab_id.clone())?;
+    if state.lock().await.paused_call_frame_id.is_none() {
+        return Err(CallToolError::from_message(debugging::NOT_PAUSED));
+    }
+    let target = session.target(ids.tab_id.clone()).await?;
+    let (paused, mut events) = super::frames::paused_with_events(&target, &state).await;
+    let params = serde_json::json!({});
+    let failure = format!("Failed to run {}", step.cdp_method());
+    crate::handler::send_or(&paused, step.cdp_method(), params, &failure).await?;
+    let location = super::wait_for_pause(&mut events, debugging::STEP_WAIT, &state).await;
+    Ok(debugging::stepped(step, location.as_ref()))
 }
 
 #[cfg(test)]
@@ -57,6 +110,36 @@ mod tests {
     async fn test_step_over_tool_deserialization() {
         let tool: Result<StepOverTool, _> = serde_json::from_value(json!({}));
         assert!(tool.is_ok());
+    }
+
+    /// ISSUE-67 (Chrome): step_into and step_out send their command and
+    /// report where the thread stopped next.
+    #[tokio::test]
+    async fn step_into_and_out_report_the_next_pause() {
+        use crate::handler::cdp_domains::tests::{
+            call, fire_after, mock_handler, reply_text, spawn_recording_mock,
+        };
+        for (name, method, first) in [
+            ("step_into", "Debugger.stepInto", "Stepped into the call"),
+            ("step_out", "Debugger.stepOut", "Stepped out to the caller"),
+        ] {
+            let mock = spawn_recording_mock().await;
+            let handler = mock_handler(mock.http_port);
+            let session = handler.session(None).await.unwrap();
+            let state = session.debugger_state(None).unwrap();
+            state.lock().await.paused_call_frame_id = Some("f1".into());
+            let paused = json!({"reason": "other", "callFrames": [{"callFrameId": "f2", "url": "http://a/app.js", "location": {"scriptId": "7", "lineNumber": 1, "columnNumber": 4}}]});
+            fire_after(mock, method, "Debugger.paused", paused);
+            let params = call(name, json!({}));
+            let reply = match name {
+                "step_into" => StepIntoTool::handle(params, &handler).await,
+                _ => StepOutTool::handle(params, &handler).await,
+            };
+            let text = reply_text(&reply.unwrap());
+            assert!(text.starts_with(first), "{text}");
+            assert!(text.contains("\"line_number\": 1"), "{text}");
+            assert_eq!(mock.commands_named(method).len(), 1);
+        }
     }
 
     /// DBG-03 (Chrome): step_over reports where the thread stopped next,

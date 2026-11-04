@@ -227,6 +227,7 @@ fn debugger_tools() -> Vec<ToolEntry> {
     use cdp_domains::debugger::evaluate_on_call_frame::EvaluateOnCallFrameTool as Frame;
     use cdp_domains::debugger::pause_on_load::PauseOnLoadTool as PauseLoad;
     use cdp_domains::debugger::remove_breakpoint::RemoveBreakpointTool as Remove;
+    use cdp_domains::debugger::{call_stack as stack, step_over as steps};
     use cdp_domains::debugger::{resume::ResumeTool as Resume, step_over::StepOverTool as Step};
     use cdp_domains::debugger::{
         search_scripts::SearchScriptsTool as Search, set_breakpoint::SetBreakpointTool as Set,
@@ -239,6 +240,15 @@ fn debugger_tools() -> Vec<ToolEntry> {
         entry!(Set, Always, &[JsDebugger], ff::set_breakpoint),
         entry!(Frame, Always, &[JsDebugger], ff::evaluate_on_call_frame),
         entry!(Remove, Always, &[JsDebugger], ff::remove_breakpoint),
+        entry!(steps::StepIntoTool, Always, &[JsDebugger], ff::step_into),
+        entry!(steps::StepOutTool, Always, &[JsDebugger], ff::step_out),
+        entry!(stack::CallStackTool, Always, &[JsDebugger], ff::call_stack),
+        entry!(
+            stack::PauseOnExceptionsTool,
+            Always,
+            &[JsDebugger],
+            ff::pause_on_exceptions
+        ),
     ]
 }
 
@@ -1393,7 +1403,7 @@ The page reacted (the DOM changed) and settled after ",
         handler.flags.enable_webmcp = true;
         handler.tool_groups = vec![crate::cli::ToolGroup::All];
         let listed = names(listed_tools(&handler));
-        assert_eq!(listed.len(), 57);
+        assert_eq!(listed.len(), 61);
         assert!(listed.contains("restart_browser") && listed.contains("stop_browser"));
         assert!(!listed.contains("restart_chrome") && !listed.contains("stop_chrome"));
     }
@@ -1525,6 +1535,7 @@ The page reacted (the DOM changed) and settled after ",
         "disable_cache",
         "duration_ms",
         "forced_colors",
+        "frame_index",
         "full_page",
         "http_only",
         "save_path",

@@ -550,6 +550,8 @@ mod tests {
         let expected = [
             "Debugger.enable",
             "Debugger.setSkipAllPauses",
+            "Debugger.setPauseOnExceptions",
+            "Debugger.setAsyncCallStackDepth",
             "Debugger.setBreakpointByUrl",
             "Runtime.runIfWaitingForDebugger",
         ];

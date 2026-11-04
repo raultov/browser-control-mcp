@@ -8,7 +8,7 @@ use serde_json::json;
 
 #[macros::mcp_tool(
     name = "evaluate_on_call_frame",
-    description = "Evaluates JavaScript in the paused top frame, with its locals and closures in scope. Returns the 'evaluate_js' shape; an exception fails with 'Evaluation threw: <what>'."
+    description = "Evaluates JavaScript in a paused frame (the top one, or 'frame_index' from call_stack), with its locals and closures in scope. Returns the 'evaluate_js' shape; an exception fails with 'Evaluation threw: <what>'."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct EvaluateOnCallFrameTool {
@@ -18,6 +18,23 @@ pub struct EvaluateOnCallFrameTool {
     pub tab_id: Option<String>,
     /// A JavaScript expression.
     pub expression: String,
+    /// The frame to evaluate in, as call_stack numbers them (0, the default, is the innermost).
+    pub frame_index: Option<u32>,
+}
+
+impl EvaluateOnCallFrameTool {
+    /// The frame index asked for (0 by default).
+    pub(crate) fn index(&self) -> usize {
+        self.frame_index
+            .map_or(0, |i| usize::try_from(i).unwrap_or(usize::MAX))
+    }
+}
+
+/// The error of a `frame_index` past the paused stack's `count` frames.
+pub(crate) fn no_such_frame(index: usize, count: usize) -> String {
+    format!(
+        "frame_index {index} is past the paused stack, which has {count} frame(s): call_stack lists them"
+    )
 }
 
 impl EvaluateOnCallFrameTool {
@@ -33,12 +50,21 @@ impl EvaluateOnCallFrameTool {
 
         // Validation: check if we have a paused call frame ID FIRST. Reading
         // the per-tab state needs no connection, so this stays cheap.
-        let call_frame_id = debugger_state
-            .lock()
-            .await
-            .paused_call_frame_id
-            .clone()
-            .ok_or_else(|| CallToolError::from_message(debugging::NOT_PAUSED))?;
+        let call_frame_id = {
+            let state = debugger_state.lock().await;
+            let top = state
+                .paused_call_frame_id
+                .clone()
+                .ok_or_else(|| CallToolError::from_message(debugging::NOT_PAUSED))?;
+            match args.index() {
+                0 => top,
+                index => {
+                    let ids = &state.paused_frame_ids;
+                    let id = ids.get(index).cloned();
+                    id.ok_or_else(|| CallToolError::from_message(no_such_frame(index, ids.len())))?
+                }
+            }
+        };
 
         let target = session.target(args.tab_id.clone()).await?;
         let paused = debugger_state.lock().await.paused_target(&target);
@@ -152,6 +178,36 @@ mod tests {
             err.to_string().contains("not found"),
             "expected tab-not-found error, got: {err}"
         );
+    }
+
+    /// ISSUE-67 (Chrome): `frame_index` evaluates in a caller's frame (its
+    /// call frame id from the pause); one past the stack fails naming it.
+    #[tokio::test]
+    async fn frame_index_picks_a_frame_of_the_stack() {
+        use crate::handler::cdp_domains::tests::{call, mock_handler, spawn_recording_mock};
+        // Given a pause two frames deep
+        let mock = spawn_recording_mock().await;
+        let handler = mock_handler(mock.http_port);
+        let session = handler.session(None).await.unwrap();
+        {
+            let state = session.debugger_state(None).unwrap();
+            let mut state = state.lock().await;
+            state.paused_call_frame_id = Some("f0".into());
+            state.paused_frame_ids = vec!["f0".into(), "f1".into()];
+        }
+        // When the caller's frame is asked for, Then its id is sent
+        let args = json!({"expression": "cart", "frame_index": 1});
+        let _ =
+            EvaluateOnCallFrameTool::handle(call("evaluate_on_call_frame", args), &handler).await;
+        let sent = mock.commands_named("Debugger.evaluateOnCallFrame");
+        assert_eq!(sent[0].params["callFrameId"], "f1");
+        // And one past the stack fails naming its size
+        let args = json!({"expression": "cart", "frame_index": 5});
+        let error = EvaluateOnCallFrameTool::handle(call("evaluate_on_call_frame", args), &handler)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert_eq!(error, no_such_frame(5, 2));
     }
 
     /// DBG-05 (Chrome): an exception in the frame is a tool error worded as

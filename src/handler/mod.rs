@@ -60,6 +60,13 @@ pub(crate) struct DebuggerState {
     frame_count: u32,
     /// The pauses and resumes of those frames, for the calls waiting.
     pub frame_events: cdp_domains::debugger::frames::FrameEvents,
+    /// The kept pause's stack, innermost first (ISSUE-67), its frames'
+    /// URLs filled in when read, and the ids of those frames, for
+    /// `evaluate_on_call_frame`'s `frame_index`.
+    pub paused_stack: Option<debugging::CallStack>,
+    pub paused_frame_ids: Vec<String>,
+    /// When the tab pauses on exceptions (`pause_on_exceptions`).
+    pub pause_on_exceptions: debugging::PauseOnExceptions,
 }
 
 impl DebuggerState {
@@ -68,7 +75,17 @@ impl DebuggerState {
     /// page's own `debugger;` statements, which anti-debugging pages loop on
     /// to freeze every tool.
     pub(crate) fn skips_pauses(&self) -> bool {
-        self.breakpoints.is_empty() && self.pause_on_load_script.is_none()
+        self.breakpoints.is_empty()
+            && self.pause_on_load_script.is_none()
+            && self.pause_on_exceptions == debugging::PauseOnExceptions::None
+    }
+
+    /// Forgets the kept pause (the thread resumed, or its frame is gone).
+    pub(crate) fn clear_pause(&mut self) {
+        self.paused_call_frame_id = None;
+        self.paused_at = None;
+        self.paused_stack = None;
+        self.paused_frame_ids.clear();
     }
 }
 
@@ -2173,8 +2190,8 @@ mod tests {
         assert!(result.is_ok());
         let tools = result.unwrap().tools;
 
-        // Without proxy, webmcp and tool groups, 35 tools are listed
-        assert_eq!(tools.len(), 35);
+        // Without proxy, webmcp and tool groups, 39 tools are listed
+        assert_eq!(tools.len(), 39);
         let tool_names: Vec<String> = tools.into_iter().map(|t| t.name).collect();
         assert!(tool_names.contains(&"scroll".to_string()));
         assert!(tool_names.contains(&"capture_screenshot".to_string()));
@@ -2204,8 +2221,8 @@ mod tests {
         assert!(result.is_ok());
         let tools = result.unwrap().tools;
 
-        // With proxy configured (and webmcp disabled), 36 tools are listed
-        assert_eq!(tools.len(), 36);
+        // With proxy configured (and webmcp disabled), 40 tools are listed
+        assert_eq!(tools.len(), 40);
         let tool_names: Vec<String> = tools.into_iter().map(|t| t.name).collect();
         assert!(tool_names.contains(&"enable_proxy_auth".to_string()));
     }
@@ -2223,8 +2240,8 @@ mod tests {
         assert!(result.is_ok());
         let tools = result.unwrap().tools;
 
-        // With webmcp configured (35 + 5 = 40 tools)
-        assert_eq!(tools.len(), 40);
+        // With webmcp configured (39 + 5 = 44 tools)
+        assert_eq!(tools.len(), 44);
         let tool_names: Vec<String> = tools.into_iter().map(|t| t.name).collect();
         assert!(tool_names.contains(&"webmcp_list_tools".to_string()));
         assert!(tool_names.contains(&"webmcp_invoke_tool".to_string()));

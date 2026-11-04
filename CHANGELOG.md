@@ -12,6 +12,14 @@ from a copy of its code: entries describe the differences from that release.
 
 ### Added
 
+- The debugger goes deeper, on both browsers (#67): `step_into` and
+  `step_out`; `call_stack` lists the paused frames (function, URL, 0-based
+  line and column), why the page paused and what it threw, and on Chrome
+  the async callers (`setTimeout`, promises); `evaluate_on_call_frame` takes
+  `frame_index` to evaluate in a caller; `pause_on_exceptions` (`none`,
+  `uncaught`, `all`) pauses on exceptions, per tab. Pausing on exceptions,
+  like a breakpoint, lets the page's `debugger;` statements pause it again.
+
 - `emulate` takes `cpu_performance_tier` (`low`, `mid`, `high`, `ultra`,
   `unknown`, or `none` to remove it) on Chrome: the tier
   `navigator.cpuPerformance` reports, so a page that picks a lighter

@@ -101,7 +101,7 @@ mod e2e {
     /// ISSUE-36: the script of the frame of another origin, to debug.
     const XO_INNER_JS: &str =
         "function xoInner(n) {\n  const doubled = n * 2;\n  return doubled;\n}\n";
-    const APP_JS: &str = "function appTarget(x) {\n  const y = x * 2;\n  return y + 1;\n}\nwindow.appTarget = appTarget;\nfetch('/api');\nfunction appLoop(n) {\n  let s = 0;\n  for (let k = 0; k < n; k++) {\n    s += k;\n  }\n  return s;\n}\nwindow.appLoop = appLoop;\n";
+    const APP_JS: &str = "function appTarget(x) {\n  const y = x * 2;\n  return y + 1;\n}\nwindow.appTarget = appTarget;\nfetch('/api');\nfunction appLoop(n) {\n  let s = 0;\n  for (let k = 0; k < n; k++) {\n    s += k;\n  }\n  return s;\n}\nwindow.appLoop = appLoop;\nfunction appPrice(n) {\n  return n * 2;\n}\nfunction appTotal(list) {\n  return list.map(appPrice).reduce((a, b) => a + b, 0);\n}\nfunction appBuy() {\n  const total = appTotal([1, 2]);\n  return total;\n}\nfunction appBoom() {\n  return null.x;\n}\nwindow.appBuy = appBuy; window.appBoom = appBoom;\n";
 
     /// The WebSocket page: sends `hello-ws` to the echo server on `port`.
     fn ws_page(port: u16) -> String {
@@ -2499,12 +2499,102 @@ mod e2e {
         steps.extend(pause_on_navigate_steps(&i, base));
         steps.extend(loop_breakpoint_steps(&i, base));
         steps.extend(debugger_wording_steps(&i));
+        steps.extend(stack_steps(&i, base));
+        steps.extend(exception_pause_steps(&i));
         steps
     }
 
     /// ISSUE-66: search_scripts leaves out the server's own snippets (a
     /// snapshot just ran one), and the debugger tools word "not paused" the
     /// same on both browsers.
+    /// ISSUE-67: the stack of a pause in nested calls, stepping into and
+    /// out of a call, and evaluating in a caller's frame (both browsers).
+    fn stack_steps(i: &Value, base: &str) -> Vec<Step> {
+        let bp = json!({"instance_id": i, "url": format!("{base}/app.js"), "line_number": 21});
+        let trigger = json!({"instance_id": i, "expression": "setTimeout(() => appBuy(), 50); 1"});
+        let on = json!({"instance_id": i});
+        let caller = json!({"instance_id": i, "expression": "typeof appTotal", "frame_index": 1});
+        vec![
+            (
+                "ISSUE-67 a breakpoint before a call",
+                "set_breakpoint",
+                bp,
+                "Breakpoint set",
+            ),
+            ("ISSUE-67 run it", "evaluate_js", trigger, ""),
+            ("ISSUE-67 wait for the pause", "sleep", json!({}), ""),
+            (
+                "ISSUE-67 the stack",
+                "call_stack",
+                on.clone(),
+                "\"function_name\": \"appBuy\"",
+            ),
+            (
+                "ISSUE-67 step into the call",
+                "step_into",
+                on.clone(),
+                "Stepped into the call",
+            ),
+            (
+                "ISSUE-67 the callee is on top",
+                "call_stack",
+                on.clone(),
+                "\"function_name\": \"appTotal\"",
+            ),
+            (
+                "ISSUE-67 evaluate in the caller",
+                "evaluate_on_call_frame",
+                caller,
+                "function",
+            ),
+            (
+                "ISSUE-67 step out to the caller",
+                "step_out",
+                on.clone(),
+                "Stepped out to the caller",
+            ),
+            ("ISSUE-67 resume", "resume", on, "resumed"),
+        ]
+    }
+
+    /// ISSUE-67: the breakpoint of `stack_steps` removed, then pausing on
+    /// uncaught exceptions, the stack saying so, and turning it off (both
+    /// browsers).
+    fn exception_pause_steps(i: &Value) -> Vec<Step> {
+        let mode = |state: &str| json!({"instance_id": i, "state": state});
+        let trigger = json!({"instance_id": i, "expression": "setTimeout(() => appBoom(), 50); 1"});
+        let on = json!({"instance_id": i});
+        vec![
+            (
+                "ISSUE-67 remove the breakpoint",
+                "remove_breakpoint",
+                json!({"instance_id": i, "breakpoint_id": "bp-5"}),
+                "removed",
+            ),
+            (
+                "ISSUE-67 pause on uncaught exceptions",
+                "pause_on_exceptions",
+                mode("uncaught"),
+                "uncaught exceptions",
+            ),
+            ("ISSUE-67 throw", "evaluate_js", trigger, ""),
+            ("ISSUE-67 wait for the exception", "sleep", json!({}), ""),
+            (
+                "ISSUE-67 paused on it",
+                "call_stack",
+                on.clone(),
+                "Paused (exception)",
+            ),
+            ("ISSUE-67 resume after it", "resume", on, "resumed"),
+            (
+                "ISSUE-67 stop pausing on exceptions",
+                "pause_on_exceptions",
+                mode("none"),
+                "does not pause",
+            ),
+        ]
+    }
+
     fn debugger_wording_steps(i: &Value) -> Vec<Step> {
         vec![
             (
@@ -2930,7 +3020,7 @@ mod e2e {
         // Every opt-in tool group: the suite drives them all.
         let secrets = secrets_file(browser);
         let mut mcp = Mcp::start(&["--tool-groups", "all", "--secrets", &secrets]).await;
-        mcp.list_tools(51).await;
+        mcp.list_tools(55).await;
         let all = [
             page_steps(browser, &base),
             tab_steps("e2e", &base),

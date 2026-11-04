@@ -1,3 +1,4 @@
+pub mod call_stack;
 pub mod evaluate_on_call_frame;
 pub(crate) mod frames;
 pub mod pause_on_load;
@@ -8,7 +9,7 @@ pub mod set_breakpoint;
 pub mod step_over;
 
 use crate::handler::cdp_domains::cdp_target::CdpTarget;
-use crate::handler::debugging::PauseLocation;
+use crate::handler::debugging::{self, PauseLocation};
 use crate::handler::{DebuggerState, ScriptInfo, extract_from_value};
 use cdp_browser_lite::WsResponse;
 use std::sync::Arc;
@@ -70,8 +71,7 @@ pub(crate) async fn process_debugger_event_in(
             .retain(|id, _| frames::split_script_id(id).0 != number),
         Some("Debugger.paused") => on_paused(&event.params, &mut st, frame),
         Some("Debugger.resumed") if st.paused_frame.as_deref() == frame => {
-            st.paused_call_frame_id = None;
-            st.paused_at = None;
+            st.clear_pause();
             st.paused_frame = None;
         }
         _ => {}
@@ -132,7 +132,110 @@ fn on_paused(params: &Option<serde_json::Value>, st: &mut DebuggerState, frame: 
         st.paused_call_frame_id = Some(call_frame_id.to_string());
         st.paused_at = params.as_ref().and_then(pause_location);
         st.paused_frame = frame.map(str::to_string);
+        if let Some(params) = params {
+            let (ids, stack) = call_stack(params);
+            st.paused_frame_ids = ids;
+            st.paused_stack = Some(stack);
+        }
     }
+}
+
+/// The ids and the stack of a `Debugger.paused` (ISSUE-67), at most
+/// `debugging::MAX_STACK_FRAMES` frames, async callers included.
+fn call_stack(params: &serde_json::Value) -> (Vec<String>, debugging::CallStack) {
+    let frames = params["callFrames"].as_array().cloned().unwrap_or_default();
+    let ids = frames
+        .iter()
+        .take(debugging::MAX_STACK_FRAMES)
+        .filter_map(|f| f["callFrameId"].as_str().map(str::to_string))
+        .collect();
+    let mut room = debugging::MAX_STACK_FRAMES;
+    let own = stack_frames(&frames, &mut room, true);
+    let mut async_parents = Vec::new();
+    let mut parent = params.get("asyncStackTrace");
+    while let Some(segment) =
+        parent.filter(|_| async_parents.len() < debugging::MAX_ASYNC_CALLERS && room > 0)
+    {
+        let frames = segment["callFrames"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        async_parents.push(debugging::AsyncSegment {
+            description: segment["description"]
+                .as_str()
+                .unwrap_or("async")
+                .to_string(),
+            frames: stack_frames(&frames, &mut room, false),
+        });
+        parent = segment.get("parent");
+    }
+    let hit = params["hitBreakpoints"]
+        .as_array()
+        .is_some_and(|hit| !hit.is_empty());
+    let native = params["reason"].as_str().unwrap_or("other");
+    let stack = debugging::CallStack {
+        reason: debugging::pause_reason(if hit { "breakpoint" } else { native }),
+        exception: thrown_text(native, params.get("data")),
+        truncated: frames.len() > own.len(),
+        frames: own,
+        async_parents,
+    };
+    (ids, stack)
+}
+
+/// What a pause on an exception or a rejection says was thrown: its
+/// description's first line (the rest is its stack), else its value.
+fn thrown_text(reason: &str, data: Option<&serde_json::Value>) -> Option<String> {
+    if !matches!(reason, "exception" | "promiseRejection") {
+        return None;
+    }
+    let data = data?;
+    match data["description"].as_str() {
+        Some(description) => description.lines().next().map(str::to_string),
+        None => data
+            .get("value")
+            .map(|v| v.as_str().map_or_else(|| v.to_string(), str::to_string)),
+    }
+}
+
+/// Up to `room` frames of a CDP stack, taking them from it:
+/// `Debugger.CallFrame`s (`located`: their place is in `location`) or
+/// `Runtime.CallFrame`s (the place is the frame's own fields).
+fn stack_frames(
+    frames: &[serde_json::Value],
+    room: &mut usize,
+    located: bool,
+) -> Vec<debugging::StackFrame> {
+    let taken: Vec<debugging::StackFrame> = frames
+        .iter()
+        .take(*room)
+        .filter_map(|frame| {
+            let at = if located {
+                frame.get("location")?
+            } else {
+                frame
+            };
+            let number = |key: &str| at[key].as_u64().and_then(|n| u32::try_from(n).ok());
+            let url = frame["url"]
+                .as_str()
+                .filter(|u| !u.is_empty())
+                .map(str::to_string);
+            Some(debugging::StackFrame {
+                function_name: frame["functionName"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string(),
+                location: PauseLocation {
+                    url,
+                    script_id: at["scriptId"].as_str().map(str::to_string),
+                    line: number("lineNumber")?,
+                    column: number("columnNumber").unwrap_or(0),
+                },
+            })
+        })
+        .collect();
+    *room = room.saturating_sub(taken.len());
+    taken
 }
 
 /// Where a `Debugger.paused` event stopped (top frame), 0-based as CDP.
@@ -213,20 +316,44 @@ async fn next_pause(
 /// its debugged frames. Best effort: an older Chrome without the command
 /// keeps pausing.
 pub(crate) async fn sync_pauses(target: &CdpTarget, state: &Arc<Mutex<DebuggerState>>) {
-    let (skip, frames) = {
+    let (settings, frames) = {
         let state = state.lock().await;
-        (state.skips_pauses(), state.debugged_frames())
+        (pause_settings(&state), state.debugged_frames())
     };
-    let skip = serde_json::json!({ "skip": skip });
-    let _ = target
-        .send_raw_command("Debugger.setSkipAllPauses", skip.clone())
-        .await;
-    for frame in frames {
-        let _ = frame
-            .tab
-            .send_raw_command("Debugger.setSkipAllPauses", skip.clone())
-            .await;
+    let sessions = std::iter::once(target.clone())
+        .chain(frames.into_iter().map(|frame| CdpTarget::tab(frame.tab)));
+    for session in sessions {
+        for (method, params) in &settings {
+            let _ = session.send_raw_command(method, params.clone()).await;
+        }
     }
+}
+
+/// How deep Chrome records async stacks while the tab is debugged (the
+/// async callers `call_stack` lists): 0 otherwise, as they cost the page.
+const ASYNC_STACK_DEPTH: u32 = 16;
+
+/// The commands telling a debugger session how the tab pauses: whether it
+/// skips every pause, on which exceptions it pauses, and how deep async
+/// stacks go (ISSUE-67).
+pub(crate) fn pause_settings(state: &DebuggerState) -> [(&'static str, serde_json::Value); 3] {
+    let skip = state.skips_pauses();
+    let depth = if skip { 0 } else { ASYNC_STACK_DEPTH };
+    let exceptions = state.pause_on_exceptions.as_str();
+    [
+        (
+            "Debugger.setSkipAllPauses",
+            serde_json::json!({ "skip": skip }),
+        ),
+        (
+            "Debugger.setPauseOnExceptions",
+            serde_json::json!({ "state": exceptions }),
+        ),
+        (
+            "Debugger.setAsyncCallStackDepth",
+            serde_json::json!({ "maxDepth": depth }),
+        ),
+    ]
 }
 
 /// Keeps the tab's debugger state from its `Debugger` events. A pause with
@@ -285,6 +412,84 @@ pub(crate) mod tests {
     use super::*;
     use crate::handler::cdp_domains::tests::make_event;
     use serde_json::json;
+
+    /// ISSUE-67 (Chrome): a pause keeps its whole stack (every frame's id,
+    /// for `frame_index`), why it paused (a breakpoint hit, an exception
+    /// with what was thrown) and its async callers; a resume forgets it.
+    #[tokio::test]
+    async fn pauses_keep_their_stack() {
+        let all = crate::handler::debugging::PauseOnExceptions::All;
+        let state = Arc::new(Mutex::new(DebuggerState {
+            pause_on_exceptions: all,
+            ..Default::default()
+        }));
+        let frame = |id: &str, name: &str, line: u64| json!({"callFrameId": id, "functionName": name, "url": "", "location": {"scriptId": "3", "lineNumber": line, "columnNumber": 2}});
+        let paused = json!({"reason": "exception", "data": {"description": "TypeError: x\n    at boom (http://a/:1:1)"},
+            "callFrames": [frame("f0", "price", 1), frame("f1", "", 5)],
+            "asyncStackTrace": {"description": "setTimeout", "callFrames": [{"functionName": "onclick", "scriptId": "9", "url": "http://a/", "lineNumber": 0, "columnNumber": 0}]}});
+        process_debugger_event(&make_event("Debugger.paused", paused), &state).await;
+        let st = state.lock().await;
+        assert_eq!(st.paused_frame_ids, ["f0", "f1"]);
+        let stack = st.paused_stack.clone().unwrap();
+        assert_eq!(
+            (stack.reason.as_str(), stack.exception.as_deref()),
+            ("exception", Some("TypeError: x"))
+        );
+        assert_eq!(stack.frames.len(), 2);
+        assert_eq!(
+            (
+                stack.frames[1].function_name.as_str(),
+                stack.frames[1].location.line
+            ),
+            ("", 5)
+        );
+        assert_eq!(stack.async_parents[0].description, "setTimeout");
+        drop(st);
+        let hit = json!({"reason": "other", "hitBreakpoints": ["1:1:0:http://a/app.js"], "callFrames": [frame("f0", "price", 1)]});
+        process_debugger_event(&make_event("Debugger.paused", hit), &state).await;
+        assert_eq!(
+            state.lock().await.paused_stack.as_ref().unwrap().reason,
+            "breakpoint"
+        );
+        process_debugger_event(&make_event("Debugger.resumed", json!({})), &state).await;
+        let st = state.lock().await;
+        assert!(st.paused_stack.is_none() && st.paused_frame_ids.is_empty());
+    }
+
+    /// ISSUE-67: pausing on exceptions keeps the tab's pauses (they were
+    /// skipped without a breakpoint), and each session is told the mode and
+    /// records async stacks only while the tab is debugged.
+    #[test]
+    fn pausing_on_exceptions_keeps_pauses() {
+        let mut state = DebuggerState::default();
+        assert!(state.skips_pauses());
+        let idle = pause_settings(&state);
+        assert_eq!(idle[1].1, json!({"state": "none"}));
+        assert_eq!(idle[2].1, json!({"maxDepth": 0}));
+        state.pause_on_exceptions = crate::handler::debugging::PauseOnExceptions::Uncaught;
+        assert!(!state.skips_pauses());
+        let settings = pause_settings(&state);
+        assert_eq!(
+            settings.clone().map(|(m, _)| m),
+            [
+                "Debugger.setSkipAllPauses",
+                "Debugger.setPauseOnExceptions",
+                "Debugger.setAsyncCallStackDepth"
+            ]
+        );
+        assert_eq!(
+            (
+                settings[0].1.clone(),
+                settings[1].1.clone(),
+                settings[2].1.clone()
+            ),
+            (
+                json!({"skip": false}),
+                json!({"state": "uncaught"}),
+                json!({"maxDepth": 16})
+            )
+        );
+    }
 
     #[tokio::test]
     async fn test_script_parsed_inserts_script_info() {
