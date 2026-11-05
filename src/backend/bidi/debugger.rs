@@ -621,6 +621,7 @@ pub(crate) async fn set_breakpoint(
     };
     let session = handler.firefox(args.instance_id.as_deref()).await?;
     let set = with_debugger(&session, args.tab_id.as_deref(), async |entry| {
+        let url = source_url(&entry.debugger, &url).await?;
         let target = BreakpointTarget {
             url: &url,
             line,
@@ -632,15 +633,11 @@ pub(crate) async fn set_breakpoint(
             line,
             column: Some(column),
         };
-        if let Some(id) = entry.breakpoints.id_of(&location) {
-            return Err(BackendError::InvalidArgument(format!(
-                "Breakpoint {id} is already set there (line_number {}, column_number {column} of {url}): Firefox keeps one breakpoint per location. Use {id}, or remove it first.",
-                args.line_number
-            )));
-        }
+        not_set_yet(entry, &location, args.line_number)?;
+        let condition = args.condition_at(&url);
         let bound = entry
             .debugger
-            .set_breakpoint_resolved(&location, None)
+            .set_breakpoint_resolved(&location, condition.as_deref())
             .await
             .map_err(|e| breakpoint_error(&e, &url, args.line_number))?;
         let id = entry.breakpoints.add(bound.location.clone());
@@ -651,10 +648,45 @@ pub(crate) async fn set_breakpoint(
             line: args.line_number,
             column: bound.location.column,
             resolved: bound.resolved,
+            condition: args.condition.clone(),
+            log: args.log.clone(),
         })
     })
     .await?;
     Ok(set.reply())
+}
+
+/// The URL of the loaded source a breakpoint `url` names: itself when
+/// absolute, else the one source whose URL ends with it (ISSUE-87).
+/// Firefox binds by exact URL, so a relative one no source ends with is
+/// refused.
+async fn source_url(debugger: &Debugger, url: &str) -> Result<String, BackendError> {
+    let sources = every_source(debugger).await;
+    let loaded = sources.iter().filter_map(|source| source.url.as_deref());
+    match debugging::resolve_script_url(url, loaded) {
+        Ok(Some(found)) => Ok(found),
+        Ok(None) => Err(BackendError::InvalidArgument(format!(
+            "no loaded script's URL ends with '{url}': give the script's absolute URL ('search_scripts' lists them)"
+        ))),
+        Err(several) => Err(BackendError::InvalidArgument(several)),
+    }
+}
+
+/// Fails when a breakpoint of the tab is at `location` already: Firefox
+/// keeps one per location (`line` is the agent's 0-based line).
+fn not_set_yet(
+    entry: &TabDebugger,
+    location: &BreakpointLocation,
+    line: u32,
+) -> Result<(), BackendError> {
+    let Some(id) = entry.breakpoints.id_of(location) else {
+        return Ok(());
+    };
+    let column = location.column.unwrap_or_default();
+    let url = &location.source_url;
+    Err(BackendError::InvalidArgument(format!(
+        "Breakpoint {id} is already set there (line_number {line}, column_number {column} of {url}): Firefox keeps one breakpoint per location. Use {id}, or remove it first."
+    )))
 }
 
 /// A line a breakpoint is asked for.
@@ -1392,6 +1424,40 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(ts::json_of(&reply)["resolved"], false);
+        ts::stop(&handler).await;
+    }
+
+    /// ISSUE-87 (Firefox): a condition and a logpoint are sent as the
+    /// breakpoint's `options.condition`, and a relative URL names the
+    /// loaded source that ends with it.
+    #[tokio::test]
+    async fn conditions_logpoints_and_relative_urls() {
+        // Given the mock's loaded https://example.com/test.html
+        let mock = ts::firefox_with_debugger().await;
+        let rdp = mock.rdp().unwrap();
+        let handler = ts::handler(&mock);
+        // When a logpoint with a condition is set by the file's name
+        let args =
+            json!({"url": "test.html", "line_number": 6, "condition": "n > 1", "log": "sum"});
+        let reply = set_breakpoint(ts::call("set_breakpoint", args), &handler)
+            .await
+            .unwrap();
+        // Then the source's URL and the condition that logs were sent
+        let sent = rdp.wait_for_request("setBreakpoint", WAIT).await.unwrap();
+        assert_eq!(sent.params["location"]["sourceUrl"], SCRIPT);
+        let expected =
+            debugging::breakpoint_condition(Some("n > 1"), Some("sum"), &format!("{SCRIPT}:6"));
+        assert_eq!(
+            sent.params["options"]["condition"],
+            json!(expected.unwrap())
+        );
+        // And the reply says it is a logpoint at that URL
+        assert!(
+            ts::text(&reply).starts_with("Logpoint set"),
+            "{}",
+            ts::text(&reply)
+        );
+        assert_eq!(ts::json_of(&reply)["url"], SCRIPT);
         ts::stop(&handler).await;
     }
 

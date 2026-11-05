@@ -12,7 +12,7 @@ use tokio::sync::Mutex;
 
 #[macros::mcp_tool(
     name = "set_breakpoint",
-    description = "Sets a breakpoint at a 0-based line of a script (by url; on Chrome also by script id or hash from 'search_scripts'). Returns {breakpoint_id, url, line_number, column_number, resolved} where the browser bound it; resolved is false until a script with that URL loads. A line without code fails. The page's own debugger statements pause only while the tab has a breakpoint. Firefox: by url only."
+    description = "Sets a breakpoint at a 0-based line of a script (by url; on Chrome also by script id or hash from 'search_scripts'). A url without a scheme ('app.js', 'js/app.js') names the loaded script whose URL ends with it (several: it fails naming them; none: on Chrome it binds to the first script ending with it that loads, on Firefox it fails). 'condition' pauses only when that expression is truthy in the paused frame; 'log' makes a logpoint: the expression's value goes to the console (get_console_logs, 'logpoint <url>:<line>:') each time the line runs, and it never pauses (with 'condition', only when it holds). Returns {breakpoint_id, url, line_number, column_number, resolved} where the browser bound it; resolved is false until a script with that URL loads, and the reply says so. A line without code fails. The page's own debugger statements pause only while the tab has a breakpoint. Firefox: by url only."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct SetBreakpointTool {
@@ -30,6 +30,10 @@ pub struct SetBreakpointTool {
     pub line_number: u32,
     /// 0-based column. Default: the first breakable one of the line.
     pub column_number: Option<u32>,
+    /// Pause only when this JavaScript expression is truthy (evaluated in the paused frame).
+    pub condition: Option<String>,
+    /// Log this expression's value to the console each time the line runs, without pausing (a logpoint; with condition, only when it holds).
+    pub log: Option<String>,
 }
 
 impl SetBreakpointTool {
@@ -37,13 +41,19 @@ impl SetBreakpointTool {
         params: CallToolRequestParams,
         handler: &McpHandler,
     ) -> Result<CallToolResult, CallToolError> {
-        let args: SetBreakpointTool = crate::handler::parse_args(params)?;
+        let mut args: SetBreakpointTool = crate::handler::parse_args(params)?;
         let session = handler.session(args.instance_id.clone()).await?;
-        let (method, params) = args.command().ok_or_else(|| {
-            CallToolError::from_message("Either script_id, url or script_hash must be provided")
-        })?;
+        if args.script_id.is_none() && args.url.is_none() && args.script_hash.is_none() {
+            return Err(CallToolError::from_message(
+                "Either script_id, url or script_hash must be provided",
+            ));
+        }
         let target = session.target(args.tab_id.clone()).await?;
         let state = session.debugger_state(args.tab_id.clone())?;
+        let url_regex = args.resolve_url(&*state.lock().await)?;
+        let (method, params) = args.command(url_regex.as_deref()).ok_or_else(|| {
+            CallToolError::from_message("Either script_id, url or script_hash must be provided")
+        })?;
         let placed = match &args.script_id {
             Some(id) => place_in_script(&target, &state, id, params).await?,
             None => place_everywhere(&target, &state, method, params).await?,
@@ -112,12 +122,56 @@ impl SetBreakpointTool {
             line: number("lineNumber").unwrap_or(self.line_number),
             column: number("columnNumber").or(self.column_number),
             resolved: resolved.is_some(),
+            condition: self.condition.clone(),
+            log: self.log.clone(),
         }
     }
 
-    fn command(&self) -> Option<(&'static str, serde_json::Value)> {
+    /// A relative `url` made the loaded script's that ends with it; with
+    /// none loaded, the `urlRegex` that matches the first one to load
+    /// (ISSUE-87). Several are refused.
+    fn resolve_url(&mut self, state: &DebuggerState) -> Result<Option<String>, CallToolError> {
+        let Some(url) = self.url.clone().filter(|_| self.script_id.is_none()) else {
+            return Ok(None);
+        };
+        let loaded = state.scripts.values().map(|script| script.url.as_str());
+        let resolved = crate::handler::debugging::resolve_script_url(&url, loaded)
+            .map_err(CallToolError::from_message)?;
+        match resolved {
+            Some(found) => {
+                self.url = Some(found);
+                Ok(None)
+            }
+            None => Ok(Some(suffix_regex(&url))),
+        }
+    }
+
+    /// The condition Chrome is given for `condition` and `log`.
+    fn condition(&self) -> Option<String> {
+        let script = self.url.as_deref().or(self.script_id.as_deref());
+        self.condition_at(script.or(self.script_hash.as_deref()).unwrap_or("?"))
+    }
+
+    /// The breakpoint condition for `condition` and `log`, a logpoint
+    /// labelled `<script>:<line>` (see `debugging::breakpoint_condition`).
+    pub(crate) fn condition_at(&self, script: &str) -> Option<String> {
+        let label = format!("{script}:{}", self.line_number);
+        crate::handler::debugging::breakpoint_condition(
+            self.condition.as_deref(),
+            self.log.as_deref(),
+            &label,
+        )
+    }
+
+    fn command(&self, url_regex: Option<&str>) -> Option<(&'static str, serde_json::Value)> {
         let (method, mut location, wrap) = if let Some(id) = &self.script_id {
             ("Debugger.setBreakpoint", json!({"scriptId": id}), true)
+        } else if let Some(regex) = url_regex {
+            (
+                "Debugger.setBreakpointByUrl",
+                json!({"urlRegex": regex}),
+                false,
+            )
         } else if let Some(url) = &self.url {
             ("Debugger.setBreakpointByUrl", json!({"url": url}), false)
         } else {
@@ -134,13 +188,30 @@ impl SetBreakpointTool {
                 map.insert("columnNumber".into(), json!(col));
             }
         }
-        let params = if wrap {
+        let mut params = if wrap {
             json!({ "location": location })
         } else {
             location
         };
+        if let Some(condition) = self.condition() {
+            params["condition"] = json!(condition);
+        }
         Some((method, params))
     }
+}
+
+/// The `urlRegex` of the scripts whose URL path ends with `tail` (a file
+/// name or a relative path), query and fragment aside.
+fn suffix_regex(tail: &str) -> String {
+    let tail = tail.trim_start_matches("./").trim_start_matches('/');
+    let mut escaped = String::new();
+    for c in tail.chars() {
+        if "\\.^$|?*+()[]{}".contains(c) {
+            escaped.push('\\');
+        }
+        escaped.push(c);
+    }
+    format!("(^|/){escaped}([?#].*)?$")
 }
 
 /// A breakpoint Chrome set, and the reply that says where it bound (its
@@ -396,5 +467,90 @@ mod tests {
         let args = json!({"url": "http://a/later.js", "line_number": 3});
         let reply = SetBreakpointTool::handle(call("set_breakpoint", args), &handler).await;
         assert!(reply.is_ok(), "{:?}", reply.err());
+    }
+
+    /// ISSUE-87 (Chrome): a condition and a logpoint are sent as the
+    /// breakpoint's condition (the logpoint logs and never pauses), and the
+    /// reply says what was set.
+    #[tokio::test]
+    async fn conditions_and_logpoints_are_sent() {
+        use crate::handler::cdp_domains::tests::{
+            call, mock_handler, reply_text, spawn_recording_mock,
+        };
+        let mock = spawn_recording_mock().await;
+        mock.respond_with("Debugger.setBreakpointByUrl", |_| {
+            json!({"breakpointId": "1:3:0:http://a/app.js", "locations": [{"scriptId": "7", "lineNumber": 3, "columnNumber": 2}]})
+        });
+        let handler = mock_handler(mock.http_port);
+        // When a logpoint with a condition is set
+        let args =
+            json!({"url": "http://a/app.js", "line_number": 3, "condition": "n > 1", "log": "sum"});
+        let reply = SetBreakpointTool::handle(call("set_breakpoint", args), &handler)
+            .await
+            .unwrap();
+        // Then Chrome gets the condition that logs and never pauses
+        let sent = &mock.commands_named("Debugger.setBreakpointByUrl")[0].params;
+        let expected = crate::handler::debugging::breakpoint_condition(
+            Some("n > 1"),
+            Some("sum"),
+            "http://a/app.js:3",
+        );
+        assert_eq!(sent["condition"], json!(expected.unwrap()));
+        // And the reply says it is a logpoint, with both
+        let text = reply_text(&reply);
+        assert!(text.starts_with("Logpoint set"), "{text}");
+        assert!(
+            text.contains("\"condition\": \"n > 1\"") && text.contains("\"log\": \"sum\""),
+            "{text}"
+        );
+    }
+
+    /// ISSUE-87 (Chrome): a relative URL names the loaded script that ends
+    /// with it; with none loaded it waits for one by its end (`urlRegex`),
+    /// and the reply says it is not bound yet (it was silently never bound).
+    #[tokio::test]
+    async fn relative_urls_are_resolved() {
+        use crate::handler::cdp_domains::tests::{
+            call, mock_handler, reply_text, spawn_recording_mock,
+        };
+        let mock = spawn_recording_mock().await;
+        // (a loaded script binds it; a URL regex no loaded script matches does not)
+        mock.respond_with("Debugger.setBreakpointByUrl", |params| {
+            let locations = match params.get("url") {
+                Some(_) => json!([{"scriptId": "7", "lineNumber": 1, "columnNumber": 0}]),
+                None => json!([]),
+            };
+            json!({"breakpointId": "1:1:0:x", "locations": locations})
+        });
+        let handler = mock_handler(mock.http_port);
+        let session = handler.session(None).await.unwrap();
+        session.target(None).await.unwrap();
+        let script = crate::handler::ScriptInfo {
+            hash: "h".into(),
+            start_line: 0,
+            start_column: 0,
+            end_line: 20,
+            url: "http://a/js/dbg67.js".into(),
+        };
+        let state = session.debugger_state(None).unwrap();
+        state.lock().await.scripts.insert("7".into(), script);
+        // When a loaded script's file name is given
+        let args = json!({"url": "dbg67.js", "line_number": 1});
+        SetBreakpointTool::handle(call("set_breakpoint", args), &handler)
+            .await
+            .unwrap();
+        // Then its URL is sent
+        let sent = mock.commands_named("Debugger.setBreakpointByUrl");
+        assert_eq!(sent[0].params["url"], "http://a/js/dbg67.js");
+        // When a file name no loaded script ends with is given
+        let args = json!({"url": "later.js", "line_number": 1});
+        let reply = SetBreakpointTool::handle(call("set_breakpoint", args), &handler)
+            .await
+            .unwrap();
+        // Then it waits for one ending with it, and says so
+        let sent = &mock.commands_named("Debugger.setBreakpointByUrl")[1].params;
+        assert_eq!(sent["urlRegex"], r"(^|/)later\.js([?#].*)?$");
+        assert!(sent.get("url").is_none());
+        assert!(reply_text(&reply).starts_with("Breakpoint set, but not bound yet"));
     }
 }

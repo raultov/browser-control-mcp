@@ -10,6 +10,18 @@ from a copy of its code: entries describe the differences from that release.
 
 ## [Unreleased]
 
+### Added
+
+- `set_breakpoint` takes `condition` (pause only when the expression is
+  truthy) and `log` (a logpoint: the value goes to the console as
+  `logpoint <url>:<line>: <value>` and the page never pauses; with
+  `condition`, only when it holds), on both browsers. A `url` without a
+  scheme (`app.js`) names the loaded script whose URL ends with it; several
+  are refused, naming them. With none loaded, Chrome waits for the first
+  script ending with it (it used to accept a URL that never bound, silently)
+  and Firefox refuses it. A breakpoint not bound yet says so in its reply's
+  first line (#87).
+
 ### Fixed
 
 - The input schemas of `emulate` (`cpu_performance_tier`) and

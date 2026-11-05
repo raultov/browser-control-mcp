@@ -2689,6 +2689,73 @@ mod e2e {
         steps.extend(stack_steps(&i, base));
         steps.extend(exception_pause_steps(&i));
         steps.extend(navigate_while_paused_steps(&i, base));
+        steps.extend(conditional_steps(&i));
+        steps
+    }
+
+    /// ISSUE-87: by the script's file name, a logpoint logs without pausing
+    /// (both browsers).
+    fn logpoint_steps(i: &Value) -> Vec<Step> {
+        let logpoint = json!({"instance_id": i, "url": "app.js", "line_number": 9, "log": "k * 10", "condition": "k === 3"});
+        vec![
+            (
+                "ISSUE-87 a logpoint by file name",
+                "set_breakpoint",
+                logpoint,
+                "Logpoint set",
+            ),
+            (
+                "ISSUE-87 the loop runs without pausing",
+                "evaluate_js",
+                json!({"instance_id": i, "expression": "appLoop(5)"}),
+                "10",
+            ),
+            (
+                "ISSUE-87 the logpoint logged",
+                "get_console_logs",
+                json!({"instance_id": i}),
+                "app.js:9: 30",
+            ),
+            (
+                "ISSUE-87 remove the logpoint",
+                "remove_breakpoint",
+                json!({"instance_id": i, "breakpoint_id": "bp-7"}),
+                "removed",
+            ),
+        ]
+    }
+
+    /// ISSUE-87: a conditional breakpoint pauses on the iteration asked for
+    /// (both browsers).
+    fn conditional_steps(i: &Value) -> Vec<Step> {
+        let on = json!({"instance_id": i});
+        let breakpoint =
+            json!({"instance_id": i, "url": "app.js", "line_number": 9, "condition": "k === 2"});
+        let run = json!({"instance_id": i, "expression": "setTimeout(() => appLoop(5), 50); 1"});
+        let mut steps = logpoint_steps(i);
+        steps.extend([
+            (
+                "ISSUE-87 a conditional breakpoint",
+                "set_breakpoint",
+                breakpoint,
+                "Breakpoint set",
+            ),
+            ("ISSUE-87 run the loop", "evaluate_js", run, ""),
+            ("ISSUE-87 wait for the pause", "sleep", json!({}), ""),
+            (
+                "ISSUE-87 paused on the iteration asked for",
+                "evaluate_on_call_frame",
+                json!({"instance_id": i, "expression": "k"}),
+                "\"value\": 2",
+            ),
+            ("ISSUE-87 resume", "resume", on, "resumed"),
+            (
+                "ISSUE-87 remove it",
+                "remove_breakpoint",
+                json!({"instance_id": i, "breakpoint_id": "bp-8"}),
+                "removed",
+            ),
+        ]);
         steps
     }
 

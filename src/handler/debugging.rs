@@ -107,23 +107,111 @@ pub(crate) struct BreakpointSet {
     pub(crate) column: Option<u32>,
     /// Whether a loaded script has this location (else it binds when one loads).
     pub(crate) resolved: bool,
+    /// When it pauses: only when this expression is truthy (ISSUE-87).
+    pub(crate) condition: Option<String>,
+    /// What it logs, as a logpoint that never pauses (ISSUE-87).
+    pub(crate) log: Option<String>,
 }
 
 impl BreakpointSet {
     /// The reply object.
     pub(crate) fn to_json(&self) -> Value {
-        json!({
+        let mut out = json!({
             "breakpoint_id": self.id,
             "url": self.url,
             "line_number": self.line,
             "column_number": self.column,
             "resolved": self.resolved,
-        })
+            "condition": self.condition,
+            "log": self.log,
+        });
+        // Only a breakpoint with a condition or a log lists them.
+        if let Some(fields) = out.as_object_mut() {
+            fields.retain(|key, value| {
+                !(value.is_null() && ["condition", "log"].contains(&key.as_str()))
+            });
+        }
+        out
     }
 
-    /// The tool reply.
+    /// The tool reply: a logpoint says where its output goes, and an
+    /// unresolved breakpoint says it is not bound yet (ISSUE-87).
     pub(crate) fn reply(&self) -> CallToolResult {
-        text("Breakpoint set.", &self.to_json())
+        let first = match (self.log.is_some(), self.resolved) {
+            (true, true) => {
+                "Logpoint set: it logs to the console (get_console_logs) each time the line runs, and never pauses."
+            }
+            (false, true) => "Breakpoint set.",
+            (true, false) => {
+                "Logpoint set, but not bound yet: no loaded script has this URL, so it logs nothing until one loads (check the URL with search_scripts)."
+            }
+            (false, false) => {
+                "Breakpoint set, but not bound yet: no loaded script has this URL, so it pauses nothing until one loads (check the URL with search_scripts)."
+            }
+        };
+        text(first, &self.to_json())
+    }
+}
+
+/// The condition a breakpoint is set with for `condition` (pause when it
+/// is truthy) and `log` (a logpoint: log `label` and its value, and never
+/// pause; only when `condition` holds, with one), as DevTools does on
+/// Chrome. The expressions are on lines of their own, so a trailing `//`
+/// comment cannot swallow the rest (ISSUE-87).
+pub(crate) fn breakpoint_condition(
+    condition: Option<&str>,
+    log: Option<&str>,
+    label: &str,
+) -> Option<String> {
+    let label = serde_json::to_string(&format!("logpoint {label}:")).unwrap_or_default();
+    match (condition, log) {
+        (None, None) => None,
+        (Some(condition), None) => Some(format!("(\n{condition}\n)")),
+        (None, Some(log)) => Some(format!("(console.log({label}, (\n{log}\n)), false)")),
+        (Some(condition), Some(log)) => Some(format!(
+            "((\n{condition}\n) && console.log({label}, (\n{log}\n)), false)"
+        )),
+    }
+}
+
+/// Whether `url` is absolute (it has a scheme: `http://`, `file://`,
+/// `data:`...), as opposed to a path or a file name.
+pub(crate) fn is_absolute_url(url: &str) -> bool {
+    let scheme = url.split_once(':').map(|(scheme, _)| scheme);
+    scheme.is_some_and(|s| {
+        !s.is_empty()
+            && s.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
+            && s.chars()
+                .all(|c| c.is_ascii_alphanumeric() || "+-.".contains(c))
+    })
+}
+
+/// The script a breakpoint `url` names among the `loaded` script URLs: an
+/// absolute URL is kept; a relative one (`app.js`, `js/app.js`) names the
+/// loaded URL whose path ends with it, `None` when none does, and is
+/// refused when several (distinct) do, naming them (ISSUE-87).
+pub(crate) fn resolve_script_url<'a>(
+    url: &str,
+    loaded: impl Iterator<Item = &'a str>,
+) -> Result<Option<String>, String> {
+    if is_absolute_url(url) {
+        return Ok(Some(url.to_string()));
+    }
+    let tail = url.trim_start_matches("./").trim_start_matches('/');
+    let ends = |loaded: &str| {
+        let path = loaded.split(['?', '#']).next().unwrap_or_default();
+        path.ends_with(&format!("/{tail}"))
+    };
+    let mut found: Vec<String> = loaded.filter(|l| ends(l)).map(str::to_string).collect();
+    found.sort();
+    found.dedup();
+    match found.len() {
+        0 => Ok(None),
+        1 => Ok(found.pop()),
+        _ => Err(format!(
+            "'{url}' is not an absolute URL, and several loaded scripts end with it: {}. Give one of them as 'url'.",
+            found.join(", ")
+        )),
     }
 }
 
@@ -446,6 +534,65 @@ mod tests {
         assert_eq!(error, "No breakpoint 'bp-1'. Breakpoints: bp-2, bp-3");
     }
 
+    /// ISSUE-87: a condition is sent as it is; a logpoint logs a label and
+    /// the value and never pauses (only when the condition holds, with one).
+    #[test]
+    fn conditions_and_logpoints_are_breakpoint_conditions() {
+        let label = "app.js:3";
+        assert_eq!(breakpoint_condition(None, None, label), None);
+        assert_eq!(
+            breakpoint_condition(Some("n > 1"), None, label).as_deref(),
+            Some("(\nn > 1\n)")
+        );
+        assert_eq!(
+            breakpoint_condition(None, Some("sum"), label).as_deref(),
+            Some("(console.log(\"logpoint app.js:3:\", (\nsum\n)), false)")
+        );
+        assert_eq!(
+            breakpoint_condition(Some("n > 1"), Some("sum"), label).as_deref(),
+            Some("((\nn > 1\n) && console.log(\"logpoint app.js:3:\", (\nsum\n)), false)")
+        );
+    }
+
+    /// ISSUE-87: a relative URL names the loaded script whose URL ends with
+    /// it (query and fragment aside); several are refused, naming them;
+    /// none leaves it unresolved. Absolute URLs are kept.
+    #[test]
+    fn relative_urls_name_a_loaded_script() {
+        let loaded = [
+            "http://a/js/dbg67.js?v=2",
+            "http://a/js/dbg67.js?v=2",
+            "http://a/other.js",
+            "http://a/lib/util.js",
+            "http://b/util.js",
+        ];
+        let resolve = |url: &str| resolve_script_url(url, loaded.iter().copied());
+        assert!(!is_absolute_url("dbg67.js") && is_absolute_url("http://a/x.js"));
+        assert_eq!(
+            resolve("dbg67.js"),
+            Ok(Some("http://a/js/dbg67.js?v=2".to_string()))
+        );
+        assert_eq!(
+            resolve("js/dbg67.js"),
+            Ok(Some("http://a/js/dbg67.js?v=2".to_string()))
+        );
+        assert_eq!(
+            resolve("./js/dbg67.js"),
+            Ok(Some("http://a/js/dbg67.js?v=2".to_string()))
+        );
+        assert_eq!(resolve("ther.js"), Ok(None));
+        assert_eq!(resolve("nope.js"), Ok(None));
+        let several = resolve("util.js").unwrap_err();
+        assert!(
+            several.contains("http://a/lib/util.js") && several.contains("http://b/util.js"),
+            "{several}"
+        );
+        assert_eq!(
+            resolve("http://z/x.js"),
+            Ok(Some("http://z/x.js".to_string()))
+        );
+    }
+
     /// DBG-01 / DBG-03: the reply shapes.
     #[test]
     fn debugger_reply_shapes() {
@@ -455,6 +602,8 @@ mod tests {
             line: 3,
             column: Some(2),
             resolved: true,
+            condition: None,
+            log: None,
         };
         assert_eq!(
             set.to_json(),
