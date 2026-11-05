@@ -519,11 +519,51 @@ mod e2e {
         ]
     }
 
+    /// ISSUE-88: values without a JSON form come back as a preview, the
+    /// same on both browsers (they were `value: null`, and Firefox lost an
+    /// Error's message).
+    fn preview_steps(instance: &str) -> Vec<Step> {
+        let i = json!(instance);
+        let eval = |expression: &str| json!({"instance_id": i, "expression": expression});
+        vec![
+            (
+                "ISSUE-88 a Map is previewed",
+                "evaluate_js",
+                eval("new Map([['a', 1]])"),
+                "\"preview\": true",
+            ),
+            (
+                "ISSUE-88 a cycle is marked",
+                "evaluate_js",
+                eval("(() => { const o = {n: 1}; o.self = o; return o; })()"),
+                "[Circular]",
+            ),
+            (
+                "ISSUE-88 a getter that throws is marked",
+                "evaluate_js",
+                eval("({get x() { throw new Error('g88'); }, y: 2})"),
+                "[Thrown: g88]",
+            ),
+            (
+                "ISSUE-88 an Error keeps its message",
+                "evaluate_js",
+                eval("new TypeError('bad88')"),
+                "TypeError: bad88",
+            ),
+            (
+                "ISSUE-88 a typed array is named",
+                "evaluate_js",
+                eval("new Uint8Array([1, 2, 3])"),
+                "Uint8Array(3)",
+            ),
+        ]
+    }
+
     /// Runtime and input steps on the active page.
     fn runtime_steps(instance: &str) -> Vec<Step> {
         let i = json!(instance);
         let effects = "document.querySelector('#q').value + window.__clicked";
-        vec![
+        let mut steps = vec![
             (
                 "evaluate_js",
                 "evaluate_js",
@@ -548,7 +588,9 @@ mod e2e {
                 json!({"instance_id": i, "expression": effects}),
                 "typed1",
             ),
-        ]
+        ];
+        steps.extend(preview_steps(instance));
+        steps
     }
 
     /// ISSUE-11 and ISSUE-2: a click that opens a dialog, then content that

@@ -2220,38 +2220,51 @@ mod tests {
     }
 
     /// AUD-EV-02 (Firefox): an object is read through MEASURE (its JSON
-    /// form, named by its class when not a plain one); one without a JSON
-    /// form (a Map) is read as it is.
+    /// form, named by its class when not a plain one); ISSUE-88: one
+    /// without a JSON form (a Map) is previewed in the page, and a function
+    /// is described by its source, as on Chrome.
     #[tokio::test]
     async fn objects_are_read_as_json_and_named() {
         let mock = MockFirefox::start(false).await.unwrap();
         mock.bidi().respond_with("script.evaluate", |params| {
             let expression = params["expression"].as_str().unwrap_or_default();
-            let kind = if expression == "m" { "map" } else { "object" };
+            let kind = match expression {
+                "m" => "map",
+                "f" => "function",
+                _ => "object",
+            };
             evaluate_success(json!({"type": kind, "handle": "h1"}))
         });
         mock.bidi().respond_with("script.callFunction", |params| {
             let declaration = params["functionDeclaration"].as_str().unwrap_or_default();
-            if declaration.contains("JSON.stringify") {
-                evaluate_success(ts::remote(&json!({"__bcm_class__": "URL", "__bcm_value__": "http://a/"})))
+            if declaration.contains("JSON.parse(json)") {
+                evaluate_success(ts::remote(
+                    &json!({"__bcm_class__": "URL", "__bcm_value__": "http://a/"}),
+                ))
+            } else if declaration.contains("__bcm_preview__") {
+                evaluate_success(ts::remote(
+                    &json!({"__bcm_preview__": [[1, 2]], "__bcm_class__": "Map(1)"}),
+                ))
             } else {
-                evaluate_success(json!({"type": "map", "value": [[{"type": "number", "value": 1}, {"type": "number", "value": 2}]]}))
+                evaluate_success(
+                    json!({"type": "string", "value": "function foo(a) { return a; }"}),
+                )
             }
         });
         let handler = ts::handler(&mock);
-        let reply = evaluate_js(call("evaluate_js", json!({"expression": "u"})), &handler)
-            .await
-            .unwrap();
-        let body: Value = serde_json::from_str(&ts::text(&reply)).unwrap();
-        assert_eq!(
-            body,
-            json!({"value": "http://a/", "type": "object", "description": "URL"})
-        );
-        let reply = evaluate_js(call("evaluate_js", json!({"expression": "m"})), &handler)
-            .await
-            .unwrap();
-        let body: Value = serde_json::from_str(&ts::text(&reply)).unwrap();
-        assert_eq!(body["description"], "Map(1)", "{body}");
+        let body = async |expression: &str| -> Value {
+            let args = json!({"expression": expression});
+            let reply = evaluate_js(call("evaluate_js", args), &handler)
+                .await
+                .unwrap();
+            serde_json::from_str(&ts::text(&reply)).unwrap()
+        };
+        let url = json!({"value": "http://a/", "type": "object", "description": "URL"});
+        assert_eq!(body("u").await, url);
+        let map = json!({"value": [[1, 2]], "type": "object", "subtype": "map", "description": "Map(1)", "preview": true});
+        assert_eq!(body("m").await, map);
+        let function = body("f").await;
+        assert_eq!(function["description"], "function foo(a) { return a; }");
         ts::stop(&handler).await;
     }
 

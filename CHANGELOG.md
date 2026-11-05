@@ -21,6 +21,12 @@ from a copy of its code: entries describe the differences from that release.
   script ending with it (it used to accept a URL that never bound, silently)
   and Firefox refuses it. A breakpoint not bound yet says so in its reply's
   first line (#87).
+- `evaluate_js` previews values without a JSON form, the same on both
+  browsers, with `preview: true`: a Map as `[key, value]` pairs, a Set or a
+  typed array as its items, an Error as `{name, message, stack}`, a cycle as
+  `"[Circular]"` and a getter that throws as `"[Thrown: message]"`; the
+  `description` names it (`Map(2)`, `Uint8Array(3)`, `TypeError: bad`).
+  They came back as `value: null` (#88).
 
 ### Fixed
 
@@ -68,6 +74,13 @@ from a copy of its code: entries describe the differences from that release.
   `@container` alone, Chrome dropped the name). The tool's description no
   longer says shadow roots and frames are out of reach on Firefox: shadow
   roots work, and an element in a frame is not always found (#86).
+- Firefox: `evaluate_js` describes an Error by its name and message (it
+  said `Error`), a typed array by its class and length (`TypedArray`) and a
+  function by its source (`function`); an object with a getter that throws
+  no longer fails with a raw protocol error. On both browsers an exception
+  whose position is outside the expression (Firefox's own wrapper, line
+  306; where a rejected promise settled, on Chrome) is reported without it
+  (#88).
 
 ## [0.11.0-beta.20] - 2026-11-04
 

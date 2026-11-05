@@ -231,12 +231,19 @@ pub(crate) async fn evaluate(tab: &Tab, expression: &str) -> Result<Value, Backe
 /// `await` at its top level, which `script.evaluate` refuses (Chrome does
 /// the same).
 pub(crate) async fn evaluate_js(tab: &Tab, expression: &str) -> Result<Evaluation, BackendError> {
-    match evaluate_once(tab, expression).await {
+    let outcome = match evaluate_once(tab, expression).await {
         Err(BackendError::InvalidArgument(error)) if error.contains("await is only valid") => {
             evaluate_once(tab, &crate::util::js::with_top_level_await(expression)).await
         }
         outcome => outcome,
-    }
+    };
+    // A position past the expression is Firefox's wrapper's (ISSUE-88).
+    outcome.map_err(|error| match error {
+        BackendError::InvalidArgument(text) => {
+            BackendError::InvalidArgument(evaluation::within_expression(&text, expression))
+        }
+        other => other,
+    })
 }
 
 /// One `script.evaluate`: the result in the shared shape, or the exception
@@ -292,6 +299,22 @@ const RETURN_THIS: &str = "function () { return this; }";
 /// The text of a symbol held by a handle (`Symbol(x)`, as Chrome describes it).
 const DESCRIBE_SYMBOL: &str = "function () { return this.toString(); }";
 
+/// The source of a function held by a handle, at most 1000 characters (as
+/// Chrome describes a function; Firefox's said `function`, ISSUE-88).
+const DESCRIBE_FUNCTION: &str = "function () { const s = Function.prototype.toString.call(this); return s.length > 1000 ? s.slice(0, 999) + '…' : s; }";
+
+/// The BiDi types of the values without a JSON form that [`evaluation::PREVIEW`]
+/// reads, as Chrome's subtypes (ISSUE-88).
+fn previewed(kind: Option<&str>) -> Option<&'static str> {
+    match kind? {
+        "map" => Some("map"),
+        "set" => Some("set"),
+        "typedarray" => Some("typedarray"),
+        "error" => Some("error"),
+        _ => None,
+    }
+}
+
 /// The shared result for `remote`, read by value when it is held by a
 /// handle: an object or array through [`evaluation::MEASURE`] (its JSON
 /// form, as on Chrome), anything else as it is.
@@ -304,7 +327,9 @@ async fn measured(tab: &Tab, remote: &Value) -> Result<Evaluation, BackendError>
     // `this` boxes a symbol into an object: its text describes it instead.
     let declaration = match kind {
         _ if json_like => evaluation::MEASURE,
+        _ if previewed(kind).is_some() => evaluation::PREVIEW,
         Some("symbol") => DESCRIBE_SYMBOL,
+        Some("function") => DESCRIBE_FUNCTION,
         _ => RETURN_THIS,
     };
     let params = json!({
@@ -318,9 +343,14 @@ async fn measured(tab: &Tab, remote: &Value) -> Result<Evaluation, BackendError>
     let reply = command(tab, "script.callFunction", params).await?;
     thrown(&reply)?;
     let read = &reply["result"];
-    if kind == Some("symbol") {
-        let text = read["value"].as_str().unwrap_or("Symbol()");
-        return Ok(Evaluation::described("symbol", None, text));
+    if let Some(described @ ("symbol" | "function")) = kind {
+        let text = read["value"].as_str().unwrap_or(described);
+        return Ok(Evaluation::described(described, None, text));
+    }
+    if let Some(subtype) = previewed(kind)
+        && let Some(json) = remote_value::json_form(read)
+    {
+        return Ok(evaluation::from_measured("object", Some(subtype), json));
     }
     let json = remote_value::json_form(read).filter(|_| json_like);
     let Some(json) = json else {

@@ -14,6 +14,14 @@
 use rust_mcp_sdk::schema::CallToolResult;
 use serde_json::{Value, json};
 
+/// A page function declaring `bcmPreview` (`previewer!`) first: `concat_preview!(head,
+/// body)` is `head`, the declaration, then `body`.
+macro_rules! concat_preview {
+    ($head:literal, $body:literal) => {
+        concat!($head, previewer!(), " ", $body)
+    };
+}
+
 /// Most characters a result's `value` may take in a reply: larger results
 /// flood the agent (and over 256 MB drop the browser connection).
 pub(crate) const EVAL_MAX_CHARS: usize = 100_000;
@@ -38,20 +46,72 @@ const TOO_LARGE: &str = "__bcm_too_large__";
 const CLASS: &str = "__bcm_class__";
 const VALUE: &str = "__bcm_value__";
 
+/// The key of a preview's value in [`PREVIEW`]'s answer (with [`CLASS`]).
+const PREVIEW_KEY: &str = "__bcm_preview__";
+
+/// Declares `bcmPreview(value, limit)`: a bounded, JSON-safe preview of a
+/// value without a JSON form, `{PREVIEW_KEY: preview, CLASS: label}`, or
+/// `{TOO_LARGE: length}` when its JSON is over `limit` (ISSUE-88). A Map
+/// is its `[key, value]` pairs, a Set or a typed array its items, an Error
+/// `{name, message, stack}`, a node `[its class]`; objects and arrays keep
+/// their own enumerable properties. A cycle is `"[Circular]"`, a getter
+/// that throws `"[Thrown: message]"`, a BigInt `"10n"`, a function
+/// `"[function name]"`; at most 100 items a level, 6 levels and 500 values.
+/// `label` is how Chrome names the value: `Map(2)`, `Uint8Array(3)`,
+/// `TypeError: bad`, its class.
+macro_rules! previewer {
+    () => {
+        "const bcmPreview = (root, limit) => { const path = new WeakSet(); let room = 500; \
+     const label = v => { if (v instanceof Error) return (v.name || 'Error') + (v.message ? ': ' + v.message : ''); \
+       if (v instanceof Map) return 'Map(' + v.size + ')'; if (v instanceof Set) return 'Set(' + v.size + ')'; \
+       if (ArrayBuffer.isView(v) && !(v instanceof DataView)) return ((v.constructor && v.constructor.name) || 'TypedArray') + '(' + v.length + ')'; \
+       if (Array.isArray(v)) return 'Array(' + v.length + ')'; \
+       return (v.constructor && v.constructor.name) || Object.prototype.toString.call(v).slice(8, -1); }; \
+     const leaf = v => { const t = typeof v; if (t === 'bigint') return v + 'n'; if (t === 'symbol') return v.toString(); \
+       if (t === 'number' && !isFinite(v)) return String(v); if (t === 'function') return '[function ' + (v.name || 'anonymous') + ']'; \
+       return v === undefined ? null : v; }; \
+     const walk = (v, depth) => { if (v === null || typeof v !== 'object') return leaf(v); \
+       if (path.has(v)) return '[Circular]'; if (--room < 0) return '[…]'; if (depth > 5) return '[' + label(v) + ']'; \
+       if (typeof Node !== 'undefined' && v instanceof Node) return '[' + label(v) + ']'; \
+       path.add(v); try { \
+         if (v instanceof Error) return { name: v.name, message: v.message, stack: String(v.stack || '').split('\\n').slice(0, 10).join('\\n') }; \
+         if (v instanceof Map) return Array.from(v).slice(0, 100).map(([k, x]) => [walk(k, depth + 1), walk(x, depth + 1)]); \
+         if (v instanceof Set) return Array.from(v).slice(0, 100).map(x => walk(x, depth + 1)); \
+         if (ArrayBuffer.isView(v) && !(v instanceof DataView)) return Array.from(v.slice(0, 100), leaf); \
+         if (Array.isArray(v)) return v.slice(0, 100).map(x => walk(x, depth + 1)); \
+         const out = {}; for (const key of Object.keys(v).slice(0, 100)) { \
+           try { out[key] = walk(v[key], depth + 1); } catch (e) { out[key] = '[Thrown: ' + ((e && e.message) || e) + ']'; } } \
+         return out; } finally { path.delete(v); } }; \
+     const preview = walk(root, 0), json = JSON.stringify(preview); \
+     if (json.length > limit) return { __bcm_too_large__: json.length }; \
+     return { __bcm_preview__: preview, __bcm_class__: label(root) }; };"
+    };
+}
+
+/// Called on a value without a JSON form (a Map, a Set, a typed array,
+/// an Error) with [`EVAL_MAX_CHARS`] as argument: its preview (see
+/// `previewer!`), read with [`from_measured`].
+pub(crate) const PREVIEW: &str =
+    concat_preview!("function (limit) { ", "return bcmPreview(this, limit); }");
+
 /// Called on an object result with [`EVAL_MAX_CHARS`] as argument: its
 /// JSON form (`JSON.stringify`, so `toJSON` counts and functions drop out,
 /// the same on every browser), `{TOO_LARGE: length}` when that is longer
-/// (a large object never crosses the connection), or the object itself
-/// when it has none (a cycle). An object that is not plain (`navigator`,
+/// (a large object never crosses the connection), its preview when it has
+/// none (a cycle, a getter that throws, a BigInt inside: ISSUE-88), or a
+/// window itself (described). An object that is not plain (`navigator`,
 /// a `URL`, a class instance) answers `{CLASS: name, VALUE: json}`: its
 /// JSON form alone was `{}` without a word. Read with [`from_measured`].
-pub(crate) const MEASURE: &str = "function (limit) { let json; try { json = JSON.stringify(this); } catch (e) { return this; } \
+pub(crate) const MEASURE: &str = concat_preview!(
+    "function (limit) { ",
+    "let json; try { json = JSON.stringify(this); } catch (e) { return this === this.window ? this : bcmPreview(this, limit); } \
      if (json === undefined) return this; \
      if (json.length > limit) return { __bcm_too_large__: json.length }; \
      const value = JSON.parse(json), proto = Object.getPrototypeOf(this); \
      if (proto === Object.prototype || proto === null || Array.isArray(this)) return value; \
      const name = (this.constructor && this.constructor.name) || Object.prototype.toString.call(this).slice(8, -1); \
-     return { __bcm_class__: name, __bcm_value__: value }; }";
+     return { __bcm_class__: name, __bcm_value__: value }; }"
+);
 
 /// The shared result of an object of `kind`/`subtype` from what
 /// [`MEASURE`] answered (`read`, as plain JSON).
@@ -60,6 +120,15 @@ pub(crate) fn from_measured(kind: &str, subtype: Option<&str>, read: Value) -> E
         return Evaluation::too_large(kind, subtype, chars);
     }
     match read {
+        Value::Object(mut named) if named.contains_key(PREVIEW_KEY) => {
+            let class = named.remove(CLASS);
+            let value = named.remove(PREVIEW_KEY).unwrap_or_default();
+            Evaluation {
+                description: class.as_ref().and_then(Value::as_str).map(str::to_string),
+                preview: true,
+                ..Evaluation::json(kind, subtype, value)
+            }
+        }
         Value::Object(mut named) if named.contains_key(CLASS) && named.contains_key(VALUE) => {
             let class = named.remove(CLASS);
             let value = named.remove(VALUE).unwrap_or_default();
@@ -90,6 +159,8 @@ pub(crate) struct Evaluation {
     pub(crate) description: Option<String>,
     /// `value` was cut or dropped for size (see [`EVAL_MAX_CHARS`]).
     pub(crate) truncated: bool,
+    /// `value` is a preview of a value without a JSON form ([`PREVIEW`]).
+    pub(crate) preview: bool,
 }
 
 impl Evaluation {
@@ -101,6 +172,7 @@ impl Evaluation {
             subtype: subtype.map(str::to_string),
             description: None,
             truncated: false,
+            preview: false,
         }
     }
 
@@ -112,6 +184,7 @@ impl Evaluation {
             subtype: subtype.map(str::to_string),
             description: Some(description.to_string()),
             truncated: false,
+            preview: false,
         }
     }
 
@@ -166,6 +239,9 @@ impl Evaluation {
         if self.truncated {
             reply["truncated"] = json!(true);
         }
+        if self.preview {
+            reply["preview"] = json!(true);
+        }
         reply
     }
 
@@ -182,6 +258,34 @@ pub(crate) fn exception_message(thrown: &str, line: i64, column: i64) -> String 
     let line = line.saturating_add(1);
     let column = column.saturating_add(1);
     format!("{thrown} (line {line}, column {column})")
+}
+
+/// `message`, an exception's text, without its `(line L, column C)` when
+/// that line is past the lines of `expression`: the position is then in
+/// the evaluation's own wrapper (Firefox) or where a promise settled
+/// (Chrome), not in the agent's code (ISSUE-88).
+pub(crate) fn within_expression(message: &str, expression: &str) -> String {
+    let Some(at) = message.rfind(" (line ") else {
+        return message.to_string();
+    };
+    let line = message[at + " (line ".len()..]
+        .split(',')
+        .next()
+        .and_then(|n| n.trim().parse::<usize>().ok());
+    let lines = expression.lines().count().max(1);
+    match line {
+        Some(line) if line > lines && message.ends_with(')') => message[..at].to_string(),
+        _ => message.to_string(),
+    }
+}
+
+/// Whether a CDP remote object is one [`PREVIEW`] reads (it has no JSON
+/// form, but a preview says more than its description): a Map, a Set, a
+/// typed array or an Error.
+pub(crate) fn has_preview(remote: &Value) -> bool {
+    let subtype = remote.get("subtype").and_then(Value::as_str);
+    remote.get("type").and_then(Value::as_str) == Some("object")
+        && matches!(subtype, Some("map" | "set" | "typedarray" | "error"))
 }
 
 /// `true` for the remote objects whose by-value form is the object itself:
@@ -301,6 +405,52 @@ mod tests {
         );
         let large = from_measured("object", None, json!({TOO_LARGE: 9}));
         assert!(large.truncated);
+    }
+
+    /// ISSUE-88: a value without a JSON form (a Map, a Set, a typed array,
+    /// an Error, a cycle, a getter that throws) is previewed in the page:
+    /// the preview is the value, its class the description, marked
+    /// `preview: true` (it was `value: null`).
+    #[test]
+    fn previews_become_values() {
+        let map = json!({PREVIEW_KEY: [["a", 1], ["b", {"c": 2}]], CLASS: "Map(2)"});
+        assert_eq!(
+            from_measured("object", Some("map"), map).to_json(),
+            json!({"value": [["a", 1], ["b", {"c": 2}]], "type": "object", "subtype": "map", "description": "Map(2)", "preview": true})
+        );
+        // The page functions preview on failure, and for those types
+        assert!(PREVIEW.contains(PREVIEW_KEY) && PREVIEW.contains("[Circular]"));
+        assert!(PREVIEW.contains("[Thrown: "));
+        assert!(MEASURE.contains("bcmPreview(this, limit)"));
+        assert!(!PREVIEW.contains("JSON.parse(json)"));
+        // And over the limit it is described as before
+        let large = from_measured("object", Some("map"), json!({TOO_LARGE: 9}));
+        assert!(large.truncated && !large.preview);
+    }
+
+    /// ISSUE-88: an exception's position outside the expression's lines is
+    /// the evaluation's wrapper's (Firefox), or of a promise's settling
+    /// (Chrome): it is left out; one inside is kept.
+    #[test]
+    fn positions_outside_the_expression_are_dropped() {
+        let one_line = "Promise.reject(new Error('x'))";
+        assert_eq!(
+            within_expression("Error: x (line 2, column 17)", one_line),
+            "Error: x"
+        );
+        assert_eq!(
+            within_expression("SyntaxError: bad (line 306, column 40)", "1 +"),
+            "SyntaxError: bad"
+        );
+        assert_eq!(
+            within_expression("RangeError: r (line 1, column 10)", one_line),
+            "RangeError: r (line 1, column 10)"
+        );
+        assert_eq!(
+            within_expression("TypeError: t (line 2, column 3)", "a;\nb.c"),
+            "TypeError: t (line 2, column 3)"
+        );
+        assert_eq!(within_expression("no position", "x"), "no position");
     }
 
     /// AUD-EV-12: a reply never carries more than `EVAL_MAX_CHARS`: a long

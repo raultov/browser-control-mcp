@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 
 #[macros::mcp_tool(
     name = "evaluate_js",
-    description = "Evaluates JavaScript in the page (promises awaited; `await` at the top level works, the last statement giving the value). Returns {value, type, subtype?, description?}: value is the JSON.stringify form, null when there is none (functions, nodes; description says what it was), cut over 100000 characters with truncated: true. An exception fails with its message, line and column. Chrome stops a script after 8 s; Firefox cannot (close a frozen tab with 'close_tab')."
+    description = "Evaluates JavaScript in the page (promises awaited; `await` at the top level works, the last statement giving the value). Returns {value, type, subtype?, description?, preview?}: value is the JSON.stringify form; a value without one gets a bounded preview with preview: true (a Map as [key, value] pairs, a Set or typed array as its items, an Error as {name, message, stack}, '[Circular]' for a cycle, '[Thrown: message]' for a getter that throws; description names it: Map(2), Uint8Array(3), TypeError: bad); null for functions, nodes and symbols (description says what it was: a function's source). Cut over 100000 characters with truncated: true. An exception fails with its message, and its line and column when they are in the expression. Chrome stops a script after 8 s; Firefox cannot (close a frozen tab with 'close_tab')."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct EvaluateJsTool {
@@ -55,9 +55,9 @@ impl EvaluateJsTool {
             }
             outcome => outcome,
         };
-        evaluated
-            .map(|evaluation| evaluation.reply())
-            .map_err(CallToolError::from_message)
+        evaluated.map(|evaluation| evaluation.reply()).map_err(|e| {
+            CallToolError::from_message(evaluation::within_expression(&e, &args.expression))
+        })
     }
 }
 
@@ -132,7 +132,13 @@ async fn read_outcome(
     }
     let remote = &remote;
     let by_value = match remote.get("objectId").and_then(Value::as_str) {
-        Some(id) if evaluation::has_json_form(remote) => by_value(target, id).await,
+        Some(id) if evaluation::has_json_form(remote) => {
+            by_value(target, id, evaluation::MEASURE).await
+        }
+        // A Map, a Set, a typed array, an Error: previewed (ISSUE-88).
+        Some(id) if evaluation::has_preview(remote) => {
+            by_value(target, id, evaluation::PREVIEW).await
+        }
         _ => None,
     };
     let Some(read) = by_value else {
@@ -174,11 +180,12 @@ async fn settled(target: &CdpTarget, promise: &Value) -> Result<Value, String> {
 
 /// The by-value form of a remote object, or `None` when Chrome cannot
 /// serialise it (e.g. `window`: "Object reference chain is too long"). The
-/// object is measured in the page first ([`evaluation::MEASURE`]).
-async fn by_value(target: &CdpTarget, object_id: &str) -> Option<Value> {
+/// object is measured or previewed in the page first (`declaration`:
+/// [`evaluation::MEASURE`] or [`evaluation::PREVIEW`]).
+async fn by_value(target: &CdpTarget, object_id: &str, declaration: &str) -> Option<Value> {
     let params = json!({
         "objectId": object_id,
-        "functionDeclaration": evaluation::MEASURE,
+        "functionDeclaration": declaration,
         "arguments": [{"value": evaluation::EVAL_MAX_CHARS}],
         "returnByValue": true,
     });
