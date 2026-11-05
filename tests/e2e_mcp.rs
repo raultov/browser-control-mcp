@@ -141,6 +141,10 @@ mod e2e {
     const FORMS85: &str = "<!doctype html><title>forms85</title><form><input class=\"f85\"><input class=\"f85\"></form>\
         <script>const x = new XMLHttpRequest(); x.open('GET', '/api?sync85', false); x.send();</script>";
 
+    /// ISSUE-86: an external stylesheet with a rule in a named container
+    /// query.
+    const CSS86: &str = ".wrap86 { container: box86 / inline-size; width: 200px; }\n@container box86 (min-width: 10px) { .k86 { color: rgb(1, 2, 3); } }\n";
+
     /// The scripts served (by path prefix).
     const SCRIPTS: [(&str, &str); 3] = [
         ("/app.js", APP_JS),
@@ -151,25 +155,34 @@ mod e2e {
         ),
     ];
 
+    /// The pages served as they are (by path prefix): content type, body.
+    const PAGES: [(&str, &str, &str); 9] = [
+        ("/data.csv", "text/csv", "a,b\n1,2\n"),
+        (
+            "/self-close.html",
+            "text/html",
+            "<!doctype html><title>closing</title><script>setTimeout(() => window.close(), 2000)</script>",
+        ),
+        ("/api", "application/json", "{\"ok\":true}"),
+        ("/frame.html", "text/html", FRAME),
+        ("/drag.html", "text/html", DRAG),
+        ("/e2e86.css", "text/css", CSS86),
+        ("/forms85.html", "text/html", FORMS85),
+        ("/xo-top.html", "text/html", XO_TOP),
+        ("/xo-inner.html", "text/html", XO_INNER),
+    ];
+
     /// The content type and body served for `path`.
     fn page(path: &str, ws: &str) -> (&'static str, String) {
         if let Some((_, script)) = SCRIPTS.iter().find(|(at, _)| path.starts_with(at)) {
             return ("application/javascript", (*script).to_string());
         }
-        match path {
-            p if p.starts_with("/data.csv") => ("text/csv", "a,b\n1,2\n".to_string()),
-            p if p.starts_with("/self-close.html") => (
-                "text/html",
-                "<!doctype html><title>closing</title><script>setTimeout(() => window.close(), 2000)</script>".to_string(),
-            ),
-            p if p.starts_with("/api") => ("application/json", "{\"ok\":true}".to_string()),
-            p if p.starts_with("/ws.html") => ("text/html", ws.to_string()),
-            p if p.starts_with("/frame.html") => ("text/html", FRAME.to_string()),
-            p if p.starts_with("/drag.html") => ("text/html", DRAG.to_string()),
-            p if p.starts_with("/forms85.html") => ("text/html", FORMS85.to_string()),
-            p if p.starts_with("/xo-top.html") => ("text/html", XO_TOP.to_string()),
-            p if p.starts_with("/xo-inner.html") => ("text/html", XO_INNER.to_string()),
-            _ => ("text/html", INDEX.to_string()),
+        if path.starts_with("/ws.html") {
+            return ("text/html", ws.to_string());
+        }
+        match PAGES.iter().find(|(at, _, _)| path.starts_with(at)) {
+            Some((_, kind, body)) => (kind, (*body).to_string()),
+            None => ("text/html", INDEX.to_string()),
         }
     }
 
@@ -796,7 +809,47 @@ mod e2e {
         ];
         steps.extend(a11y_state_steps(instance));
         steps.extend(css_steps(instance));
+        steps.extend(css_sheet_steps(instance));
         steps
+    }
+
+    /// ISSUE-86: a rule of an external stylesheet names that sheet, and its
+    /// container query keeps its name (both browsers).
+    fn css_sheet_steps(instance: &str) -> Vec<Step> {
+        let i = json!(instance);
+        let html = "<div id=\"w86\"><link rel=\"stylesheet\" href=\"/e2e86.css\"><div class=\"wrap86\"><p id=\"c86\" class=\"k86\">c86</p></div></div>";
+        let add = format!(
+            "document.body.insertAdjacentHTML('afterbegin', {}); 1",
+            json!(html)
+        );
+        let styles = json!({"instance_id": i, "selector": "#c86"});
+        vec![
+            (
+                "ISSUE-86 an element styled by an external sheet",
+                "evaluate_js",
+                json!({"instance_id": i, "expression": add}),
+                "",
+            ),
+            ("ISSUE-86 wait for the sheet", "sleep", json!({}), ""),
+            (
+                "ISSUE-86 its rule names the sheet",
+                "get_css_styles",
+                styles.clone(),
+                "/e2e86.css\"",
+            ),
+            (
+                "ISSUE-86 the container query keeps its name",
+                "get_css_styles",
+                styles,
+                "@container box86 (min-width: 10px)",
+            ),
+            (
+                "ISSUE-86 remove it",
+                "evaluate_js",
+                json!({"instance_id": i, "expression": "document.getElementById('w86').remove(); 1"}),
+                "",
+            ),
+        ]
     }
 
     /// ISSUE-59: an element's matched rules, with the overridden and

@@ -83,7 +83,47 @@ async fn read_in(
     let computed = json!({"node": node_actor, "filter": "user"});
     let computed = request(rdp, &page_style, "getComputed", computed).await?;
     let label = node_label(&node);
-    Ok(css_styles::from_firefox(&label, page, &rules, &computed))
+    let sheets = css_styles::Sheets {
+        page: page.to_string(),
+        by_id: sheet_urls(&thread_of(rdp, form), &args.selector, &rules).await,
+    };
+    Ok(css_styles::from_firefox(&label, &rules, &computed, &sheets))
+}
+
+/// The URLs of the sheets the rules of `applied` come from, by their
+/// `parentStyleSheet` id, found in the page from one rule of each (see
+/// `css_styles::sheet_lookup`, ISSUE-86). Best effort: a sheet not found
+/// is left out (its rules then name the page).
+async fn sheet_urls(
+    thread: &TargetThread,
+    selector: &str,
+    applied: &Value,
+) -> std::collections::HashMap<String, String> {
+    let samples = css_styles::firefox_sheet_samples(applied);
+    if samples.is_empty() {
+        return Default::default();
+    }
+    let lookup = css_styles::sheet_lookup(&crate::util::js::element(selector), &samples);
+    let found = thread.evaluate(&lookup).await.ok();
+    let text = found.filter(|f| f.exception.is_none());
+    let text = text.and_then(|f| f.result.as_str().map(str::to_string));
+    let urls = text.and_then(|t| serde_json::from_str::<Value>(&t).ok());
+    let urls = urls
+        .as_ref()
+        .and_then(Value::as_object)
+        .into_iter()
+        .flatten();
+    urls.filter_map(|(id, url)| Some((id.clone(), url.as_str()?.to_string())))
+        .collect()
+}
+
+/// The thread (and console) of the target `form` describes.
+fn thread_of(rdp: &RdpClient, form: &Value) -> TargetThread {
+    TargetThread::new(
+        rdp,
+        form["threadActor"].as_str().unwrap_or_default(),
+        form["consoleActor"].as_str().unwrap_or_default(),
+    )
 }
 
 /// The inspector's node form of the element `selector` names.
@@ -93,11 +133,7 @@ async fn node_of(
     inspector: &str,
     selector: &str,
 ) -> Result<Value, String> {
-    let thread = TargetThread::new(
-        rdp,
-        form["threadActor"].as_str().unwrap_or_default(),
-        form["consoleActor"].as_str().unwrap_or_default(),
-    );
+    let thread = thread_of(rdp, form);
     let expression = crate::util::js::element(selector);
     let evaluation = thread
         .evaluate(&expression)

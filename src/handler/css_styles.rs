@@ -380,11 +380,14 @@ fn chrome_rule(rule: &Value, sheets: &HashMap<String, String>) -> Option<CssRule
         ("containerQueries", "@container"),
     ] {
         let texts = rule[key].as_array().into_iter().flatten();
-        at_rules.extend(
-            texts
-                .filter_map(|at| at["text"].as_str())
-                .map(|text| format!("{name} {text}")),
-        );
+        // A container query keeps its container's name (ISSUE-86).
+        at_rules.extend(texts.filter_map(|at| {
+            let text = at["text"].as_str()?;
+            Some(match at["name"].as_str().filter(|n| !n.is_empty()) {
+                Some(container) => format!("{name} {container} {text}"),
+                None => format!("{name} {text}"),
+            })
+        }));
     }
     let sheet = rule["styleSheetId"]
         .as_str()
@@ -432,13 +435,22 @@ fn chrome_declarations(style: &Value) -> Vec<Declaration> {
         .collect()
 }
 
+/// Where the rules of a Firefox page come from: the page's URL (an inline
+/// `<style>`'s sheet), and the URLs of the other sheets by their
+/// `parentStyleSheet` id (see [`firefox_sheet_samples`], ISSUE-86).
+#[derive(Debug, Default)]
+pub(crate) struct Sheets {
+    pub(crate) page: String,
+    pub(crate) by_id: HashMap<String, String>,
+}
+
 /// The styles of a Firefox page style `getApplied` reply (`applied`) and
-/// `getComputed` reply (`computed`), the page's URL being `page`.
+/// `getComputed` reply (`computed`), its rules' sheets named from `sheets`.
 pub(crate) fn from_firefox(
     element: &str,
-    page: &str,
     applied: &Value,
     computed: &Value,
+    sheets: &Sheets,
 ) -> CssStyles {
     let mut styles = CssStyles {
         element: element.to_string(),
@@ -446,7 +458,7 @@ pub(crate) fn from_firefox(
     };
     let mut ancestors: Vec<String> = Vec::new();
     for entry in applied["entries"].as_array().into_iter().flatten() {
-        let Some(rule) = firefox_rule(&entry["rule"], page) else {
+        let Some(rule) = firefox_rule(&entry["rule"], sheets) else {
             continue;
         };
         let pseudo = entry["pseudoElement"].as_str().unwrap_or_default();
@@ -483,8 +495,9 @@ pub(crate) fn from_firefox(
 }
 
 /// The rule of a Firefox `getApplied` entry (type 100: the `style`
-/// attribute); its 1-based line and column made 0-based.
-fn firefox_rule(rule: &Value, page: &str) -> Option<CssRule> {
+/// attribute); its 1-based line and column made 0-based, its sheet's URL
+/// from `sheets`.
+fn firefox_rule(rule: &Value, sheets: &Sheets) -> Option<CssRule> {
     let declarations = firefox_declarations(rule)?;
     let number = |key: &str| {
         rule[key]
@@ -510,11 +523,10 @@ fn firefox_rule(rule: &Value, page: &str) -> Option<CssRule> {
             false => selectors.join(", "),
         },
         origin: origin.to_string(),
-        // An inline <style> has no href: its sheet is the page.
         stylesheet: match origin {
             "inline-style" => None,
             "user-agent" => rule["href"].as_str().map(str::to_string),
-            _ => Some(rule["href"].as_str().unwrap_or(page).to_string()),
+            _ => Some(firefox_sheet_url(rule, sheets)),
         },
         line: number("line"),
         column: number("column"),
@@ -538,21 +550,112 @@ fn firefox_declarations(rule: &Value) -> Option<Vec<Declaration>> {
     Some(read.collect())
 }
 
-/// A Firefox rule's at-rules (its `ancestorData`: `@media (min-width: 1px)`).
+/// The URL of the sheet of an author rule: Firefox 159 names it only by
+/// `parentStyleSheet`, found in `sheets` (ISSUE-86); an older `href`; else
+/// the page's (an inline `<style>`, or a sheet the page did not find).
+fn firefox_sheet_url(rule: &Value, sheets: &Sheets) -> String {
+    let found = rule["parentStyleSheet"].as_str();
+    let found = found.and_then(|id| sheets.by_id.get(id));
+    let named = found.map(String::as_str).or(rule["href"].as_str());
+    named.unwrap_or(&sheets.page).to_string()
+}
+
+/// A Firefox rule's at-rules (its `ancestorData`: `@media (min-width: 1px)`;
+/// a container query's name and query from its `conditions`, ISSUE-86).
 fn firefox_at_rules(rule: &Value) -> Vec<String> {
     let ancestors = rule["ancestorData"].as_array().into_iter().flatten();
     ancestors
         .filter_map(|at| {
             let kind = at["type"].as_str()?;
-            let value = at["value"].as_str().unwrap_or_default();
+            let value = match at["conditions"].as_array() {
+                Some(conditions) => container_conditions(conditions),
+                None => at["value"].as_str().unwrap_or_default().to_string(),
+            };
             Some(format!("@{kind} {value}").trim_end().to_string())
         })
         .collect()
 }
 
+/// `box (min-width: 100px)` from a Firefox container rule's `conditions`.
+fn container_conditions(conditions: &[Value]) -> String {
+    let each = conditions.iter().map(|c| {
+        let name = c["containerName"].as_str().unwrap_or_default();
+        let query = c["containerQuery"].as_str().unwrap_or_default();
+        format!("{name} {query}").trim().to_string()
+    });
+    each.collect::<Vec<_>>().join(", ")
+}
+
+/// A rule of one Firefox stylesheet, to find that sheet in the page.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct SheetSample {
+    /// The sheet's `parentStyleSheet` id.
+    pub(crate) id: String,
+    /// The rule's selector, as the CSSOM's `selectorText`.
+    pub(crate) selector: String,
+    /// Its declarations, as the CSSOM's `style.cssText`.
+    pub(crate) css_text: String,
+}
+
+/// One rule of each sheet the author rules of a `getApplied` reply come
+/// from, in order: Firefox 159 names a rule's sheet only by an id of its
+/// stylesheet resources, which `get_css_styles`' own target cannot list,
+/// so the page finds the sheet holding that rule (ISSUE-86).
+pub(crate) fn firefox_sheet_samples(applied: &Value) -> Vec<SheetSample> {
+    let mut samples: Vec<SheetSample> = Vec::new();
+    for entry in applied["entries"].as_array().into_iter().flatten() {
+        let rule = &entry["rule"];
+        let Some(id) = rule["parentStyleSheet"].as_str() else {
+            continue;
+        };
+        let selectors = rule["selectors"].as_array().into_iter().flatten();
+        let selectors: Vec<&str> = selectors.filter_map(Value::as_str).collect();
+        let css_text = rule["cssText"].as_str();
+        if selectors.is_empty() || samples.iter().any(|s| s.id == id) {
+            continue;
+        }
+        if let Some(css_text) = css_text {
+            samples.push(SheetSample {
+                id: id.to_string(),
+                selector: selectors.join(", "),
+                css_text: css_text.to_string(),
+            });
+        }
+    }
+    samples
+}
+
+/// Finds, in the page, the sheet of each of `samples`: the first sheet of
+/// the root of the element `element` (a JavaScript expression) or of its
+/// document, adopted ones and `@import`ed ones included, with a rule (at
+/// any depth: grouping and nested rules) of the same selector and
+/// declarations. Answers a JSON object of URLs by id: the sheet's, or
+/// for one without a URL (an inline `<style>`, a constructed sheet) the
+/// element's document's.
+pub(crate) fn sheet_lookup(element: &str, samples: &[SheetSample]) -> String {
+    let wanted: Vec<[&str; 3]> = samples
+        .iter()
+        .map(|s| [s.id.as_str(), s.selector.as_str(), s.css_text.as_str()])
+        .collect();
+    let wanted = serde_json::to_string(&wanted).unwrap_or_else(|_| "[]".into());
+    format!(
+        "(() => {{ const el = {element}; if (!el) return null; const doc = el.ownerDocument, root = el.getRootNode(); \
+         const sheets = [root, doc].flatMap(r => [...(r.styleSheets || []), ...(r.adoptedStyleSheets || [])]); \
+         const holds = (rules, sel, text, depth) => {{ for (const r of rules) {{ \
+           if (r.selectorText === sel && r.style && r.style.cssText === text) return true; \
+           if (depth < 8 && r.cssRules && holds(r.cssRules, sel, text, depth + 1)) return true; }} return false; }}; \
+         const find = (sheet, sel, text, depth) => {{ let rules; try {{ rules = sheet.cssRules; }} catch (e) {{ return null; }} \
+           if (holds(rules, sel, text, 0)) return sheet; \
+           for (const r of rules) {{ if (depth < 4 && r.styleSheet) {{ const s = find(r.styleSheet, sel, text, depth + 1); if (s) return s; }} }} return null; }}; \
+         const out = {{}}; for (const [id, sel, text] of {wanted}) {{ \
+           for (const sheet of sheets) {{ const s = find(sheet, sel, text, 0); if (s) {{ out[id] = s.href || doc.URL; break; }} }} }} \
+         return JSON.stringify(out); }})()"
+    )
+}
+
 #[macros::mcp_tool(
     name = "get_css_styles",
-    description = "Explains how an element is styled: the CSS rules that match it, highest priority first (the style attribute, then the rules), each with its selector, stylesheet URL (or the page's for an inline <style>), 0-based line and column in that stylesheet, the at-rules around it (@media, @container, @layer, @supports) and its declarations marked important, invalid or overridden; its pseudo-elements (::before...); with include_inherited the rules of its ancestors (nearest first); and the computed values of the properties declared (or of 'properties'). 'properties' also limits the declarations shown; user-agent rules are left out unless include_user_agent; at most max_rules rules (default 30). Firefox reads them with its inspector, which needs its debugger port, and only for elements of the tab's document (not inside a shadow root or a frame)."
+    description = "Explains how an element is styled: the CSS rules that match it, highest priority first (the style attribute, then the rules), each with its selector, stylesheet URL (or the page's for an inline <style>), 0-based line and column in that stylesheet, the at-rules around it (@media, @container, @layer, @supports) and its declarations marked important, invalid or overridden; its pseudo-elements (::before...); with include_inherited the rules of its ancestors (nearest first); and the computed values of the properties declared (or of 'properties'). 'properties' also limits the declarations shown; user-agent rules are left out unless include_user_agent; at most max_rules rules (default 30). Firefox reads them with its inspector, which needs its debugger port; an element in a frame is not always found there."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct GetCssStylesTool {
@@ -1007,7 +1110,7 @@ mod tests {
         let user = json!({"entries": [entry("r1", 1), entry("r0", 100)]});
         let mut both = json!({"entries": [entry("r0", 100), entry("r1", 1), entry("r9", 1)]});
         mark_user_agent(&mut both, &rule_actors(&user));
-        let styles = from_firefox("p", "http://a/", &both, &json!({}));
+        let styles = from_firefox("p", &both, &json!({}), &page_sheets("http://a/"));
         let origins: Vec<&str> = styles.matched.iter().map(|r| r.origin.as_str()).collect();
         assert_eq!(origins, ["inline-style", "author", "user-agent"]);
         assert_eq!(styles.matched[2].stylesheet, None);
@@ -1087,6 +1190,138 @@ mod tests {
         assert_eq!(error, not_found("#nope"));
     }
 
+    /// Sheets of a page `page` none of which was found elsewhere.
+    fn page_sheets(page: &str) -> Sheets {
+        Sheets {
+            page: page.into(),
+            ..Default::default()
+        }
+    }
+
+    /// The captured `getApplied` reply of `button#go` (r9 CSS page).
+    fn captured_applied() -> Value {
+        let captured = include_str!("../../tests/fixtures/rdp/css-get-applied.json");
+        serde_json::from_str(captured).unwrap()
+    }
+
+    /// ISSUE-86 (Firefox 159, captured): each sheet the rules come from
+    /// gives one sample rule (selector and declarations), in order.
+    #[test]
+    fn firefox_sheets_are_sampled() {
+        let samples = firefox_sheet_samples(&captured_applied());
+        let ids: Vec<&str> = samples.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            [
+                "server1.conn1.child25/windowGlobalTarget2:stylesheet:0",
+                "server1.conn1.child25/windowGlobalTarget2:stylesheet:1"
+            ]
+        );
+        assert_eq!(
+            (samples[1].selector.as_str(), samples[1].css_text.as_str()),
+            (".card .btn", "color: blue !important;")
+        );
+    }
+
+    /// ISSUE-86 (Firefox 159, captured): a rule names its sheet only by
+    /// `parentStyleSheet`; each sheet gives one sample rule (selector and
+    /// declarations) to find it in the page, and the URL found is the
+    /// rule's stylesheet (it used to be the page's for every rule). The
+    /// `@container` at-rule keeps its name and query.
+    #[test]
+    fn firefox_rules_name_their_stylesheet() {
+        let applied = captured_applied();
+        // Given the sheets of the samples found in the page
+        let samples = firefox_sheet_samples(&applied);
+        let page = "http://127.0.0.1:8766/r9-css.html";
+        let sheet = "http://127.0.0.1:8766/r9-css.css";
+        let by_id = HashMap::from([
+            (samples[0].id.clone(), page.to_string()),
+            (samples[1].id.clone(), sheet.to_string()),
+        ]);
+        let styles = from_firefox(
+            "button#go.btn",
+            &applied,
+            &json!({}),
+            &Sheets {
+                page: page.into(),
+                by_id,
+            },
+        );
+        // Then each rule names its own sheet
+        let at = |selector: &str| {
+            let rule = styles
+                .matched
+                .iter()
+                .find(|r| r.selector == selector)
+                .unwrap();
+            rule.stylesheet.clone().unwrap()
+        };
+        assert_eq!(at("#go"), page);
+        assert_eq!(at(".card .btn"), sheet);
+        // And @container keeps its name and query
+        let container = styles
+            .matched
+            .iter()
+            .find(|r| r.at_rules.iter().any(|a| a.starts_with("@container")))
+            .unwrap();
+        assert_eq!(container.at_rules, ["@container box (min-width: 100px)"]);
+        // And a sheet the page did not find is the page's, as before
+        let styles = from_firefox("button#go.btn", &applied, &json!({}), &page_sheets(page));
+        assert!(
+            styles
+                .matched
+                .iter()
+                .all(|r| r.stylesheet.as_deref() != Some(sheet))
+        );
+    }
+
+    /// ISSUE-86 (Chrome): a named container query keeps its name.
+    #[test]
+    fn chrome_container_queries_keep_their_name() {
+        let rule = json!({"selectorList": {"text": ".btn", "selectors": [{"text": ".btn"}]}, "origin": "regular",
+            "containerQueries": [{"text": "(min-width: 100px)", "name": "box"}, {"text": "(width > 1px)"}],
+            "style": {"cssProperties": []}});
+        let rule = chrome_rule(&rule, &HashMap::new()).unwrap();
+        assert_eq!(
+            rule.at_rules,
+            [
+                "@container box (min-width: 100px)",
+                "@container (width > 1px)"
+            ]
+        );
+    }
+
+    /// ISSUE-86: the page snippet looks for each sample in the element's
+    /// sheets (its root's, adopted ones, imported and nested rules) and
+    /// answers their URLs by id.
+    #[test]
+    fn the_sheet_lookup_names_each_sample() {
+        let samples = vec![SheetSample {
+            id: "S:1".into(),
+            selector: ".card .btn".into(),
+            css_text: "color: blue !important;".into(),
+        }];
+        let snippet = sheet_lookup("document.querySelector('#go')", &samples);
+        assert!(
+            snippet.contains("document.querySelector('#go')"),
+            "{snippet}"
+        );
+        assert!(
+            snippet.contains(r#"["S:1",".card .btn","color: blue !important;"]"#),
+            "{snippet}"
+        );
+        for part in [
+            "adoptedStyleSheets",
+            "styleSheet",
+            "cssRules",
+            "selectorText",
+            "cssText",
+        ] {
+            assert!(snippet.contains(part), "{part}");
+        }
+    }
+
     /// A Firefox `getApplied` reply with the same rules as `chrome_matched`.
     fn firefox_applied() -> Value {
         let decl = |name: &str, value: &str| json!({"name": name, "value": value, "priority": "", "isValid": true});
@@ -1130,7 +1365,12 @@ mod tests {
     fn firefox_styles_are_read() {
         let applied = firefox_applied();
         let computed = json!({"computed": {"color": {"matched": true, "value": "rgb(0, 128, 0)"}}});
-        let styles = from_firefox("p#inner", "http://a/page.html", &applied, &computed);
+        let styles = from_firefox(
+            "p#inner",
+            &applied,
+            &computed,
+            &page_sheets("http://a/page.html"),
+        );
         let selectors: Vec<&str> = styles.matched.iter().map(|r| r.selector.as_str()).collect();
         assert_eq!(selectors, ["element.style", "#inner", "#inner", ".box"]);
         assert_eq!(styles.matched[0].origin, "inline-style");

@@ -47,6 +47,15 @@ from a copy of its code: entries describe the differences from that release.
   have a title (`[GenericIssue] Form fields share an id: ...`). Firefox
   reports its deprecation warnings (a synchronous XHR...) as
   `DeprecationIssue` (#85).
+- Firefox: `get_css_styles` names the stylesheet of each rule. Firefox 159
+  names a rule's sheet only by an id its debugger cannot resolve here, so
+  every rule was attributed to the page's URL; the page now finds the sheet
+  holding a rule with the same selector and declarations (`@import`ed,
+  nested, adopted and shadow-root sheets included). `@container` at-rules
+  keep their container's name and query on both browsers (Firefox gave
+  `@container` alone, Chrome dropped the name). The tool's description no
+  longer says shadow roots and frames are out of reach on Firefox: shadow
+  roots work, and an element in a frame is not always found (#86).
 
 ## [0.11.0-beta.20] - 2026-11-04
 

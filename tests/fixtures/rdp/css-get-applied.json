@@ -1,0 +1,561 @@
+{
+ "entries": [
+  {
+   "darkColorScheme": false,
+   "inherited": null,
+   "isSystem": false,
+   "pseudoElement": null,
+   "rule": {
+    "actor": "server1.conn1.child25/domstylerule27",
+    "ancestorData": [],
+    "authoredText": "padding: 8px",
+    "className": 100,
+    "cssText": "padding: 8px;",
+    "declarations": [
+     {
+      "colonOffsets": [
+       7,
+       9
+      ],
+      "isNameValid": true,
+      "isValid": true,
+      "name": "padding",
+      "offsets": [
+       0,
+       12
+      ],
+      "priority": "",
+      "terminator": ";",
+      "value": "8px"
+     }
+    ],
+    "href": "http://127.0.0.1:8766/r9-css.html",
+    "traits": {
+     "canSetRuleText": true
+    },
+    "type": 100
+   },
+   "siblingCount": 1,
+   "siblingIndex": 1
+  },
+  {
+   "darkColorScheme": false,
+   "inherited": null,
+   "isSystem": false,
+   "matchedSelectorIndexes": [
+    0
+   ],
+   "pseudoElement": "",
+   "rule": {
+    "actor": "server1.conn1.child25/domstylerule28",
+    "ancestorData": [],
+    "authoredText": " color: black; ",
+    "className": "CSSStyleRule",
+    "column": 1,
+    "cssText": "color: black;",
+    "declarations": [
+     {
+      "colonOffsets": [
+       6,
+       8
+      ],
+      "isNameValid": true,
+      "isValid": true,
+      "name": "color",
+      "offsets": [
+       1,
+       14
+      ],
+      "priority": "",
+      "terminator": "",
+      "value": "black"
+     }
+    ],
+    "line": 1,
+    "parentStyleSheet": "server1.conn1.child25/windowGlobalTarget2:stylesheet:0",
+    "selectors": [
+     "#go"
+    ],
+    "selectorsSpecificity": [
+     1048576
+    ],
+    "traits": {
+     "canSetRuleText": true
+    },
+    "type": 1
+   },
+   "siblingCount": 1,
+   "siblingIndex": 1
+  },
+  {
+   "darkColorScheme": false,
+   "inherited": null,
+   "isSystem": false,
+   "matchedSelectorIndexes": [
+    0
+   ],
+   "pseudoElement": "",
+   "rule": {
+    "actor": "server1.conn1.child25/domstylerule29",
+    "ancestorData": [],
+    "authoredText": " color: blue !important; ",
+    "className": "CSSStyleRule",
+    "column": 1,
+    "cssText": "color: blue !important;",
+    "declarations": [
+     {
+      "colonOffsets": [
+       6,
+       8
+      ],
+      "isNameValid": true,
+      "isValid": true,
+      "name": "color",
+      "offsets": [
+       1,
+       24
+      ],
+      "priority": "important",
+      "terminator": "",
+      "value": "blue"
+     }
+    ],
+    "line": 6,
+    "parentStyleSheet": "server1.conn1.child25/windowGlobalTarget2:stylesheet:1",
+    "selectors": [
+     ".card .btn"
+    ],
+    "selectorsSpecificity": [
+     2048
+    ],
+    "traits": {
+     "canSetRuleText": true
+    },
+    "type": 1
+   },
+   "siblingCount": 1,
+   "siblingIndex": 1
+  },
+  {
+   "darkColorScheme": false,
+   "inherited": null,
+   "isSystem": false,
+   "matchedSelectorIndexes": [
+    0
+   ],
+   "pseudoElement": "",
+   "rule": {
+    "actor": "server1.conn1.child25/domstylerule30",
+    "ancestorData": [],
+    "authoredText": " color: gray; ",
+    "className": "CSSStyleRule",
+    "column": 23,
+    "cssText": "color: gray;",
+    "declarations": [
+     {
+      "colonOffsets": [
+       6,
+       8
+      ],
+      "isNameValid": true,
+      "isValid": true,
+      "name": "color",
+      "offsets": [
+       1,
+       13
+      ],
+      "priority": "",
+      "terminator": "",
+      "value": "gray"
+     }
+    ],
+    "line": 1,
+    "parentStyleSheet": "server1.conn1.child25/windowGlobalTarget2:stylesheet:0",
+    "selectors": [
+     ".btn"
+    ],
+    "selectorsSpecificity": [
+     1024
+    ],
+    "traits": {
+     "canSetRuleText": true
+    },
+    "type": 1
+   },
+   "siblingCount": 1,
+   "siblingIndex": 1
+  },
+  {
+   "darkColorScheme": false,
+   "inherited": null,
+   "isSystem": false,
+   "matchedSelectorIndexes": [
+    0
+   ],
+   "pseudoElement": "",
+   "rule": {
+    "actor": "server1.conn1.child25/domstylerule31",
+    "ancestorData": [
+     {
+      "conditions": [
+       {
+        "containerName": "box",
+        "containerQuery": "(min-width: 100px)",
+        "hasContainer": true,
+        "matched": true
+       }
+      ],
+      "type": "container"
+     }
+    ],
+    "authoredText": " letter-spacing: 1px; ",
+    "className": "CSSStyleRule",
+    "column": 37,
+    "cssText": "letter-spacing: 1px;",
+    "declarations": [
+     {
+      "colonOffsets": [
+       15,
+       17
+      ],
+      "isNameValid": true,
+      "isValid": true,
+      "name": "letter-spacing",
+      "offsets": [
+       1,
+       21
+      ],
+      "priority": "",
+      "terminator": "",
+      "value": "1px"
+     }
+    ],
+    "line": 9,
+    "parentStyleSheet": "server1.conn1.child25/windowGlobalTarget2:stylesheet:1",
+    "selectors": [
+     ".btn"
+    ],
+    "selectorsSpecificity": [
+     1024
+    ],
+    "traits": {
+     "canSetRuleText": true
+    },
+    "type": 1
+   },
+   "siblingCount": 1,
+   "siblingIndex": 1
+  },
+  {
+   "darkColorScheme": false,
+   "inherited": null,
+   "isSystem": false,
+   "matchedSelectorIndexes": [
+    0
+   ],
+   "pseudoElement": "",
+   "rule": {
+    "actor": "server1.conn1.child25/domstylerule32",
+    "ancestorData": [
+     {
+      "type": "media",
+      "value": "(min-width: 600px)"
+     }
+    ],
+    "authoredText": " font-size: 18px; ",
+    "className": "CSSStyleRule",
+    "column": 29,
+    "cssText": "font-size: 18px;",
+    "declarations": [
+     {
+      "colonOffsets": [
+       10,
+       12
+      ],
+      "isNameValid": true,
+      "isValid": true,
+      "name": "font-size",
+      "offsets": [
+       1,
+       17
+      ],
+      "priority": "",
+      "terminator": "",
+      "value": "18px"
+     }
+    ],
+    "line": 7,
+    "parentStyleSheet": "server1.conn1.child25/windowGlobalTarget2:stylesheet:1",
+    "selectors": [
+     ".btn"
+    ],
+    "selectorsSpecificity": [
+     1024
+    ],
+    "traits": {
+     "canSetRuleText": true
+    },
+    "type": 1
+   },
+   "siblingCount": 1,
+   "siblingIndex": 1
+  },
+  {
+   "darkColorScheme": false,
+   "inherited": null,
+   "isSystem": false,
+   "matchedSelectorIndexes": [
+    0
+   ],
+   "pseudoElement": "",
+   "rule": {
+    "actor": "server1.conn1.child25/domstylerule33",
+    "ancestorData": [],
+    "authoredText": " border: 1px solid var(--accent); margin: var(--gap); ",
+    "className": "CSSStyleRule",
+    "column": 1,
+    "cssText": "border: 1px solid var(--accent); margin: var(--gap);",
+    "declarations": [
+     {
+      "colonOffsets": [
+       7,
+       9
+      ],
+      "isNameValid": true,
+      "isValid": true,
+      "name": "border",
+      "offsets": [
+       1,
+       33
+      ],
+      "priority": "",
+      "terminator": "",
+      "value": "1px solid var(--accent)"
+     },
+     {
+      "colonOffsets": [
+       40,
+       42
+      ],
+      "isNameValid": true,
+      "isValid": true,
+      "name": "margin",
+      "offsets": [
+       34,
+       53
+      ],
+      "priority": "",
+      "terminator": "",
+      "value": "var(--gap)"
+     }
+    ],
+    "line": 5,
+    "parentStyleSheet": "server1.conn1.child25/windowGlobalTarget2:stylesheet:1",
+    "selectors": [
+     ".btn"
+    ],
+    "selectorsSpecificity": [
+     1024
+    ],
+    "traits": {
+     "canSetRuleText": true
+    },
+    "type": 1
+   },
+   "siblingCount": 1,
+   "siblingIndex": 1
+  },
+  {
+   "darkColorScheme": false,
+   "inherited": null,
+   "isSystem": false,
+   "matchedSelectorIndexes": [
+    0
+   ],
+   "pseudoElement": "",
+   "rule": {
+    "actor": "server1.conn1.child25/domstylerule34",
+    "ancestorData": [
+     {
+      "actorID": "server1.conn1.child25/domstylerule39",
+      "type": "layer",
+      "value": "theme"
+     }
+    ],
+    "authoredText": " color: purple; ",
+    "className": "CSSStyleRule",
+    "column": 16,
+    "cssText": "color: purple;",
+    "declarations": [
+     {
+      "colonOffsets": [
+       6,
+       8
+      ],
+      "isNameValid": true,
+      "isValid": true,
+      "name": "color",
+      "offsets": [
+       1,
+       15
+      ],
+      "priority": "",
+      "terminator": "",
+      "value": "purple"
+     }
+    ],
+    "line": 3,
+    "parentStyleSheet": "server1.conn1.child25/windowGlobalTarget2:stylesheet:1",
+    "selectors": [
+     ".btn"
+    ],
+    "selectorsSpecificity": [
+     1024
+    ],
+    "traits": {
+     "canSetRuleText": true
+    },
+    "type": 1
+   },
+   "siblingCount": 1,
+   "siblingIndex": 1
+  },
+  {
+   "darkColorScheme": false,
+   "inherited": null,
+   "isSystem": false,
+   "matchedSelectorIndexes": [
+    0
+   ],
+   "pseudoElement": "",
+   "rule": {
+    "actor": "server1.conn1.child25/domstylerule35",
+    "ancestorData": [
+     {
+      "actorID": "server1.conn1.child25/domstylerule40",
+      "type": "layer",
+      "value": "base"
+     }
+    ],
+    "authoredText": " color: green; padding: 4px; ",
+    "className": "CSSStyleRule",
+    "column": 15,
+    "cssText": "color: green; padding: 4px;",
+    "declarations": [
+     {
+      "colonOffsets": [
+       6,
+       8
+      ],
+      "isNameValid": true,
+      "isValid": true,
+      "name": "color",
+      "offsets": [
+       1,
+       14
+      ],
+      "priority": "",
+      "terminator": "",
+      "value": "green"
+     },
+     {
+      "colonOffsets": [
+       22,
+       24
+      ],
+      "isNameValid": true,
+      "isValid": true,
+      "name": "padding",
+      "offsets": [
+       15,
+       28
+      ],
+      "priority": "",
+      "terminator": "",
+      "value": "4px"
+     }
+    ],
+    "line": 2,
+    "parentStyleSheet": "server1.conn1.child25/windowGlobalTarget2:stylesheet:1",
+    "selectors": [
+     ".btn"
+    ],
+    "selectorsSpecificity": [
+     1024
+    ],
+    "traits": {
+     "canSetRuleText": true
+    },
+    "type": 1
+   },
+   "siblingCount": 1,
+   "siblingIndex": 1
+  },
+  {
+   "darkColorScheme": false,
+   "inherited": null,
+   "isSystem": false,
+   "matchedSelectorIndexes": [
+    0
+   ],
+   "pseudoElement": "::before",
+   "rule": {
+    "actor": "server1.conn1.child25/domstylerule36",
+    "ancestorData": [],
+    "authoredText": " content: \"â†’ \"; color: red; ",
+    "className": "CSSStyleRule",
+    "column": 1,
+    "cssText": "content: \"â†’ \"; color: red;",
+    "declarations": [
+     {
+      "colonOffsets": [
+       8,
+       10
+      ],
+      "isNameValid": true,
+      "isValid": true,
+      "name": "content",
+      "offsets": [
+       1,
+       17
+      ],
+      "priority": "",
+      "terminator": "",
+      "value": "\"â†’ \""
+     },
+     {
+      "colonOffsets": [
+       23,
+       25
+      ],
+      "isNameValid": true,
+      "isValid": true,
+      "name": "color",
+      "offsets": [
+       18,
+       29
+      ],
+      "priority": "",
+      "terminator": "",
+      "value": "red"
+     }
+    ],
+    "line": 10,
+    "parentStyleSheet": "server1.conn1.child25/windowGlobalTarget2:stylesheet:1",
+    "selectors": [
+     ".btn::before"
+    ],
+    "selectorsSpecificity": [
+     1025
+    ],
+    "traits": {
+     "canSetRuleText": true
+    },
+    "type": 1
+   },
+   "siblingCount": 1,
+   "siblingIndex": 1
+  }
+ ],
+ "from": "server1.conn1.child25/pagestyle26"
+}
