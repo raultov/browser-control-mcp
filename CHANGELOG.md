@@ -30,6 +30,14 @@ from a copy of its code: entries describe the differences from that release.
   error. Firefox: a navigation or reload of a paused tab forgets the pause
   it replaced once it answers, as the debugger can say it resumed only
   later, and input tools briefly refused to run on the new page (#83).
+- Chrome: `pause_on_load` answers once the reloaded page paused, with
+  where (or that it had not paused within 5 s). It answered "paused" before
+  the pause, so `call_stack` right after said "not paused" and `resume`
+  failed with Chrome's raw error. The pause, before the page's first
+  script, is named: its frame's URL is `browser-control-mcp://pause_on_load`
+  (it was an anonymous frame without a URL) and `call_stack` gives the
+  reason `pause_on_load`; `search_scripts` leaves that script out. `resume`
+  before the pause says it has not come yet (#84).
 
 ## [0.11.0-beta.20] - 2026-11-04
 

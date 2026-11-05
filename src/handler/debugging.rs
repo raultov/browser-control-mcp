@@ -159,7 +159,7 @@ impl PauseLocation {
 
     /// ` at <url> line N, column M (0-based)` for messages (the script id
     /// when the URL is unknown).
-    fn at(&self) -> String {
+    pub(crate) fn at(&self) -> String {
         let (line, column) = (self.line, self.column);
         match (&self.url, &self.script_id) {
             (Some(url), _) => format!(" at {url} line {line}, column {column} (0-based)"),

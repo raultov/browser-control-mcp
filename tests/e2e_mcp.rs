@@ -3087,14 +3087,8 @@ mod e2e {
             "profile_duration_ms",
         )];
         steps.extend(insights_steps(browser));
+        steps.extend(pause_on_load_steps(&i));
         steps.extend([
-            (
-                "pause_on_load",
-                "pause_on_load",
-                json!({"instance_id": i}),
-                "paused",
-            ),
-            ("wait for the load pause", "sleep", json!({}), ""),
             (
                 "resume after load",
                 "resume",
@@ -3104,6 +3098,31 @@ mod e2e {
             close,
         ]);
         steps
+    }
+
+    /// ISSUE-84: pause_on_load answers once the page paused, before its
+    /// scripts ran, and the pause is named (Chrome only).
+    fn pause_on_load_steps(i: &Value) -> Vec<Step> {
+        vec![
+            (
+                "ISSUE-84 pause_on_load answers the pause",
+                "pause_on_load",
+                json!({"instance_id": i}),
+                "paused before its first script runs",
+            ),
+            (
+                "ISSUE-84 call_stack at once names it",
+                "call_stack",
+                json!({"instance_id": i}),
+                "browser-control-mcp://pause_on_load",
+            ),
+            (
+                "ISSUE-84 the page's scripts have not run",
+                "evaluate_js",
+                json!({"instance_id": i, "expression": "typeof appTarget"}),
+                "undefined",
+            ),
+        ]
     }
 
     /// The secret the launched server masks (`--secrets`).

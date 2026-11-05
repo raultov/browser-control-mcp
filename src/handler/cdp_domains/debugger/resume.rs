@@ -48,6 +48,9 @@ impl ResumeTool {
     }
 }
 
+/// `resume`'s answer before pause_on_load's pause came (ISSUE-84).
+const NOT_PAUSED_YET: &str = "Not paused yet: the page reloaded by pause_on_load has not reached its pause (it comes when the new document starts running; call_stack shows it). Nothing was resumed; resume again once it paused.";
+
 /// `resume`'s answer when Chrome refused `Debugger.resume` with `error`.
 async fn refused(
     error: String,
@@ -64,6 +67,11 @@ async fn refused(
         None => Err(CallToolError::from_message(error)),
         // Not paused yet (the reload has not reached it): the script stays
         // pending, so the pause still comes and the next resume removes it.
+        Some(script) if error.contains(super::NOT_PAUSED_REFUSAL) => {
+            state.lock().await.pause_on_load_script = Some(script);
+            super::sync_pauses(target, state).await;
+            Err(CallToolError::from_message(NOT_PAUSED_YET))
+        }
         Some(script) => {
             state.lock().await.pause_on_load_script = Some(script);
             super::sync_pauses(target, state).await;
@@ -201,9 +209,13 @@ mod tests {
         let handler = mock_handler(mock.http_port);
         let session = handler.session(None).await.unwrap();
         session.debugger_state.lock().await.pause_on_load_script = Some("1".into());
-        ResumeTool::handle(call("resume", json!({})), &handler)
+        let error = ResumeTool::handle(call("resume", json!({})), &handler)
             .await
-            .unwrap_err();
+            .unwrap_err()
+            .to_string();
+        // ISSUE-84: it says the pause has not come yet, not Chrome's error
+        assert!(error.starts_with("Not paused yet"), "{error}");
+        assert!(!error.contains("Can only perform"), "{error}");
         let script = session
             .debugger_state
             .lock()

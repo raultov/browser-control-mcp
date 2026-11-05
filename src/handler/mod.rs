@@ -38,6 +38,9 @@ pub(crate) struct ScriptInfo {
 
 /// Most parsed scripts remembered per tab (oldest forgotten first).
 pub(crate) const MAX_SCRIPTS: usize = 2000;
+/// Most ids of pause_on_load's script remembered per tab (one per document
+/// of the tab that runs it: the page and its same-origin frames).
+pub(crate) const MAX_PAUSE_ON_LOAD_SOURCES: usize = 64;
 /// Most WebSocket connections remembered per tab, with their frames.
 pub(crate) const MAX_WS_CONNECTIONS: usize = 100;
 
@@ -53,6 +56,11 @@ pub(crate) struct DebuggerState {
     /// Identifier of the `debugger;` script `pause_on_load` installed, removed
     /// on the next `resume` so later navigations do not pause again.
     pub pause_on_load_script: Option<String>,
+    /// Script ids of that `debugger;` script in the tab's documents (it
+    /// names itself with its sourceURL): not page scripts, and a pause in
+    /// one is pause_on_load's (ISSUE-84). At most
+    /// [`MAX_PAUSE_ON_LOAD_SOURCES`]; forgotten with the document.
+    pub pause_on_load_sources: std::collections::BTreeSet<String>,
     /// Breakpoints by MCP id (`bp-N`) → CDP breakpoint ids.
     pub breakpoints: debugging::BreakpointIds<cdp_domains::debugger::frames::ChromeBreakpoint>,
     /// The tab's frames of another origin whose debugger feeds this state,

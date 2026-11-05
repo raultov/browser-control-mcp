@@ -104,6 +104,8 @@ pub(crate) async fn process_debugger_event_in(
 fn on_contexts_cleared(st: &mut DebuggerState, number: Option<u32>, frame: Option<&str>) {
     st.scripts
         .retain(|id, _| frames::split_script_id(id).0 != number);
+    st.pause_on_load_sources
+        .retain(|id| frames::split_script_id(id).0 != number);
     if frame.is_none() || st.paused_frame.as_deref() == frame {
         st.clear_pause();
         st.paused_frame = None;
@@ -135,6 +137,13 @@ fn on_script_parsed(
         || script_id.to_string(),
         |number| frames::frame_script_id(number, script_id),
     );
+    // pause_on_load's own `debugger;`: not the page's (ISSUE-84).
+    if url == pause_on_load::PAUSE_ON_LOAD_URL {
+        if st.pause_on_load_sources.len() < crate::handler::MAX_PAUSE_ON_LOAD_SOURCES {
+            st.pause_on_load_sources.insert(id);
+        }
+        return;
+    }
     let info = ScriptInfo {
         hash: hash.to_string(),
         start_line: position(params, "startLine"),
@@ -160,7 +169,12 @@ fn on_paused(params: &Option<serde_json::Value>, st: &mut DebuggerState, frame: 
         st.paused_at = params.as_ref().and_then(pause_location);
         st.paused_frame = frame.map(str::to_string);
         if let Some(params) = params {
-            let (ids, stack) = call_stack(params);
+            let (ids, mut stack) = call_stack(params);
+            // Stopped at pause_on_load's own `debugger;` (ISSUE-84).
+            let injected = st.paused_at.as_ref().and_then(|at| at.script_id.as_ref());
+            if injected.is_some_and(|id| st.pause_on_load_sources.contains(id)) {
+                stack.reason = "pause_on_load".to_string();
+            }
             st.paused_frame_ids = ids;
             st.paused_stack = Some(stack);
         }
@@ -296,6 +310,11 @@ pub(crate) fn pause_location(params: &serde_json::Value) -> Option<PauseLocation
 /// pause did not carry one: Chrome leaves `callFrames[].url` empty (it is
 /// deprecated in favour of `location.scriptId`).
 pub(crate) fn with_script_url(mut location: PauseLocation, state: &DebuggerState) -> PauseLocation {
+    let injected = location.script_id.as_ref();
+    if location.url.is_none() && injected.is_some_and(|id| state.pause_on_load_sources.contains(id))
+    {
+        location.url = Some(pause_on_load::PAUSE_ON_LOAD_URL.to_string());
+    }
     if location.url.is_none()
         && let Some(script) = location
             .script_id
@@ -797,6 +816,37 @@ pub(crate) mod tests {
         let st = state.lock().await;
         assert!(st.paused_call_frame_id.is_none() && st.paused_stack.is_none());
         assert!(st.paused_at.is_none() && st.paused_frame_ids.is_empty());
+    }
+
+    /// ISSUE-84 (Chrome): the `debugger;` script pause_on_load injects is
+    /// not one of the page's scripts (search_scripts leaves it out), and a
+    /// pause in it says so: its URL is pause_on_load's and its reason
+    /// `pause_on_load` (it was an `(anonymous)` frame without a URL).
+    #[tokio::test]
+    async fn the_pause_on_load_script_is_named() {
+        use super::pause_on_load::PAUSE_ON_LOAD_URL;
+        // Given a pending pause_on_load whose script was parsed as script 4
+        let state = Arc::new(Mutex::new(DebuggerState {
+            pause_on_load_script: Some("1".into()),
+            ..Default::default()
+        }));
+        let parsed = json!({"scriptId": "4", "hash": "h", "url": PAUSE_ON_LOAD_URL});
+        process_debugger_event(&make_event("Debugger.scriptParsed", parsed), &state).await;
+        // When the page pauses in it
+        let frame = json!({"callFrameId": "f0", "functionName": "", "url": "", "location": {"scriptId": "4", "lineNumber": 0, "columnNumber": 0}});
+        let paused = json!({"reason": "other", "callFrames": [frame]});
+        process_debugger_event(&make_event("Debugger.paused", paused), &state).await;
+        // Then it is not a page script, and the pause is named as its own
+        let st = state.lock().await;
+        assert!(st.scripts.get("4").is_none());
+        assert_eq!(st.paused_stack.as_ref().unwrap().reason, "pause_on_load");
+        let at = with_script_url(st.paused_at.clone().unwrap(), &st);
+        assert_eq!(at.url.as_deref(), Some(PAUSE_ON_LOAD_URL));
+        drop(st);
+        // And a new document forgets its id (Chrome reuses ids)
+        let cleared = make_event("Runtime.executionContextsCleared", json!({}));
+        process_debugger_event(&cleared, &state).await;
+        assert!(state.lock().await.pause_on_load_sources.is_empty());
     }
 
     /// FIX-01: Script start positions are read from integers.

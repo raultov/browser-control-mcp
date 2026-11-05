@@ -575,8 +575,11 @@ statements do not pause it: the debugger is always attached, and
 anti-debugging pages loop on `debugger;` to freeze every tool. The first
 breakpoint, or `pause_on_exceptions`, turns them back on.
 
-Chrome also offers `pause_on_load` (pause on the first statement of the next
-load). Firefox notes: breakpoints by URL only; without `column_number` the
+Chrome also offers `pause_on_load`: it reloads the tab and answers once the
+page paused before any of its scripts runs, at a `debugger;` statement it
+injects (`browser-control-mcp://pause_on_load`, reason `pause_on_load` in
+`call_stack`), so breakpoints can be set in the page's scripts before they
+run; `resume` continues the load. Firefox notes: breakpoints by URL only; without `column_number` the
 breakpoint binds to the first breakable column of the line, in whichever of
 the page's scripts with that URL has one (inline `<script>` blocks share the
 page's URL), and needs the script loaded; the debugger needs the RDP port.
