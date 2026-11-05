@@ -10,6 +10,23 @@ from a copy of its code: entries describe the differences from that release.
 
 ## [Unreleased]
 
+## [0.12.0-beta.21] - 2026-11-05
+
+Public **BETA**. Debugging, evaluation and diagnostics fixes found by a
+comparison with other browser MCP servers. `set_breakpoint` takes a
+`condition` and a `log` (logpoints) on both browsers, and a script's file
+name instead of its URL. `evaluate_js` previews the values it answered as
+`null` (Maps, Sets, typed arrays, Errors, cycles, getters that throw), the
+same on both browsers. Chrome no longer stays stuck as paused after a
+navigation while paused, and `pause_on_load` answers once the page paused.
+`get_issues` counts Chrome's repeated reports once and names the elements
+an issue is about; Firefox's `get_css_styles` names each rule's stylesheet
+and finds every element. The schema of `emulate` and `pause_on_exceptions`
+lists the values they accept. Behaviour changes: `evaluate_js` answers a
+preview (`preview: true`) where it answered `value: null`;
+`profile_page_performance` refuses an `action` it does not know (it
+profiled without a reload); `get_issues` counts distinct reports.
+
 ### Added
 
 - `set_breakpoint` takes `condition` (pause only when the expression is
