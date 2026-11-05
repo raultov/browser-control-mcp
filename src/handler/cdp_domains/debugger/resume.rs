@@ -39,18 +39,7 @@ impl ResumeTool {
             .await
             .map_err(|e| e.to_string());
         if let Err(e) = resumed {
-            // Nothing paused, nothing pending: the same answer as Firefox.
-            if pause_script.is_none() && e.contains(NOT_PAUSED_REFUSAL) {
-                return Ok(debugging::nothing_to_resume());
-            }
-            // Not paused yet (the reload has not reached it): the script
-            // stays pending, so the pause still comes and the next resume
-            // removes it.
-            if pause_script.is_some() {
-                debugger_state.lock().await.pause_on_load_script = pause_script;
-                super::sync_pauses(&target, &debugger_state).await;
-            }
-            return Err(CallToolError::from_message(e));
+            return refused(e, pause_script, &target, &debugger_state).await;
         }
         remove_pause_script(&target, pause_script).await;
         let location =
@@ -59,8 +48,29 @@ impl ResumeTool {
     }
 }
 
-/// How Chrome refuses `Debugger.resume` when nothing is paused.
-const NOT_PAUSED_REFUSAL: &str = "Can only perform operation while paused";
+/// `resume`'s answer when Chrome refused `Debugger.resume` with `error`.
+async fn refused(
+    error: String,
+    pause_script: Option<String>,
+    target: &CdpTarget,
+    state: &std::sync::Arc<tokio::sync::Mutex<crate::handler::DebuggerState>>,
+) -> Result<CallToolResult, CallToolError> {
+    match pause_script {
+        // Nothing paused, nothing pending: the same answer as Firefox, and
+        // a kept pause Chrome no longer has is forgotten (ISSUE-83).
+        None if super::forget_refused_pause(&error, state).await => {
+            Ok(debugging::nothing_to_resume())
+        }
+        None => Err(CallToolError::from_message(error)),
+        // Not paused yet (the reload has not reached it): the script stays
+        // pending, so the pause still comes and the next resume removes it.
+        Some(script) => {
+            state.lock().await.pause_on_load_script = Some(script);
+            super::sync_pauses(target, state).await;
+            Err(CallToolError::from_message(error))
+        }
+    }
+}
 
 /// Removes the `debugger;` script `pause_on_load` installed, if any, once
 /// its pause was resumed: later navigations must not pause again.

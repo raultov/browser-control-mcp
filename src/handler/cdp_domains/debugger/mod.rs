@@ -25,6 +25,23 @@ fn position(params: &Option<serde_json::Value>, key: &str) -> i32 {
     number.or(text).unwrap_or(0)
 }
 
+/// How Chrome refuses a resume or a step when nothing is paused.
+pub(crate) const NOT_PAUSED_REFUSAL: &str = "Can only perform operation while paused";
+
+/// Forgets the tab's kept pause when Chrome refused `error` (a resume's or
+/// a step's) as not paused: the pause went without a `Debugger.resumed`,
+/// and keeping it would block input tools (ISSUE-83). Returns whether it
+/// was that refusal.
+pub(crate) async fn forget_refused_pause(error: &str, state: &Arc<Mutex<DebuggerState>>) -> bool {
+    let refused = error.contains(NOT_PAUSED_REFUSAL);
+    if refused {
+        let mut state = state.lock().await;
+        state.clear_pause();
+        state.paused_frame = None;
+    }
+    refused
+}
+
 /// [`process_debugger_event_in`] for an event of the tab.
 #[cfg(test)]
 pub(crate) async fn process_debugger_event(
@@ -64,11 +81,7 @@ pub(crate) async fn process_debugger_event_in(
     };
     match method {
         Some("Debugger.scriptParsed") => on_script_parsed(&event.params, &mut st, number),
-        // The document (of the tab, or of this frame) was replaced: its
-        // scripts are gone, and Chrome may reuse their ids (ISSUE-66).
-        Some("Runtime.executionContextsCleared") => st
-            .scripts
-            .retain(|id, _| frames::split_script_id(id).0 != number),
+        Some("Runtime.executionContextsCleared") => on_contexts_cleared(&mut st, number, frame),
         Some("Debugger.paused") => on_paused(&event.params, &mut st, frame),
         Some("Debugger.resumed") if st.paused_frame.as_deref() == frame => {
             st.clear_pause();
@@ -81,6 +94,20 @@ pub(crate) async fn process_debugger_event_in(
         st.frame_events.announce(event.clone());
     }
     false
+}
+
+/// The document of the tab (`frame` `None`) or of its frame `number`
+/// (session `frame`) was replaced: its scripts are gone, and Chrome may
+/// reuse their ids (ISSUE-66). A pause in it (or, for the tab, in any of
+/// its frames) went with it: Chrome sends no `Debugger.resumed` then, and
+/// a kept pause would block input tools (ISSUE-83).
+fn on_contexts_cleared(st: &mut DebuggerState, number: Option<u32>, frame: Option<&str>) {
+    st.scripts
+        .retain(|id, _| frames::split_script_id(id).0 != number);
+    if frame.is_none() || st.paused_frame.as_deref() == frame {
+        st.clear_pause();
+        st.paused_frame = None;
+    }
 }
 
 /// Records the script a `Debugger.scriptParsed` announces, of frame
@@ -747,6 +774,29 @@ pub(crate) mod tests {
         let st = state.lock().await;
         let kept: Vec<&String> = st.scripts.keys().collect();
         assert_eq!(kept, ["2.7"]);
+    }
+
+    /// ISSUE-83 (Chrome): a navigation while paused forgets the pause.
+    /// Chrome tears the paused document down without `Debugger.resumed`, so
+    /// the kept pause made input tools refuse to run and call_stack show
+    /// the old stack for good.
+    #[tokio::test]
+    async fn a_navigation_while_paused_forgets_the_pause() {
+        let frame = json!({"callFrameId": "f0", "functionName": "price", "url": "", "location": {"scriptId": "3", "lineNumber": 1, "columnNumber": 2}});
+        let paused = json!({"reason": "other", "callFrames": [frame]});
+        // Given a pause of the tab (with a breakpoint, so pauses are kept)
+        let state = Arc::new(Mutex::new(DebuggerState::default()));
+        let breakpoint = frames::ChromeBreakpoint::on_tab("b");
+        state.lock().await.breakpoints.add(breakpoint);
+        process_debugger_event(&make_event("Debugger.paused", paused), &state).await;
+        assert!(state.lock().await.paused_stack.is_some());
+        // When its contexts are cleared (it navigated), with no resume
+        let cleared = make_event("Runtime.executionContextsCleared", json!({}));
+        process_debugger_event(&cleared, &state).await;
+        // Then the pause is forgotten
+        let st = state.lock().await;
+        assert!(st.paused_call_frame_id.is_none() && st.paused_stack.is_none());
+        assert!(st.paused_at.is_none() && st.paused_frame_ids.is_empty());
     }
 
     /// FIX-01: Script start positions are read from integers.

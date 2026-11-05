@@ -397,6 +397,43 @@ mod tests {
         assert!(state.lock().await.paused_call_frame_id.is_none());
     }
 
+    /// ISSUE-83: a frame's document going (its contexts cleared) forgets a
+    /// pause of that frame only; the tab's going forgets any pause.
+    #[tokio::test]
+    async fn cleared_contexts_forget_their_own_pause() {
+        let (_mock, handler, frame) = handler_with_frame().await;
+        let state = handler
+            .session(None)
+            .await
+            .unwrap()
+            .debugger_state(None)
+            .unwrap();
+        // (with a breakpoint, so pauses are kept)
+        let breakpoint = ChromeBreakpoint::on_tab("b");
+        state.lock().await.breakpoints.add(breakpoint);
+        let call_frame =
+            json!({"callFrameId": "c1", "url": "", "location": {"scriptId": "7", "lineNumber": 1}});
+        let paused = make_event("Debugger.paused", json!({"callFrames": [call_frame]}));
+        let cleared = make_event("Runtime.executionContextsCleared", json!({}));
+        let is_paused = async || state.lock().await.paused_call_frame_id.is_some();
+        // Given the tab paused, when the frame's contexts are cleared
+        process_debugger_event_in(&paused, &state, None).await;
+        process_debugger_event_in(&cleared, &state, Some(&frame)).await;
+        // Then the tab's pause is kept
+        assert!(is_paused().await);
+        // Given the frame paused, when its contexts are cleared
+        process_debugger_event_in(&paused, &state, Some(&frame)).await;
+        process_debugger_event_in(&cleared, &state, Some(&frame)).await;
+        // Then its pause is forgotten
+        assert!(!is_paused().await);
+        // Given the frame paused, when the tab's contexts are cleared
+        process_debugger_event_in(&paused, &state, Some(&frame)).await;
+        process_debugger_event_in(&cleared, &state, None).await;
+        // Then its pause is forgotten too (the frame went with the page)
+        assert!(!is_paused().await);
+        assert!(state.lock().await.paused_frame.is_none());
+    }
+
     /// ISSUE-36: a detached frame's scripts go, and its late events are
     /// ignored.
     #[tokio::test]

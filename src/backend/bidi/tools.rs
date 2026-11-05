@@ -2,7 +2,7 @@
 //! arguments as the Chrome tool (one schema per tool) and answers in the same
 //! shape where the protocols allow it.
 
-use super::debugger::{race_pause, unless_paused};
+use super::debugger::{race_pause, unless_paused, unless_paused_replacing};
 use super::page;
 use super::session::FirefoxSession;
 use crate::backend::BackendError;
@@ -173,7 +173,7 @@ pub(crate) async fn navigate(params: CallToolRequestParams, handler: &McpHandler
     check_local(handler, &url)?;
     let (session, id, tab) = target(handler, &ids(&args.instance_id, &args.tab_id)).await?;
     let navigation = unless_auth(&tab, page::navigate(&tab.tab, &url));
-    let outcome = unless_paused(&session, &id, "navigate", navigation).await?;
+    let outcome = unless_paused_replacing(&session, &id, "navigate", navigation).await?;
     let document = navigation_document(&tab, &outcome, &url).await;
     let attachment = document.as_ref().is_some_and(NetworkRequest::is_attachment);
     if attachment || became_download(&tab, &outcome, &url).await {
@@ -196,7 +196,7 @@ async fn traverse_history(
 ) -> ToolResult {
     let (session, id, tab) = target(handler, &ids(&args.instance_id, &args.tab_id)).await?;
     let traversal = page::traverse(&tab.tab, step);
-    let outcome = unless_paused(&session, &id, "navigate", traversal).await?;
+    let outcome = unless_paused_replacing(&session, &id, "navigate", traversal).await?;
     let document = navigation_document(&tab, &outcome, &outcome.url).await;
     let outcome = outcome.with_status(document.and_then(|d| d.response_status));
     Ok(outcome.reply(&format!("{} {}.", step.went(), outcome.url), Some(&id)))
@@ -279,7 +279,7 @@ pub(crate) async fn reload(params: CallToolRequestParams, handler: &McpHandler) 
     let ids: TargetArgs = parse_args(params)?;
     let (session, id, tab) = target(handler, &ids).await?;
     let reload = unless_auth(&tab, page::reload(&tab.tab));
-    let outcome = unless_paused(&session, &id, "reload", reload).await?;
+    let outcome = unless_paused_replacing(&session, &id, "reload", reload).await?;
     let document = navigation_document(&tab, &outcome, &outcome.url).await;
     let outcome = outcome.with_status(document.and_then(|d| d.response_status));
     Ok(outcome.reply("Page reloaded.", Some(&id)))

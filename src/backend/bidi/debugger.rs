@@ -504,6 +504,36 @@ pub(crate) async fn unless_paused<T, E: From<BackendError>>(
         .unwrap_or_else(|paused| Err(BackendError::InvalidArgument(paused.during(call)).into()))
 }
 
+/// [`unless_paused`] for a call that replaces the tab's document (a
+/// navigation, a history step, a reload). A pause kept from before it was
+/// in the replaced document: once the call succeeds it is forgotten, as
+/// the thread's resumed state can come after the reply and input tools
+/// would refuse to run meanwhile (ISSUE-83). A pause of the new document
+/// is another one (its own `seq`) and is kept.
+pub(crate) async fn unless_paused_replacing<T, E: From<BackendError>>(
+    session: &FirefoxSession,
+    id: &str,
+    call: &str,
+    operation: impl std::future::Future<Output = Result<T, E>>,
+) -> Result<T, E> {
+    let found = session.debuggers.lock().await.get(id).cloned();
+    let slot = match found {
+        Some(shared) => Some(shared.lock().await.pause.clone()),
+        None => None,
+    };
+    let before = slot.as_deref().and_then(read_pause);
+    let outcome = unless_paused(session, id, call, operation).await?;
+    if let (Some(slot), Some(before)) = (slot, before) {
+        let mut kept = slot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if kept.as_ref() == Some(&before) {
+            *kept = None;
+        }
+    }
+    Ok(outcome)
+}
+
 /// Runs `operation` on tab `id` unless the tab's debugger pauses first:
 /// then the pause, for input actions whose effect happened anyway (see
 /// [`unless_paused`]).
@@ -1719,6 +1749,41 @@ mod tests {
         };
         assert_eq!(at.url.as_deref(), Some(SCRIPT));
         ts::stop(&handler).await;
+    }
+
+    /// ISSUE-83 (Firefox): a navigation or a reload of a paused tab forgets
+    /// the pause it replaced, even before the thread says it resumed (that
+    /// state can come after the reply), so input tools run on the new page.
+    #[tokio::test]
+    async fn a_navigation_forgets_the_pause_it_replaced() {
+        for call in ["navigate", "reload"] {
+            // Given a tab paused at a breakpoint
+            let mock = ts::firefox_with_debugger().await;
+            mock.bidi().respond_with(
+                "browsingContext.navigate",
+                |_| json!({"navigation": "n1", "url": "http://127.0.0.1:8/page"}),
+            );
+            mock.bidi().respond_with(
+                "browsingContext.reload",
+                |_| json!({"navigation": "n2", "url": "http://127.0.0.1:8/page"}),
+            );
+            let rdp = mock.rdp().unwrap();
+            let handler = ts::handler(&mock);
+            set_breakpoint(breakpoint(0, None), &handler).await.unwrap();
+            let session = handler.firefox(None).await.unwrap();
+            rdp.pause("breakpoint", None);
+            wait_paused(&session, "tab-1").await;
+            // When it navigates, with no resumed thread state
+            let args = json!({"url": "http://127.0.0.1:8/page"});
+            let done = match call {
+                "navigate" => super::super::tools::navigate(ts::call(call, args), &handler).await,
+                _ => super::super::tools::reload(ts::call(call, json!({})), &handler).await,
+            };
+            assert!(done.is_ok(), "{call}: {:?}", done.err());
+            // Then the tab is no longer paused
+            assert_eq!(paused(&session, None).await, None, "{call}");
+            ts::stop(&handler).await;
+        }
     }
 
     /// RDP-09: search_scripts keeps Chrome's query language.

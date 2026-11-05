@@ -2583,7 +2583,56 @@ mod e2e {
         steps.extend(debugger_wording_steps(&i));
         steps.extend(stack_steps(&i, base));
         steps.extend(exception_pause_steps(&i));
+        steps.extend(navigate_while_paused_steps(&i, base));
         steps
+    }
+
+    /// ISSUE-83: navigating while paused leaves the new page unpaused (both
+    /// browsers): no stale stack, and input tools run again.
+    fn navigate_while_paused_steps(i: &Value, base: &str) -> Vec<Step> {
+        let bp = json!({"instance_id": i, "url": format!("{base}/app.js"), "line_number": 21});
+        let trigger = json!({"instance_id": i, "expression": "setTimeout(() => appBuy(), 50); 1"});
+        let on = json!({"instance_id": i});
+        vec![
+            (
+                "ISSUE-83 a breakpoint",
+                "set_breakpoint",
+                bp,
+                "Breakpoint set",
+            ),
+            ("ISSUE-83 run into it", "evaluate_js", trigger, ""),
+            ("ISSUE-83 wait for the pause", "sleep", json!({}), ""),
+            (
+                "ISSUE-83 paused",
+                "call_stack",
+                on.clone(),
+                "Paused (breakpoint)",
+            ),
+            (
+                "ISSUE-83 navigate while paused",
+                "navigate",
+                json!({"instance_id": i, "url": format!("{base}/")}),
+                "Navigated",
+            ),
+            (
+                "ISSUE-83 no stale pause",
+                "call_stack",
+                on.clone(),
+                "!not paused",
+            ),
+            (
+                "ISSUE-83 input runs again",
+                "click_element",
+                json!({"instance_id": i, "selector": "#late"}),
+                "clicked",
+            ),
+            (
+                "ISSUE-83 remove the breakpoint",
+                "remove_breakpoint",
+                json!({"instance_id": i, "breakpoint_id": "bp-6"}),
+                "removed",
+            ),
+        ]
     }
 
     /// ISSUE-66: search_scripts leaves out the server's own snippets (a

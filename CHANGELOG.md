@@ -20,6 +20,16 @@ from a copy of its code: entries describe the differences from that release.
 - `profile_page_performance`'s `action` is an enum in the schema (`none`,
   `reload`). A value it does not list now fails the call; before, it was
   ignored and the page was profiled without a reload (#82).
+- Chrome: navigating (or reloading) while the debugger is paused no longer
+  leaves the tab stuck as paused. Chrome tears the paused page down
+  without saying it resumed, so `click_element` and the other input tools
+  kept refusing to run, `call_stack` showed the old stack and only a new
+  instance got out of it. The pause is now forgotten when its page (or
+  frame) goes, and when Chrome refuses a `resume` or a step as not paused;
+  steps then answer "the debugger is not paused" instead of Chrome's raw
+  error. Firefox: a navigation or reload of a paused tab forgets the pause
+  it replaced once it answers, as the debugger can say it resumed only
+  later, and input tools briefly refused to run on the new page (#83).
 
 ## [0.11.0-beta.20] - 2026-11-04
 

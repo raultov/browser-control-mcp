@@ -86,7 +86,17 @@ async fn step(
     let (paused, mut events) = super::frames::paused_with_events(&target, &state).await;
     let params = serde_json::json!({});
     let failure = format!("Failed to run {}", step.cdp_method());
-    crate::handler::send_or(&paused, step.cdp_method(), params, &failure).await?;
+    // As text: the error type is not `Send` across the await below.
+    let sent = crate::handler::send_or(&paused, step.cdp_method(), params, &failure)
+        .await
+        .map_err(|e| e.to_string());
+    if let Err(e) = sent {
+        let message = match super::forget_refused_pause(&e, &state).await {
+            true => debugging::NOT_PAUSED.to_string(),
+            false => e,
+        };
+        return Err(CallToolError::from_message(message));
+    }
     let location = super::wait_for_pause(&mut events, debugging::STEP_WAIT, &state).await;
     Ok(debugging::stepped(step, location.as_ref()))
 }
@@ -139,6 +149,46 @@ mod tests {
             assert!(text.starts_with(first), "{text}");
             assert!(text.contains("\"line_number\": 1"), "{text}");
             assert_eq!(mock.commands_named(method).len(), 1);
+        }
+    }
+
+    /// ISSUE-83 (Chrome): a kept pause Chrome no longer has (it refuses the
+    /// step or the resume as not paused) is forgotten: steps fail with the
+    /// usual "not paused" message, not Chrome's raw error, resume answers
+    /// that nothing was paused, and the tab no longer counts as paused.
+    #[tokio::test]
+    async fn a_pause_chrome_no_longer_has_is_forgotten() {
+        use crate::handler::cdp_domains::tests::{
+            call, mock_handler, reply_text, spawn_recording_mock,
+        };
+        let refusal = |_: &serde_json::Value| json!({"error": {"code": -32000, "message": "Can only perform operation while paused."}});
+        let mock = spawn_recording_mock().await;
+        mock.respond_with("Debugger.stepOver", refusal);
+        mock.respond_with("Debugger.resume", refusal);
+        let handler = mock_handler(mock.http_port);
+        let session = handler.session(None).await.unwrap();
+        let state = session.debugger_state(None).unwrap();
+        for name in ["step_over", "resume"] {
+            // Given a kept pause Chrome does not have
+            state.lock().await.paused_call_frame_id = Some("f1".into());
+            // When the tool runs
+            let params = call(name, json!({}));
+            let reply = match name {
+                "step_over" => StepOverTool::handle(params, &handler).await,
+                _ => super::super::resume::ResumeTool::handle(params, &handler).await,
+            };
+            // Then it says nothing is paused
+            let text = match reply {
+                Ok(result) => reply_text(&result),
+                Err(e) => e.to_string(),
+            };
+            let expected = match name {
+                "step_over" => debugging::NOT_PAUSED,
+                _ => "The debugger was not paused",
+            };
+            assert!(text.starts_with(expected), "{name}: {text}");
+            // And the pause is forgotten
+            assert!(state.lock().await.paused_call_frame_id.is_none(), "{name}");
         }
     }
 
