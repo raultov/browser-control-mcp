@@ -195,7 +195,9 @@ pub(crate) async fn process_log_event(event: &WsResponse, state: &Arc<Mutex<LogS
         state.main_frame = params["frame"]["id"].as_str().map(str::to_string);
         state.on_document_committed(url, None);
     } else if method == "Audits.issueAdded" {
-        if let Some(issue) = crate::handler::issues::from_chrome(params) {
+        if let Some(mut issue) = crate::handler::issues::from_chrome(params) {
+            // Its node ids are only valid in that session (ISSUE-85).
+            issue.session = event.session_id.clone();
             state.lock().await.issues.push(issue);
         }
     } else if method == "Page.navigatedWithinDocument" {
@@ -598,8 +600,9 @@ mod tests {
         for _ in 0..2 {
             process_log_event(&send("Audits.issueAdded", cors.clone()), &state).await;
         }
+        // (the same details twice are one report sent again, ISSUE-85)
         let kept = state.lock().await.issues.list();
-        assert_eq!((kept.len(), kept[0].count), (1, 2));
+        assert_eq!((kept.len(), kept[0].count), (1, 1));
         process_log_event(&send("Page.frameNavigated", page("http://a/other")), &state).await;
         assert_eq!(state.lock().await.issues.list().len(), 1, "same site");
         process_log_event(&send("Page.frameNavigated", page("http://c.test/")), &state).await;

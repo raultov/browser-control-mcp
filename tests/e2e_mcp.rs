@@ -136,6 +136,11 @@ mod e2e {
         port
     }
 
+    /// ISSUE-85: two fields with neither an id nor a name (Chrome reports
+    /// each twice) and a synchronous XHR (a deprecation on both browsers).
+    const FORMS85: &str = "<!doctype html><title>forms85</title><form><input class=\"f85\"><input class=\"f85\"></form>\
+        <script>const x = new XMLHttpRequest(); x.open('GET', '/api?sync85', false); x.send();</script>";
+
     /// The scripts served (by path prefix).
     const SCRIPTS: [(&str, &str); 3] = [
         ("/app.js", APP_JS),
@@ -161,6 +166,7 @@ mod e2e {
             p if p.starts_with("/ws.html") => ("text/html", ws.to_string()),
             p if p.starts_with("/frame.html") => ("text/html", FRAME.to_string()),
             p if p.starts_with("/drag.html") => ("text/html", DRAG.to_string()),
+            p if p.starts_with("/forms85.html") => ("text/html", FORMS85.to_string()),
             p if p.starts_with("/xo-top.html") => ("text/html", XO_TOP.to_string()),
             p if p.starts_with("/xo-inner.html") => ("text/html", XO_INNER.to_string()),
             _ => ("text/html", INDEX.to_string()),
@@ -621,6 +627,52 @@ mod e2e {
                 "0 issue(s)",
             ),
         ]
+    }
+
+    /// ISSUE-85: in a tab of its own, Chrome's form issues count each field
+    /// once and name them by selector and ref; Firefox reports the
+    /// deprecated synchronous XHR as an issue too.
+    fn form_issue_steps(instance: &str, base: &str, chrome: bool) -> Vec<Step> {
+        let i = json!(instance);
+        let on = |code: &str| json!({"instance_id": i, "tab_id": "$TAB", "code": code});
+        let mut steps = vec![
+            (
+                "ISSUE-85 a page with form problems",
+                "open_tab",
+                json!({"instance_id": i, "url": format!("{base}/forms85.html")}),
+                "tab_id",
+            ),
+            ("ISSUE-85 wait for its issues", "sleep", json!({}), ""),
+            (
+                "ISSUE-85 the deprecated sync XHR is an issue",
+                "get_issues",
+                on("Deprecation"),
+                "[DeprecationIssue]",
+            ),
+        ];
+        if chrome {
+            steps.extend([
+                (
+                    "ISSUE-85 two fields, counted once each",
+                    "get_issues",
+                    on("Generic"),
+                    "neither an id nor a name: FormEmptyIdAndNameAttributesForInputError [x2]",
+                ),
+                (
+                    "ISSUE-85 the fields are named",
+                    "get_issues",
+                    on("Generic"),
+                    "form > input:nth-of-type(1) [ref=e",
+                ),
+            ]);
+        }
+        steps.push((
+            "ISSUE-85 close its tab",
+            "close_tab",
+            json!({"instance_id": i, "tab_id": "$TAB"}),
+            "closed_tab_id",
+        ));
+        steps
     }
 
     /// ISSUE-80: counters keep their count, an unhandled rejection says
@@ -3203,6 +3255,7 @@ mod e2e {
             request_detail_steps("e2e"),
             websocket_steps("e2e", &base),
             other_page_steps("e2e", &base),
+            form_issue_steps("e2e", &base, browser == "chrome"),
             debugger_steps("e2e", &base),
             closing_steps(browser),
         ];
@@ -3259,19 +3312,11 @@ mod e2e {
         }
     }
 
-    /// Attach mode: steps 3, 5 and 11 on the default instance, then
-    /// `stop_browser`; a second attach must succeed afterwards.
-    async fn attach(variable: &str) {
-        let Ok(args) = std::env::var(variable) else {
-            println!("SKIP attach suite ({variable} not set)");
-            return;
-        };
-        let mut args: Vec<&str> = args.split_whitespace().collect();
-        args.extend(["--tool-groups", "all"]);
-        let base = serve().await;
-        let mut mcp = Mcp::start(&args).await;
-        let all = [
-            tab_steps("default", &base),
+    /// The attach suite's steps on the default instance (`chrome`: the
+    /// attached browser is Chrome).
+    fn attach_steps(base: &str, chrome: bool) -> Vec<Step> {
+        [
+            tab_steps("default", base),
             runtime_steps("default"),
             dialog_and_wait_steps("default"),
             pierce_steps("default"),
@@ -3290,15 +3335,31 @@ mod e2e {
             key_and_pointer_steps("default"),
             key_combination_steps("default"),
             storage_steps("default"),
-            emulate_steps("default", variable.contains("CHROME")),
-            closed_root_steps("default", variable.contains("CHROME")),
+            emulate_steps("default", chrome),
+            closed_root_steps("default", chrome),
             network_steps("default"),
             worker_steps("default"),
             request_detail_steps("default"),
-            other_page_steps("default", &base),
-            debugger_steps("default", &base),
-        ];
-        mcp.steps(all.concat()).await;
+            other_page_steps("default", base),
+            form_issue_steps("default", base, chrome),
+            debugger_steps("default", base),
+        ]
+        .concat()
+    }
+
+    /// Attach mode: steps 3, 5 and 11 on the default instance, then
+    /// `stop_browser`; a second attach must succeed afterwards.
+    async fn attach(variable: &str) {
+        let Ok(args) = std::env::var(variable) else {
+            println!("SKIP attach suite ({variable} not set)");
+            return;
+        };
+        let mut args: Vec<&str> = args.split_whitespace().collect();
+        args.extend(["--tool-groups", "all"]);
+        let base = serve().await;
+        let mut mcp = Mcp::start(&args).await;
+        mcp.steps(attach_steps(&base, variable.contains("CHROME")))
+            .await;
         let stop = json!({"instance_id": "default"});
         mcp.step(("stop_browser", "stop_browser"), stop, stop_reply(variable))
             .await;

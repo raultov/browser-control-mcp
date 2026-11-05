@@ -101,6 +101,23 @@ const nameOf = (el, role) => {
     return clean(el.getAttribute('title') || el.getAttribute('placeholder'));
 };"#;
 
+/// An element's CSS selector and opening tag, declared after
+/// [`ELEMENT_HELPERS`] (they use its `clean` and `cut`): `selectorOf(el)`,
+/// the shortest id or `tag:nth-of-type` path (at most 5 steps, `host >>>
+/// inner` across open shadow roots), and `snippetOf(el)`, its opening tag
+/// (150 characters at most). For `audit_page` and `get_issues`.
+pub(crate) const ELEMENT_LOCATORS: &str = r#"const esc = text => window.CSS && CSS.escape ? CSS.escape(text) : text.replace(/[^\w-]/g, '\\$&');
+const selectorOf = el => {
+    const root = el.getRootNode(), parts = [];
+    for (let node = el; node && node.nodeType === 1 && parts.length < 5; node = node.parentElement) {
+        if (node.id && root.querySelectorAll && root.querySelectorAll('#' + esc(node.id)).length === 1) { parts.unshift('#' + esc(node.id)); break; }
+        const siblings = node.parentNode && node.parentNode.children ? Array.from(node.parentNode.children).filter(c => c.tagName === node.tagName) : [];
+        parts.unshift(node.tagName.toLowerCase() + (siblings.length > 1 ? ':nth-of-type(' + (siblings.indexOf(node) + 1) + ')' : ''));
+    }
+    return (root.host ? selectorOf(root.host) + ' >>> ' : '') + parts.join(' > ');
+};
+const snippetOf = el => { const html = el.outerHTML || '', end = html.indexOf('>'); return cut(clean(end > 0 ? html.slice(0, end + 1) : html), 150); };"#;
+
 /// Declares `outline(root, maxDepth, maxChars, maxOptions)`: `{lines,
 /// truncated, foreign}` for `root` (the document, or an element and its
 /// subtree). A native `<select>` combobox lists its options under it, at

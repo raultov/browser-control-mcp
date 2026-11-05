@@ -38,6 +38,15 @@ from a copy of its code: entries describe the differences from that release.
   (it was an anonymous frame without a URL) and `call_stack` gives the
   reason `pause_on_load`; `search_scripts` leaves that script out. `resume`
   before the pause says it has not come yet (#84).
+- `get_issues` on Chrome counts an issue once per distinct report: Chrome
+  sends its form issues twice with the same details, so the counts were
+  doubled (`[x4]` for two fields). The elements an issue of the tab is
+  about follow its line as `selector [ref=eN]` (in `include_details`,
+  `elements` with ref, selector and opening tag); before, only the first
+  one's node id was in the details. The common codes and form problems
+  have a title (`[GenericIssue] Form fields share an id: ...`). Firefox
+  reports its deprecation warnings (a synchronous XHR...) as
+  `DeprecationIssue` (#85).
 
 ## [0.11.0-beta.20] - 2026-11-04
 

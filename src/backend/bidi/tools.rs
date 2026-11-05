@@ -877,7 +877,7 @@ pub(crate) async fn network_logs(
 }
 
 /// What `get_issues` says on Firefox, which has no Issues panel.
-const FIREFOX_ISSUES: &str = "Firefox has no Issues panel: these are its security console messages (cookies, Content-Security-Policy, mixed content, CORS); Chrome's other issue codes (LazyLoadImageIssue, DeprecationIssue...) have no Firefox equivalent";
+const FIREFOX_ISSUES: &str = "Firefox has no Issues panel: these are its security console messages (cookies, Content-Security-Policy, mixed content, CORS) and deprecation warnings; Chrome's other issue codes (form problems, LazyLoadImageIssue...) have no Firefox equivalent";
 
 /// `get_issues`: the tab's security console messages, read as issues
 /// (ISSUE-60); they come from Firefox's debugger.

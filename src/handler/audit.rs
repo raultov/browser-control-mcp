@@ -6,7 +6,7 @@
 
 use crate::handler::McpHandler;
 use crate::handler::cdp_domains::log::{LogState, canonical_level};
-use crate::util::outline::ELEMENT_HELPERS;
+use crate::util::outline::{ELEMENT_HELPERS, ELEMENT_LOCATORS};
 use rust_mcp_sdk::{
     macros,
     schema::{CallToolError, CallToolRequestParams, CallToolResult},
@@ -74,7 +74,8 @@ const MAX_ERRORS: usize = 10;
 /// detail?}]}], notes}` for the categories in `wanted`. `checked` is how
 /// many things a check looked at (0: it did not apply), `count` how many
 /// failed. It walks the document and its open shadow roots (at most 20 000
-/// elements) and needs [`ELEMENT_HELPERS`] declared before it.
+/// elements) and needs [`ELEMENT_HELPERS`] and [`ELEMENT_LOCATORS`]
+/// declared before it.
 const AUDIT: &str = r#"const audit = (wanted, maxElements) => {
     const doc = document, notes = [], audits = [], elements = [], MAX = 20000;
     const collect = root => {
@@ -92,17 +93,6 @@ const AUDIT: &str = r#"const audit = (wanted, maxElements) => {
     const roleAttr = el => (el.getAttribute('role') || '').trim().split(/\s+/)[0];
     const shown = el => el.checkVisibility ? el.checkVisibility({ visibilityProperty: true }) : el.getClientRects().length > 0;
     const exposed = el => shown(el) && !el.closest('[aria-hidden="true"], [inert]');
-    const esc = text => window.CSS && CSS.escape ? CSS.escape(text) : text.replace(/[^\w-]/g, '\\$&');
-    const selectorOf = el => {
-        const root = el.getRootNode(), parts = [];
-        for (let node = el; node && node.nodeType === 1 && parts.length < 5; node = node.parentElement) {
-            if (node.id && root.querySelectorAll && root.querySelectorAll('#' + esc(node.id)).length === 1) { parts.unshift('#' + esc(node.id)); break; }
-            const siblings = node.parentNode && node.parentNode.children ? Array.from(node.parentNode.children).filter(c => c.tagName === node.tagName) : [];
-            parts.unshift(node.tagName.toLowerCase() + (siblings.length > 1 ? ':nth-of-type(' + (siblings.indexOf(node) + 1) + ')' : ''));
-        }
-        return (root.host ? selectorOf(root.host) + ' >>> ' : '') + parts.join(' > ');
-    };
-    const snippetOf = el => { const html = el.outerHTML || '', end = html.indexOf('>'); return cut(clean(end > 0 ? html.slice(0, end + 1) : html), 150); };
     const add = (category, id, title, failed, checked) => audits.push({ category, id, title, checked, count: failed.length,
         elements: failed.slice(0, maxElements).map(({ el, detail }) => Object.assign(
             el ? { ref: refOf(el), selector: selectorOf(el), snippet: snippetOf(el) } : {}, detail ? { detail } : {})) });
@@ -294,7 +284,9 @@ impl AuditPageTool {
     pub(crate) fn snippet(&self) -> String {
         let wanted: Vec<&str> = self.wanted().into_iter().map(AuditCategory::name).collect();
         let wanted = serde_json::to_string(&wanted).unwrap_or_else(|_| "[]".into());
-        format!("(() => {{ {ELEMENT_HELPERS} {AUDIT} return audit({wanted}, {MAX_ELEMENTS}); }})()")
+        format!(
+            "(() => {{ {ELEMENT_HELPERS} {ELEMENT_LOCATORS} {AUDIT} return audit({wanted}, {MAX_ELEMENTS}); }})()"
+        )
     }
 
     /// The reply from what the page found and the tab's console (shared
@@ -464,7 +456,9 @@ mod tests {
     fn snippet_runs_the_categories_asked_for() {
         let all = tool(json!({})).snippet();
         assert!(
-            all.starts_with(&format!("(() => {{ {ELEMENT_HELPERS} {AUDIT}")),
+            all.starts_with(&format!(
+                "(() => {{ {ELEMENT_HELPERS} {ELEMENT_LOCATORS} {AUDIT}"
+            )),
             "{all}"
         );
         assert!(

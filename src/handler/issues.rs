@@ -5,7 +5,9 @@
 //! Firefox has no such panel, and reports them as security messages of
 //! its console, read as issues here. `get_issues` lists them.
 
+use crate::handler::cdp_domains::cdp_target::CdpTarget;
 use crate::handler::cdp_domains::log::{ConsoleMessage, LogState};
+use crate::util::outline::{ELEMENT_HELPERS, ELEMENT_LOCATORS};
 use rust_mcp_sdk::{
     macros,
     schema::{CallToolError, CallToolRequestParams, CallToolResult},
@@ -18,24 +20,52 @@ pub(crate) const MAX_ISSUES: usize = 200;
 /// Longest summary of an issue (characters).
 const SUMMARY_MAX_CHARS: usize = 300;
 
-/// One problem the browser reported, folded with its repeats.
-#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+/// Most distinct reports of one issue told apart from repeats; past them,
+/// every report counts.
+const MAX_REPORTS: usize = 100;
+
+/// Most elements kept for one issue.
+const MAX_ELEMENTS: usize = 10;
+
+/// One problem the browser reported, folded with its other reports.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
 pub(crate) struct Issue {
     /// Chrome's issue code (`CookieIssue`, `CorsIssue`...).
     pub(crate) code: String,
+    /// What it is, in words, for the common Chrome codes (ISSUE-85).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) title: Option<String>,
     /// What it says, on one line.
     pub(crate) summary: String,
     /// The resource it is about, when it names one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) url: Option<String>,
-    /// The browser's own details (Chrome's `*IssueDetails`; Firefox's text).
+    /// The browser's own details (Chrome's `*IssueDetails`; Firefox's text),
+    /// of its first report.
     pub(crate) details: Value,
-    /// How many times it was reported.
+    /// How many distinct reports it has (on Chrome, a report sent again
+    /// with the same details is not counted).
     pub(crate) count: u32,
+    /// The elements it is about (`ref`, `selector`, `snippet`), resolved
+    /// when listed (Chrome, the tab's own issues).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub(crate) elements: Vec<Value>,
+    /// Chrome's backend node ids of those elements, at most
+    /// [`MAX_ELEMENTS`].
+    #[serde(skip)]
+    pub(crate) nodes: Vec<u64>,
+    /// The CDP session that reported it (the tab's, or a frame's): node
+    /// ids are only valid there.
+    #[serde(skip)]
+    pub(crate) session: Option<String>,
+    /// Its reports' details (Chrome): one seen already is Chrome sending
+    /// it again, not another occurrence (ISSUE-85).
+    #[serde(skip)]
+    reports: std::collections::BTreeSet<String>,
 }
 
 impl Issue {
-    /// `[code] summary @ url [xN]`.
+    /// `[code] title: summary @ url [xN]`, then the elements it is about.
     fn line(&self) -> String {
         let at = self
             .url
@@ -46,7 +76,52 @@ impl Issue {
             0 | 1 => String::new(),
             n => format!(" [x{n}]"),
         };
-        format!("[{}] {}{at}{times}", self.code, self.summary)
+        let title = self
+            .title
+            .as_deref()
+            .map(|title| format!("{title}: "))
+            .unwrap_or_default();
+        let line = format!("[{}] {title}{}{at}{times}", self.code, self.summary);
+        match self.elements.is_empty() {
+            true => line,
+            false => format!("{line}\n    elements: {}", self.element_list()),
+        }
+    }
+
+    /// `selector [ref=eN], ...`.
+    fn element_list(&self) -> String {
+        let named = self.elements.iter().map(|element| {
+            let selector = element["selector"].as_str().unwrap_or("?");
+            match element["ref"].as_str() {
+                Some(r) => format!("{selector} [ref={r}]"),
+                None => selector.to_string(),
+            }
+        });
+        named.collect::<Vec<_>>().join(", ")
+    }
+
+    /// Folds `other`, an issue with the same code, summary and URL: counted
+    /// unless it is a report seen already, its elements added when both
+    /// came from the same session.
+    fn fold(&mut self, other: Issue) {
+        let fresh =
+            other.reports.is_empty() || other.reports.iter().any(|r| !self.reports.contains(r));
+        if !fresh {
+            return;
+        }
+        for report in other.reports {
+            if self.reports.len() < MAX_REPORTS {
+                self.reports.insert(report);
+            }
+        }
+        self.count = self.count.saturating_add(other.count);
+        if other.session == self.session {
+            for node in other.nodes {
+                if !self.nodes.contains(&node) && self.nodes.len() < MAX_ELEMENTS {
+                    self.nodes.push(node);
+                }
+            }
+        }
     }
 }
 
@@ -63,12 +138,63 @@ pub(crate) fn from_chrome(params: &Value) -> Option<Issue> {
         .unwrap_or(Value::Null);
     let (summary, url) = summarize(&code, &details);
     let summary = crate::util::text::capped(&summary, SUMMARY_MAX_CHARS);
+    let nodes = ["/violatingNodeId", "/nodeId"]
+        .iter()
+        .filter_map(|pointer| details.pointer(pointer).and_then(Value::as_u64))
+        .take(1)
+        .collect();
     Some(Issue {
-        code,
+        title: title(&code, &details).map(str::to_string),
         summary,
         url,
+        reports: std::iter::once(details.to_string()).collect(),
         details,
         count: 1,
+        nodes,
+        code,
+        ..Default::default()
+    })
+}
+
+/// What an issue of `code` is, in words, for the common codes (a
+/// `GenericIssue` by its `errorType`).
+fn title(code: &str, details: &Value) -> Option<&'static str> {
+    if code == "GenericIssue" {
+        return form_title(text_at(details, "/errorType")?);
+    }
+    Some(match code {
+        "CookieIssue" => "A cookie was blocked or warned",
+        "CorsIssue" => "A cross-origin request was blocked (CORS)",
+        "ContentSecurityPolicyIssue" => "The Content Security Policy blocked something",
+        "MixedContentIssue" => "An insecure (http) resource on a secure page",
+        "DeprecationIssue" => "A deprecated feature was used",
+        "LowTextContrastIssue" => "Text contrast is too low",
+        "QuirksModeIssue" => "The page renders in quirks mode (no <!doctype html>)",
+        "HeavyAdIssue" => "An ad used too many resources and was removed",
+        "SharedArrayBufferIssue" => "SharedArrayBuffer needs cross-origin isolation",
+        "BlockedByResponseIssue" => "A resource was blocked by its response headers",
+        _ => return None,
+    })
+}
+
+/// What a `GenericIssue` of `kind` (its `errorType`) is, for the form ones.
+fn form_title(kind: &str) -> Option<&'static str> {
+    Some(match kind {
+        "FormEmptyIdAndNameAttributesForInputError" => "A form field has neither an id nor a name",
+        "FormDuplicateIdForInputError" => "Form fields share an id",
+        "FormLabelForMatchesNonExistingIdError" => "A <label for> names no element",
+        "FormLabelForNameError" => "A <label for> names a field's name instead of its id",
+        "FormInputWithNoLabelError" => "A form field has no label",
+        "FormLabelHasNeitherForNorNestedInputError" => "A <label> has no for and no field inside",
+        "FormAriaLabelledByToNonExistingIdError" => "aria-labelledby names no element",
+        "FormAutocompleteAttributeEmptyError" => "An autocomplete attribute is empty",
+        "FormInputHasWrongButWellIntendedAutocompleteValueError" => {
+            "An autocomplete value is misspelled"
+        }
+        "FormInputAssignedAutocompleteValueToIdOrNameAttributeError" => {
+            "An autocomplete value is in the field's id or name instead"
+        }
+        _ => return None,
     })
 }
 
@@ -197,6 +323,9 @@ pub(crate) fn from_firefox(message: &ConsoleMessage) -> Option<Issue> {
         "CorsIssue"
     } else if lower.contains("mixed") && lower.contains("content") {
         "MixedContentIssue"
+    } else if message.source == "other" && lower.contains("deprecated") {
+        // Firefox's own deprecation warnings (not the page's console).
+        "DeprecationIssue"
     } else if message.source == "security" {
         "SecurityIssue"
     } else {
@@ -208,6 +337,7 @@ pub(crate) fn from_firefox(message: &ConsoleMessage) -> Option<Issue> {
         url: message.url.clone(),
         details: json!({"level": message.level, "text": text}),
         count: 1,
+        ..Default::default()
     })
 }
 
@@ -224,7 +354,7 @@ impl IssueBuffer {
             kept.code == issue.code && kept.summary == issue.summary && kept.url == issue.url
         };
         if let Some(kept) = self.issues.iter_mut().find(same) {
-            kept.count = kept.count.saturating_add(issue.count);
+            kept.fold(issue);
             return;
         }
         self.issues.push_back(issue);
@@ -257,7 +387,7 @@ fn code_matches(filter: Option<&str>, code: &str) -> bool {
 
 #[macros::mcp_tool(
     name = "get_issues",
-    description = "Returns the problems the browser diagnosed in the tab, which the console hides or words vaguely: a cookie blocked or warned and why, a CORS or Content-Security-Policy block, mixed content, and on Chrome every code of its DevTools Issues panel (LazyLoadImageIssue, DeprecationIssue, WebInstallIssue...). One line each: [code] summary @ url [xN], oldest first; include_details gives the browser's details as JSON. 'code' filters (substring), 'clear' removes what was returned. Firefox has no Issues panel: its security console messages are read as issues (cookies, CSP, mixed content, CORS; it needs its debugger port)."
+    description = "Returns the problems the browser diagnosed in the tab, which the console hides or words vaguely: a cookie blocked or warned and why, a CORS or Content-Security-Policy block, mixed content, a deprecated feature, and on Chrome every code of its DevTools Issues panel (form fields without id or name or label, LazyLoadImageIssue, WebInstallIssue...). One line each, oldest first: [code] title: summary @ url [xN] (a title for the common Chrome codes; N distinct reports, as many as the elements or requests it is about), then on Chrome the elements it is about (selector [ref=eN], refs as snapshot's, at most 10). include_details gives the browser's details as JSON. 'code' filters (substring), 'clear' removes what was returned. Firefox has no Issues panel: its security console messages and deprecation warnings are read as issues (cookies, CSP, mixed content, CORS, DeprecationIssue; it needs its debugger port)."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct GetIssuesTool {
@@ -303,24 +433,81 @@ impl GetIssuesTool {
         let session = handler.session(args.instance_id.clone()).await?;
         // Connected first (Audits.enable replays the page's issues).
         let first = !session.is_connected().await;
-        session.target(args.tab_id.clone()).await?;
+        let target = session.target(args.tab_id.clone()).await?;
         if first {
             session.settle_replayed_events().await;
         }
         let log = session.log_state(args.tab_id.clone())?;
-        let mut log = log.lock().await;
         let code = args.code.as_deref();
-        let issues: Vec<Issue> = log
-            .issues
-            .list()
-            .into_iter()
-            .filter(|issue| code_matches(code, &issue.code))
-            .collect();
-        if args.clear == Some(true) {
-            log.issues.clear(code);
-        }
+        let mut issues: Vec<Issue> = {
+            let mut log = log.lock().await;
+            let issues = log.issues.list();
+            if args.clear == Some(true) {
+                log.issues.clear(code);
+            }
+            issues
+        };
+        issues.retain(|issue| code_matches(code, &issue.code));
+        let tab = target.page_tab().map(|tab| tab.session_id().to_string());
+        resolve_elements(&target, tab.as_deref(), &mut issues).await;
         Ok(args.reply(&issues, &[]))
     }
+}
+
+/// Most elements `get_issues` resolves in one call (two commands each).
+const MAX_RESOLVED: usize = 50;
+
+/// The object group of the elements `get_issues` resolves, released after.
+const LOCATE_GROUP: &str = "browser-control-mcp-issues";
+
+/// Fills the elements of the issues the tab's session (`tab`: `None` for a
+/// connection to the page itself) reported from their backend node ids: their ref, selector and opening tag, as
+/// `audit_page` gives them. A frame's node ids belong to its own process,
+/// and a node of a document that is gone no longer resolves: both are
+/// left out (ISSUE-85).
+async fn resolve_elements(target: &CdpTarget, tab: Option<&str>, issues: &mut [Issue]) {
+    let ours = |issue: &Issue| issue.session.as_deref() == tab;
+    if !issues
+        .iter()
+        .any(|issue| ours(issue) && !issue.nodes.is_empty())
+    {
+        return;
+    }
+    let locate = format!(
+        "function() {{ if (this.nodeType !== 1) return null; {ELEMENT_HELPERS} {ELEMENT_LOCATORS} return {{ ref: refOf(this), selector: selectorOf(this), snippet: snippetOf(this) }}; }}"
+    );
+    let mut budget = MAX_RESOLVED;
+    for issue in issues.iter_mut() {
+        if !ours(issue) {
+            continue;
+        }
+        let nodes: Vec<u64> = issue.nodes.iter().copied().take(budget).collect();
+        budget -= nodes.len();
+        for node in nodes {
+            issue
+                .elements
+                .extend(locate_node(target, node, &locate).await);
+        }
+    }
+    let release = json!({ "objectGroup": LOCATE_GROUP });
+    let _ = target
+        .send_raw_command("Runtime.releaseObjectGroup", release)
+        .await;
+}
+
+/// Backend node `node` located by `locate` (`{ref, selector, snippet}`),
+/// if it still is an element of the page.
+async fn locate_node(target: &CdpTarget, node: u64, locate: &str) -> Option<Value> {
+    let resolve = json!({"backendNodeId": node, "objectGroup": LOCATE_GROUP});
+    let resolved = target.send_raw_command("DOM.resolveNode", resolve).await;
+    let object = resolved.ok()?.result?["object"]["objectId"].clone();
+    let call =
+        json!({"objectId": object.as_str()?, "functionDeclaration": locate, "returnByValue": true});
+    let reply = target
+        .send_raw_command("Runtime.callFunctionOn", call)
+        .await;
+    let value = reply.ok()?.result?["result"]["value"].clone();
+    value.is_object().then_some(value)
 }
 
 /// The issues of a Firefox tab's console (`log`), folded, after its last
@@ -377,7 +564,7 @@ mod tests {
         );
         assert_eq!(
             cookie.line(),
-            "[CookieIssue] ExcludeSameSiteNoneInsecure: SetCookie cookie \"srv\" @ http://a/x"
+            "[CookieIssue] A cookie was blocked or warned: ExcludeSameSiteNoneInsecure: SetCookie cookie \"srv\" @ http://a/x"
         );
         assert_eq!(cookie.details["cookie"]["name"], "srv");
         let cors = issue(
@@ -387,7 +574,7 @@ mod tests {
         );
         assert_eq!(
             cors.line(),
-            "[CorsIssue] MissingAllowOriginHeader @ http://b/api"
+            "[CorsIssue] A cross-origin request was blocked (CORS): MissingAllowOriginHeader @ http://b/api"
         );
         let csp = issue(
             "ContentSecurityPolicyIssue",
@@ -396,7 +583,7 @@ mod tests {
         );
         assert_eq!(
             csp.line(),
-            "[ContentSecurityPolicyIssue] img-src blocked it (report only) @ http://a/img"
+            "[ContentSecurityPolicyIssue] The Content Security Policy blocked something: img-src blocked it (report only) @ http://a/img"
         );
         let mixed = issue(
             "MixedContentIssue",
@@ -405,7 +592,7 @@ mod tests {
         );
         assert_eq!(
             mixed.line(),
-            "[MixedContentIssue] MixedContentBlocked Image @ http://a/i.png"
+            "[MixedContentIssue] An insecure (http) resource on a secure page: MixedContentBlocked Image @ http://a/i.png"
         );
     }
 
@@ -423,7 +610,7 @@ mod tests {
         );
         assert_eq!(
             other.line(),
-            "[DeprecationIssue] UnloadHandler @ http://a/app.js"
+            "[DeprecationIssue] A deprecated feature was used: UnloadHandler @ http://a/app.js"
         );
         assert!(from_chrome(&json!({"issue": {}})).is_none());
     }
@@ -438,6 +625,7 @@ mod tests {
             url: None,
             details: Value::Null,
             count: 1,
+            ..Default::default()
         };
         let mut buffer = IssueBuffer::default();
         buffer.push(issue("CookieIssue", "a"));
@@ -564,6 +752,137 @@ mod tests {
         assert_eq!(left, ["CorsIssue"]);
     }
 
+    /// A Chrome form issue about backend node `node`, from session `S`.
+    fn form_issue(kind: &str, node: u64) -> Issue {
+        let details = json!({"genericIssueDetails": {"errorType": kind, "violatingNodeId": node, "violatingNodeAttribute": "id"}});
+        let mut issue =
+            from_chrome(&json!({"issue": {"code": "GenericIssue", "details": details}})).unwrap();
+        issue.session = Some("S".into());
+        issue
+    }
+
+    /// ISSUE-85 (Chrome): Chrome sends its form issues twice, with the same
+    /// details: a repeat is not counted (the counts were doubled); each
+    /// distinct report is, and keeps the element it is about.
+    #[test]
+    fn identical_chrome_reports_count_once() {
+        // Given Chrome's two reports of each of two duplicate-id fields
+        let mut buffer = IssueBuffer::default();
+        for node in [6, 7, 6, 7] {
+            buffer.push(form_issue("FormDuplicateIdForInputError", node));
+        }
+        // Then one issue counts the two fields, and keeps both
+        let kept = buffer.list();
+        assert_eq!((kept.len(), kept[0].count), (1, 2));
+        assert_eq!(kept[0].nodes, [6, 7]);
+        // And its line says what it is about, not only Chrome's code
+        assert_eq!(
+            kept[0].line(),
+            "[GenericIssue] Form fields share an id: FormDuplicateIdForInputError, id [x2]"
+        );
+        // And once cleared, a report seen before counts again
+        buffer.clear(None);
+        buffer.push(form_issue("FormDuplicateIdForInputError", 6));
+        assert_eq!(buffer.list()[0].count, 1);
+    }
+
+    /// ISSUE-85: the common codes carry a title; others do not.
+    #[test]
+    fn common_issues_have_a_title() {
+        let titled = |code: &str, details: Value| {
+            from_chrome(&json!({"issue": {"code": code, "details": {"d": details}}}))
+                .unwrap()
+                .title
+        };
+        assert_eq!(
+            titled(
+                "GenericIssue",
+                json!({"errorType": "FormLabelForMatchesNonExistingIdError"})
+            )
+            .as_deref(),
+            Some("A <label for> names no element")
+        );
+        assert_eq!(
+            titled("DeprecationIssue", json!({"type": "X"})).as_deref(),
+            Some("A deprecated feature was used")
+        );
+        assert_eq!(titled("SomeNewIssue", json!({})), None);
+    }
+
+    /// ISSUE-85: the elements an issue is about follow its line (selector
+    /// and ref), and are in its details.
+    #[test]
+    fn replies_list_the_elements() {
+        let mut issue = form_issue("FormDuplicateIdForInputError", 6);
+        issue.elements = vec![
+            json!({"ref": "e5", "selector": "form > input:nth-of-type(3)", "snippet": "<input id=\"dup\">"}),
+        ];
+        let args: GetIssuesTool = serde_json::from_value(json!({})).unwrap();
+        let text = text_of(&args.reply(std::slice::from_ref(&issue), &[]));
+        assert!(
+            text.ends_with("\n    elements: form > input:nth-of-type(3) [ref=e5]"),
+            "{text}"
+        );
+        let detailed: GetIssuesTool =
+            serde_json::from_value(json!({"include_details": true})).unwrap();
+        let body: Value = serde_json::from_str(&text_of(&detailed.reply(&[issue], &[]))).unwrap();
+        assert_eq!(body["issues"][0]["elements"][0]["ref"], "e5");
+    }
+
+    /// ISSUE-85 (Chrome): get_issues resolves the elements of the tab's own
+    /// issues to refs and selectors; a frame's node ids are another
+    /// process's, so its issues are left as they are.
+    #[tokio::test]
+    async fn the_tabs_issue_elements_are_resolved() {
+        use crate::handler::cdp_domains::tests::{
+            call, mock_handler, reply_text, spawn_recording_mock,
+        };
+        // Given a tab issue about node 6 and a frame issue about node 9
+        let mock = spawn_recording_mock().await;
+        mock.respond_with("DOM.resolveNode", |_| json!({"object": {"objectId": "o1"}}));
+        mock.respond_with("Runtime.callFunctionOn", |_| {
+            json!({"result": {"result": {"type": "object", "value": {"ref": "e5", "selector": "form > input:nth-of-type(3)", "snippet": "<input>"}}}})
+        });
+        let handler = mock_handler(mock.http_port);
+        let session = handler.session(None).await.unwrap();
+        // (a registered tab: a flat session of its own, as in a real browser)
+        let id =
+            crate::handler::cdp_domains::tests::register_tab_on(&session, mock.http_port).await;
+        let target = session.target(Some(id.clone())).await.unwrap();
+        let tab = target.page_tab().map(|tab| tab.session_id().to_string());
+        assert!(tab.is_some());
+        let log = session.log_state(Some(id.clone())).unwrap();
+        let mut ours = form_issue("FormDuplicateIdForInputError", 6);
+        ours.session = tab.clone();
+        let mut framed = form_issue("FormLabelForMatchesNonExistingIdError", 9);
+        framed.session = Some("FRAME".into());
+        log.lock().await.issues.push(ours);
+        log.lock().await.issues.push(framed);
+        // When get_issues runs
+        let reply = GetIssuesTool::handle(call("get_issues", json!({"tab_id": id})), &handler)
+            .await
+            .unwrap();
+        // Then the tab's element is named, and only it was resolved
+        let text = reply_text(&reply);
+        assert!(
+            text.contains("elements: form > input:nth-of-type(3) [ref=e5]"),
+            "{text}"
+        );
+        let resolved = mock.commands_named("DOM.resolveNode");
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].params["backendNodeId"], 6);
+    }
+
+    /// ISSUE-85 (Firefox): its deprecation warnings are issues; a page's
+    /// own console.warn saying "deprecated" is not.
+    #[test]
+    fn firefox_deprecation_warnings_are_issues() {
+        let text = "Synchronous XMLHttpRequest on the main thread is deprecated because of its detrimental effects";
+        let code = |source: &str| from_firefox(&message(source, text)).map(|i| i.code);
+        assert_eq!(code("other").as_deref(), Some("DeprecationIssue"));
+        assert_eq!(code("console-api"), None);
+    }
+
     /// ISSUE-60: the reply is one line per issue, or the details as JSON.
     #[test]
     fn replies_list_the_issues() {
@@ -573,6 +892,7 @@ mod tests {
             url: Some("http://b/api".into()),
             details: json!({"isWarning": false}),
             count: 1,
+            ..Default::default()
         };
         let args: GetIssuesTool = serde_json::from_value(json!({})).unwrap();
         let notes = ["a note".to_string()];
