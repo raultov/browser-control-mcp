@@ -150,12 +150,30 @@ async fn node_of(
         .unwrap_or_default()
         .to_string();
     let found = json!({"contentDomReference": reference});
-    let node = request(rdp, &walker, "getNodeActorFromContentDomReference", found).await?;
-    let node = node["nodeFront"]["node"].clone();
-    match node["actor"].is_string() {
-        true => Ok(node),
-        false => Err(css_styles::not_found(selector)),
+    let reply = request(rdp, &walker, "getNodeActorFromContentDomReference", found).await?;
+    if let Some(node) = node_in(&reply, "nodeFront") {
+        return Ok(node);
     }
+    // Some Firefox instances' walkers do not resolve a reference to an
+    // element that is there (ISSUE-93): the evaluation's object actor
+    // holds the element itself, which the walker takes too.
+    let held = held_element(&evaluation.result).ok_or_else(|| css_styles::not_found(selector))?;
+    let reply = request(rdp, &walker, "getNodeFromActor", held).await?;
+    node_in(&reply, "node").ok_or_else(|| css_styles::not_found(selector))
+}
+
+/// The node form a walker reply holds under `key` (a `disconnectedNode`:
+/// `{node, newParents}`), when the walker found one.
+fn node_in(reply: &Value, key: &str) -> Option<Value> {
+    let node = &reply[key]["node"];
+    node["actor"].is_string().then(|| node.clone())
+}
+
+/// The `getNodeFromActor` request for the element an evaluation answered
+/// (`result`, its grip): its object actor, whose `rawObj` is the element.
+fn held_element(result: &Value) -> Option<Value> {
+    let actor = result["actor"].as_str()?;
+    Some(json!({"actorID": actor, "path": ["rawObj"]}))
 }
 
 /// `p#inner.box` from an inspector node form.
@@ -188,6 +206,33 @@ mod tests {
         let node = json!({"nodeName": "P", "attrs": [{"name": "id", "value": "inner"}, {"name": "class", "value": "box big"}]});
         assert_eq!(node_label(&node), "p#inner.box.big");
         assert_eq!(node_label(&json!({"nodeName": "DIV"})), "div");
+    }
+
+    /// ISSUE-93 (Firefox 159, as captured): when the walker answers no node
+    /// for the element's content DOM reference (`nodeFront: null`, though
+    /// the element is there), the element is asked for by the evaluation's
+    /// object actor (`getNodeFromActor`, path `rawObj`), whose node is used.
+    #[test]
+    fn an_unresolved_reference_falls_back_to_the_object_actor() {
+        // Given the walker's answer for a reference it could not resolve
+        let unresolved = json!({"from": "server1.conn1.child27/domwalker21", "nodeFront": null});
+        assert_eq!(node_in(&unresolved, "nodeFront"), None);
+        // Then the evaluation's grip names the request to send instead
+        let grip = json!({"type": "object", "actor": "server1.conn1.child27/obj19", "class": "HTMLElement",
+            "contentDomReference": {"browsingContextId": 17179869185_u64, "id": 0.96}});
+        assert_eq!(
+            held_element(&grip),
+            Some(json!({"actorID": "server1.conn1.child27/obj19", "path": ["rawObj"]}))
+        );
+        assert_eq!(held_element(&json!({"type": "undefined"})), None);
+        // And its answer gives the node
+        let found = json!({"from": "w", "node": {"node": {"actor": "server1.conn1.child27/domnode22", "nodeName": "B"}, "newParents": []}});
+        assert_eq!(
+            node_in(&found, "node").unwrap()["actor"],
+            "server1.conn1.child27/domnode22"
+        );
+        let resolved = json!({"nodeFront": {"node": {"actor": "a1"}}});
+        assert_eq!(node_in(&resolved, "nodeFront").unwrap()["actor"], "a1");
     }
 
     /// ISSUE-59 (Firefox): without the debugger port, the call fails saying

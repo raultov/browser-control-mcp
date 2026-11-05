@@ -72,8 +72,8 @@ from a copy of its code: entries describe the differences from that release.
   nested, adopted and shadow-root sheets included). `@container` at-rules
   keep their container's name and query on both browsers (Firefox gave
   `@container` alone, Chrome dropped the name). The tool's description no
-  longer says shadow roots and frames are out of reach on Firefox: shadow
-  roots work, and an element in a frame is not always found (#86).
+  longer says shadow roots and frames are out of reach on Firefox: both
+  work (#86, #93).
 - Firefox: `evaluate_js` describes an Error by its name and message (it
   said `Error`), a typed array by its class and length (`TypedArray`) and a
   function by its source (`function`); an object with a getter that throws
@@ -81,6 +81,11 @@ from a copy of its code: entries describe the differences from that release.
   whose position is outside the expression (Firefox's own wrapper, line
   306; where a rejected promise settled, on Chrome) is reported without it
   (#88).
+- Firefox: `get_css_styles` no longer answers "Element not found" for an
+  element that is there. In some Firefox instances the inspector's walker
+  does not resolve the element's content DOM reference (more often for an
+  element in a frame), and no retry helped; the element is then taken from
+  the object the evaluation found it as (#93).
 
 ## [0.11.0-beta.20] - 2026-11-04
 
