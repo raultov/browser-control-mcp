@@ -27,23 +27,30 @@ impl ReloadTool {
         let target = session.target(ids.tab_id.clone()).await?;
         // Subscribed first: `load` can fire before the reply is read.
         let mut page_events = target.on_domain("Page");
-        // Right after a navigation Chrome may still be committing the new
-        // document and refuse with "Not attached to an active page": retry
-        // once after a short pause.
-        let mut reply = target.send_raw_command("Page.reload", json!({})).await;
-        if reply.as_ref().is_err_and(|e| is_transient(&e.to_string())) {
-            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-            reply = target.send_raw_command("Page.reload", json!({})).await;
-        }
-        let resp = reply.map_err(|e| {
-            CallToolError::from_message(crate::handler::cdp_failure("Failed to reload page", &e))
-        })?;
+        let reload = async {
+            // Right after a navigation Chrome may still be committing the
+            // new document and refuse with "Not attached to an active
+            // page": retry once after a short pause.
+            let mut reply = target.send_raw_command("Page.reload", json!({})).await;
+            if reply.as_ref().is_err_and(|e| is_transient(&e.to_string())) {
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                reply = target.send_raw_command("Page.reload", json!({})).await;
+            }
+            let reply =
+                reply.map_err(|e| crate::handler::cdp_failure("Failed to reload page", &e))?;
+            let loaded = super::navigate::wait_for_load(&mut page_events).await;
+            Ok::<_, String>((reply, loaded))
+        };
         // A page paused in the debugger (or showing a dialog) while it
         // loads never fires `load`: the call ends saying so, as on Firefox.
-        let loaded = target
-            .race_interruptions("reload", super::navigate::wait_for_load(&mut page_events))
+        // Listened for before the command is sent: the pause can come
+        // right after its reply.
+        let (resp, loaded) = target
+            .race_interruptions("reload", reload)
             .await
-            .map_err(|stopped| CallToolError::from_message(stopped.during("reload")))?;
+            .map_err(|stopped| stopped.during("reload"))
+            .and_then(|reloaded| reloaded)
+            .map_err(CallToolError::from_message)?;
         let browser = resp.result.unwrap_or_else(|| json!({}));
         let network = session.network_state(ids.tab_id.clone())?;
         let outcome = super::navigate::finish(&target, "", browser, loaded).await;
@@ -103,6 +110,44 @@ mod tests {
         assert_eq!(body["url"], "http://127.0.0.1:8/page");
         assert!(body.get("tab_id").is_some() && body.get("browser").is_some());
         assert!(body.get("notes").is_none(), "load fired: {body}");
+    }
+
+    /// A pause announced right after Chrome answers `Page.reload`, before
+    /// reload listens for interruptions (the order a slow machine showed),
+    /// also ends the wait: reload listens before it sends the command, as
+    /// navigate does. The tab's debugger state is held meanwhile, as the
+    /// listening starts by reading it.
+    #[tokio::test]
+    async fn a_pause_right_after_the_reload_reply_ends_the_wait() {
+        let mock = spawn_recording_mock().await;
+        let handler = mock_handler(mock.http_port);
+        let state = handler
+            .session(None)
+            .await
+            .unwrap()
+            .debugger_state(None)
+            .unwrap();
+        let location = json!({"scriptId": "7", "lineNumber": 2, "columnNumber": 4});
+        let frame =
+            json!({"callFrameId": "c1", "url": "http://127.0.0.1:8/app.js", "location": location});
+        let paused = json!({"reason": "other", "callFrames": [frame]});
+        // (answered, then the state held while the pause is announced)
+        mock.respond_with("Page.reload", move |_| {
+            let held = state.clone().try_lock_owned();
+            mock.emit("Debugger.paused", paused.clone(), None);
+            tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                drop(held);
+            });
+            json!({})
+        });
+        let started = std::time::Instant::now();
+        let error = ReloadTool::handle(call("reload", json!({})), &handler)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+        assert!(error.contains("while running reload"), "{error}");
     }
 
     /// ISSUE-45: a page that pauses in the debugger while it reloads makes

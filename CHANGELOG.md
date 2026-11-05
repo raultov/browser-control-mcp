@@ -103,6 +103,10 @@ profiled without a reload); `get_issues` counts distinct reports.
   does not resolve the element's content DOM reference (more often for an
   element in a frame), and no retry helped; the element is then taken from
   the object the evaluation found it as (#93).
+- Chrome: `reload` notices a pause in the debugger that comes right after
+  Chrome answers the reload. It listened for pauses only once the reply was
+  read, so such a pause was missed and the call waited 30 s for `load`
+  (seen on a slow machine).
 
 ## [0.11.0-beta.20] - 2026-11-04
 
