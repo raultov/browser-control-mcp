@@ -10,6 +10,17 @@ from a copy of its code: entries describe the differences from that release.
 
 ## [Unreleased]
 
+### Fixed
+
+- The input schemas of `emulate` (`cpu_performance_tier`) and
+  `pause_on_exceptions` (`state`) list the values the tools accept
+  (`low`, `uncaught`...). They listed the capitalized names (`Low`,
+  `Uncaught`...), which the tools refused, so a client that sends only
+  schema values could not use these options (#82).
+- `profile_page_performance`'s `action` is an enum in the schema (`none`,
+  `reload`). A value it does not list now fails the call; before, it was
+  ignored and the page was profiled without a reload (#82).
+
 ## [0.11.0-beta.20] - 2026-11-04
 
 Public **BETA**. Deeper debugging and inspection on both browsers. The

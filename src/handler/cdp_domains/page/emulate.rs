@@ -205,22 +205,29 @@ impl NetworkThrottling {
 
 /// `cpu_performance_tier` (Chrome's `Emulation.setCPUPerformanceOverride`;
 /// the page reads 0 for `unknown`, 1 for `low` ... 4 for `ultra`, ISSUE-61).
+/// Each variant is renamed on its own: the schema derive ignores
+/// `rename_all` and would list the Rust names (ISSUE-82).
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema,
 )]
-#[serde(rename_all = "lowercase")]
 pub enum CpuPerformanceTier {
     /// Unknown (navigator.cpuPerformance 0).
+    #[serde(rename = "unknown")]
     Unknown,
     /// Low (1).
+    #[serde(rename = "low")]
     Low,
     /// Mid (2).
+    #[serde(rename = "mid")]
     Mid,
     /// High (3).
+    #[serde(rename = "high")]
     High,
     /// Ultra (4).
+    #[serde(rename = "ultra")]
     Ultra,
     /// No override: the host's tier.
+    #[serde(rename = "none")]
     None,
 }
 

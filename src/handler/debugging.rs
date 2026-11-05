@@ -340,14 +340,18 @@ pub(crate) fn pause_reason(native: &str) -> String {
     ::serde::Serialize,
     rust_mcp_sdk::macros::JsonSchema,
 )]
-#[serde(rename_all = "lowercase")]
 pub enum PauseOnExceptions {
+    // Each variant is renamed on its own: the schema derive ignores
+    // `rename_all` and would list the Rust names (ISSUE-82).
     /// Never.
     #[default]
+    #[serde(rename = "none")]
     None,
     /// On exceptions nothing catches (and unhandled promise rejections).
+    #[serde(rename = "uncaught")]
     Uncaught,
     /// On every exception, caught or not.
+    #[serde(rename = "all")]
     All,
 }
 

@@ -24,7 +24,7 @@ pub struct ProfilePagePerformanceTool {
 
     /// 'none' (default) or 'reload'.
     #[serde(default)]
-    pub action: Option<String>,
+    pub action: Option<ProfileAction>,
 
     /// Bypass the cache while tracing. Default: false.
     #[serde(default)]
@@ -37,6 +37,21 @@ pub struct ProfilePagePerformanceTool {
     /// Add what explains the numbers (LCP element, breakdown and discovery, INP, layout shifts, render-blocking and slowest requests, scripts of long frames, DOM size, oversized/unsized images, third-party origins, forced reflows on Chrome, findings; with action 'reload' on Chrome, the unused JavaScript and CSS of the load). Default: false.
     #[serde(default)]
     pub insights: Option<bool>,
+}
+
+/// What `profile_page_performance` does to the page while it traces. Each
+/// variant is renamed on its own: the schema derive ignores `rename_all`
+/// (ISSUE-82).
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema,
+)]
+pub enum ProfileAction {
+    /// Trace the page as it is.
+    #[serde(rename = "none")]
+    None,
+    /// Reload the page, to measure its load.
+    #[serde(rename = "reload")]
+    Reload,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -131,7 +146,7 @@ impl ProfilePagePerformanceTool {
 
     /// Whether the page is reloaded while profiling.
     pub(crate) fn reloads(&self) -> bool {
-        self.action.as_deref() == Some("reload")
+        self.action == Some(ProfileAction::Reload)
     }
 
     fn analyze_trace(raw_json: &str, duration_ms: u64) -> PerformanceSummary {
@@ -422,8 +437,32 @@ mod tests {
         });
         let tool: ProfilePagePerformanceTool = serde_json::from_value(json).unwrap();
         assert_eq!(tool.duration_ms, Some(5000));
-        assert_eq!(tool.action, Some("reload".to_string()));
+        assert_eq!(tool.action, Some(ProfileAction::Reload));
+        assert!(tool.reloads());
         assert_eq!(tool.disable_cache, Some(true));
+    }
+
+    /// ISSUE-82: 'action' lists its values in the schema, and a value it
+    /// does not list is refused instead of silently profiling without a
+    /// reload.
+    #[test]
+    fn action_is_an_enum() {
+        // Given the tool's schema as clients see it
+        let tool = crate::handler::schema_compat::normalize_tool_with_options(
+            ProfilePagePerformanceTool::tool(),
+            true,
+        );
+        let properties = tool.input_schema.properties.unwrap_or_default();
+        // Then 'action' lists 'none' and 'reload'
+        assert_eq!(properties["action"]["enum"], json!(["none", "reload"]));
+        // And an unlisted value fails to parse
+        let parsed =
+            serde_json::from_value::<ProfilePagePerformanceTool>(json!({"action": "Reload"}));
+        assert!(parsed.is_err());
+        // And no action does not reload
+        let none: ProfilePagePerformanceTool =
+            serde_json::from_value(json!({"action": "none"})).unwrap();
+        assert!(!none.reloads());
     }
 
     #[test]

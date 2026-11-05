@@ -89,6 +89,18 @@ pub(crate) struct ToolEntry {
     pub(crate) chrome: ToolHandler,
     /// The Firefox (BiDi/RDP) implementation, once it exists.
     pub(crate) firefox: Option<ToolHandler>,
+    /// Deserializes arguments into the tool's struct, so tests can check
+    /// that every value its schema lists is accepted (ISSUE-82).
+    #[cfg(test)]
+    pub(crate) parse: fn(serde_json::Value) -> Result<(), String>,
+}
+
+/// `ToolEntry::parse` for the tool struct `T`.
+#[cfg(test)]
+fn parse_as<T: serde::de::DeserializeOwned>(arguments: serde_json::Value) -> Result<(), String> {
+    serde_json::from_value::<T>(arguments)
+        .map(|_| ())
+        .map_err(|e| e.to_string())
 }
 
 macro_rules! entry {
@@ -99,6 +111,8 @@ macro_rules! entry {
             needs: $needs,
             chrome: |params, handler| Box::pin(<$tool>::handle(params, handler)),
             firefox: None,
+            #[cfg(test)]
+            parse: parse_as::<$tool>,
         }
     };
     ($tool:ty, $gate:expr, $needs:expr, $firefox:path) => {
@@ -125,6 +139,8 @@ macro_rules! firefox_only {
                 })
             },
             firefox: Some(|params, handler| Box::pin($firefox(params, handler))),
+            #[cfg(test)]
+            parse: parse_as::<$tool>,
         }
     };
 }
@@ -1344,6 +1360,65 @@ The page reacted (the DOM changed) and settled after ",
         let table_names: Vec<String> = table().iter().map(|e| (e.tool)().name).collect();
         assert_eq!(listed.len(), table_names.len());
         assert_eq!(names(listed), table_names.into_iter().collect());
+    }
+
+    /// ISSUE-82: every value a tool's input schema lists in an `enum` (of
+    /// an argument or of its array items) is accepted by the tool: strict
+    /// tool-calling engines only send those values.
+    #[test]
+    fn every_schema_enum_value_is_accepted() {
+        // Given every tool of the table, with the schema clients are sent
+        let mut refused = Vec::new();
+        let mut checked = 0;
+        for entry in table() {
+            let tool =
+                crate::handler::schema_compat::normalize_tool_with_options((entry.tool)(), true);
+            for (label, arguments) in enum_arguments(&tool) {
+                // When an argument takes one of its listed values
+                checked += 1;
+                // Then it deserializes (a missing required argument is
+                // reported only after every given one is read)
+                match (entry.parse)(arguments) {
+                    Err(e) if !e.starts_with("missing field") => {
+                        refused.push(format!("{label}: {e}"))
+                    }
+                    _ => {}
+                }
+            }
+        }
+        assert!(checked > 20, "only {checked} enum values found");
+        assert!(refused.is_empty(), "refused: {refused:#?}");
+    }
+
+    /// For each value an `enum` of `tool`'s schema lists (of an argument or
+    /// of its array items): `tool.argument = value` and the arguments that
+    /// give it.
+    fn enum_arguments(tool: &Tool) -> Vec<(String, serde_json::Value)> {
+        let properties = tool.input_schema.properties.clone().unwrap_or_default();
+        let mut out = Vec::new();
+        for (name, property) in properties {
+            let property = serde_json::Value::Object(property);
+            let (values, in_array) = match property["enum"].as_array() {
+                Some(values) => (values.clone(), false),
+                None => (
+                    property["items"]["enum"]
+                        .as_array()
+                        .cloned()
+                        .unwrap_or_default(),
+                    true,
+                ),
+            };
+            out.extend(values.into_iter().map(|value| {
+                let label = format!("{}.{name} = {value}", tool.name);
+                let given = if in_array {
+                    serde_json::json!([value])
+                } else {
+                    value
+                };
+                (label, serde_json::json!({ name.clone(): given }))
+            }));
+        }
+        out
     }
 
     fn params(name: &str, arguments: serde_json::Value) -> CallToolRequestParams {

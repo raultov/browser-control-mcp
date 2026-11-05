@@ -78,7 +78,7 @@ pub(crate) async fn profile(params: CallToolRequestParams, handler: &McpHandler)
         set_cache_behavior(&tab.tab, "bypass").await?;
     }
     let profiled = async {
-        if args.action.as_deref() == Some("reload") {
+        if args.reloads() {
             page::reload(&tab.tab).await?;
         }
         tokio::time::sleep(std::time::Duration::from_millis(duration)).await;
