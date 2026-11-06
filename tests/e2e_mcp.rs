@@ -2130,6 +2130,22 @@ mod e2e {
         vec![("ISSUE-61 a low CPU performance tier", "emulate", low, read)]
     }
 
+    /// ISSUE-92: a phone viewport on a page without a viewport meta tag
+    /// lays out at 980 px, and the reply says why (Chrome; Firefox has no
+    /// mobile emulation and refuses it).
+    fn mobile_layout_steps(i: &Value, chrome: bool) -> Vec<Step> {
+        let phone = json!({"instance_id": i, "width": 390, "height": 844, "mobile": true});
+        let expected = match chrome {
+            true => "lays out at 980 px, wider than 390",
+            false => "!mobile not available on Firefox",
+        };
+        let reset = json!({"instance_id": i, "reset": true});
+        vec![
+            ("ISSUE-92 a phone viewport", "emulate", phone, expected),
+            ("ISSUE-92 reset", "emulate", reset, "Emulation reset"),
+        ]
+    }
+
     fn emulate_steps(instance: &str, chrome: bool) -> Vec<Step> {
         let i = json!(instance);
         let dark = if chrome {
@@ -2172,6 +2188,7 @@ mod e2e {
             "Emulation reset",
         )])
         .chain(after_reset_steps(&i))
+        .chain(mobile_layout_steps(&i, chrome))
         .collect()
     }
 
@@ -3443,11 +3460,12 @@ mod e2e {
             steps.push(close);
             return steps;
         }
+        // ISSUE-92: nothing loads while tracing: the page's own timings
         let mut steps = vec![(
             "profile_page_performance",
             "profile_page_performance",
             profile,
-            "profile_duration_ms",
+            "nothing loaded while tracing",
         )];
         steps.extend(insights_steps(browser));
         steps.extend(pause_on_load_steps(&i));

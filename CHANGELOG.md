@@ -27,6 +27,12 @@ from a copy of its code: entries describe the differences from that release.
 - `snapshot` shows a field's placeholder (`[placeholder="you@example.com"]`,
   often the format it expects) when it is not already the field's name; a
   labelled field hid it (#91).
+- Chrome: `emulate` with `mobile` says why the page lays out wider than
+  asked (a page without a viewport meta tag gets a phone's 980 px layout
+  viewport); the width it answered was unexplained. `profile_page_performance`
+  without a reload gives the current page's FCP, LCP, DCL and Load from the
+  Web Performance APIs, as Firefox does, with a note saying so (or that the
+  page reports none); they were all `null` without a word (#92).
 
 ## [0.12.0-beta.21] - 2026-11-05
 

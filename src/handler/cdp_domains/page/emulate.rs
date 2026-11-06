@@ -146,6 +146,15 @@ impl Emulation {
         if let Some(net) = self.network_throttling.or(args.network_throttling) {
             seen["network_throttling"] = json!(net.as_str());
         }
+        let laid_out = seen["width"].as_u64();
+        let mobile = self.mobile == Some(true) && args.sets_viewport();
+        if let (true, Some(asked), Some(width)) = (mobile, self.width, laid_out)
+            && width > u64::from(asked)
+        {
+            seen["notes"] = json!([format!(
+                "mobile: the page lays out at {width} px, wider than {asked}: like a phone, a page without <meta name=\"viewport\" content=\"width=device-width\"> (the usual cause) gets a wide layout viewport, 980 px by default; its screen is still {asked} px wide"
+            )]);
+        }
     }
 }
 
@@ -717,6 +726,40 @@ mod tests {
 
     fn tool(args: Value) -> EmulateTool {
         serde_json::from_value(args).unwrap()
+    }
+
+    /// ISSUE-92: a mobile viewport the page lays out wider than asked (no
+    /// viewport meta tag: a phone's 980 px) says why; one at the width
+    /// asked, or a desktop one, says nothing.
+    #[test]
+    fn a_mobile_layout_wider_than_asked_is_explained() {
+        let phone = tool(json!({"width": 390, "height": 844, "mobile": true}));
+        let state = Emulation::default().merged(&phone);
+        let mut seen = json!({"width": 980});
+        state.annotate(&phone, &mut seen);
+        let note = seen["notes"][0].as_str().unwrap();
+        assert!(
+            note.contains("980 px") && note.contains("390") && note.contains("viewport"),
+            "{note}"
+        );
+        let mut fits = json!({"width": 390});
+        state.annotate(&phone, &mut fits);
+        assert!(fits.get("notes").is_none());
+        // A narrower layout (a viewport meta tag with a fixed width) is not
+        // explained by a missing tag; nor is a later call that set no viewport
+        let mut narrower = json!({"width": 375});
+        state.annotate(&phone, &mut narrower);
+        assert!(narrower.get("notes").is_none());
+        let dark = tool(json!({"color_scheme": "dark"}));
+        let mut later = json!({"width": 980});
+        state.merged(&dark).annotate(&dark, &mut later);
+        assert!(later.get("notes").is_none());
+        let desktop = tool(json!({"width": 390, "height": 844}));
+        let mut seen = json!({"width": 980});
+        Emulation::default()
+            .merged(&desktop)
+            .annotate(&desktop, &mut seen);
+        assert!(seen.get("notes").is_none());
     }
 
     /// ISSUE-64 (Chrome): on a page paused in the debugger, what the page

@@ -126,7 +126,7 @@ impl ProfilePagePerformanceTool {
             ),
             None => None,
         };
-        reply(&target, &summary, extras, saved).await
+        reply(&target, &summary, (extras, saved)).await
     }
 
     /// The file the raw trace is to be saved to, checked before anything
@@ -311,10 +311,15 @@ struct TraceInsights {
 async fn reply(
     target: &Target,
     summary: &PerformanceSummary,
-    extras: Option<TraceInsights>,
-    saved: Option<serde_json::Value>,
+    (extras, saved): (Option<TraceInsights>, Option<serde_json::Value>),
 ) -> Result<CallToolResult, CallToolError> {
     let mut result_json = serde_json::to_value(summary).unwrap_or_default();
+    // Nothing loaded while tracing: the page's own timings (ISSUE-92).
+    if nothing_loaded(&result_json) {
+        let page = crate::util::js::PAGE_VITALS;
+        let vitals = crate::handler::snippet_value(target, page).await;
+        with_page_vitals(&mut result_json, vitals.ok().as_ref());
+    }
     if let Some(saved) = saved {
         result_json["saved_trace"] = saved;
     }
@@ -327,6 +332,47 @@ async fn reply(
     }
     let text = serde_json::to_string_pretty(&result_json).unwrap_or_default();
     Ok(CallToolResult::text_content(vec![text.into()]))
+}
+
+/// The load timings a trace gives (from a load during it).
+const LOAD_TIMINGS: [&str; 4] = [
+    "first_contentful_paint_ms",
+    "largest_contentful_paint_ms",
+    "dom_content_loaded_ms",
+    "load_event_ms",
+];
+
+/// Why a profile's load timings are the page's own (ISSUE-92).
+const PAGE_VITALS_NOTE: &str = "nothing loaded while tracing: first_contentful_paint_ms, largest_contentful_paint_ms, dom_content_loaded_ms and load_event_ms are the current page's, from the Web Performance APIs (ms since its navigation started), while total_blocking_time_ms and top_long_tasks cover only the traced window; use action 'reload' to trace a load";
+
+/// Why a profile without a load has no timings at all (ISSUE-92).
+const NO_PAGE_VITALS_NOTE: &str = "nothing loaded while tracing, and the page reported no load timings of its own (none yet, or it could not be read): use action 'reload' to trace a load";
+
+/// Whether a profile `summary` has none of the load timings: no load
+/// happened while tracing (all were `null` without a word, ISSUE-92).
+fn nothing_loaded(summary: &serde_json::Value) -> bool {
+    LOAD_TIMINGS.iter().all(|key| summary[*key].is_null())
+}
+
+/// Fills a profile `summary`'s load timings from the page's own
+/// (`util::js::PAGE_VITALS`, as on Firefox; `None` when they could not be
+/// read), with a note saying where they come from, or that there are none.
+fn with_page_vitals(summary: &mut serde_json::Value, vitals: Option<&serde_json::Value>) {
+    let round = |ms: f64| (ms * 10.0).round() / 10.0;
+    let mut found = false;
+    for key in LOAD_TIMINGS {
+        let value = vitals.and_then(|v| v[key].as_f64()).map(round);
+        found |= value.is_some();
+        summary[key] = json!(value);
+    }
+    let note = match found {
+        true => PAGE_VITALS_NOTE,
+        false => NO_PAGE_VITALS_NOTE,
+    };
+    match summary["notes"].as_array_mut() {
+        Some(notes) => notes.push(json!(note)),
+        None => summary["notes"] = json!([note]),
+    }
 }
 
 /// Starts tracing, optionally reloads, waits `duration` ms, stops, and
@@ -463,6 +509,30 @@ mod tests {
         let none: ProfilePagePerformanceTool =
             serde_json::from_value(json!({"action": "none"})).unwrap();
         assert!(!none.reloads());
+    }
+
+    /// ISSUE-92 (Chrome): a trace in which nothing loaded (no reload) gives
+    /// the current page's FCP, LCP, DCL and Load from the Web Performance
+    /// APIs, as Firefox does, saying so; a trace with a load keeps its own.
+    #[test]
+    fn a_trace_without_a_load_reads_the_page() {
+        let vitals = json!({"first_contentful_paint_ms": 28.5, "largest_contentful_paint_ms": 30.0,
+            "dom_content_loaded_ms": 11.0, "load_event_ms": 11.999999, "lcp_supported": true});
+        let mut idle = json!({"profile_duration_ms": 2000, "first_contentful_paint_ms": null,
+            "largest_contentful_paint_ms": null, "dom_content_loaded_ms": null, "load_event_ms": null});
+        assert!(nothing_loaded(&idle));
+        let mut unread = idle.clone();
+        with_page_vitals(&mut idle, Some(&vitals));
+        assert_eq!(idle["first_contentful_paint_ms"], 28.5);
+        assert_eq!(idle["load_event_ms"], 12.0);
+        assert_eq!(idle["notes"][0], PAGE_VITALS_NOTE);
+        // A page that could not be read, or reports nothing, says so
+        with_page_vitals(&mut unread, None);
+        assert!(unread["load_event_ms"].is_null());
+        assert_eq!(unread["notes"][0], NO_PAGE_VITALS_NOTE);
+        let loaded = json!({"first_contentful_paint_ms": 40.0, "largest_contentful_paint_ms": null,
+            "dom_content_loaded_ms": null, "load_event_ms": null});
+        assert!(!nothing_loaded(&loaded));
     }
 
     #[test]
