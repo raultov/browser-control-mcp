@@ -165,6 +165,7 @@ fn on_paused(params: &Option<serde_json::Value>, st: &mut DebuggerState, frame: 
         .and_then(|first| first.get("callFrameId"))
         .and_then(|id| id.as_str());
     if let Some(call_frame_id) = first {
+        st.pauses_recorded += 1;
         st.paused_call_frame_id = Some(call_frame_id.to_string());
         st.paused_at = params.as_ref().and_then(pause_location);
         st.paused_frame = frame.map(str::to_string);
@@ -328,15 +329,51 @@ pub(crate) fn with_script_url(mut location: PauseLocation, state: &DebuggerState
 }
 
 /// Waits up to `limit` for the next `Debugger.paused` on `events` (see
-/// `frames::debugger_events`); its script is named from `state`'s parsed
-/// scripts.
+/// `frames::debugger_events`), then for `state` to record it (past the
+/// `recorded` pauses it had when `events` subscribed, see
+/// [`pause_recorded`]); its script is named from `state`'s parsed scripts.
 pub(crate) async fn wait_for_pause(
     events: &mut (impl tokio_stream::Stream<Item = cdp_browser_lite::CdpResult<WsResponse>> + Unpin),
-    limit: std::time::Duration,
+    (limit, recorded): (std::time::Duration, u64),
     state: &Arc<Mutex<DebuggerState>>,
 ) -> Option<PauseLocation> {
     let location = next_pause(events, limit).await?;
+    recorded_or_warn(state, recorded).await;
     Some(with_script_url(location, &*state.lock().await))
+}
+
+/// [`pause_recorded`], logging when the wait hit its limit (the tool
+/// answers anyway: the pause it saw is real).
+async fn recorded_or_warn(state: &Arc<Mutex<DebuggerState>>, recorded: u64) {
+    if !pause_recorded(state, recorded).await {
+        tracing::warn!("the debugger listener did not record a pause within {PAUSE_RECORD_WAIT:?}");
+    }
+}
+
+/// The most a tool waits for the tab's state to record a pause it saw.
+const PAUSE_RECORD_WAIT: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// Waits (at most [`PAUSE_RECORD_WAIT`]) for the tab's `state` to record
+/// a pause after the `recorded` it had when the tool subscribed: the tool
+/// saw the pause on its own subscription, the debugger listener runs
+/// apart, and a call right after the tool's answer (call_stack,
+/// evaluate_on_call_frame) read the state before the listener recorded
+/// the pause, or the previous one (ISSUE-94). A tab that skips its pauses
+/// records none: no wait. `false` when the wait hit its limit.
+async fn pause_recorded(state: &Arc<Mutex<DebuggerState>>, recorded: u64) -> bool {
+    let deadline = tokio::time::Instant::now() + PAUSE_RECORD_WAIT;
+    loop {
+        {
+            let st = state.lock().await;
+            if st.pauses_recorded > recorded || st.skips_pauses() {
+                return true;
+            }
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
 }
 
 /// The next `Debugger.paused` on `events` within `limit`.
@@ -847,6 +884,60 @@ pub(crate) mod tests {
         let cleared = make_event("Runtime.executionContextsCleared", json!({}));
         process_debugger_event(&cleared, &state).await;
         assert!(state.lock().await.pause_on_load_sources.is_empty());
+    }
+
+    /// ISSUE-94: a tool that saw the next pause on its own subscription
+    /// answers once the tab's state recorded a new pause (the listener runs
+    /// apart: a call_stack right after a step said "not paused"), not on
+    /// the previous pause still held at the same place.
+    #[tokio::test]
+    async fn the_next_pause_is_recorded_before_answering() {
+        let state = Arc::new(Mutex::new(DebuggerState::default()));
+        state
+            .lock()
+            .await
+            .breakpoints
+            .add(frames::ChromeBreakpoint::on_tab("b"));
+        let frame = json!({"callFrameId": "f9", "url": "", "location": {"scriptId": "3", "lineNumber": 5, "columnNumber": 2}});
+        let paused = make_event("Debugger.paused", json!({"callFrames": [frame]}));
+        // Given a pause the state already holds (Chrome repeats call frame
+        // ids, and a step can stop where it was): the tool subscribed then
+        process_debugger_event(&paused, &state).await;
+        let recorded = state.lock().await.pauses_recorded;
+        // And the listener records the next pause a little later
+        let later = state.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            process_debugger_event(&paused, &later).await;
+        });
+        // When the tool waits for it
+        let started = std::time::Instant::now();
+        let done = pause_recorded(&state, recorded).await;
+        // Then it waited for the new one, not the one held, well before the limit
+        assert!(done);
+        assert!(started.elapsed() >= std::time::Duration::from_millis(50));
+        assert!(started.elapsed() < PAUSE_RECORD_WAIT);
+        assert_eq!(state.lock().await.pauses_recorded, recorded + 1);
+    }
+
+    /// A pause the state never records ends the wait at its limit, saying
+    /// so; a tab that skips its pauses records none, so it is not waited for.
+    #[tokio::test]
+    async fn a_pause_never_recorded_is_waited_for_only_up_to_the_limit() {
+        let state = Arc::new(Mutex::new(DebuggerState::default()));
+        state
+            .lock()
+            .await
+            .breakpoints
+            .add(frames::ChromeBreakpoint::on_tab("b"));
+        let started = std::time::Instant::now();
+        assert!(!pause_recorded(&state, 0).await);
+        assert!(started.elapsed() >= PAUSE_RECORD_WAIT);
+        let skipping = Arc::new(Mutex::new(DebuggerState::default()));
+        assert!(skipping.lock().await.skips_pauses());
+        let started = std::time::Instant::now();
+        assert!(pause_recorded(&skipping, 0).await);
+        assert!(started.elapsed() < std::time::Duration::from_millis(50));
     }
 
     /// FIX-01: Script start positions are read from integers.

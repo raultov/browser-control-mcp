@@ -124,20 +124,22 @@ pub(crate) fn debugger_events(
     target.on_domain("Debugger").merge(frames)
 }
 
-/// Where the pause of `target`'s tab is (the tab, or a frame), and its
-/// `Debugger` events from now on (see [`debugger_events`]), subscribed
-/// before a command that ends the pause: the next one can come before the
-/// reply.
+/// Where the pause of `target`'s tab is (the tab, or a frame), how many
+/// pauses its state had recorded (`DebuggerState::pauses_recorded`, for
+/// `wait_for_pause`), and its `Debugger` events from now on (see
+/// [`debugger_events`]), subscribed before a command that ends the pause:
+/// the next one can come before the reply.
 pub(crate) async fn paused_with_events(
     target: &CdpTarget,
     state: &Arc<Mutex<DebuggerState>>,
 ) -> (
     CdpTarget,
+    u64,
     impl Stream<Item = CdpResult<WsResponse>> + Unpin + Send + use<>,
 ) {
     let state = state.lock().await;
     let events = debugger_events(target, state.frame_events.subscribe());
-    (state.paused_target(target), events)
+    (state.paused_target(target), state.pauses_recorded, events)
 }
 
 impl DebuggerState {

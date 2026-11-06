@@ -33,6 +33,15 @@ from a copy of its code: entries describe the differences from that release.
   without a reload gives the current page's FCP, LCP, DCL and Load from the
   Web Performance APIs, as Firefox does, with a note saying so (or that the
   page reports none); they were all `null` without a word (#92).
+- Chrome: `step_over`, `step_into`, `step_out`, `resume` and
+  `pause_on_load` answer once the tab's debugger state recorded the new pause. A `call_stack` or
+  `evaluate_on_call_frame` right after could still read the state before
+  the pause ("the debugger is not paused") or the previous one (#94).
+- Chrome: `navigate` waits for the `load` of the page it navigates to.
+  The `load` of the previous page, when it was still loading, ended the
+  wait early: the reply came before the new page had loaded (or even
+  entered the history), and a navigation right after could cancel it, so
+  `history: "back"` later went to the wrong page (#94).
 
 ## [0.12.0-beta.21] - 2026-11-05
 

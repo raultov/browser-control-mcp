@@ -83,7 +83,7 @@ async fn step(
         return Err(CallToolError::from_message(debugging::NOT_PAUSED));
     }
     let target = session.target(ids.tab_id.clone()).await?;
-    let (paused, mut events) = super::frames::paused_with_events(&target, &state).await;
+    let (paused, recorded, mut events) = super::frames::paused_with_events(&target, &state).await;
     let params = serde_json::json!({});
     let failure = format!("Failed to run {}", step.cdp_method());
     // As text: the error type is not `Send` across the await below.
@@ -97,7 +97,8 @@ async fn step(
         };
         return Err(CallToolError::from_message(message));
     }
-    let location = super::wait_for_pause(&mut events, debugging::STEP_WAIT, &state).await;
+    let watch = (debugging::STEP_WAIT, recorded);
+    let location = super::wait_for_pause(&mut events, watch, &state).await;
     Ok(debugging::stepped(step, location.as_ref()))
 }
 

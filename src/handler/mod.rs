@@ -48,6 +48,11 @@ pub(crate) const MAX_WS_CONNECTIONS: usize = 100;
 pub(crate) struct DebuggerState {
     pub scripts: crate::util::bounded::BoundedMap<String, ScriptInfo, MAX_SCRIPTS>,
     pub paused_call_frame_id: Option<String>,
+    /// How many pauses the listener recorded: a tool that saw a pause on
+    /// its own subscription waits for this to grow past what it was then
+    /// (Chrome's call frame ids repeat from one pause to the next, so they
+    /// cannot tell a new pause from the previous one; ISSUE-94).
+    pub pauses_recorded: u64,
     /// Where the kept pause stopped (`Debugger.paused`'s top frame).
     pub paused_at: Option<debugging::PauseLocation>,
     /// The session of the frame of another origin the kept pause is in;

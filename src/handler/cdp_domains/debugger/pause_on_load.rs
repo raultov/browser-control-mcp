@@ -48,10 +48,16 @@ impl PauseOnLoadTool {
         install_script(&target, &debugger_state).await?;
 
         // Subscribed first: the pause can come before the reload's reply.
-        let (_, mut events) = super::frames::paused_with_events(&target, &debugger_state).await;
+        let (_, recorded, mut events) =
+            super::frames::paused_with_events(&target, &debugger_state).await;
         send_or(&target, "Page.reload", json!({}), "CDP Page.reload error").await?;
         let paused = match load_pause(&mut events).await {
-            Some(at) => Some(super::with_script_url(at, &*debugger_state.lock().await)),
+            Some(at) => {
+                // Answered once the tab's state holds it, for a call_stack
+                // right after (ISSUE-94).
+                super::recorded_or_warn(&debugger_state, recorded).await;
+                Some(super::with_script_url(at, &*debugger_state.lock().await))
+            }
             None => None,
         };
         Ok(reply(paused.as_ref()))

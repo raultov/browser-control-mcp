@@ -2853,8 +2853,9 @@ mod e2e {
             (
                 "ISSUE-31 the test page is loaded",
                 "evaluate_js",
-                json!({"instance_id": i, "expression": "!!document.getElementById('go') && document.readyState"}),
-                "complete",
+                // (says where it is when it fails: ISSUE-94)
+                json!({"instance_id": i, "expression": "(document.getElementById('go') ? '[go] ' : '[no-go] ') + document.readyState + ' ' + location.pathname + ' history ' + history.length"}),
+                "[go] complete /",
             ),
         ]
     }

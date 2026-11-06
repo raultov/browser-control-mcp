@@ -49,7 +49,9 @@ status=$?
 
 echo
 echo "Summary:"
-grep -E '^(PASS|FAIL|SKIP) ' <<< "$output"
+# A failed step keeps the text it got (the indented line after it), so an
+# intermittent failure can be diagnosed from one run (ISSUE-94).
+awk '/^(PASS|FAIL|SKIP) / { print; failed = /^FAIL / ; next } failed && /^      / { print; failed = 0; next } { failed = 0 }' <<< "$output"
 pass=$(grep -cE '^PASS ' <<< "$output")
 fail=$(grep -cE '^FAIL ' <<< "$output")
 skip=$(grep -cE '^SKIP ' <<< "$output")

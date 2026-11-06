@@ -28,7 +28,7 @@ impl ResumeTool {
         let debugger_state = session.debugger_state(ids.tab_id.clone())?;
         let pause_script = debugger_state.lock().await.pause_on_load_script.take();
         let target = session.target(ids.tab_id.clone()).await?;
-        let (paused, mut events) =
+        let (paused, recorded, mut events) =
             super::frames::paused_with_events(&target, &debugger_state).await;
         // Before resuming: a page `debugger;` right after must not stop it.
         super::sync_pauses(&target, &debugger_state).await;
@@ -42,8 +42,8 @@ impl ResumeTool {
             return refused(e, pause_script, &target, &debugger_state).await;
         }
         remove_pause_script(&target, pause_script).await;
-        let location =
-            super::wait_for_pause(&mut events, debugging::RESUME_WAIT, &debugger_state).await;
+        let watch = (debugging::RESUME_WAIT, recorded);
+        let location = super::wait_for_pause(&mut events, watch, &debugger_state).await;
         Ok(debugging::resumed(location.as_ref()))
     }
 }

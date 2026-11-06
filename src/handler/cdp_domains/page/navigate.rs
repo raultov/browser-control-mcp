@@ -244,7 +244,11 @@ pub(crate) async fn navigate_and_wait(
         let outcome = finish(target, url, browser, true).await;
         return Ok(with_status(outcome, target, network).await);
     }
-    let loaded = wait_for_load(&mut page_events).await;
+    let loader = browser
+        .get("loaderId")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let loaded = wait_for_load_of(&mut page_events, loader).await;
     let outcome = finish(target, url, browser, loaded).await;
     Ok(with_status(outcome, target, network).await)
 }
@@ -435,6 +439,39 @@ pub(crate) async fn wait_for_load(events: &mut cdp_browser_lite::EventFilter) ->
     load_before(events, deadline, is_load).await
 }
 
+/// Waits (at most [`LOAD_TIMEOUT`]) for the `load` of the document the
+/// navigation of `loader` commits: only after its `Page.frameNavigated`.
+/// A `load` before that is the previous document's, still loading when the
+/// navigation started; answering on it let the agent's next navigation
+/// cancel the new page before it was in the history (ISSUE-94).
+async fn wait_for_load_of(
+    events: &mut (
+             impl tokio_stream::Stream<Item = cdp_browser_lite::CdpResult<cdp_browser_lite::WsResponse>>
+             + Unpin
+         ),
+    loader: &str,
+) -> bool {
+    // Atomic, not `Cell`: the wait is held across awaits in `Send` futures.
+    let committed = std::sync::atomic::AtomicBool::new(false);
+    let deadline = tokio::time::Instant::now() + LOAD_TIMEOUT;
+    let ours = |event: &cdp_browser_lite::CdpResult<cdp_browser_lite::WsResponse>| {
+        let Ok(event) = event else { return false };
+        match event.method.as_deref() {
+            Some("Page.frameNavigated") => {
+                let params = event.params.as_ref();
+                let id = params.and_then(|p| p.pointer("/frame/loaderId"));
+                if id.and_then(Value::as_str) == Some(loader) {
+                    committed.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+                false
+            }
+            Some("Page.loadEventFired") => committed.load(std::sync::atomic::Ordering::Relaxed),
+            _ => false,
+        }
+    };
+    load_before(events, deadline, ours).await
+}
+
 fn is_load(event: &cdp_browser_lite::CdpResult<cdp_browser_lite::WsResponse>) -> bool {
     event
         .as_ref()
@@ -520,8 +557,7 @@ pub(crate) mod tests {
     }
 
     use crate::handler::cdp_domains::tests::{
-        call, committed_url, fire_events_after, fire_load_after, mock_handler, reply_text,
-        spawn_recording_mock,
+        call, committed_url, fire_events_after, mock_handler, reply_text, spawn_recording_mock,
     };
     use crate::handler::navigation::DOWNLOAD;
 
@@ -627,7 +663,7 @@ pub(crate) mod tests {
             |_| json!({"frameId": "F1", "loaderId": "L1"}),
         );
         committed_url(mock, "http://127.0.0.1:8/final");
-        fire_load_after(mock, "Page.navigate");
+        fire_events_after(mock, "Page.navigate", vec![committed("L1"), load_event()]);
         let handler = mock_handler(mock.http_port);
         // When navigate runs
         let args = json!({"url": "http://127.0.0.1:8/start"});
@@ -641,6 +677,30 @@ pub(crate) mod tests {
         assert_eq!(body["browser"]["loaderId"], "L1");
         assert!(body.get("tab_id").is_some());
         assert!(body.get("notes").is_none(), "load fired: {body}");
+    }
+
+    /// ISSUE-94: only the `load` of the document the navigation commits
+    /// (its `frameNavigated` carries the reply's loader) ends the wait; a
+    /// `load` before it is the previous document's, still loading when the
+    /// navigation started: answering then let the next navigation cancel
+    /// the page before it was in the history.
+    #[tokio::test]
+    async fn only_the_new_documents_load_ends_the_wait() {
+        use crate::handler::cdp_domains::tests::make_event;
+        let load = || Ok(make_event("Page.loadEventFired", json!({"timestamp": 1.0})));
+        let navigated = |loader: &str| {
+            let frame = json!({"frame": {"id": "F1", "loaderId": loader, "url": "http://a/"}});
+            Ok(make_event("Page.frameNavigated", frame))
+        };
+        // Given the previous document's load, then an iframe's commit
+        let stale = vec![load(), navigated("L-iframe"), load()];
+        // When the wait for loader L2 reads them, they do not end it
+        let mut events = tokio_stream::iter(stale);
+        assert!(!wait_for_load_of(&mut events, "L2").await);
+        // But L2's commit followed by a load does
+        let fresh = vec![load(), navigated("L2"), load()];
+        let mut events = tokio_stream::iter(fresh);
+        assert!(wait_for_load_of(&mut events, "L2").await);
     }
 
     /// ISSUE-70: a navigation to a fragment of the current page answers
@@ -731,8 +791,23 @@ pub(crate) mod tests {
                 "Network.responseReceived",
                 json!({"requestId": "L1", "loaderId": "L1", "type": "Document", "response": {"url": url, "status": status, "statusText": "", "headers": {}}}),
             ),
-            ("Page.loadEventFired", json!({"timestamp": 1.0})),
+            committed("L1"),
+            load_event(),
         ]
+    }
+
+    /// Chrome's `Page.frameNavigated` for the top document of `loader`.
+    fn committed(loader: &str) -> (&'static str, Value) {
+        let frame = json!({"id": "F1", "loaderId": loader, "url": "http://127.0.0.1:8/page"});
+        (
+            "Page.frameNavigated",
+            json!({"frame": frame, "type": "Navigation"}),
+        )
+    }
+
+    /// Chrome's `Page.loadEventFired`.
+    fn load_event() -> (&'static str, Value) {
+        ("Page.loadEventFired", json!({"timestamp": 1.0}))
     }
 
     /// AUD-EV-11: the document's HTTP status is in the reply; an error
