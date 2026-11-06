@@ -77,6 +77,9 @@ pub(crate) struct TabRegistry {
     /// attaching and registering: an action that opened a tab waits for
     /// them before naming the tabs it opened.
     pub(crate) opening: usize,
+    /// Pages Chrome announced that were not registered, the instance being
+    /// at `max_tabs`: an action that opened one says so (ISSUE-95).
+    pub(crate) untracked: u64,
     /// Tabs in the order they were last made active (most recent last), so
     /// closing the active tab falls back to the previous one.
     recent: Vec<TabId>,
@@ -90,6 +93,7 @@ impl TabRegistry {
             max_tabs,
             counter: 1,
             opening: 0,
+            untracked: 0,
             recent: Vec::new(),
         }
     }

@@ -524,6 +524,8 @@ struct NetworkBefore {
     known: HashSet<String>,
     /// The ids of the instance's tabs, to tell the tabs the action opened.
     tabs: HashSet<String>,
+    /// How many tabs the instance had not tracked, at its cap (ISSUE-95).
+    untracked: u64,
     /// The instance's downloads and how many had begun, to tell the ones
     /// the action started (#77).
     downloads: (Arc<Mutex<DownloadState>>, u64),
@@ -652,12 +654,14 @@ async fn network_before(
         .into_iter()
         .map(|tab| tab.id)
         .collect();
+    let untracked = untracked_now(handler, browser, &ids).await;
     Some(NetworkBefore {
         browser,
         ids,
         network,
         known,
         tabs,
+        untracked,
         downloads: (downloads, begun),
         page,
     })
@@ -766,6 +770,39 @@ fn opened_tabs(before: &HashSet<String>, now: Vec<KnownTab>) -> Vec<KnownTab> {
     now.into_iter()
         .filter(|tab| !before.contains(&tab.id))
         .collect()
+}
+
+/// How many tabs the instance `ids` addresses did not track, at its cap.
+async fn untracked_now(handler: &McpHandler, browser: BrowserKind, ids: &TargetArgs) -> u64 {
+    match browser {
+        BrowserKind::Chrome => match handler.session(ids.instance_id.clone()).await {
+            Ok(session) => crate::util::sync::read(&session.tabs).untracked,
+            Err(_) => 0,
+        },
+        BrowserKind::Firefox => match handler.firefox(ids.instance_id.as_deref()).await {
+            Ok(session) => crate::util::sync::read(&session.tabs).untracked,
+            Err(_) => 0,
+        },
+    }
+}
+
+/// The sentence a reply adds for the tabs an action opened that the
+/// instance did not track, `before` and `now` being its untracked counts
+/// (ISSUE-95: they were dropped without a word, and stayed in front).
+fn untracked_note(before: u64, now: u64) -> Option<String> {
+    let max = crate::handler::MAX_TABS;
+    let why = format!(
+        "this instance already has {max} tabs, the most it tracks; close the tabs you no longer need with close_tab (list_tabs shows them) for the next ones to be tracked."
+    );
+    match now.saturating_sub(before) {
+        0 => None,
+        1 => Some(format!(
+            "The action opened a tab that is not tracked (it has no tab_id, so neither switch_tab nor close_tab can reach it): {why}"
+        )),
+        many => Some(format!(
+            "The action opened {many} tabs that are not tracked (they have no tab_id, so neither switch_tab nor close_tab can reach them): {why}"
+        )),
+    }
 }
 
 /// Brings the active tab of the instance `ids` address back to the front
@@ -956,7 +993,9 @@ async fn settled(
         Err(interruption) => (None, Some(interruption)),
     };
     let opened = tabs_opened(handler, before.browser, &before.ids, &before.tabs).await;
-    if !opened.is_empty() {
+    let untracked = untracked_now(handler, before.browser, &before.ids).await;
+    let untracked = untracked_note(before.untracked, untracked);
+    if !opened.is_empty() || untracked.is_some() {
         // The browser shows the new tab; the agent stays on its tab.
         front_active(handler, before.browser, &before.ids).await;
     }
@@ -966,7 +1005,8 @@ async fn settled(
     let downloaded = crate::handler::downloads::action_note(&started);
     let page_notes = before.page.notes().await;
     let closed = closed_after(handler, &before, false).await;
-    let notes = [reacted, opened, closed, downloaded].into_iter().flatten();
+    let notes = [reacted, opened, untracked, closed, downloaded];
+    let notes = notes.into_iter().flatten();
     append_notes(&mut result, interruption, notes.chain(page_notes));
     result
 }
@@ -1189,6 +1229,18 @@ mod tests {
         let active = active_tab(&handler, BrowserKind::Firefox, &ids).await;
         assert_eq!(active.as_deref(), Some("tab-1"));
         ts::stop(&handler).await;
+    }
+
+    /// ISSUE-95: an input action during which the page opened a tab the
+    /// instance could not track (at its cap) says so and how to free room.
+    #[test]
+    fn untracked_tabs_are_noted() {
+        let one = untracked_note(3, 4).unwrap();
+        assert!(one.contains("opened a tab that is not tracked"), "{one}");
+        assert!(one.contains("close_tab"), "{one}");
+        let two = untracked_note(3, 5).unwrap();
+        assert!(two.contains("opened 2 tabs that are not tracked"), "{two}");
+        assert_eq!(untracked_note(3, 3), None);
     }
 
     /// ISSUE-90: an input action during which tabs closed says so, naming

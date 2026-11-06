@@ -12,6 +12,16 @@ from a copy of its code: entries describe the differences from that release.
 
 ### Fixed
 
+- A tab a page opens while its instance already holds 16 tabs (the most
+  it tracks) is named in the action's reply as not tracked, with how to
+  make room (`close_tab`), and the agent's tab stays in front, on both
+  browsers. It was dropped without a word: the new tab stayed in front and
+  later actions on the agent's tab (now hidden) timed out (#95).
+- Firefox: top-level contexts that are not tabs (Firefox gives them a
+  numeric id) are no longer listed as tabs: `save_pdf` of a page with
+  iframes left one per iframe (the copies Firefox makes to print), which
+  `close_tab` could not close and which used up the instance's 16 tabs;
+  a DevTools window was listed too (#95).
 - `capture_screenshot` of an element puts the page's scroll back after the
   capture (and its scrollable boxes'), also when it fails; it was left
   where the element was. A hidden or zero-size element is refused before

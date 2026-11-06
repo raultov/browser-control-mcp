@@ -188,7 +188,10 @@ after 134 ms.`, or says the page was still changing after 1 s. A click that
 navigates waits for the new page's requests. Use `wait_for` for anything
 slower (a timer, a long request). An action that opened tabs (a
 `target=_blank` link, `window.open`) says so: `The action opened tab tab-3
-(https://…): call switch_tab with its tab_id to act in it.` One during which
+(https://…): call switch_tab with its tab_id to act in it.` An instance
+tracks at most 16 tabs: one opened beyond that has no tab_id, and the action
+says so (close tabs with `close_tab` to make room); the agent's tab stays in
+front. One during which
 a tab closed (a page calling `window.close()`) names it and the tab now
 active. So
 does one that downloaded a file (`The action downloaded data.csv (8 bytes) to …`),

@@ -399,6 +399,85 @@ mod e2e {
             self.report(&label, count == expected, "");
         }
 
+        /// The ids of the default instance's tabs, and its active one.
+        async fn tabs(&mut self) -> (Vec<String>, String) {
+            let (_, text) = self.call("list_tabs", json!({})).await;
+            let reply: Value = serde_json::from_str(&text).unwrap_or_default();
+            let ids = reply["tabs"].as_array().into_iter().flatten();
+            let ids = ids.filter_map(|t| t["tab_id"].as_str().map(String::from));
+            let active = reply["active_tab_id"].as_str().unwrap_or_default();
+            (ids.collect(), active.to_string())
+        }
+
+        /// ISSUE-95: with the default instance at its 16 tabs, a click that
+        /// opens one more says it is not tracked, and the agent's tab stays
+        /// in front (the new page closes itself 2 s after loading).
+        async fn tab_cap(&mut self) {
+            let (tabs, active) = self.tabs().await;
+            for _ in tabs.len()..16 {
+                let (ok, text) = self.call("open_tab", json!({"url": "about:blank"})).await;
+                if !ok {
+                    self.report("ISSUE-95 fill the instance", false, &text);
+                    return;
+                }
+            }
+            let back = json!({"tab_id": active});
+            self.step(("ISSUE-95 back to the tab", "switch_tab"), back, "")
+                .await;
+            let link = "(() => { const a = document.createElement('a'); a.id = 'cap95'; a.href = '/self-close.html'; a.target = '_blank'; a.textContent = 'cap95'; document.body.prepend(a); return 1; })()";
+            let steps = vec![
+                (
+                    "ISSUE-95 a link to a new tab",
+                    "evaluate_js",
+                    json!({"expression": link}),
+                    "",
+                ),
+                (
+                    "ISSUE-95 a tab beyond the cap is named untracked",
+                    "click_element",
+                    json!({"selector": "#cap95"}),
+                    "opened a tab that is not tracked",
+                ),
+                (
+                    "ISSUE-95 the agent's tab stays in front",
+                    "evaluate_js",
+                    json!({"expression": "document.visibilityState"}),
+                    "visible",
+                ),
+                (
+                    "ISSUE-95 remove the link",
+                    "evaluate_js",
+                    json!({"expression": "document.getElementById('cap95').remove(); 1"}),
+                    "",
+                ),
+            ];
+            self.steps(steps).await;
+        }
+
+        /// Closes the default instance's tabs that are neither in `keep` nor
+        /// the active one, so a browser the suite attached to does not pile
+        /// them up (ISSUE-95). (Its pages are registered only once a tool
+        /// uses them: `keep` can be empty.)
+        async fn close_tabs_but(&mut self, keep: &[String]) {
+            let (tabs, active) = self.tabs().await;
+            let gone = tabs.iter().filter(|t| !keep.contains(t) && **t != active);
+            for tab in gone {
+                let (ok, text) = self.call("close_tab", json!({"tab_id": tab})).await;
+                if !ok {
+                    self.report("close the suite's tabs", false, &text);
+                }
+            }
+        }
+
+        /// Runs `steps` on a browser the suite attached to, then the
+        /// ISSUE-95 check, then closes the tabs it opened.
+        async fn attached_steps(&mut self, steps: Vec<Step>) {
+            let (there, _) = self.tabs().await;
+            self.steps(steps).await;
+            self.tab_cap().await;
+            self.close_tabs_but(&there).await;
+        }
+
         /// Closes stdin and waits for the server to exit.
         async fn finish(mut self) -> Vec<String> {
             drop(self.stdin);
@@ -3688,7 +3767,7 @@ mod e2e {
         args.extend(["--tool-groups", "all"]);
         let base = serve().await;
         let mut mcp = Mcp::start(&args).await;
-        mcp.steps(attach_steps(&base, variable.contains("CHROME")))
+        mcp.attached_steps(attach_steps(&base, variable.contains("CHROME")))
             .await;
         let stop = json!({"instance_id": "default"});
         mcp.step(("stop_browser", "stop_browser"), stop, stop_reply(variable))

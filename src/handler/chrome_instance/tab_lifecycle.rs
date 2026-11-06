@@ -149,7 +149,15 @@ async fn on_page_created(
         return;
     };
     let info = super::tab_registry::NewTab::new(None, url);
-    let _ = register_and_listen(tabs, &tab, info, enable_webmcp).await;
+    if register_and_listen(tabs, &tab, info, enable_webmcp)
+        .await
+        .is_err()
+    {
+        // At the cap (no label to refuse): counted for the action that
+        // opened it to say so (ISSUE-95), and its session released.
+        crate::util::sync::write(tabs).untracked += 1;
+        let _ = tab.detach().await;
+    }
 }
 
 /// Registers `tab`, then starts its listeners **before** enabling its
@@ -279,6 +287,30 @@ mod tests {
         // Then tab-1 is active and in front
         assert_eq!(active.as_deref(), Some("tab-1"));
         assert_eq!(activated(mock).last().map(String::as_str), Some("T-page-1"));
+    }
+
+    /// ISSUE-95 (Chrome): a page Chrome announces while the instance is at
+    /// its cap is not registered but counted, for the action that opened
+    /// it to say so (it was dropped without a word).
+    #[tokio::test]
+    async fn a_page_beyond_the_cap_is_counted() {
+        // Given an instance that holds one tab, its cap
+        let mock = crate::handler::cdp_domains::tests::spawn_recording_mock().await;
+        let address = format!("127.0.0.1:{}", mock.http_port);
+        let browser = BrowserClient::connect(&address, Duration::from_secs(2))
+            .await
+            .expect("connect");
+        let tabs = Arc::new(RwLock::new(TabRegistry::new(1)));
+        let first = browser.attach("T-tab-1").await.expect("attach");
+        register_and_listen(&tabs, &first, NewTab::new(None, "about:blank"), false)
+            .await
+            .expect("registration");
+        // When Chrome announces a page the instance's page opened
+        on_page_created(&browser, &tabs, ("T-popup", "http://a/"), false).await;
+        // Then it is counted, not registered, and its session released
+        let registry = crate::util::sync::read(&tabs);
+        assert_eq!((registry.tabs.len(), registry.untracked), (1, 1));
+        assert_eq!(mock.commands_named("Target.detachFromTarget").len(), 1);
     }
 
     /// ISSUE-68 (Chrome): a click that opens a tab waits for the listener

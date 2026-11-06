@@ -38,6 +38,11 @@ pub(crate) struct ScriptInfo {
 
 /// Most parsed scripts remembered per tab (oldest forgotten first).
 pub(crate) const MAX_SCRIPTS: usize = 2000;
+
+/// Most tabs an instance tracks, on both browsers: each holds listeners and
+/// bounded buffers. A page opened beyond it is counted, not tracked
+/// (ISSUE-95).
+pub(crate) const MAX_TABS: usize = 16;
 /// Most ids of pause_on_load's script remembered per tab (one per document
 /// of the tab that runs it: the page and its same-origin frames).
 pub(crate) const MAX_PAUSE_ON_LOAD_SOURCES: usize = 64;
@@ -919,7 +924,7 @@ impl BrowserSession {
             emulation_state: Default::default(),
             chrome_manager,
             tabs: Arc::new(std::sync::RwLock::new(
-                chrome_instance::tab_registry::TabRegistry::new(16),
+                chrome_instance::tab_registry::TabRegistry::new(MAX_TABS),
             )),
             session_listeners: Default::default(),
             browser_version: Default::default(),

@@ -94,7 +94,10 @@ pub(crate) async fn route(event: &WsResponse, client: &BrowserClient, state: &Pu
 /// about the browser's tabs rather than a page's, kept on the active tab.
 fn is_tab_lifecycle(method: &str, params: &Value, state: &PumpState) -> bool {
     match method {
-        "browsingContext.contextCreated" => str_field(params, "parent").is_none(),
+        "browsingContext.contextCreated" => {
+            str_field(params, "parent").is_none()
+                && str_field(params, "context").is_some_and(super::session::is_tab_id)
+        }
         "browsingContext.contextDestroyed" => str_field(params, "context").is_some_and(|c| {
             read(&state.tabs)
                 .tabs
@@ -288,11 +291,12 @@ async fn on_context_created(params: &Value, client: &BrowserClient, state: &Pump
                 .parents
                 .insert(context.to_string(), parent.to_string());
         }
+        None if !super::session::is_tab_id(context) => {}
         None => {
             // A tab opened by the page (or by `open_tab`, which dedupes).
             if let Ok(tab) = client.attach(context).await {
                 let url = string_or_empty(params, "url");
-                let _ = write(&state.tabs).register(tab, None, &url);
+                write(&state.tabs).adopt(tab, &url);
             }
         }
     }
@@ -727,6 +731,30 @@ mod tests {
         )
         .await;
         assert_eq!(read(&state.tabs).tabs.len(), 1);
+    }
+
+    /// A top-level context with a numeric id is not a tab: Firefox names
+    /// so the static copies of a page's iframes it makes to print it
+    /// (`save_pdf`), never reports them destroyed and refuses to close
+    /// them. They were adopted as tabs that could not be closed, one per
+    /// iframe per print, filling the instance's 16 tabs.
+    #[tokio::test]
+    async fn print_copies_of_iframes_are_not_tabs() {
+        // Given one known tab
+        let mock = MockBidi::start(MockBidiBehavior::Ready).await.unwrap();
+        let (client, state) = one_tab(&mock).await;
+        // When printing announces a top-level context with a numeric id
+        let created = json!({"context": "15032385542", "parent": null, "url": "about:blank"});
+        let created = event("browsingContext.contextCreated", created);
+        route(&created, &client, &state).await;
+        // Then it is neither a tab nor counted as one beyond the cap
+        let tabs = read(&state.tabs);
+        assert_eq!((tabs.tabs.len(), tabs.untracked), (1, 0));
+        assert!(!is_tab_lifecycle(
+            "browsingContext.contextCreated",
+            &created.params.clone().unwrap_or_default(),
+            &state
+        ));
     }
 
     /// The methods in tab `id`'s custom buffer, in order.

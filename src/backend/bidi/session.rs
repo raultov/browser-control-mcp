@@ -22,7 +22,16 @@ fn is_privileged_start_page(url: &str) -> bool {
 const DETACH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// Most tabs per Firefox instance (as for Chrome).
-const MAX_TABS: usize = 16;
+const MAX_TABS: usize = crate::handler::MAX_TABS;
+
+/// Whether `context`, a top-level context, is a tab. Firefox names every
+/// tab's context with a UUID and gives a numeric id to a top-level context
+/// not shown in a tab: the static copies of a page's iframes it makes to
+/// print it (`save_pdf`). It never reports those destroyed and refuses to
+/// close them: adopted as tabs, they filled the instance's tabs.
+pub(crate) fn is_tab_id(context: &str) -> bool {
+    !context.bytes().all(|b| b.is_ascii_digit())
+}
 
 /// Buffered state of one tab (a top-level browsing context).
 #[derive(Clone)]
@@ -74,6 +83,9 @@ pub(crate) struct FirefoxTabs {
     counter: usize,
     /// Child context → parent context (iframes).
     pub(crate) parents: HashMap<String, String>,
+    /// Tabs Firefox announced that were not registered, the instance being
+    /// at [`MAX_TABS`]: an action that opened one says so (ISSUE-95).
+    pub(crate) untracked: u64,
 }
 
 impl FirefoxTabs {
@@ -135,6 +147,15 @@ impl FirefoxTabs {
         self.recent.retain(|seen| seen != id);
         self.recent.push(id.to_string());
         self.active = Some(id.to_string());
+    }
+
+    /// Registers a tab Firefox announced (opened by a page, or there when
+    /// the session started), counting it in `untracked` when the instance
+    /// is at [`MAX_TABS`] (ISSUE-95: it was dropped without a word).
+    pub(crate) fn adopt(&mut self, tab: Tab, url: &str) {
+        if self.register(tab, None, url).is_err() {
+            self.untracked += 1;
+        }
     }
 
     /// Whether a new tab labelled `label` may be registered (under the cap,
@@ -454,6 +475,9 @@ impl FirefoxSession {
             .await
             .map_err(lifecycle_error)?
         {
+            if !is_tab_id(tab.context_id()) {
+                continue;
+            }
             let mut url = urls.get(tab.context_id()).cloned().unwrap_or_default();
             // A fresh Firefox opens about:home, a privileged page where BiDi
             // refuses scripts without -remote-allow-system-access: start
@@ -466,7 +490,7 @@ impl FirefoxSession {
                     url = "about:blank".to_string();
                 }
             }
-            let _ = write(&self.tabs).register(tab, None, &url);
+            write(&self.tabs).adopt(tab, &url);
         }
         Ok(())
     }
@@ -682,6 +706,26 @@ pub(crate) mod tests {
         assert!(taken.is_err());
         assert!(tabs.check_new(Some("x")).is_err());
         assert!(tabs.check_new(Some("y")).is_ok());
+    }
+
+    /// ISSUE-95: a tab the browser announces once the instance holds
+    /// MAX_TABS is not registered but counted, for the action that opened
+    /// it to say so (it was dropped without a word).
+    #[tokio::test]
+    async fn a_tab_beyond_the_cap_is_counted() {
+        // Given an instance at the cap
+        let mock = MockBidi::start(MockBidiBehavior::Ready).await.unwrap();
+        let (client, mut tabs) = two_tabs(&mock).await;
+        for n in 3..=MAX_TABS {
+            let tab = client.attach(&format!("ctx-{n}")).await.unwrap();
+            tabs.adopt(tab, "about:blank");
+        }
+        assert_eq!((tabs.tabs.len(), tabs.untracked), (MAX_TABS, 0));
+        // When the page opens one more
+        let extra = client.attach("ctx-extra").await.unwrap();
+        tabs.adopt(extra, "http://a/");
+        // Then it is counted, not registered
+        assert_eq!((tabs.tabs.len(), tabs.untracked), (MAX_TABS, 1));
     }
 
     /// REV-13: tab ids are not reused after a restart.
