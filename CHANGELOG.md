@@ -10,6 +10,22 @@ from a copy of its code: entries describe the differences from that release.
 
 ## [Unreleased]
 
+## [0.12.0-beta.22] - 2026-11-07
+
+Public **BETA**. Fixes found by a comparison with other browser MCP
+servers and by the end-to-end suite. Chrome's `navigate` waits for the
+new page's own `load` (the previous page's could end the wait, and the
+next navigation then cancelled the new page), and stepping, `resume` and
+`pause_on_load` answer once the pause is recorded. A tab opened beyond an
+instance's 16 tabs is named as not tracked instead of leaving the agent's
+tab hidden, and Firefox no longer lists the copies of iframes `save_pdf`
+makes as tabs. A click whose page closes its own tab is reported as done
+on both browsers. Element screenshots put the page's scroll back.
+Behaviour changes: `snapshot` lines of fields with a placeholder gain
+`[placeholder="…"]`; Chrome's `profile_page_performance` without a reload
+gives the page's own load timings (they were `null`) and `emulate` with
+`mobile` may add `notes`; Firefox no longer lists DevTools windows as tabs.
+
 ### Fixed
 
 - A tab a page opens while its instance already holds 16 tabs (the most
