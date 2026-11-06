@@ -1526,12 +1526,66 @@ mod e2e {
     /// ISSUE-33: a capture of one element is its size (the PNG header of
     /// a 123 x 45 px image).
     fn element_shot_steps(instance: &str) -> Vec<Step> {
-        vec![(
+        let i = json!(instance);
+        let mut steps = vec![(
             "ISSUE-33 screenshot of one element",
             "capture_screenshot",
-            json!({"instance_id": instance, "selector": "#shot"}),
+            json!({"instance_id": i, "selector": "#shot"}),
             "iVBORw0KGgoAAAANSUhEUgAAAHsAAAAt",
-        )]
+        )];
+        steps.extend(scroll_shot_steps(&i));
+        steps
+    }
+
+    /// ISSUE-89: element captures put the page's and the boxes' scroll
+    /// back, and an element outside the page is refused (both browsers).
+    fn scroll_shot_steps(i: &Value) -> Vec<Step> {
+        // ISSUE-89: an element far down and one outside the page
+        let add = "document.body.insertAdjacentHTML('beforeend', '<div id=\"w89\"><div style=\"height:3000px\"></div><p id=\"low89\">low</p><div id=\"box89\" style=\"height:100px;overflow:auto\"><div style=\"height:2000px\"></div><p id=\"deep89\">deep</p></div><p id=\"off89\" style=\"position:absolute;left:-500px;top:5px;width:20px;height:20px\">off</p></div>'); scrollTo(0, 0); 1";
+        vec![
+            (
+                "ISSUE-89 elements far down and outside the page",
+                "evaluate_js",
+                json!({"instance_id": i, "expression": add}),
+                "",
+            ),
+            (
+                "ISSUE-89 a capture far down",
+                "capture_screenshot",
+                json!({"instance_id": i, "selector": "#low89"}),
+                "iVBORw0KGgo",
+            ),
+            (
+                "ISSUE-89 leaves the page where it was",
+                "evaluate_js",
+                json!({"instance_id": i, "expression": "scrollY"}),
+                "\"value\": 0",
+            ),
+            (
+                "ISSUE-89 a capture inside a scrolled box",
+                "capture_screenshot",
+                json!({"instance_id": i, "selector": "#deep89"}),
+                "iVBORw0KGgo",
+            ),
+            (
+                "ISSUE-89 leaves the box and the page where they were",
+                "evaluate_js",
+                json!({"instance_id": i, "expression": "document.getElementById('box89').scrollTop + scrollY"}),
+                "\"value\": 0",
+            ),
+            (
+                "ISSUE-89 an element outside the page is refused",
+                "capture_screenshot",
+                json!({"instance_id": i, "selector": "#off89"}),
+                "!is outside the page",
+            ),
+            (
+                "ISSUE-89 remove them",
+                "evaluate_js",
+                json!({"instance_id": i, "expression": "document.getElementById('w89').remove(); 1"}),
+                "",
+            ),
+        ]
     }
 
     /// ISSUE-32: fill_input with append types after the content: a text

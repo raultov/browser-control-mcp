@@ -10,6 +10,16 @@ from a copy of its code: entries describe the differences from that release.
 
 ## [Unreleased]
 
+### Fixed
+
+- `capture_screenshot` of an element puts the page's scroll back after the
+  capture (and its scrollable boxes'), also when it fails; it was left
+  where the element was. A hidden or zero-size element is refused before
+  anything scrolls. An element outside the page fails saying so on both
+  browsers (Firefox failed with a raw protocol error, Chrome answered an
+  image of nothing), and one partly outside is cut to the page, with a
+  note (#89).
+
 ## [0.12.0-beta.21] - 2026-11-05
 
 Public **BETA**. Debugging, evaluation and diagnostics fixes found by a

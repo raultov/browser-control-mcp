@@ -59,24 +59,21 @@ impl CaptureScreenshotTool {
         let note = match (args.selector.as_deref(), args.full_page.unwrap_or(false)) {
             (Some(_), true) => return Err(selector_or_full_page()),
             (Some(selector), false) => {
-                let expression = crate::util::js::element_box(selector);
-                let measured = crate::handler::snippet_value(&target, &expression).await?;
-                let ((x, y, width, height), note) = element_clip(&measured, selector)?;
-                if let Some(map) = command_params.as_object_mut() {
-                    let clip =
-                        json!({"x": x, "y": y, "width": width, "height": height, "scale": 1});
-                    map.insert("clip".to_string(), clip);
-                    map.insert("captureBeyondViewport".to_string(), json!(true));
-                }
-                note
+                element_clip_params(&target, selector, &mut command_params).await?
             }
             (None, true) => add_full_page_clip(&target, &mut command_params).await?,
             (None, false) => None,
         };
         let failure = "CDP Error";
-        let val =
+        let captured =
             crate::handler::send_or(&target, "Page.captureScreenshot", command_params, failure)
-                .await?;
+                .await
+                .map_err(|e| e.to_string());
+        // The element's scroll is put back, whatever the capture did (ISSUE-89).
+        if args.selector.is_some() {
+            restore_scroll(&target).await;
+        }
+        let val = captured.map_err(CallToolError::from_message)?;
         let data = val
             .result
             .as_ref()
@@ -174,8 +171,20 @@ pub(crate) fn element_clip(
                 side("height").unwrap_or_default(),
             );
             let clip = (x, y, width.min(FULL_PAGE_MAX), height.min(FULL_PAGE_MAX));
-            Ok((clip, cut_note("Element", width, height)))
+            let outside = measured["cut"].as_bool() == Some(true);
+            let note = match outside {
+                true => Some(PARTLY_OUTSIDE.to_string()),
+                false => None,
+            };
+            let notes = [cut_note("Element", width, height), note];
+            let notes: Vec<String> = notes.into_iter().flatten().collect();
+            Ok((clip, (!notes.is_empty()).then(|| notes.join(" "))))
         }
+        Some("outside") => Err(CallToolError::from_message(format!(
+            "Element '{selector}' is outside the page (its box starts at x {}, y {} of the document): nothing was captured.",
+            side("x").unwrap_or_default(),
+            side("y").unwrap_or_default()
+        ))),
         Some("hidden") => Err(CallToolError::from_message(format!(
             "Element '{selector}' is not visible (display:none, visibility:hidden or zero size); nothing was captured."
         ))),
@@ -185,6 +194,45 @@ pub(crate) fn element_clip(
         ))),
     }
 }
+
+/// Measures the element `selector` names and clips the capture
+/// `params` to it (document coordinates, beyond the viewport); its note.
+/// An element that cannot be captured fails, the scroll put back.
+async fn element_clip_params(
+    target: &crate::handler::cdp_domains::cdp_target::CdpTarget,
+    selector: &str,
+    params: &mut serde_json::Value,
+) -> Result<Option<String>, CallToolError> {
+    let expression = crate::util::js::element_box(selector);
+    let measured = crate::handler::snippet_value(target, &expression).await;
+    let clip = measured.and_then(|m| element_clip(&m, selector));
+    // As text: the error type is not `Send` across the await.
+    let ((x, y, width, height), note) = match clip.map_err(|e| e.to_string()) {
+        Ok(clip) => clip,
+        Err(e) => {
+            restore_scroll(target).await;
+            return Err(CallToolError::from_message(e));
+        }
+    };
+    if let Some(map) = params.as_object_mut() {
+        let clip = json!({"x": x, "y": y, "width": width, "height": height, "scale": 1});
+        map.insert("clip".to_string(), clip);
+        map.insert("captureBeyondViewport".to_string(), json!(true));
+    }
+    Ok(note)
+}
+
+/// Puts back the scroll an element capture changed (`util::js::RESTORE_SCROLL`,
+/// best effort), on every way out of the capture (ISSUE-89).
+async fn restore_scroll(target: &crate::handler::cdp_domains::cdp_target::CdpTarget) {
+    let restore = json!({"expression": crate::util::js::RESTORE_SCROLL});
+    let _ = target.send_raw_command("Runtime.evaluate", restore).await;
+}
+
+/// The note of an element captured only in part: the rest is outside the
+/// page (ISSUE-89).
+const PARTLY_OUTSIDE: &str =
+    "The element is partly outside the page: only its part inside the page was captured.";
 
 /// The capture format `format` names (any case; `jpg` is `jpeg`), `png`
 /// when omitted. Checked before anything is sent: Firefox answered a PNG
@@ -391,6 +439,51 @@ mod tests {
             json!({"x": 10.0, "y": 2000.0, "width": 123.0, "height": 45.0, "scale": 1})
         );
         assert_eq!(sent["captureBeyondViewport"], true);
+    }
+
+    /// ISSUE-89: an element outside the page fails saying so; one partly
+    /// outside is captured cut to the page, with a note.
+    #[test]
+    fn elements_outside_the_page_are_refused_or_cut() {
+        let outside = json!({"status": "outside", "x": -9999, "y": 10});
+        let error = element_clip(&outside, "#off").unwrap_err().to_string();
+        assert!(error.contains("'#off' is outside the page"), "{error}");
+        let cut = json!({"status": "ok", "x": 0, "y": 10, "width": 20, "height": 50, "cut": true});
+        let (clip, note) = element_clip(&cut, "#half").unwrap();
+        assert_eq!(clip, (0.0, 10.0, 20.0, 50.0));
+        assert!(note.unwrap().contains("partly outside the page"));
+    }
+
+    /// ISSUE-89: the page's scroll is put back after an element capture,
+    /// also when the capture fails or the element cannot be captured (it
+    /// was left where the element was).
+    #[tokio::test]
+    async fn the_scroll_is_restored_after_an_element_capture() {
+        use crate::handler::cdp_domains::tests::{call, mock_handler, spawn_recording_mock};
+        let inside = json!({"status": "ok", "x": 10, "y": 2000, "width": 123, "height": 45});
+        let outside = json!({"status": "outside", "x": -9999, "y": 10});
+        let captured = json!({"result": {"data": "iVBO"}});
+        let failed = json!({"error": {"code": -32000, "message": "boom"}});
+        // A capture that works, one that fails, and an element outside
+        for (measured, answer) in [
+            (inside.clone(), captured.clone()),
+            (inside, failed),
+            (outside, captured),
+        ] {
+            let mock = spawn_recording_mock().await;
+            mock.respond_with("Runtime.evaluate", move |_| {
+                json!({"result": {"result": {"type": "object", "value": measured.clone()}}})
+            });
+            mock.respond_with("Page.captureScreenshot", move |_| answer.clone());
+            let handler = mock_handler(mock.http_port);
+            let args = json!({"selector": "#chart"});
+            let _ = CaptureScreenshotTool::handle(call("capture_screenshot", args), &handler).await;
+            let restored = mock
+                .commands_named("Runtime.evaluate")
+                .into_iter()
+                .any(|c| c.params["expression"].as_str() == Some(crate::util::js::RESTORE_SCROLL));
+            assert!(restored);
+        }
     }
 
     /// ISSUE-33: a missing element, or a selector with full_page, fails

@@ -208,26 +208,60 @@ const CLICK_POINT: &str = "el.scrollIntoView({ behavior: 'instant', block: 'cent
     } \
     return { status: 'ok', x, y, disabled };";
 
-/// Scrolls the first element matching `selector` into view and measures
-/// its box for `capture_screenshot`: `{status: 'ok', x, y, width, height}`
-/// in CSS pixels of the top document (an element inside iframes is offset
-/// by each frame), or `missing`, or `hidden` (no visible box). Document
-/// coordinates, so an element taller than the viewport is captured whole.
+/// Scrolls the first element matching `selector` into view (so lazily
+/// drawn content is drawn) and measures it for `capture_screenshot`:
+/// `{status: 'ok', x, y, width, height, cut}` in CSS pixels of the top
+/// document (an element inside iframes is offset by each frame), cut to
+/// the page (`cut: true` when part of it was outside), or `missing`, or
+/// `hidden` (no visible box), or `outside` (no part of it in the page,
+/// with its `x` and `y`, even once scrolled to). Document coordinates, so
+/// an element taller than the viewport is captured whole. The scroll
+/// positions of its windows and of at most 50 scrollable ancestors are
+/// kept first, for [`RESTORE_SCROLL`] after the capture (ISSUE-89: the
+/// page was left scrolled); nothing is scrolled for a hidden element, and
+/// they are put back at once for one outside the page.
 pub fn element_box(selector: &str) -> String {
     status_of(selector, ELEMENT_BOX)
 }
 
-const ELEMENT_BOX: &str = "el.scrollIntoView({ behavior: 'instant', block: 'center', inline: 'center' }); \
-    let win = el.ownerDocument.defaultView; \
+/// The key, on the evaluating window, of the scroll positions
+/// [`element_box`] keeps (`Symbol.for` it).
+pub const SCROLL_KEY: &str = "browser-control-mcp.scrolled";
+
+/// Puts back the scroll positions [`element_box`] kept, and forgets them.
+pub const RESTORE_SCROLL: &str = "(() => { const key = Symbol.for('browser-control-mcp.scrolled'), saved = window[key] || []; \
+    delete window[key]; \
+    for (const [node, left, top] of saved) { try { node.scrollTo({ left, top, behavior: 'instant' }); } catch (e) {} } \
+    return saved.length; })()";
+
+const ELEMENT_BOX: &str = "let win = el.ownerDocument.defaultView; \
     const r = el.getBoundingClientRect(); \
     if (r.width === 0 || r.height === 0 || win.getComputedStyle(el).visibility !== 'visible') return { status: 'hidden' }; \
-    let x = r.left, y = r.top; \
-    while (win.frameElement) { \
-        const frame = win.frameElement, f = frame.getBoundingClientRect(); \
-        x += f.left + frame.clientLeft; y += f.top + frame.clientTop; \
-        win = frame.ownerDocument.defaultView; \
+    const place = () => { const b = el.getBoundingClientRect(); let x = b.left, y = b.top, w = win; \
+        while (w.frameElement) { const frame = w.frameElement, f = frame.getBoundingClientRect(); \
+            x += f.left + frame.clientLeft; y += f.top + frame.clientTop; w = frame.ownerDocument.defaultView; } \
+        const page = w.document.documentElement, body = w.document.body; \
+        const pageW = Math.max(page.scrollWidth, page.clientWidth, body ? body.scrollWidth : 0), pageH = Math.max(page.scrollHeight, page.clientHeight, body ? body.scrollHeight : 0); \
+        x += w.scrollX; y += w.scrollY; \
+        const left = Math.max(x, 0), upper = Math.max(y, 0), right = Math.min(x + b.width, pageW), lower = Math.min(y + b.height, pageH); \
+        return { x, y, left, upper, width: right - left, height: lower - upper, cut: left > x || upper > y || right < x + b.width || lower < y + b.height }; }; \
+    const saved = []; \
+    for (let w = win; ; w = w.frameElement.ownerDocument.defaultView) { saved.push([w, w.scrollX, w.scrollY]); if (!w.frameElement) break; } \
+    for (let node = el, w = win, kept = 0; kept < 50; ) { \
+        node = node.parentElement || (node.parentNode && node.parentNode.host) || null; \
+        if (!node) { if (!w.frameElement) break; node = w.frameElement; w = node.ownerDocument.defaultView; } \
+        if (node.scrollHeight > node.clientHeight || node.scrollWidth > node.clientWidth) { saved.push([node, node.scrollLeft, node.scrollTop]); kept++; } \
     } \
-    return { status: 'ok', x: x + win.scrollX, y: y + win.scrollY, width: r.width, height: r.height };";
+    const key = Symbol.for('browser-control-mcp.scrolled'); \
+    window[key] = saved; \
+    el.scrollIntoView({ behavior: 'instant', block: 'center', inline: 'center' }); \
+    const at = place(); \
+    if (at.width <= 0 || at.height <= 0) { \
+        for (const [node, left, top] of saved) { try { node.scrollTo({ left, top, behavior: 'instant' }); } catch (e) {} } \
+        delete window[key]; \
+        return { status: 'outside', x: at.x, y: at.y }; \
+    } \
+    return { status: 'ok', x: at.left, y: at.upper, width: at.width, height: at.height, cut: at.cut };";
 
 /// The viewport centre of the first element matching `selector`, where
 /// `drag` drops: `{status: 'ok', x, y}` in the top window (offset by the
@@ -1053,10 +1087,42 @@ mod tests {
         let expression = element_box("#chart");
         assert!(expression.contains("el.scrollIntoView("), "{expression}");
         assert!(
-            expression.contains("while (win.frameElement)"),
+            expression.contains("while (w.frameElement)"),
             "{expression}"
         );
-        assert!(expression.contains("x + win.scrollX"), "{expression}");
+        assert!(expression.contains("x += w.scrollX"), "{expression}");
+    }
+
+    /// ISSUE-89: nothing is scrolled for an element that is hidden or
+    /// outside the page; otherwise the scroll positions are kept first,
+    /// for RESTORE_SCROLL to put them back after the capture, and a box
+    /// partly outside the page is cut to it.
+    #[test]
+    fn element_box_keeps_the_scroll_to_restore() {
+        let expression = element_box("#chart");
+        let at = |text: &str| {
+            expression
+                .find(text)
+                .unwrap_or_else(|| panic!("{text}: {expression}"))
+        };
+        assert!(at("status: 'hidden'") < at("el.scrollIntoView("));
+        assert!(at(SCROLL_KEY) < at("el.scrollIntoView("));
+        // The windows are kept first, whatever the number of boxes
+        assert!(at("saved.push([w, w.scrollX") < at("kept < 50"));
+        // An element still outside once scrolled to is refused, the scroll
+        // put back (one in a scrolled box was refused before scrolling)
+        let (scrolled, outside) = (at("el.scrollIntoView("), at("status: 'outside'"));
+        assert!(scrolled < outside);
+        assert!(
+            expression[scrolled..outside]
+                .contains("node.scrollTo({ left, top, behavior: 'instant' })")
+        );
+        // Put back at once, whatever the page's scroll-behavior
+        assert!(RESTORE_SCROLL.contains("behavior: 'instant'"));
+        // The page's bounds are those of a full-page capture
+        assert!(expression.contains("body.scrollWidth"));
+        assert!(expression.contains("cut: "), "{expression}");
+        assert!(RESTORE_SCROLL.contains(SCROLL_KEY) && RESTORE_SCROLL.contains("scrollTo("));
     }
 
     /// ISSUE-38: date, time, range and colour inputs get their value set

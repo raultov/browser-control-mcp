@@ -789,9 +789,19 @@ pub(crate) async fn capture_screenshot(
         (Some(_), true) => return Err(capture_screenshot::selector_or_full_page()),
         (Some(selector), false) => {
             let expression = crate::util::js::element_box(selector);
-            let measured = page::run_snippet(&tab.tab, &expression).await?;
-            let (clip, note) = capture_screenshot::element_clip(&measured, selector)?;
-            (Some(clip), note)
+            let measured = page::run_snippet(&tab.tab, &expression).await;
+            let measured = measured.map_err(|e| e.to_string());
+            let clip = measured.and_then(|m| {
+                capture_screenshot::element_clip(&m, selector).map_err(|e| e.to_string())
+            });
+            match clip {
+                Ok((clip, note)) => (Some(clip), note),
+                Err(e) => {
+                    // The scroll is put back on every way out (ISSUE-89).
+                    let _ = page::run_snippet(&tab.tab, crate::util::js::RESTORE_SCROLL).await;
+                    return Err(CallToolError::from_message(e));
+                }
+            }
         }
         (None, true) => full_page_clip(&tab.tab).await?,
         (None, false) => (None, None),
@@ -803,8 +813,12 @@ pub(crate) async fn capture_screenshot(
         full_page: full_page || clip.is_some(),
         clip,
     };
-    let data = page::screenshot(&tab.tab, &request).await?;
-    Ok(capture_screenshot::image_reply(data, format, note))
+    let data = page::screenshot(&tab.tab, &request).await;
+    // The element's scroll is put back, whatever the capture did (ISSUE-89).
+    if args.selector.is_some() {
+        let _ = page::run_snippet(&tab.tab, crate::util::js::RESTORE_SCROLL).await;
+    }
+    Ok(capture_screenshot::image_reply(data?, format, note))
 }
 
 /// The clip and note of a full-page capture on Firefox: none when the
