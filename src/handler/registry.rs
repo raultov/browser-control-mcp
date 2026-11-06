@@ -809,6 +809,103 @@ fn opened_note(opened: &[(String, String)]) -> Option<String> {
     }
 }
 
+/// The tabs of the instance `ids` addresses that were there `before` an
+/// action and are gone (a page that called `window.close()`), sorted.
+async fn tabs_closed(
+    handler: &McpHandler,
+    browser: BrowserKind,
+    ids: &TargetArgs,
+    before: &HashSet<String>,
+) -> Vec<String> {
+    let now: HashSet<String> = tabs_now(handler, browser, ids)
+        .await
+        .into_iter()
+        .map(|tab| tab.id)
+        .collect();
+    let mut closed: Vec<String> = before.difference(&now).cloned().collect();
+    closed.sort();
+    closed
+}
+
+/// [`tabs_closed`], waiting up to [`CLOSE_WAIT`] for the browser to report
+/// the closing, for an action whose tab no longer answers.
+async fn tabs_closing(
+    handler: &McpHandler,
+    browser: BrowserKind,
+    ids: &TargetArgs,
+    before: &HashSet<String>,
+) -> Vec<String> {
+    let deadline = tokio::time::Instant::now() + CLOSE_WAIT;
+    loop {
+        let closed = tabs_closed(handler, browser, ids, before).await;
+        if !closed.is_empty() || tokio::time::Instant::now() >= deadline {
+            return closed;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+}
+
+/// How long an action whose tab no longer answers waits for the browser
+/// to report that tab closed.
+const CLOSE_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// The active tab of the instance `ids` addresses.
+async fn active_tab(
+    handler: &McpHandler,
+    browser: BrowserKind,
+    ids: &TargetArgs,
+) -> Option<String> {
+    match browser {
+        BrowserKind::Chrome => {
+            let session = handler.session(ids.instance_id.clone()).await.ok()?;
+            crate::util::sync::read(&session.tabs).active_tab_id.clone()
+        }
+        BrowserKind::Firefox => {
+            let session = handler.firefox(ids.instance_id.as_deref()).await.ok()?;
+            crate::util::sync::read(&session.tabs).active.clone()
+        }
+    }
+}
+
+/// The note for the tabs the action `before` describes closed, waiting for
+/// the browser to report them (`wait`) when the action's tab no longer
+/// answers, unless it is paused in the debugger.
+async fn closed_after(handler: &McpHandler, before: &NetworkBefore, wait: bool) -> Option<String> {
+    let (browser, ids) = (before.browser, &before.ids);
+    // A tab paused in the debugger did not close: no wait for it.
+    if wait && paused_at(handler, browser, ids).await.is_some() {
+        return None;
+    }
+    let closed = match wait {
+        true => tabs_closing(handler, browser, ids, &before.tabs).await,
+        false => tabs_closed(handler, browser, ids, &before.tabs).await,
+    };
+    if closed.is_empty() {
+        return None;
+    }
+    closed_note(&closed, active_tab(handler, browser, ids).await.as_deref())
+}
+
+/// The sentence a reply adds for the tabs that closed during an action
+/// (ISSUE-90: a click whose page closed its tab was reported as a
+/// protocol error on Firefox, and as nothing on Chrome), naming the tab
+/// now active. Only that they closed then is known, not who closed them.
+fn closed_note(closed: &[String], active: Option<&str>) -> Option<String> {
+    let now = active
+        .map(|tab| format!("; the active tab is now {tab}"))
+        .unwrap_or_default();
+    match closed {
+        [] => None,
+        [one] => Some(format!(
+            "Tab {one} closed during the action (a page that closes itself){now}."
+        )),
+        many => Some(format!(
+            "Tabs {} closed during the action{now}.",
+            many.join(", ")
+        )),
+    }
+}
+
 /// The page of the tab `ids` address, unless the action left it blocked
 /// (a dialog open, or paused in the debugger): it answers nothing then.
 async fn page_after(
@@ -845,6 +942,9 @@ async fn settled(
     mut result: CallToolResult,
 ) -> CallToolResult {
     let Some(page) = page_after(handler, before.browser, &before.ids).await else {
+        // The tab may have closed itself (ISSUE-90).
+        let note = closed_after(handler, &before, true).await;
+        append_notes(&mut result, None, note.into_iter());
         return result;
     };
     // Bounded even if the page stops answering mid-way (a navigation).
@@ -865,21 +965,31 @@ async fn settled(
     let started = crate::handler::downloads::wait_ended(downloads, *begun, ACTION_WAIT).await;
     let downloaded = crate::handler::downloads::action_note(&started);
     let page_notes = before.page.notes().await;
+    let closed = closed_after(handler, &before, false).await;
+    let notes = [reacted, opened, closed, downloaded].into_iter().flatten();
+    append_notes(&mut result, interruption, notes.chain(page_notes));
+    result
+}
+
+/// Appends to the first text of `result` what interrupted the action, if
+/// anything, then one line per note.
+fn append_notes(
+    result: &mut CallToolResult,
+    interruption: Option<crate::handler::interruption::Interruption>,
+    notes: impl Iterator<Item = String>,
+) {
     let first_text = result.content.iter_mut().find_map(|block| match block {
         rust_mcp_sdk::schema::ContentBlock::TextContent(text) => Some(text),
         _ => None,
     });
-    if let Some(text) = first_text {
-        if let Some(interruption) = interruption {
-            text.text = interruption.appended_to(&text.text);
-        }
-        let notes = [reacted, opened, downloaded].into_iter().flatten();
-        for note in notes.chain(page_notes) {
-            text.text.push('\n');
-            text.text.push_str(&note);
-        }
+    let Some(text) = first_text else { return };
+    if let Some(interruption) = interruption {
+        text.text = interruption.appended_to(&text.text);
     }
-    result
+    for note in notes {
+        text.text.push('\n');
+        text.text.push_str(&note);
+    }
 }
 
 /// Runs `watch` (the page settling after an action) unless the page pauses
@@ -911,10 +1021,15 @@ async fn paused_target(
     browser: BrowserKind,
     params: &CallToolRequestParams,
 ) -> Option<Paused> {
-    let ids = target_args(params);
+    paused_at(handler, browser, &target_args(params)).await
+}
+
+/// Where the tab `ids` address is paused in the debugger, if it is.
+async fn paused_at(handler: &McpHandler, browser: BrowserKind, ids: &TargetArgs) -> Option<Paused> {
     match browser {
         BrowserKind::Chrome => {
-            let target = super::resolve_target(handler, ids.instance_id, ids.tab_id);
+            let (instance, tab) = (ids.instance_id.clone(), ids.tab_id.clone());
+            let target = super::resolve_target(handler, instance, tab);
             target.await.ok()?.paused().await
         }
         BrowserKind::Firefox => {
@@ -1054,6 +1169,46 @@ mod tests {
             serde_json::json!({"status": "ok", "x": 10, "y": 20})
         };
         serde_json::json!({"result": {"result": {"type": "object", "value": value}}})
+    }
+
+    /// ISSUE-90: the tabs that were there before an action and are gone
+    /// are found, and the active tab named (Firefox instance, tab-1 open).
+    #[tokio::test]
+    async fn tabs_gone_since_an_action_are_found() {
+        use crate::backend::bidi::test_support as ts;
+        let mock = bidi_browser_lite::test_support::MockFirefox::start(false)
+            .await
+            .unwrap();
+        let handler = ts::handler(&mock);
+        let session = handler.firefox(None).await.unwrap();
+        session.tab(None).await.unwrap();
+        let ids = TargetArgs::default();
+        let before: HashSet<String> = ["tab-1", "tab-9"].map(String::from).into();
+        let closed = tabs_closed(&handler, BrowserKind::Firefox, &ids, &before).await;
+        assert_eq!(closed, ["tab-9"]);
+        let active = active_tab(&handler, BrowserKind::Firefox, &ids).await;
+        assert_eq!(active.as_deref(), Some("tab-1"));
+        ts::stop(&handler).await;
+    }
+
+    /// ISSUE-90: an input action during which tabs closed says so, naming
+    /// the tab now active.
+    #[test]
+    fn closed_tabs_are_noted() {
+        // ISSUE-90: a tab the action closed is named, with the active one
+        let one = closed_note(&["tab-2".to_string()], Some("tab-1"));
+        assert_eq!(
+            one.as_deref(),
+            Some(
+                "Tab tab-2 closed during the action (a page that closes itself); the active tab is now tab-1."
+            )
+        );
+        let two = closed_note(&["tab-2".to_string(), "tab-3".to_string()], None);
+        assert_eq!(
+            two.as_deref(),
+            Some("Tabs tab-2, tab-3 closed during the action.")
+        );
+        assert_eq!(closed_note(&[], Some("tab-1")), None);
     }
 
     /// ISSUE-41: an input action that opened tabs says so, naming each

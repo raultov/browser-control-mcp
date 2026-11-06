@@ -1785,6 +1785,32 @@ mod tests {
         ts::stop(&handler).await;
     }
 
+    /// ISSUE-90 (Firefox): a click whose handler closes its own tab
+    /// (`window.close()`) happened: releasing the input state then fails
+    /// with "no such frame", which is not reported as an error (it was a
+    /// raw protocol error).
+    #[tokio::test]
+    async fn a_click_that_closes_its_tab_is_a_click() {
+        // Given a button whose click closes the tab
+        let mock = MockFirefox::start(false).await.unwrap();
+        page_with_button(&mock);
+        mock.bidi().respond_with("input.releaseActions", |_| {
+            json!({"type": "error", "error": "no such frame", "message": "Browsing Context with id ctx-0 not found"})
+        });
+        let handler = ts::handler(&mock);
+        // When it is clicked
+        let reply =
+            click_element(call("click_element", json!({"selector": "#go"})), &handler).await;
+        // Then the click is reported
+        let reply = reply.unwrap();
+        assert!(
+            ts::text(&reply).starts_with("Successfully clicked"),
+            "{}",
+            ts::text(&reply)
+        );
+        ts::stop(&handler).await;
+    }
+
     /// ISSUE-2 (Firefox): wait_for evaluates the shared check without
     /// awaiting promises and answers from its outcome, as on Chrome.
     #[tokio::test]

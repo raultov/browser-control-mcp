@@ -156,7 +156,7 @@ mod e2e {
     ];
 
     /// The pages served as they are (by path prefix): content type, body.
-    const PAGES: [(&str, &str, &str); 9] = [
+    const PAGES: [(&str, &str, &str); 10] = [
         ("/data.csv", "text/csv", "a,b\n1,2\n"),
         (
             "/self-close.html",
@@ -168,6 +168,11 @@ mod e2e {
         ("/drag.html", "text/html", DRAG),
         ("/e2e86.css", "text/css", CSS86),
         ("/forms85.html", "text/html", FORMS85),
+        (
+            "/close90.html",
+            "text/html",
+            "<!doctype html><title>close90</title><button id=\"close90\" onclick=\"window.close()\">close</button>",
+        ),
         ("/xo-top.html", "text/html", XO_TOP),
         ("/xo-inner.html", "text/html", XO_INNER),
     ];
@@ -246,6 +251,8 @@ mod e2e {
         failures: Vec<String>,
         last_tab: String,
         last_ref: String,
+        /// The tab the last action that opened one named (`$OPENED`).
+        last_opened: String,
     }
 
     impl Mcp {
@@ -270,6 +277,7 @@ mod e2e {
                 next_id: 0,
                 failures: Vec::new(),
                 last_tab: String::new(),
+                last_opened: String::new(),
                 last_ref: String::new(),
             };
             let init = json!({"protocolVersion": "2025-11-25", "capabilities": {}, "clientInfo": {"name": "e2e", "version": "0"}});
@@ -342,8 +350,11 @@ mod e2e {
             let args = args
                 .to_string()
                 .replace("$TAB", &self.last_tab)
+                .replace("$OPENED", &self.last_opened)
                 .replace("$REF", &self.last_ref);
-            let expected = expected.replace("$TAB", &self.last_tab);
+            let expected = expected
+                .replace("$TAB", &self.last_tab)
+                .replace("$OPENED", &self.last_opened);
             let (ok, text) = self.call(name, serde_json::from_str(&args).unwrap()).await;
             let passed = match expected.strip_prefix('!') {
                 Some(error) => !ok && text.contains(error),
@@ -353,6 +364,11 @@ mod e2e {
                 && let Ok(reply) = serde_json::from_str::<Value>(&text)
             {
                 self.last_tab = reply["tab_id"].as_str().unwrap_or_default().to_string();
+            }
+            if let Some(start) = text.find("The action opened tab ") {
+                let rest = &text[start + "The action opened tab ".len()..];
+                let end = rest.find(|c: char| !(c.is_ascii_alphanumeric() || c == '-'));
+                self.last_opened = rest[..end.unwrap_or(rest.len())].to_string();
             }
             if let Some(start) = text.rfind("[ref=") {
                 let rest = &text[start + "[ref=".len()..];
@@ -471,6 +487,46 @@ mod e2e {
                 "$TAB",
             ),
             ("wait for the page", "sleep", json!({}), ""),
+        ]
+    }
+
+    /// ISSUE-90: a click whose page closes its own tab is a click, and the
+    /// reply says the tab closed and which one is active (both browsers).
+    fn self_close_steps(instance: &str) -> Vec<Step> {
+        let i = json!(instance);
+        // Opened by the page (Chrome lets a script close only such a tab)
+        let link = "(() => { const a = document.createElement('a'); a.id = 'open90'; a.href = '/close90.html'; a.target = '_blank'; a.textContent = 'open90'; document.body.prepend(a); return 1; })()";
+        vec![
+            (
+                "ISSUE-90 a link to a page that closes itself",
+                "evaluate_js",
+                json!({"instance_id": i, "expression": link}),
+                "",
+            ),
+            (
+                "ISSUE-90 open it",
+                "click_element",
+                json!({"instance_id": i, "selector": "#open90"}),
+                "The action opened tab",
+            ),
+            (
+                "ISSUE-90 act in it",
+                "switch_tab",
+                json!({"instance_id": i, "tab_id": "$OPENED"}),
+                "$OPENED",
+            ),
+            (
+                "ISSUE-90 its click closes its tab",
+                "click_element",
+                json!({"instance_id": i, "selector": "#close90"}),
+                "Tab $OPENED closed during the action",
+            ),
+            (
+                "ISSUE-90 the opener answers",
+                "evaluate_js",
+                json!({"instance_id": i, "expression": "document.getElementById('open90').remove(); 1"}),
+                "1",
+            ),
         ]
     }
 
@@ -2574,6 +2630,7 @@ mod e2e {
             audit_steps(instance),
             multiple_select_steps(instance),
             opened_tab_steps(instance),
+            self_close_steps(instance),
             late_element_steps(instance),
             valued_input_steps(instance),
             custom_editor_steps(instance),

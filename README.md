@@ -188,8 +188,10 @@ after 134 ms.`, or says the page was still changing after 1 s. A click that
 navigates waits for the new page's requests. Use `wait_for` for anything
 slower (a timer, a long request). An action that opened tabs (a
 `target=_blank` link, `window.open`) says so: `The action opened tab tab-3
-(https://…): call switch_tab with its tab_id to act in it.` So does one
-that downloaded a file (`The action downloaded data.csv (8 bytes) to …`),
+(https://…): call switch_tab with its tab_id to act in it.` One during which
+a tab closed (a page calling `window.close()`) names it and the tab now
+active. So
+does one that downloaded a file (`The action downloaded data.csv (8 bytes) to …`),
 opened a file chooser (`set its files with upload_file`; Chrome intercepts
 file choosers, so none opens on screen) or changed the URL without loading
 a page (`history.pushState`, a `#fragment`). In a textarea or

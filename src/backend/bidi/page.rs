@@ -11,6 +11,7 @@ use crate::handler::cdp_domains::page::wait_for::CheckError;
 use crate::handler::evaluation::{self, Evaluation, exception_message};
 use crate::handler::interruption::Interruption;
 use crate::handler::navigation::{LOAD_TIMEOUT, NOT_LOADED_NOTE, NavigationOutcome, load_before};
+use bidi_browser_lite::bidi_lite::error::codes;
 use bidi_browser_lite::{BidiError, ReadinessState, Tab};
 use serde_json::{Value, json};
 
@@ -577,9 +578,16 @@ async fn perform_then(
     if !release {
         return Ok(None);
     }
-    command(tab, "input.releaseActions", releasing)
-        .await
-        .map(|_| None)
+    let method = "input.releaseActions";
+    let send = tab.send_raw_command(method, releasing);
+    match unless_prompt(tab, method, send).await? {
+        Ok(_) => Ok(None),
+        // The actions closed their own tab (a click handler calling
+        // `window.close()`): they happened, and there is no input state
+        // left to release (ISSUE-90).
+        Err(BidiError::ProtocolError { error, .. }) if error == codes::NO_SUCH_FRAME => Ok(None),
+        Err(error) => Err(protocol_error(method, &error)),
+    }
 }
 
 /// The WebDriver key value typing `c`: a newline in a textarea or
