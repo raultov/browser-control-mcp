@@ -490,6 +490,43 @@ mod e2e {
         ]
     }
 
+    /// ISSUE-91: a labelled field shows its placeholder in the snapshot
+    /// (both browsers run the same outline).
+    fn placeholder_steps(instance: &str) -> Vec<Step> {
+        let i = json!(instance);
+        let html = "<div id=\"w91\"><label for=\"f91\">Email91</label><input id=\"f91\" placeholder=\"you91@example.com\"><input placeholder=\"Search91\"></div>";
+        let add = format!(
+            "document.body.insertAdjacentHTML('afterbegin', {}); 1",
+            json!(html)
+        );
+        vec![
+            (
+                "ISSUE-91 a labelled field with a placeholder",
+                "evaluate_js",
+                json!({"instance_id": i, "expression": add}),
+                "",
+            ),
+            (
+                "ISSUE-91 the snapshot shows its placeholder",
+                "find_in_snapshot",
+                json!({"instance_id": i, "text": "Email91"}),
+                "textbox \"Email91\" [placeholder=\"you91@example.com\"] [ref=",
+            ),
+            (
+                "ISSUE-91 a field named by its placeholder does not repeat it",
+                "find_in_snapshot",
+                json!({"instance_id": i, "text": "Search91"}),
+                "textbox \"Search91\" [ref=",
+            ),
+            (
+                "ISSUE-91 remove it",
+                "evaluate_js",
+                json!({"instance_id": i, "expression": "document.getElementById('w91').remove(); 1"}),
+                "",
+            ),
+        ]
+    }
+
     /// ISSUE-90: a click whose page closes its own tab is a click, and the
     /// reply says the tab closed and which one is active (both browsers).
     fn self_close_steps(instance: &str) -> Vec<Step> {
@@ -2631,6 +2668,7 @@ mod e2e {
             multiple_select_steps(instance),
             opened_tab_steps(instance),
             self_close_steps(instance),
+            placeholder_steps(instance),
             late_element_steps(instance),
             valued_input_steps(instance),
             custom_editor_steps(instance),

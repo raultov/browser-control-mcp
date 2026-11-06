@@ -24,6 +24,9 @@ from a copy of its code: entries describe the differences from that release.
   closed during the action and the tab now active, on both browsers. Firefox failed with a
   raw protocol error from `input.releaseActions` (the click had happened);
   Chrome said nothing of the closed tab (#90).
+- `snapshot` shows a field's placeholder (`[placeholder="you@example.com"]`,
+  often the format it expects) when it is not already the field's name; a
+  labelled field hid it (#91).
 
 ## [0.12.0-beta.21] - 2026-11-05
 

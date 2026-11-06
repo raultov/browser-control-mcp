@@ -208,8 +208,8 @@ const OUTLINE: &str = r#"const outline = (root, maxDepth, maxChars, maxOptions) 
         const aria = el.getAttribute('aria-invalid');
         return aria === null || aria === 'false' ? matches(el, ':user-invalid') : true;
     };
-    const details = (el, role) => {
-        const out = [], flag = (on, name) => { if (on) out.push('[' + name + ']'); };
+    const details = (el, role, name) => {
+        const out = [], flag = (on, state) => { if (on) out.push('[' + state + ']'); };
         const box = el.type === 'checkbox' || el.type === 'radio';
         flag(box ? el.checked : el.getAttribute('aria-checked') === 'true', 'checked');
         flag(el.disabled || el.getAttribute('aria-disabled') === 'true', 'disabled');
@@ -235,6 +235,9 @@ const OUTLINE: &str = r#"const outline = (root, maxDepth, maxChars, maxOptions) 
         flag(role === 'dialog' && el.matches(':modal'), 'modal');
         if (role === 'heading') out.push('[level=' + (el.getAttribute('aria-level') || (/^H[1-6]$/.test(el.tagName) ? el.tagName[1] : '2')) + ']');
         if (role === 'link') out.push('[href=' + cut(el.getAttribute('href') || '', 120) + ']');
+        const field = el.tagName === 'INPUT' || el.tagName === 'TEXTAREA';
+        const placeholder = field ? clean(el.getAttribute('placeholder')) : '';
+        if (placeholder && placeholder !== name) out.push('[placeholder=' + JSON.stringify(cut(placeholder, 100)) + ']');
         return out;
     };
     const valueOf = (el, role, name) => {
@@ -301,7 +304,7 @@ const OUTLINE: &str = r#"const outline = (root, maxDepth, maxChars, maxOptions) 
         const name = nameOf(el, holder ? 'group' : role), value = valueOf(el, role, name), at = lines.length;
         const parts = [role];
         if (name) parts.push(JSON.stringify(cut(name, 100)));
-        parts.push(...details(el, role), '[ref=' + refOf(el) + ']');
+        parts.push(...details(el, role, name), '[ref=' + refOf(el) + ']');
         push(depth, parts.join(' ') + (value ? ': ' + JSON.stringify(cut(value, 100)) : ''));
         if (role === 'iframe') {
             let doc = null; try { doc = el.contentDocument; } catch (e) {}
@@ -490,6 +493,18 @@ mod tests {
             "{OUTLINE}"
         );
         assert!(OUTLINE.contains("valueOf(el, role, name)"), "{OUTLINE}");
+    }
+
+    /// ISSUE-91: a field's placeholder (often the format it expects) shows
+    /// when it is not already its name (a field without a label is named
+    /// by it): `textbox "Email" [placeholder="you@example.com"]`.
+    #[test]
+    fn placeholders_show_unless_they_are_the_name() {
+        assert!(OUTLINE.contains("details(el, role, name)"), "{OUTLINE}");
+        assert!(
+            OUTLINE.contains("placeholder !== name") && OUTLINE.contains("'[placeholder='"),
+            "{OUTLINE}"
+        );
     }
 
     /// ISSUE-48: an element made draggable, or a drop zone (a drop or
