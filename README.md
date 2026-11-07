@@ -402,7 +402,8 @@ claude mcp add browser-control-mcp -- npx -y @raultov/browser-control-mcp
   `open_tab` makes its new tab active, `close_tab` brings the next one to
   the front, and after a page opens or closes a tab (a `target=_blank`
   link, a popup, `window.close()`) the active tab is brought back to the
-  front. Background tabs are hidden to their pages (no
+  front. Once the last tab is closed, a tool says to open one, and
+  `open_tab` does. Background tabs are hidden to their pages (no
   `requestAnimationFrame`, throttled timers). An argument a tool does not have fails the
   call before anything runs (a `tabId` typo answers "did you mean
   `tab_id`?"), so a typo never falls back to the active tab.

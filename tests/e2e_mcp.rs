@@ -3599,6 +3599,53 @@ mod e2e {
         ]
     }
 
+    /// ISSUE-101: once an instance's last tab is closed, a tool says to
+    /// open one, and open_tab does (it failed on Chrome).
+    fn last_tab_steps(browser: &str, base: &str) -> Vec<Step> {
+        let i = json!("last101");
+        let open = json!({"browser": browser, "label": "last101", "headless": true});
+        let url = format!("{base}/");
+        vec![
+            ("ISSUE-101 an instance", "open_instance", open, "last101"),
+            (
+                "ISSUE-101 its page",
+                "navigate",
+                json!({"instance_id": i, "url": url}),
+                "Navigated to",
+            ),
+            (
+                "ISSUE-101 close its last tab",
+                "close_tab",
+                json!({"instance_id": i}),
+                "closed_tab_id",
+            ),
+            (
+                "ISSUE-101 a tool says to open one",
+                "evaluate_js",
+                json!({"instance_id": i, "expression": "1"}),
+                "!open one with open_tab",
+            ),
+            (
+                "ISSUE-101 open_tab opens one",
+                "open_tab",
+                json!({"instance_id": i, "url": url}),
+                "tab_id",
+            ),
+            (
+                "ISSUE-101 it answers",
+                "evaluate_js",
+                json!({"instance_id": i, "expression": "1 + 1"}),
+                "2",
+            ),
+            (
+                "ISSUE-101 close the instance",
+                "close_instance",
+                json!({"instance_id": i}),
+                "\"stopped\":true",
+            ),
+        ]
+    }
+
     /// Steps 13–15: tracing and pause on load (Chrome only; Firefox
     /// answers a capability error), then close.
     fn closing_steps(browser: &str) -> Vec<Step> {
@@ -3753,6 +3800,7 @@ mod e2e {
             other_page_steps("e2e", &base),
             form_issue_steps("e2e", &base, browser == "chrome"),
             debugger_steps("e2e", &base, browser == "chrome"),
+            last_tab_steps(browser, &base),
             closing_steps(browser),
         ];
         mcp.steps(all.concat()).await;

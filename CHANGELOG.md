@@ -10,6 +10,13 @@ from a copy of its code: entries describe the differences from that release.
 
 ## [Unreleased]
 
+### Fixed
+
+- Chrome: once an instance's last tab is closed, `open_tab` opens a new one;
+  it failed (`No suitable Chrome target found`), as did every other tool,
+  until `restart_browser`. A tool that needs a tab then says to open one
+  with `open_tab`, the same on both browsers (#101).
+
 ## [0.13.0-beta.23] - 2026-11-07
 
 Public **BETA**. Uses two new Chrome 156 DevTools features and fixes found

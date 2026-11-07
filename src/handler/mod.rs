@@ -797,6 +797,20 @@ async fn read_browser_version(client: &CdpClient) -> Option<BrowserVersion> {
     })
 }
 
+/// Why a tool finds no tab to act on, on both browsers (ISSUE-101: on
+/// Chrome, once its last tab was closed, it said only that no Chrome target
+/// was found).
+pub(crate) const NO_TAB_OPEN: &str = "No tab is open in this instance: open one with open_tab.";
+
+/// The error of a session connection that failed with `error` on a browser
+/// with `pages` pages (`None`: unknown): with none, [`NO_TAB_OPEN`].
+fn connect_failure(error: &str, pages: Option<usize>) -> String {
+    match pages {
+        Some(0) => NO_TAB_OPEN.to_string(),
+        _ => format!("Failed to connect to Chrome: {error}"),
+    }
+}
+
 pub(crate) fn parse_chrome_major(product: &str) -> Option<u32> {
     let prefix = if product.starts_with("HeadlessChrome/") {
         "HeadlessChrome/"
@@ -994,13 +1008,30 @@ impl BrowserSession {
                 let manager = self.chrome_manager.lock().await;
                 manager.client().await
             };
-            let client = client_res.map_err(|e| {
-                CallToolError::from_message(format!("Failed to connect to Chrome: {}", e))
-            })?;
+            let client = match client_res.map_err(|e| e.to_string()) {
+                Ok(client) => client,
+                Err(e) => {
+                    drop(client_lock);
+                    let pages = self.page_count().await;
+                    return Err(CallToolError::from_message(connect_failure(&e, pages)));
+                }
+            };
             self.prepare_client(&client).await;
             *client_lock = Some(client);
         }
         Ok(client_lock)
+    }
+
+    /// How many pages the browser has (`None` when it cannot be asked).
+    pub(crate) async fn page_count(&self) -> Option<usize> {
+        let browser = self
+            .chrome_manager
+            .lock()
+            .await
+            .browser_client()
+            .await
+            .ok()?;
+        browser.list_tabs().await.ok().map(|pages| pages.len())
     }
 
     /// First use of a session-level client: enable the domains, read the
@@ -1938,6 +1969,26 @@ mod tests {
         // Then it is told to restart, and the dead tab is gone
         assert_eq!(error, BROWSER_GONE);
         assert!(crate::util::sync::read(&session.tabs).tabs.is_empty());
+    }
+
+    /// ISSUE-101: a connection refused because the browser has no page
+    /// left (its last tab was closed) says so and names open_tab; any other
+    /// failure keeps its own error.
+    #[test]
+    fn a_browser_without_pages_says_to_open_a_tab() {
+        let refused = "No suitable Chrome target found at host: 127.0.0.1:9";
+        assert_eq!(connect_failure(refused, Some(0)), NO_TAB_OPEN);
+        let other = connect_failure(refused, Some(2));
+        assert!(
+            other.starts_with("Failed to connect to Chrome: No suitable"),
+            "{other}"
+        );
+        let unknown = connect_failure(refused, None);
+        assert!(
+            unknown.starts_with("Failed to connect to Chrome"),
+            "{unknown}"
+        );
+        assert!(NO_TAB_OPEN.contains("open_tab"));
     }
 
     /// AUD-EV-07: once the page is registered as a tab, the session-level

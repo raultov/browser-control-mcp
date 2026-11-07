@@ -236,10 +236,7 @@ impl FirefoxTabs {
     pub(crate) fn get(&self, id: Option<&str>) -> Result<(String, FirefoxTab), String> {
         let id = match id {
             Some(id) => id.to_string(),
-            None => self
-                .active
-                .clone()
-                .ok_or("No tab is open in this Firefox instance")?,
+            None => self.active.clone().ok_or(crate::handler::NO_TAB_OPEN)?,
         };
         match self.tabs.get(&id) {
             Some(tab) => Ok((id, tab.clone())),

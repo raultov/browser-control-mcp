@@ -90,6 +90,37 @@ async fn open_url(
     Ok(outcome.url)
 }
 
+/// Connects the session, then creates the tab. The session connection
+/// starts target discovery (popups, tabs the page or the user closes, the
+/// browser's first page): without it a session whose first call is
+/// open_tab would never track them. It connects to a page: with none left
+/// (the last tab was closed), the tab is created first (ISSUE-101).
+async fn connect_and_create(
+    session: &crate::handler::BrowserSession,
+    label: Option<String>,
+    url: &str,
+) -> Result<(String, String), CallToolError> {
+    // Asked only before the session connects: one round trip, not one per tab.
+    let connected = session.client.lock().await.is_some();
+    if !connected && session.page_count().await == Some(0) {
+        let (tab_id, target_id) = create_tab(session, label, url).await?;
+        // As text: the error type is not `Send` across the await.
+        let connecting = session
+            .get_or_connect()
+            .await
+            .map(drop)
+            .map_err(|e| e.to_string());
+        return match connecting {
+            Ok(()) => Ok((tab_id, target_id)),
+            Err(e) => Err(CallToolError::from_message(format!(
+                "{e} (the new tab {tab_id} stays open)"
+            ))),
+        };
+    }
+    drop(session.get_or_connect().await?);
+    create_tab(session, label, url).await
+}
+
 impl OpenTabTool {
     pub async fn handle(
         params: CallToolRequestParams,
@@ -117,12 +148,7 @@ impl OpenTabTool {
                 ))
             })?;
         }
-        // The session connection starts target discovery (popups, tabs the
-        // page or the user closes, the browser's first page): without it a
-        // session whose first call is open_tab would never track them.
-        drop(session.get_or_connect().await?);
-
-        let (tab_id, target_id) = create_tab(&session, args.label.clone(), &url).await?;
+        let (tab_id, target_id) = connect_and_create(&session, args.label.clone(), &url).await?;
         // The browser shows the new tab: it becomes the tab the tools act on.
         super::tab_lifecycle::make_active(&session.tabs, &tab_id)
             .await
