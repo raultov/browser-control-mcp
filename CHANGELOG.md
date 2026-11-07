@@ -10,6 +10,17 @@ from a copy of its code: entries describe the differences from that release.
 
 ## [Unreleased]
 
+### Changed
+
+- Without `--port`, the default Chrome instance launches a Chrome of its
+  own on a free port, with the launch options it was given (`--headless`,
+  `--window-size`, `--proxy-server`...). It attached to whatever Chrome
+  was already running on 9222 (another MCP session's, visible, with its
+  tabs) and ignored those options without a word. To attach to a running
+  Chrome, pass its `--port` (`--port 9222`); a remote `--host` and
+  `--user-profile` still attach on 9222 when no port is given.
+  `list_instances` shows the port the instance's Chrome runs on (#96).
+
 ## [0.12.0-beta.22] - 2026-11-07
 
 Public **BETA**. Fixes found by a comparison with other browser MCP

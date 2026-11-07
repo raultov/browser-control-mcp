@@ -116,7 +116,7 @@ impl OpenInstanceTool {
             user_profile: false,
             window_size: handler.base_params.browser.window_size,
         };
-        let mut params = LaunchParams::new("127.0.0.1".into(), 0, browser);
+        let mut params = LaunchParams::new("127.0.0.1".into(), None, browser);
         params.secondary = true;
         params.set_enable_webmcp(handler.flags.enable_webmcp);
         if let Some(features) = self.features.clone() {

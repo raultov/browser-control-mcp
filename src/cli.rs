@@ -25,9 +25,12 @@ pub struct Args {
     #[arg(long, default_value = "127.0.0.1")]
     pub host: String,
 
-    /// Chrome remote debugging port
-    #[arg(long, default_value_t = 9222)]
-    pub port: u16,
+    /// Chrome remote debugging port of the default instance. Without it the
+    /// server launches a Chrome of its own on a free port; with it, it
+    /// attaches to the Chrome already running there, or launches one there.
+    /// 0 is refused: omit the flag for a port of the server's choosing.
+    #[arg(long, value_parser = clap::value_parser!(u16).range(1..))]
+    pub port: Option<u16>,
 
     /// Maximum number of concurrent Chrome instances (default: 8)
     #[arg(long, default_value_t = 8)]
@@ -273,7 +276,8 @@ mod tests {
     #[test]
     fn test_args_parsing_defaults() {
         let args = Args::parse_from(["browser-control-mcp"]);
-        assert_eq!(args.port, 9222);
+        // ISSUE-96: no port means the server launches its own Chrome
+        assert_eq!(args.port, None);
         assert_eq!(args.host, "127.0.0.1");
         assert_eq!(args.max_instances, 8);
         assert_eq!(
@@ -345,7 +349,10 @@ mod tests {
     #[test]
     fn test_args_parsing_custom_port() {
         let args = Args::parse_from(["browser-control-mcp", "--port", "8080"]);
-        assert_eq!(args.port, 8080);
+        assert_eq!(args.port, Some(8080));
+        // ISSUE-96: 0 is refused at once (attach-or-launch needs a real port)
+        let zero = Args::try_parse_from(["browser-control-mcp", "--port", "0"]);
+        assert!(zero.is_err());
     }
 
     #[test]

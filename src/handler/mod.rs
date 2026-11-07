@@ -1358,7 +1358,8 @@ impl BrowserSession {
 #[derive(Debug, Clone)]
 pub struct HandlerParams {
     pub host: String,
-    pub port: u16,
+    /// `--port`: `None` launches a Chrome of the server's own (ISSUE-96).
+    pub port: Option<u16>,
     pub default_browser: crate::backend::BrowserKind,
     pub browser: crate::cli::BrowserFlags,
     pub server: crate::cli::ServerFlags,
@@ -1374,7 +1375,7 @@ impl Default for HandlerParams {
     fn default() -> Self {
         Self {
             host: "127.0.0.1".into(),
-            port: 9222,
+            port: None,
             default_browser: Default::default(),
             browser: Default::default(),
             server: Default::default(),
@@ -1556,9 +1557,9 @@ impl McpHandler {
     }
 
     pub fn new_with_params(options: HandlerParams) -> Self {
-        let port = options.port;
         let mut params =
             chrome_instance::launch::LaunchParams::new(options.host, options.port, options.browser);
+        let port = params.configured_port();
         params.set_enable_webmcp(options.server.enable_webmcp);
         if let Some(proxy) = &options.proxy.proxy_server {
             params.set_proxy(Some(proxy.clone()));
@@ -2143,7 +2144,7 @@ mod tests {
     fn test_handler_new_with_params() {
         let handler = McpHandler::new_with_params(HandlerParams {
             host: "host.docker.internal".into(),
-            port: 9222,
+            port: Some(9222),
             browser: crate::cli::BrowserFlags {
                 headless: true,
                 enable_automation: true,
@@ -2165,7 +2166,7 @@ mod tests {
     fn test_handler_new_with_automation() {
         let handler = McpHandler::new_with_params(HandlerParams {
             host: "127.0.0.1".into(),
-            port: 9444,
+            port: Some(9444),
             default_browser: crate::backend::BrowserKind::Chrome,
             browser: crate::cli::BrowserFlags {
                 headless: false,

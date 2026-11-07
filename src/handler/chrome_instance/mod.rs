@@ -52,7 +52,7 @@ use crate::handler::chrome_instance::launch::ChromeFeature;
 /// already running on its `port`.
 pub(crate) fn attached_restart_refused(port: u16) -> String {
     format!(
-        "The Chrome on port {port} was already running when this instance connected to it: this server did not launch it, so restart_browser cannot stop or relaunch it, and proxy, features and cookies cannot be applied. Close that Chrome yourself (or start the server with another --port) to let the server launch its own; stop_browser only disconnects from it."
+        "The Chrome on port {port} was already running when this instance connected to it: this server did not launch it, so restart_browser cannot stop or relaunch it, and proxy, features and cookies cannot be applied. The server launches a Chrome of its own only when started without --port, on the local host and without --user-profile (or close that Chrome yourself); stop_browser only disconnects from it."
     )
 }
 

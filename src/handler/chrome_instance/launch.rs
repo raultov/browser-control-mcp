@@ -44,10 +44,17 @@ impl ChromeFeature {
     }
 }
 
+/// The port a Chrome is attached to when none is given and the server does
+/// not launch its own (a remote `--host`, or `--user-profile`): Chrome's
+/// usual debugging port.
+pub(crate) const DEFAULT_PORT: u16 = 9222;
+
 #[derive(Debug, Clone)]
 pub(crate) struct LaunchParams {
     host: String,
-    port: u16,
+    /// `--port`; `None`: the default instance launches a Chrome of its own
+    /// on a port Chrome picks (ISSUE-96).
+    port: Option<u16>,
     pub(crate) browser: crate::cli::BrowserFlags,
     pub(crate) enable_webmcp: bool,
     pub(crate) secondary: bool,
@@ -64,10 +71,14 @@ pub(crate) struct LaunchPlan {
 }
 
 impl LaunchParams {
-    pub(crate) fn new(host: String, port: u16, browser: crate::cli::BrowserFlags) -> Self {
+    pub(crate) fn new(
+        host: String,
+        port: impl Into<Option<u16>>,
+        browser: crate::cli::BrowserFlags,
+    ) -> Self {
         Self {
             host,
-            port,
+            port: port.into(),
             browser,
             enable_webmcp: false,
             secondary: false,
@@ -101,12 +112,24 @@ impl LaunchParams {
         self.proxy.as_deref()
     }
 
+    /// The port before a launch: 0 when Chrome picks it (the real one is
+    /// known once it runs).
     pub(crate) fn configured_port(&self) -> u16 {
-        self.port
+        self.resolve_port()
+    }
+
+    /// Whether this instance launches a Chrome of its own on a port Chrome
+    /// picks: a secondary instance, or the default one without `--port`
+    /// on the local host. Attaching to whatever Chrome ran on 9222 (another
+    /// session's, visible) ignored `--headless` without a word (ISSUE-96).
+    /// The user's own profile is not launched twice: their Chrome uses it.
+    fn launches_own(&self) -> bool {
+        self.secondary
+            || (self.port.is_none() && is_local_host(&self.host) && !self.browser.user_profile)
     }
 
     pub(crate) fn plan(&self) -> LaunchPlan {
-        let mode = if self.secondary {
+        let mode = if self.launches_own() {
             LaunchMode::LaunchNew
         } else if is_local_host(&self.host) {
             LaunchMode::Auto
@@ -124,8 +147,6 @@ impl LaunchParams {
             // browser stops (or swept by cdp-browser-lite after an abrupt kill).
             ProfileMode::Ephemeral
         };
-
-        let _port = if self.secondary { 0 } else { self.port };
 
         let mut extra_args = if self.browser.enable_automation {
             Vec::new()
@@ -153,7 +174,11 @@ impl LaunchParams {
     }
 
     pub(crate) fn resolve_port(&self) -> u16 {
-        if self.secondary { 0 } else { self.port }
+        match (self.launches_own(), self.port) {
+            (true, _) => 0,
+            (false, Some(port)) => port,
+            (false, None) => DEFAULT_PORT,
+        }
     }
 
     pub(crate) fn to_config(&self, plan: &LaunchPlan) -> BrowserConfig {
@@ -250,6 +275,33 @@ mod tests {
         assert_eq!(plan.mode, LaunchMode::LaunchNew);
         assert_eq!(params.resolve_port(), 0);
         assert_eq!(plan.profile, ProfileMode::Ephemeral);
+    }
+
+    /// ISSUE-96: without --port the default instance launches a Chrome of
+    /// its own on a port Chrome picks; it attached to whatever Chrome was
+    /// already on 9222 (another session's), ignoring --headless.
+    #[test]
+    fn without_a_port_the_default_instance_launches_its_own_chrome() {
+        let params = LaunchParams::new("127.0.0.1".into(), None, flags(false, true, false));
+        assert_eq!(params.plan().mode, LaunchMode::LaunchNew);
+        assert_eq!(params.resolve_port(), 0);
+        assert_eq!(params.to_config(&params.plan()).port(), 0);
+        // An explicit port keeps attaching to the Chrome there (or launching on it)
+        let given = LaunchParams::new("127.0.0.1".into(), 9333, flags(false, true, false));
+        assert_eq!(given.plan().mode, LaunchMode::Auto);
+        assert_eq!(given.resolve_port(), 9333);
+        // The user's own profile is used by their running Chrome: still 9222
+        let user = LaunchParams::new("127.0.0.1".into(), None, flags(false, false, true));
+        assert_eq!(
+            (user.plan().mode, user.resolve_port()),
+            (LaunchMode::Auto, DEFAULT_PORT)
+        );
+        // A remote host is only attached to, on 9222 unless told otherwise
+        let remote = LaunchParams::new("10.0.0.5".into(), None, flags(false, false, false));
+        assert_eq!(
+            (remote.plan().mode, remote.resolve_port()),
+            (LaunchMode::AttachOnly, DEFAULT_PORT)
+        );
     }
 
     #[test]

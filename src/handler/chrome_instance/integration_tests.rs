@@ -318,7 +318,7 @@ async fn given_managed_instance_when_stopped_then_ephemeral_profile_dir_is_remov
 async fn given_real_chrome_when_multiple_tabs_opened_then_console_logs_are_isolated() {
     let handler = crate::handler::McpHandler::new_with_params(crate::handler::HandlerParams {
         host: "127.0.0.1".into(),
-        port: TEST_PORT_BASE + 6,
+        port: Some(TEST_PORT_BASE + 6),
         browser: crate::cli::BrowserFlags {
             headless: true,
             ..Default::default()

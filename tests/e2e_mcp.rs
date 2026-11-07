@@ -478,6 +478,28 @@ mod e2e {
             self.close_tabs_but(&there).await;
         }
 
+        /// ISSUE-96: without --port the default instance launches a Chrome
+        /// of its own on a port Chrome picks, even with one already on 9222
+        /// (it attached to it); then it is stopped.
+        async fn own_default_chrome(&mut self) {
+            let (ok, text) = self
+                .call("evaluate_js", json!({"expression": "1 + 1"}))
+                .await;
+            self.report("ISSUE-96 the default instance starts", ok, &text);
+            let (_, text) = self.call("list_instances", json!({})).await;
+            let rows: Value = text
+                .split("\n\n")
+                .next()
+                .and_then(|rows| serde_json::from_str(rows).ok())
+                .unwrap_or_default();
+            let port = rows[0]["port"].as_u64().unwrap_or_default();
+            let own = rows[0]["id"] == "default" && port != 0 && port != 9222;
+            self.report("ISSUE-96 it runs a Chrome of its own", own, &text);
+            let stop = json!({"instance_id": "default"});
+            self.step(("ISSUE-96 stop it", "stop_browser"), stop, "stopped")
+                .await;
+        }
+
         /// Closes stdin and waits for the server to exit.
         async fn finish(mut self) -> Vec<String> {
             drop(self.stdin);
@@ -3632,6 +3654,9 @@ mod e2e {
         let secrets = secrets_file(browser);
         let mut mcp = Mcp::start(&["--tool-groups", "all", "--secrets", &secrets]).await;
         mcp.list_tools(57).await;
+        if browser == "chrome" {
+            mcp.own_default_chrome().await;
+        }
         let all = [
             page_steps(browser, &base),
             tab_steps("e2e", &base),

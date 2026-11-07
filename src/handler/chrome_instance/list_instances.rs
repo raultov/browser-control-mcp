@@ -6,7 +6,7 @@ use rust_mcp_sdk::{
 
 #[macros::mcp_tool(
     name = "list_instances",
-    description = "Lists the instances: id, browser, capabilities, label, host, port, profile_dir, features, is_default."
+    description = "Lists the instances: id, browser, capabilities, label, host, port (0 until a Chrome the server launches has picked one), profile_dir, features, is_default."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct ListInstancesTool {}
@@ -23,6 +23,9 @@ impl ListInstancesTool {
         let mut rows = Vec::new();
         for desc in &descriptors {
             let mut row = describe(handler, desc);
+            if let (Some(port), Some(map)) = (running_port(handler, desc), row.as_object_mut()) {
+                map.insert("port".into(), serde_json::json!(port));
+            }
             if let Some(session) = handler.registry.get_firefox(&desc.id)
                 && let (Some(version), Some(map)) = (session.version().await, row.as_object_mut())
             {
@@ -73,6 +76,19 @@ fn describe(handler: &McpHandler, desc: &super::registry::InstanceDescriptor) ->
     row
 }
 
+/// The port the Chrome of the instance `desc` describes runs on, once
+/// launched: the default instance launches its own on a port Chrome picks,
+/// so its descriptor holds 0 (ISSUE-96). `None` while its manager is busy
+/// (a launch in progress) or nothing runs yet.
+fn running_port(handler: &McpHandler, desc: &super::registry::InstanceDescriptor) -> Option<u16> {
+    if desc.browser != crate::backend::BrowserKind::Chrome {
+        return None;
+    }
+    let session = handler.registry.get_session(&desc.id)?;
+    let manager = session.chrome_manager.try_lock().ok()?;
+    Some(manager.get_port()).filter(|port| *port != 0)
+}
+
 /// A warning for an outdated browser, or a note when the product is not
 /// recognised but feature presets were requested.
 fn version_warning(desc: &super::registry::InstanceDescriptor) -> Option<String> {
@@ -118,6 +134,26 @@ mod tests {
         let ff_caps = row("ff")["capabilities"].as_array().unwrap().clone();
         assert!(ff_caps.contains(&serde_json::json!("raw_bidi")));
         assert!(!ff_caps.contains(&serde_json::json!("webmcp")));
+    }
+
+    /// ISSUE-96: the default instance launches its Chrome on a port Chrome
+    /// picks: list_instances shows the port it runs on, not the 0 it was
+    /// registered with.
+    #[tokio::test]
+    async fn the_port_shown_is_the_one_chrome_runs_on() {
+        // Given a default instance registered before its Chrome picked port 9999
+        let handler = McpHandler::new_test_with_port(9999);
+        let _ = handler.session(None).await.unwrap();
+        handler
+            .registry
+            .update_descriptor("default", |d| d.port = 0);
+        // When list_instances is called
+        let params = serde_json::from_value(serde_json::json!({"name": "list_instances"})).unwrap();
+        let result = ListInstancesTool::handle(params, &handler).await.unwrap();
+        let text = result.content[0].as_text_content().unwrap().text.clone();
+        let rows: Vec<serde_json::Value> = serde_json::from_str(&text).unwrap();
+        // Then its row has the port Chrome runs on
+        assert_eq!(rows[0]["port"], 9999, "{text}");
     }
 
     /// CLI-05: --enable-automation on Firefox is reported, not silently dropped.
