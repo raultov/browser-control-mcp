@@ -16,6 +16,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import sys
 import time
 import traceback
@@ -39,12 +40,21 @@ PUPPETEER = "@hisma/server-puppeteer@0.6.5"
 MARK = {"pass": "✓", "fail": "✗", "unsupported": "–", "error": "E", None: " "}
 
 
+def free_port():
+    """A TCP port nothing listens on now, for a browser of its own."""
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return probe.getsockname()[1]
+
+
 def servers(args, output):
     """name -> (adapter class, command, env, extra keyword arguments)."""
     npx = shutil.which("npx") or "npx"
     chrome = args.chrome or shutil.which("google-chrome") or shutil.which("google-chrome-stable") or "google-chrome"
     env = dict(os.environ)
-    bc = [args.bc_bin, "--headless", "--tool-groups", "all"]
+    # A port of its own: before #96 (an older --bc-bin) the server attached
+    # to whatever Chrome ran on 9222 (another MCP session's) without --port.
+    bc = [args.bc_bin, "--headless", "--port", str(free_port()), "--tool-groups", "all"]
     puppeteer_env = {**env, "PUPPETEER_LAUNCH_OPTIONS": json.dumps({"headless": True, "executablePath": chrome})}
     return {
         "bc": (BrowserControl, bc, env, {}),
