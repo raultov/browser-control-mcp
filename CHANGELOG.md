@@ -10,6 +10,21 @@ from a copy of its code: entries describe the differences from that release.
 
 ## [Unreleased]
 
+## [0.13.0-beta.23] - 2026-11-07
+
+Public **BETA**. Uses two new Chrome 156 DevTools features and fixes found
+by a test round on Chrome 156. `record_video` records a video of a Chrome
+tab, and `evaluate_on_call_frame` takes `scope` to evaluate in an
+enclosing scope of a paused frame, whose scopes `call_stack` now lists.
+Without `--port` the default Chrome instance launches a Chrome of its own
+instead of attaching to whatever Chrome ran on 9222. On an attached Chrome
+with tabs, input actions no longer name the tabs already open as opened by
+them, and a screenshot of a minimized window restores it for the capture.
+Behaviour changes: without `--port` the server no longer attaches to a
+Chrome on 9222 (pass `--port 9222` to do so); `--port 0` is refused;
+`list_instances` shows the port the instance's Chrome runs on; `call_stack`
+frames gain `scopes` on Chrome; a new tool in the `files` group.
+
 ### Added
 
 - `record_video` (`files` group, Chrome 156 or later): `action: "start"`
