@@ -21,6 +21,15 @@ from a copy of its code: entries describe the differences from that release.
   `--user-profile` still attach on 9222 when no port is given.
   `list_instances` shows the port the instance's Chrome runs on (#96).
 
+### Fixed
+
+- Chrome: on a browser that already had tabs when the server attached, the
+  first input actions no longer say they opened those tabs (`The action
+  opened tabs tab-12, tab-13…`, or at the 16-tab cap `opened 3 tabs that are
+  not tracked`): Chrome announces its open pages again when the server
+  starts watching them, and those registered during an action were taken
+  for tabs it opened. A page announced twice is counted once (#97).
+
 ## [0.12.0-beta.22] - 2026-11-07
 
 Public **BETA**. Fixes found by a comparison with other browser MCP

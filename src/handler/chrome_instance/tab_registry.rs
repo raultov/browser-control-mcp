@@ -5,7 +5,7 @@ use crate::handler::cdp_domains::webmcp::{WebmcpAvailability, WebmcpState};
 use crate::handler::dialogs::DialogState;
 use crate::handler::{CustomState, DebuggerState, NetworkState};
 use cdp_browser_lite::Tab;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -80,12 +80,85 @@ pub(crate) struct TabRegistry {
     /// Pages Chrome announced that were not registered, the instance being
     /// at `max_tabs`: an action that opened one says so (ISSUE-95).
     pub(crate) untracked: u64,
+    /// The pages counted in `untracked`, so a page Chrome announces again
+    /// is counted once (at most [`MAX_KNOWN_PAGES`]).
+    untracked_pages: HashSet<String>,
+    /// The target ids of the pages open when the lifecycle listener started
+    /// (at most [`MAX_KNOWN_PAGES`]): Chrome announces them again, and an
+    /// action during which they are registered did not open them (ISSUE-97).
+    preexisting: HashSet<String>,
+    /// Those of them Chrome has not announced (or closed) yet: an action
+    /// waits for them, so the tab it opened, announced after them, is
+    /// registered before it names it.
+    replay_pending: HashSet<String>,
+    /// Whether the lifecycle listener is still listing the open pages.
+    listing: bool,
     /// Tabs in the order they were last made active (most recent last), so
     /// closing the active tab falls back to the previous one.
     recent: Vec<TabId>,
 }
 
+/// Most page ids [`TabRegistry`] keeps in each of its sets of pages.
+const MAX_KNOWN_PAGES: usize = 512;
+
 impl TabRegistry {
+    /// The lifecycle listener starts listing the open pages.
+    pub(crate) fn start_listing(&mut self) {
+        self.listing = true;
+    }
+
+    /// Records the pages open `before` the lifecycle listener turned
+    /// discovery on, which no action opened, and those open once it was on
+    /// (`announced`), each of which Chrome announces, or closes, next.
+    pub(crate) fn set_preexisting(&mut self, before: Vec<String>, announced: Vec<String>) {
+        if before.len() > MAX_KNOWN_PAGES {
+            tracing::warn!(pages = before.len(), "more open pages than are remembered");
+        }
+        self.preexisting = before.into_iter().take(MAX_KNOWN_PAGES).collect();
+        self.replay_pending = announced.into_iter().take(MAX_KNOWN_PAGES).collect();
+        self.listing = false;
+    }
+
+    /// The announcements of the open pages will not all come (events were
+    /// lost, or the listener stopped): actions no longer wait for them.
+    pub(crate) fn replay_finished(&mut self) {
+        self.replay_pending.clear();
+        self.listing = false;
+    }
+
+    /// Chrome's announcement (or closing) of page `target_id` was handled.
+    pub(crate) fn replayed(&mut self, target_id: &str) {
+        self.replay_pending.remove(target_id);
+    }
+
+    /// Whether the pages open when the listener started are still being
+    /// listed or announced.
+    pub(crate) fn discovering(&self) -> bool {
+        self.listing || !self.replay_pending.is_empty()
+    }
+
+    /// Whether page `target_id` was open when the listener started.
+    pub(crate) fn was_open(&self, target_id: &str) -> bool {
+        self.preexisting.contains(target_id)
+    }
+
+    /// The pages open when the listener started.
+    pub(crate) fn preexisting(&self) -> &HashSet<String> {
+        &self.preexisting
+    }
+
+    /// Counts page `target_id`, not registered at the cap, in `untracked`
+    /// unless it was open before or already counted (ISSUE-95, ISSUE-97).
+    pub(crate) fn note_untracked(&mut self, target_id: &str) {
+        if self.was_open(target_id) || self.untracked_pages.contains(target_id) {
+            return;
+        }
+        if self.untracked_pages.len() < MAX_KNOWN_PAGES {
+            self.untracked_pages.insert(target_id.to_string());
+        }
+        self.untracked += 1;
+    }
+
     pub(crate) fn new(max_tabs: usize) -> Self {
         Self {
             tabs: HashMap::new(),
@@ -94,6 +167,10 @@ impl TabRegistry {
             counter: 1,
             opening: 0,
             untracked: 0,
+            untracked_pages: HashSet::new(),
+            preexisting: HashSet::new(),
+            replay_pending: HashSet::new(),
+            listing: false,
             recent: Vec::new(),
         }
     }
@@ -206,6 +283,13 @@ impl TabRegistry {
         self.tabs.clear();
         self.recent.clear();
         self.active_tab_id = None;
+        // The listener that kept these is gone (ISSUE-97): a new one
+        // starts from scratch, and nothing waits for the old one.
+        self.opening = 0;
+        self.listing = false;
+        self.replay_pending.clear();
+        self.preexisting.clear();
+        self.untracked_pages.clear();
     }
 }
 

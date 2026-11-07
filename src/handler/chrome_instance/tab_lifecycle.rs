@@ -33,7 +33,11 @@ pub(crate) async fn front_active(tabs: &RwLock<TabRegistry>) {
 /// before the listener attached the page.
 pub(crate) async fn registrations_done(tabs: &RwLock<TabRegistry>, limit: std::time::Duration) {
     let deadline = tokio::time::Instant::now() + limit;
-    while crate::util::sync::read(tabs).opening > 0 && tokio::time::Instant::now() < deadline {
+    let pending = || {
+        let registry = crate::util::sync::read(tabs);
+        registry.opening > 0 || registry.discovering()
+    };
+    while pending() && tokio::time::Instant::now() < deadline {
         tokio::time::sleep(REGISTRATION_POLL).await;
     }
 }
@@ -65,10 +69,17 @@ pub(crate) fn start_tab_lifecycle_listener(
     let mut target_events = browser_client.client().on_domain("Target");
     let bc = browser_client.clone();
     let tabs_clone = tabs.clone();
+    crate::util::sync::write(&tabs).start_listing();
 
     tokio::spawn(async move {
+        // ISSUE-97: the pages open before discovery are not opened by any
+        // action; those open once it is on are each announced (Chrome's
+        // replay) or closed on `target_events`, and actions wait for that.
+        let before = open_pages(&bc).await;
         // Enable target discovery to receive targetCreated/targetDestroyed events
         let _ = bc.set_discover_targets(true).await;
+        let announced = open_pages(&bc).await;
+        crate::util::sync::write(&tabs_clone).set_preexisting(before, announced);
 
         while let Some(item) = target_events.next().await {
             match item {
@@ -80,10 +91,30 @@ pub(crate) fn start_tab_lifecycle_listener(
                         error = crate::handler::cdp_domains::event_pump::error_kind(&e),
                         "target lifecycle event stream error"
                     );
+                    // Events were lost: the replay may never complete.
+                    crate::util::sync::write(&tabs_clone).replay_finished();
                 }
             }
         }
+        crate::util::sync::write(&tabs_clone).replay_finished();
     })
+}
+
+/// The target ids of the browser's pages (see [`is_page`]); none, logged,
+/// when they cannot be listed.
+async fn open_pages(browser: &BrowserClient) -> Vec<String> {
+    match browser.list_targets().await {
+        Ok(targets) => targets
+            .into_iter()
+            .filter(|t| is_page(&t.r#type, &t.url))
+            .map(|page| page.target_id)
+            .collect(),
+        Err(e) => {
+            let error = crate::handler::cdp_domains::event_pump::error_kind(&e);
+            tracing::warn!(error, "could not list the open pages");
+            Vec::new()
+        }
+    }
 }
 
 async fn process_target_event(
@@ -102,10 +133,12 @@ async fn process_target_event(
                 on_page_created(browser_client, tabs, (target_id, url), enable_webmcp).await;
                 let mut registry = crate::util::sync::write(tabs);
                 registry.opening = registry.opening.saturating_sub(1);
+                registry.replayed(target_id);
             }
         }
         "Target.targetDestroyed" => {
             if let Some(target_id) = params.get("targetId").and_then(|v| v.as_str()) {
+                crate::util::sync::write(tabs).replayed(target_id);
                 let tab_id = crate::util::sync::read(tabs)
                     .tabs
                     .iter()
@@ -126,8 +159,17 @@ fn page_target(params: &serde_json::Value) -> Option<(&str, &str)> {
     let info = params.get("targetInfo")?;
     let target_id = info.get("targetId").and_then(|v| v.as_str())?;
     let url = info.get("url").and_then(|v| v.as_str())?;
-    let is_page = info.get("type").and_then(|v| v.as_str()) == Some("page");
-    (is_page && !url.starts_with("chrome-extension://")).then_some((target_id, url))
+    let kind = info
+        .get("type")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    is_page(kind, url).then_some((target_id, url))
+}
+
+/// Whether a target of `kind` showing `url` is a page the server tracks
+/// as a tab (extension pages are not).
+fn is_page(kind: &str, url: &str) -> bool {
+    kind == "page" && !url.starts_with("chrome-extension://")
 }
 
 /// Registers a page the browser opened (unless already known) and starts
@@ -155,7 +197,7 @@ async fn on_page_created(
     {
         // At the cap (no label to refuse): counted for the action that
         // opened it to say so (ISSUE-95), and its session released.
-        crate::util::sync::write(tabs).untracked += 1;
+        crate::util::sync::write(tabs).note_untracked(target_id);
         let _ = tab.detach().await;
     }
 }
@@ -311,6 +353,89 @@ mod tests {
         let registry = crate::util::sync::read(&tabs);
         assert_eq!((registry.tabs.len(), registry.untracked), (1, 1));
         assert_eq!(mock.commands_named("Target.detachFromTarget").len(), 1);
+    }
+
+    /// ISSUE-97 (Chrome): at the cap, a page that was open when the server
+    /// attached (Chrome's replay of its pages) is not counted as untracked,
+    /// nor is a page counted twice when Chrome announces it again.
+    #[tokio::test]
+    async fn pages_already_open_or_announced_twice_are_not_counted() {
+        // Given an instance at its cap of one tab, with T-old open before
+        let mock = crate::handler::cdp_domains::tests::spawn_recording_mock().await;
+        let address = format!("127.0.0.1:{}", mock.http_port);
+        let browser = BrowserClient::connect(&address, Duration::from_secs(2))
+            .await
+            .expect("connect");
+        let tabs = Arc::new(RwLock::new(TabRegistry::new(1)));
+        let first = browser.attach("T-tab-1").await.expect("attach");
+        register_and_listen(&tabs, &first, NewTab::new(None, "about:blank"), false)
+            .await
+            .expect("registration");
+        let old = vec!["T-old".to_string()];
+        crate::util::sync::write(&tabs).set_preexisting(old.clone(), old);
+        // When Chrome announces T-old, then T-popup twice
+        on_page_created(&browser, &tabs, ("T-old", "http://a/"), false).await;
+        on_page_created(&browser, &tabs, ("T-popup", "http://a/"), false).await;
+        on_page_created(&browser, &tabs, ("T-popup", "http://a/"), false).await;
+        // Then only T-popup is counted, once
+        assert_eq!(crate::util::sync::read(&tabs).untracked, 1);
+    }
+
+    /// ISSUE-97 (Chrome): an action waits until Chrome announced (or
+    /// closed) every page open when the listener started, so the tab it
+    /// opened, announced after them, is registered when it names it.
+    #[tokio::test]
+    async fn actions_wait_for_the_pages_open_before() {
+        use crate::handler::cdp_domains::tests::make_event;
+        let mock = crate::handler::cdp_domains::tests::spawn_recording_mock().await;
+        let address = format!("127.0.0.1:{}", mock.http_port);
+        let browser = BrowserClient::connect(&address, Duration::from_secs(2))
+            .await
+            .expect("connect");
+        let tabs = Arc::new(RwLock::new(TabRegistry::new(8)));
+        // Given the listener is listing, then found two pages
+        crate::util::sync::write(&tabs).start_listing();
+        assert!(crate::util::sync::read(&tabs).discovering());
+        let open = vec!["T-a".to_string(), "T-b".to_string()];
+        crate::util::sync::write(&tabs).set_preexisting(open.clone(), open);
+        // When Chrome announces one and closes the other
+        let info = serde_json::json!({"targetInfo": {"targetId": "T-a", "type": "page", "url": "http://a/"}});
+        process_target_event(
+            &make_event("Target.targetCreated", info),
+            &browser,
+            &tabs,
+            false,
+        )
+        .await
+        .unwrap();
+        assert!(crate::util::sync::read(&tabs).discovering());
+        let gone = serde_json::json!({"targetId": "T-b"});
+        process_target_event(
+            &make_event("Target.targetDestroyed", gone),
+            &browser,
+            &tabs,
+            false,
+        )
+        .await
+        .unwrap();
+        // Then nothing is left to wait for, and T-a is a registered tab
+        let registry = crate::util::sync::read(&tabs);
+        assert!(!registry.discovering());
+        assert_eq!(registry.tabs.len(), 1);
+        // And a replay whose events were lost is not waited for
+        drop(registry);
+        crate::util::sync::write(&tabs).set_preexisting(Vec::new(), vec!["T-c".to_string()]);
+        assert!(crate::util::sync::read(&tabs).discovering());
+        crate::util::sync::write(&tabs).replay_finished();
+        assert!(!crate::util::sync::read(&tabs).discovering());
+        let registry = crate::util::sync::read(&tabs);
+        // And a cleared registry (the listener aborted) waits for nothing
+        drop(registry);
+        let mut registry = crate::util::sync::write(&tabs);
+        registry.start_listing();
+        registry.opening = 3;
+        registry.clear();
+        assert!(!registry.discovering() && registry.opening == 0);
     }
 
     /// ISSUE-68 (Chrome): a click that opens a tab waits for the listener

@@ -735,7 +735,8 @@ async fn tabs_opened(
     if browser == BrowserKind::Chrome {
         chrome_registrations(handler, ids).await;
     }
-    let opened = opened_tabs(before, tabs_now(handler, browser, ids).await);
+    let there = pages_open_before(handler, browser, ids).await;
+    let opened = opened_tabs(before, &there, tabs_now(handler, browser, ids).await);
     let current = match opened.iter().any(|tab| tab.target.is_some()) {
         true => chrome_targets(handler, ids).await,
         false => Vec::new(),
@@ -766,10 +767,35 @@ async fn chrome_targets(
 }
 
 /// The tabs of `now` that were not in `before`.
-fn opened_tabs(before: &HashSet<String>, now: Vec<KnownTab>) -> Vec<KnownTab> {
+/// Neither those whose page was open when the server attached (`there`,
+/// Chrome target ids): registered while the action ran, it did not open
+/// them (ISSUE-97).
+fn opened_tabs(
+    before: &HashSet<String>,
+    there: &HashSet<String>,
+    now: Vec<KnownTab>,
+) -> Vec<KnownTab> {
+    let was_open = |tab: &KnownTab| tab.target.as_ref().is_some_and(|t| there.contains(t));
     now.into_iter()
-        .filter(|tab| !before.contains(&tab.id))
+        .filter(|tab| !before.contains(&tab.id) && !was_open(tab))
         .collect()
+}
+
+/// The Chrome pages that were open when the instance `ids` addresses
+/// started watching its tabs (none for Firefox, whose session adopts its
+/// open tabs before any action).
+async fn pages_open_before(
+    handler: &McpHandler,
+    browser: BrowserKind,
+    ids: &TargetArgs,
+) -> HashSet<String> {
+    if browser != BrowserKind::Chrome {
+        return HashSet::new();
+    }
+    match handler.session(ids.instance_id.clone()).await {
+        Ok(session) => crate::util::sync::read(&session.tabs).preexisting().clone(),
+        Err(_) => HashSet::new(),
+    }
 }
 
 /// How many tabs the instance `ids` addresses did not track, at its cap.
@@ -1263,6 +1289,30 @@ mod tests {
         assert_eq!(closed_note(&[], Some("tab-1")), None);
     }
 
+    /// ISSUE-97: pages that were open when the server attached, registered
+    /// while an action ran, are not tabs the action opened; a page Chrome
+    /// created since is.
+    #[test]
+    fn pages_already_open_are_not_opened_by_an_action() {
+        let before: HashSet<String> = ["tab-1".to_string()].into();
+        let there: HashSet<String> = ["T-old".to_string()].into();
+        let tab = |id: &str, target: &str| KnownTab {
+            id: id.into(),
+            target: Some(target.into()),
+            url: String::new(),
+        };
+        let now = vec![
+            tab("tab-1", "T-1"),
+            tab("tab-2", "T-old"),
+            tab("tab-3", "T-new"),
+        ];
+        let opened: Vec<String> = opened_tabs(&before, &there, now)
+            .into_iter()
+            .map(|t| t.id)
+            .collect();
+        assert_eq!(opened, ["tab-3"]);
+    }
+
     /// ISSUE-41: an input action that opened tabs says so, naming each
     /// with its URL (none while it is still blank) and how to act in it.
     #[test]
@@ -1274,7 +1324,7 @@ mod tests {
             url: url.into(),
         };
         let named = |tabs: Vec<KnownTab>| -> Vec<(String, String)> {
-            opened_tabs(&before, tabs)
+            opened_tabs(&before, &HashSet::new(), tabs)
                 .into_iter()
                 .map(|t| (t.id, t.url))
                 .collect()
