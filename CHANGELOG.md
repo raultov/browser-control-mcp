@@ -22,6 +22,14 @@ from a copy of its code: entries describe the differences from that release.
   Each one took 10 to 30 s and failed with unrelated errors (a promise that
   never settles, a command timeout, an internal error). Firefox lets no page
   crash on demand, so it is not covered (#102).
+- `navigate` and `open_tab` refuse a `javascript:` URL, pointing to
+  `evaluate_js`, and a URL without a scheme (suggesting `http://` for
+  `localhost:8080` or `example.com:8080`), on both browsers before anything runs. Chrome answered that
+  a `javascript:` navigation failed though its script ran, Firefox waited
+  30 s for a `load`; a URL without a scheme was a raw protocol error on
+  Chrome and a path of the current site on Firefox. Firefox words a URL it
+  lets no automation open (`about:config`, `chrome://`) as a navigation
+  failure instead of a raw protocol error (#103).
 - Chrome: a click whose handler closes its own tab no longer waits 10 s and
   fails now and then when Chrome never answers the button's release: the
   tab's closing ends the wait (#90).

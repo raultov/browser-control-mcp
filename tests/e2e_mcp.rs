@@ -628,6 +628,38 @@ mod e2e {
         ]
     }
 
+    /// ISSUE-103: a javascript: URL or one without a scheme is refused
+    /// before anything runs, the same on both browsers.
+    fn url_check_steps(instance: &str) -> Vec<Step> {
+        let go = |url: &str| json!({"instance_id": instance, "url": url});
+        vec![
+            (
+                "ISSUE-103 a javascript: URL",
+                "navigate",
+                go("javascript:alert(1)"),
+                "!Run the script with evaluate_js",
+            ),
+            (
+                "ISSUE-103 a URL without a scheme",
+                "navigate",
+                go("not a url"),
+                "!is not an absolute URL",
+            ),
+            (
+                "ISSUE-103 a host and port without a scheme",
+                "navigate",
+                go("localhost:1/x"),
+                "!did you mean http://localhost:1/x",
+            ),
+            (
+                "ISSUE-103 the page answers",
+                "evaluate_js",
+                json!({"instance_id": instance, "expression": "1 + 1"}),
+                "2",
+            ),
+        ]
+    }
+
     /// ISSUE-90: a click whose page closes its own tab is a click, and the
     /// reply says the tab closed and which one is active (both browsers).
     fn self_close_steps(instance: &str) -> Vec<Step> {
@@ -2832,6 +2864,7 @@ mod e2e {
             multiple_select_steps(instance),
             opened_tab_steps(instance),
             self_close_steps(instance),
+            url_check_steps(instance),
             placeholder_steps(instance),
             late_element_steps(instance),
             valued_input_steps(instance),

@@ -185,6 +185,15 @@ fn navigation_error(method: &str, url: &str, error: &BidiError) -> BackendError 
                 url: url.to_string(),
             }
         }
+        // about:config, chrome:// and the like (ISSUE-103).
+        BidiError::ProtocolError { error, message, .. }
+            if error == codes::UNSUPPORTED_OPERATION =>
+        {
+            BackendError::Navigation {
+                reason: format!("Firefox does not let automation open it ({message})"),
+                url: url.to_string(),
+            }
+        }
         other => protocol_error(method, other),
     }
 }
@@ -686,6 +695,25 @@ pub(crate) async fn screenshot(tab: &Tab, req: &ShotRequest<'_>) -> Result<Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ISSUE-103: a URL Firefox lets no automation open (about:config,
+    /// chrome://) is worded for the agent, not as a raw protocol error.
+    #[test]
+    fn forbidden_urls_are_worded() {
+        // Given Firefox refusing a privileged page
+        let error = BidiError::ProtocolError {
+            error: "unsupported operation".into(),
+            message: "Navigation to \"about:config\" is not allowed in this context".into(),
+            stacktrace: None,
+        };
+        // When it is worded
+        let text = navigation_error("browsingContext.navigate", "about:config", &error).to_string();
+        assert!(
+            text.contains("Firefox does not let automation open it"),
+            "{text}"
+        );
+        assert!(!text.contains("protocol error"), "{text}");
+    }
 
     /// ISSUE-81 (Firefox): a newline in a textarea or contenteditable is the
     /// Enter key; elsewhere it is typed as it was.

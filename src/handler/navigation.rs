@@ -151,6 +151,56 @@ impl NavigationOutcome {
     }
 }
 
+/// Checks a URL `navigate` or `open_tab` is to load, the same on both
+/// browsers (ISSUE-103): an absolute URL with its scheme. A `javascript:`
+/// URL runs a script and loads nothing (Chrome answered that the navigation
+/// failed though the script ran; Firefox waited 30 s for a `load`), and a
+/// URL without a scheme was an error on Chrome and a path of the current
+/// site on Firefox. Tabs and line breaks are dropped first, as browsers do
+/// (`java\tscript:` is `javascript:`).
+pub(crate) fn checked_url(url: &str) -> Result<(), String> {
+    let cleaned: String = url
+        .trim()
+        .chars()
+        .filter(|c| !matches!(c, '\t' | '\n' | '\r'))
+        .collect();
+    if cleaned.is_empty() {
+        return Err("'url' is empty: give an absolute URL such as https://example.com/".into());
+    }
+    let parsed = url::Url::parse(&cleaned);
+    let scheme = match &parsed {
+        Ok(parsed) => Some(parsed.scheme().to_string()),
+        Err(_) => cleaned.split_once(':').map(|(s, _)| s.to_ascii_lowercase()),
+    };
+    if scheme.as_deref() == Some("javascript") {
+        return Err("A 'javascript:' URL is not a page: navigating to it runs the script in the current page and loads nothing. Run the script with evaluate_js instead.".into());
+    }
+    if host_and_port(&cleaned, parsed.is_ok()) {
+        return Err(format!(
+            "'{cleaned}' has no scheme: did you mean http://{cleaned}?"
+        ));
+    }
+    match parsed {
+        Ok(_) => Ok(()),
+        Err(_) => Err(format!(
+            "'{cleaned}' is not an absolute URL: give it with its scheme, like https://example.com/path"
+        )),
+    }
+}
+
+/// Whether `url` is a host and port without a scheme (`localhost:8080/x`,
+/// `example.com:8080`, `127.0.0.1:8080`): a port after the first colon,
+/// and before it a host the URL parser took for a scheme (`localhost`, or
+/// with a dot) or no valid scheme at all. `mailto:123` or `tel:123` are not.
+fn host_and_port(url: &str, parsed: bool) -> bool {
+    let Some((host, rest)) = url.split_once(':') else {
+        return false;
+    };
+    let port = rest.starts_with(|c: char| c.is_ascii_digit());
+    let hostlike = !parsed || host.eq_ignore_ascii_case("localhost") || host.contains('.');
+    port && hostlike && !host.contains('/')
+}
+
 /// A navigation error ([`crate::backend::BackendError::Navigation`]) of the
 /// navigation `open_tab` started: the tab was
 /// created and stays open, so the agent can inspect or close it.
@@ -162,6 +212,52 @@ pub(crate) fn open_tab_navigation_failed(message: &str, tab_id: &str) -> String 
 mod tests {
     /// ISSUE-50: a page behind HTTP authentication is named as such, with
     /// the scheme and realm of its challenge, and how to log in.
+    /// ISSUE-103: absolute URLs pass, also those whose body starts with a
+    /// digit (`mailto:123` is not a host and port).
+    #[test]
+    fn absolute_urls_pass() {
+        let urls = [
+            "http://a/",
+            "https://a/b?c",
+            "about:blank",
+            "data:text/html,x",
+            "file:///etc/hostname",
+            "chrome://version",
+            "mailto:123",
+            "tel:123",
+            "data:123",
+            "urn:isbn:0451450523",
+            "blob:https://a/1",
+        ];
+        for url in urls {
+            assert_eq!(checked_url(url), Ok(()), "{url}");
+        }
+    }
+
+    /// ISSUE-103: what navigate and open_tab load is checked the same on
+    /// both browsers: a javascript: URL points to evaluate_js (tabs and line
+    /// breaks do not hide it); a host:port without a scheme suggests
+    /// http://; anything else without a scheme is refused.
+    #[test]
+    fn urls_are_checked_before_navigating() {
+        let refused = [
+            ("not a url", "is not an absolute URL"),
+            ("/relative", "is not an absolute URL"),
+            ("", "empty"),
+            ("javascript:alert(1)", "evaluate_js"),
+            (" JavaScript:void(0)", "evaluate_js"),
+            ("java\tscript:alert(1)", "evaluate_js"),
+            ("javascript\n:alert(1)", "evaluate_js"),
+            ("localhost:8080/x", "http://localhost:8080/x"),
+            ("127.0.0.1:8080", "http://127.0.0.1:8080"),
+            ("example.com:8080", "http://example.com:8080"),
+        ];
+        for (url, says) in refused {
+            let error = checked_url(url).unwrap_err();
+            assert!(error.contains(says), "{url}: {error}");
+        }
+    }
+
     #[test]
     fn authentication_is_explained() {
         let basic = super::auth_required(Some(r#"Basic realm="staging area", charset="UTF-8""#));

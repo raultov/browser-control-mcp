@@ -977,6 +977,7 @@ pub(crate) async fn custom_events(
 pub(crate) async fn open_tab(params: CallToolRequestParams, handler: &McpHandler) -> ToolResult {
     let args: open_tab::OpenTabTool = parse_args(params)?;
     let url = args.url.clone().unwrap_or_else(|| "about:blank".into());
+    crate::handler::navigation::checked_url(&url).map_err(CallToolError::from_message)?;
     check_local(handler, &url)?;
     let session = handler.firefox(args.instance_id.as_deref()).await?;
     let browser = session.browser().await?;

@@ -131,6 +131,7 @@ impl OpenTabTool {
 
         // Refused before anything starts a browser.
         let url = args.url.clone().unwrap_or_else(|| BLANK.to_string());
+        crate::handler::navigation::checked_url(&url).map_err(CallToolError::from_message)?;
         if handler.flags.local && !crate::handler::is_local_address(&url) {
             return Err(CallToolError::from_message(format!(
                 "Navigation to '{}' is blocked by local-only restrictions.",

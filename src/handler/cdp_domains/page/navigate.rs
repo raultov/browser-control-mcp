@@ -89,7 +89,9 @@ impl NavigateTool {
     /// The URL or the history move this call asks for (exactly one).
     pub(crate) fn destination(&self) -> Result<Destination<'_>, CallToolError> {
         match (self.url.as_deref(), self.history) {
-            (Some(url), None) => Ok(Destination::Url(url)),
+            (Some(url), None) => crate::handler::navigation::checked_url(url)
+                .map(|()| Destination::Url(url))
+                .map_err(CallToolError::from_message),
             (None, Some(step)) => Ok(Destination::History(step)),
             _ => Err(CallToolError::from_message(
                 "Pass either 'url' or 'history' ('back' or 'forward'), not both.",
