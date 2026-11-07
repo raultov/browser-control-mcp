@@ -118,6 +118,9 @@ pub(crate) struct DialogState {
     pub(crate) file_choosers: u64,
     /// Whether the last file chooser takes several files.
     pub(crate) chooser_multiple: bool,
+    /// Whether the page crashed (Chrome's `Inspector.targetCrashed`) and no
+    /// page of the tab committed since (ISSUE-102).
+    pub(crate) crashed: bool,
 }
 
 impl OpenDialog {

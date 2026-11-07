@@ -153,6 +153,30 @@ pub(crate) async fn process_dialog_event(
             .as_ref()
             .map(crate::handler::dialogs::OpenDialog::from_chrome),
         Some("Page.javascriptDialogClosed") => None,
+        // A crashed page stays so until a page of the tab commits again.
+        // The renderer gone without a crash report: the tab closed (then it
+        // is forgotten anyway), or its page is dead all the same.
+        Some("Inspector.targetCrashed") => {
+            state.lock().await.crashed = true;
+            return;
+        }
+        Some("Inspector.detached") => {
+            let reason = event.params.as_ref().and_then(|p| p["reason"].as_str());
+            if reason == Some(crate::handler::cdp_domains::cdp_target::RENDERER_GONE) {
+                state.lock().await.crashed = true;
+            }
+            return;
+        }
+        Some("Page.frameNavigated") => {
+            let top = event
+                .params
+                .as_ref()
+                .and_then(|p| p.pointer("/frame/parentId"));
+            if top.is_none_or(serde_json::Value::is_null) {
+                state.lock().await.crashed = false;
+            }
+            return;
+        }
         Some("Page.fileChooserOpened") => {
             let mode = event.params.as_ref().and_then(|p| p["mode"].as_str());
             let mut state = state.lock().await;
@@ -165,13 +189,18 @@ pub(crate) async fn process_dialog_event(
     state.lock().await.open = opened;
 }
 
-/// Starts the listener of [`process_dialog_event`].
+/// Starts the listeners of [`process_dialog_event`]: the `Page` events and
+/// the `Inspector` ones (a crash, ISSUE-102).
 pub(crate) fn start_dialog_listener(
     target: &crate::handler::cdp_domains::cdp_target::CdpTarget,
     state: Arc<Mutex<crate::handler::dialogs::DialogState>>,
-) -> tokio::task::JoinHandle<()> {
+) -> [tokio::task::JoinHandle<()>; 2] {
+    use crate::handler::cdp_domains::event_pump::spawn_state_listener;
     let process = |event, state| async move { process_dialog_event(&event, &state).await };
-    crate::handler::cdp_domains::event_pump::spawn_state_listener(target, "Page", state, process)
+    [
+        spawn_state_listener(target, "Page", state.clone(), process),
+        spawn_state_listener(target, "Inspector", state, process),
+    ]
 }
 
 pub(crate) fn start_page_listener(
@@ -250,6 +279,33 @@ mod tests {
             (st.file_choosers, st.chooser_multiple, st.open.is_none()),
             (1, true, true)
         );
+    }
+
+    /// ISSUE-102 (Chrome): a crash of the tab's page is kept until a page
+    /// of its own commits again (an iframe's does not count).
+    #[tokio::test]
+    async fn a_crash_is_kept_until_the_page_loads_again() {
+        use crate::handler::cdp_domains::tests::make_event;
+        let state = Arc::new(Mutex::new(crate::handler::dialogs::DialogState::default()));
+        let crashed = make_event("Inspector.targetCrashed", serde_json::json!({}));
+        process_dialog_event(&crashed, &state).await;
+        assert!(state.lock().await.crashed);
+        let frame = |parent: Option<&str>| {
+            let frame = serde_json::json!({"id": "F", "parentId": parent, "loaderId": "L", "url": "http://a/"});
+            make_event("Page.frameNavigated", serde_json::json!({"frame": frame}))
+        };
+        process_dialog_event(&frame(Some("P")), &state).await;
+        assert!(state.lock().await.crashed);
+        process_dialog_event(&frame(None), &state).await;
+        assert!(!state.lock().await.crashed);
+        // A renderer gone without a crash report is a dead page too; another
+        // client taking the inspector over is not
+        let taken = serde_json::json!({"reason": "replaced_with_devtools"});
+        process_dialog_event(&make_event("Inspector.detached", taken), &state).await;
+        assert!(!state.lock().await.crashed);
+        let gone = serde_json::json!({"reason": "Render process gone."});
+        process_dialog_event(&make_event("Inspector.detached", gone), &state).await;
+        assert!(state.lock().await.crashed);
     }
 
     /// AUD-EV-05: the tab's open dialog follows Chrome's events.

@@ -159,7 +159,11 @@ impl CdpTarget {
         };
         // The frames' too: a call can make a frame of another origin pause.
         let debugger = super::debugger::frames::debugger_events(self, frames);
-        let events = self.on_domain("Page").merge(debugger);
+        // `Inspector`: the page crashed, or its tab closed (ISSUE-102).
+        let events = self
+            .on_domain("Page")
+            .merge(debugger)
+            .merge(self.on_domain("Inspector"));
         // The outcome is not held across the naming's await: a tool's error
         // (a possible `T`) is not `Send`.
         let location = match unless_interrupted(work, events, call).await {
@@ -199,6 +203,23 @@ enum Blocker {
     Paused(Option<PauseLocation>),
     /// The page runs again.
     Resumed,
+    /// The page crashed, or its tab closed: the command will not answer.
+    Gone(Interruption),
+}
+
+/// The `Inspector.detached` reason of a page whose renderer went away: Chrome
+/// 156 sends it for a page closing itself, and for a renderer that died.
+pub(crate) const RENDERER_GONE: &str = "Render process gone.";
+
+/// Whether an `Inspector.detached` (its `params`) means the page is gone:
+/// its tab closed (`target_closed`, or `Render process gone.`, which Chrome
+/// 156 sends for a page closing itself), not another client taking the
+/// inspector over (`replaced_with_devtools`, `canceled_by_user`).
+pub(crate) fn detached_for_good(params: Option<&serde_json::Value>) -> bool {
+    let reason = params
+        .and_then(|p| p["reason"].as_str())
+        .unwrap_or_default();
+    !matches!(reason, "replaced_with_devtools" | "canceled_by_user")
 }
 
 /// The blocker `event` announces; pauses and resumes only when `pauses`.
@@ -213,6 +234,10 @@ fn blocker(event: &CdpResult<WsResponse>, pauses: bool) -> Option<Blocker> {
             params.and_then(super::debugger::pause_location),
         )),
         "Debugger.resumed" if pauses => Some(Blocker::Resumed),
+        "Inspector.targetCrashed" => Some(Blocker::Gone(Interruption::Crashed)),
+        "Inspector.detached" if detached_for_good(params) => {
+            Some(Blocker::Gone(Interruption::Closed))
+        }
         _ => None,
     }
 }
@@ -233,6 +258,7 @@ async fn unless_interrupted<T>(
         let paused = match unless_blocked(&mut command, &mut events, |e| blocker(e, pauses)).await {
             Ok(reply) => return Ok(reply),
             Err(Blocker::Dialog(opened)) => return Err(Interruption::Dialog(opened)),
+            Err(Blocker::Gone(gone)) => return Err(gone),
             Err(Blocker::Resumed) => continue,
             Err(Blocker::Paused(location)) => location,
         };
@@ -240,6 +266,7 @@ async fn unless_interrupted<T>(
         return match unless_blocked(settle, &mut events, |e| blocker(e, true)).await {
             Ok(Ok(reply)) => Ok(reply),
             Err(Blocker::Dialog(opened)) => Err(Interruption::Dialog(opened)),
+            Err(Blocker::Gone(gone)) => Err(gone),
             Err(Blocker::Resumed) => continue,
             Err(Blocker::Paused(next)) => Err(Interruption::Paused(next)),
             Ok(Err(_elapsed)) => Err(Interruption::Paused(paused)),
@@ -309,6 +336,50 @@ mod tests {
         assert!(
             message.starts_with("The page paused in the debugger at script 35 line 3, column 2 (0-based) while running Input.dispatchMouseEvent:"),
             "{message}"
+        );
+    }
+
+    /// ISSUE-102 / ISSUE-90 (Chrome): a command whose page crashes, or
+    /// whose tab closes, ends at once saying so (it waited for the 10 s
+    /// command timeout).
+    #[tokio::test]
+    async fn a_crash_or_a_closing_ends_a_blocked_command() {
+        let cases = [
+            (
+                make_event("Inspector.targetCrashed", json!({})),
+                Interruption::Crashed,
+            ),
+            (
+                make_event(
+                    "Inspector.detached",
+                    json!({"reason": "Render process gone."}),
+                ),
+                Interruption::Closed,
+            ),
+        ];
+        for (event, expected) in cases {
+            let blocked = std::future::pending::<CdpResult<u32>>();
+            let run =
+                unless_interrupted(blocked, tokio_stream::iter([Ok(event)]), "Runtime.evaluate");
+            let outcome = tokio::time::timeout(std::time::Duration::from_secs(1), run).await;
+            assert_eq!(outcome.expect("ended at once").unwrap_err(), expected);
+        }
+        // Another client taking the inspector over does not end it
+        let taken = make_event(
+            "Inspector.detached",
+            json!({"reason": "replaced_with_devtools"}),
+        );
+        let later = async {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            Ok(7)
+        };
+        let outcome =
+            unless_interrupted(later, tokio_stream::iter([Ok(taken)]), "Runtime.evaluate").await;
+        assert_eq!(answered(outcome), Some(7));
+        let crashed = Interruption::Crashed.during("Runtime.evaluate");
+        assert!(
+            crashed.contains("crashed") && crashed.contains("reload"),
+            "{crashed}"
         );
     }
 

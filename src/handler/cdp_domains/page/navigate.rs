@@ -116,7 +116,7 @@ impl NavigateTool {
         if args.copy_cookies == Some(true) {
             args.import_cookies(handler, &session).await?;
         }
-        let target = session.target(args.tab_id.clone()).await?;
+        let target = session.target_to_load(args.tab_id.clone()).await?;
         let network = session.network_state(args.tab_id.clone())?;
         let navigation = async {
             Ok(match destination {

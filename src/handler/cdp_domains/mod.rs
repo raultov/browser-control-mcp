@@ -294,7 +294,9 @@ pub(crate) fn start_tab_listeners(
         dialog,
     } = states;
     handles.push(debugger::start_debugger_listener(&target, dbg.clone()));
-    handles.push(page::start_dialog_listener(&target, dialog));
+    for handle in page::start_dialog_listener(&target, dialog) {
+        handles.push(handle);
+    }
     handles.push(network::start_network_listener(&target, net.clone()));
     let sinks = frame_watch::FrameSinks::new(log.clone(), net.clone(), dbg);
     handles.push(frame_watch::start_frame_watcher(tab, sinks));

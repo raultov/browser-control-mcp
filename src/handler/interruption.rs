@@ -1,5 +1,6 @@
-//! What stops the page from answering a call, the same on both browsers: a
-//! JavaScript dialog it opened, or a debugger pause its code hit. A call
+//! What stops the page from answering a call: a JavaScript dialog it
+//! opened, or a debugger pause its code hit (both browsers); on Chrome also
+//! its renderer crashing, or its tab closing (ISSUE-102). A call
 //! whose answer is missing fails with it ([`Interruption::during`]); an
 //! input action whose effect happened (a click) succeeds and says so
 //! ([`Interruption::note`], [`Interruption::to_json`]).
@@ -15,7 +16,16 @@ pub(crate) enum Interruption {
     Dialog(OpenDialog),
     /// It paused in the debugger (where, when the browser says).
     Paused(Option<PauseLocation>),
+    /// Its renderer process died (Chrome's `Inspector.targetCrashed`).
+    Crashed,
+    /// Its tab closed (Chrome's `Inspector.detached`): a page that closed
+    /// itself, for example with `window.close()`.
+    Closed,
 }
+
+/// Why a tool does not act on a tab whose page crashed (ISSUE-102: it
+/// timed out after 10-30 s with unrelated errors).
+pub(crate) const PAGE_CRASHED: &str = "The tab's page crashed (its renderer process is gone): call reload, or navigate, to load it again.";
 
 impl Interruption {
     /// The error of `call`, which the interruption left unfinished.
@@ -23,6 +33,10 @@ impl Interruption {
         match self {
             Self::Dialog(dialog) => dialog.opened_during(call),
             Self::Paused(location) => debugging::paused_during(location.as_ref(), call),
+            Self::Crashed => format!(
+                "The tab's page crashed (its renderer process is gone) while running {call}: call reload, or navigate, to load it again."
+            ),
+            Self::Closed => format!("The tab closed while running {call}."),
         }
     }
 
@@ -31,6 +45,8 @@ impl Interruption {
         match self {
             Self::Dialog(dialog) => dialog.opened_note(),
             Self::Paused(location) => debugging::paused_note(location.as_ref()),
+            Self::Crashed => "The tab's page crashed during the action (its renderer process is gone): call reload, or navigate, to load it again.".to_string(),
+            Self::Closed => "The tab closed during the action.".to_string(),
         }
     }
 
@@ -59,6 +75,8 @@ impl Interruption {
             Self::Paused(location) => {
                 json!({"paused": true, "location": location.as_ref().map(PauseLocation::to_json)})
             }
+            Self::Crashed => json!({"crashed": true}),
+            Self::Closed => json!({"closed": true}),
         }
     }
 }

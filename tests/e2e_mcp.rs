@@ -3599,6 +3599,12 @@ mod e2e {
         ]
     }
 
+    /// Instances that lose their page: the last tab closed (ISSUE-101) or
+    /// the page crashed (ISSUE-102).
+    fn lost_page_steps(browser: &str, base: &str) -> Vec<Step> {
+        [last_tab_steps(browser, base), crash_steps(browser, base)].concat()
+    }
+
     /// ISSUE-101: once an instance's last tab is closed, a tool says to
     /// open one, and open_tab does (it failed on Chrome).
     fn last_tab_steps(browser: &str, base: &str) -> Vec<Step> {
@@ -3639,6 +3645,47 @@ mod e2e {
             ),
             (
                 "ISSUE-101 close the instance",
+                "close_instance",
+                json!({"instance_id": i}),
+                "\"stopped\":true",
+            ),
+        ]
+    }
+
+    /// ISSUE-102 (Chrome): a tool on a crashed page fails at once saying
+    /// so, and reload brings it back (Firefox lets no page crash on demand).
+    fn crash_steps(browser: &str, base: &str) -> Vec<Step> {
+        if browser != "chrome" {
+            return Vec::new();
+        }
+        let i = json!("crash102");
+        let open = json!({"browser": browser, "label": "crash102", "headless": true});
+        let crash = json!({"instance_id": i, "method": "Page.crash", "params": "{}"});
+        let eval = |expression: &str| json!({"instance_id": i, "expression": expression});
+        vec![
+            ("ISSUE-102 an instance", "open_instance", open, "crash102"),
+            (
+                "ISSUE-102 its page",
+                "navigate",
+                json!({"instance_id": i, "url": format!("{base}/")}),
+                "Navigated to",
+            ),
+            ("ISSUE-102 crash it", "send_cdp_command", crash, "!crashed"),
+            (
+                "ISSUE-102 a tool says so at once",
+                "evaluate_js",
+                eval("1"),
+                "!call reload, or navigate",
+            ),
+            (
+                "ISSUE-102 reload brings it back",
+                "reload",
+                json!({"instance_id": i}),
+                "Page reloaded",
+            ),
+            ("ISSUE-102 it answers", "evaluate_js", eval("1 + 1"), "2"),
+            (
+                "ISSUE-102 close the instance",
                 "close_instance",
                 json!({"instance_id": i}),
                 "\"stopped\":true",
@@ -3800,7 +3847,7 @@ mod e2e {
             other_page_steps("e2e", &base),
             form_issue_steps("e2e", &base, browser == "chrome"),
             debugger_steps("e2e", &base, browser == "chrome"),
-            last_tab_steps(browser, &base),
+            lost_page_steps(browser, &base),
             closing_steps(browser),
         ];
         mcp.steps(all.concat()).await;

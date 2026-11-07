@@ -24,7 +24,7 @@ impl ReloadTool {
     ) -> Result<CallToolResult, CallToolError> {
         let ids: crate::handler::TargetArgs = crate::handler::parse_args(params)?;
         let session = handler.session(ids.instance_id.clone()).await?;
-        let target = session.target(ids.tab_id.clone()).await?;
+        let target = session.target_to_load(ids.tab_id.clone()).await?;
         // Subscribed first: `load` can fire before the reply is read.
         let mut page_events = target.on_domain("Page");
         let reload = async {

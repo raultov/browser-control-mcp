@@ -1012,14 +1012,10 @@ async fn settled(
         append_notes(&mut result, None, note.into_iter());
         return result;
     };
-    // Bounded even if the page stops answering mid-way (a navigation).
-    let limit = settle::MAX + std::time::Duration::from_secs(1);
-    let watched = settle::settle(&page, &before.network, &before.known);
-    let watched = tokio::time::timeout(limit, watched);
-    let (reacted, interruption) = match unless_blocked(handler, &before, &page, watched).await {
-        Ok(reaction) => (reaction.ok().flatten().and_then(|r| r.note()), None),
-        Err(interruption) => (None, Some(interruption)),
-    };
+    let (reacted, interruption) = reaction(handler, &before, &page).await;
+    // Its page gone (Chrome's `Inspector.detached`): the tab may be closing,
+    // which the browser reports a moment later (ISSUE-90).
+    let gone = before.page.dialog.lock().await.crashed;
     let opened = tabs_opened(handler, before.browser, &before.ids, &before.tabs).await;
     let untracked = untracked_now(handler, before.browser, &before.ids).await;
     let untracked = untracked_note(before.untracked, untracked);
@@ -1032,11 +1028,33 @@ async fn settled(
     let started = crate::handler::downloads::wait_ended(downloads, *begun, ACTION_WAIT).await;
     let downloaded = crate::handler::downloads::action_note(&started);
     let page_notes = before.page.notes().await;
-    let closed = closed_after(handler, &before, false).await;
+    let closed = closed_after(handler, &before, gone).await;
     let notes = [reacted, opened, untracked, closed, downloaded];
     let notes = notes.into_iter().flatten();
     append_notes(&mut result, interruption, notes.chain(page_notes));
     result
+}
+
+/// How the page reacted to the action (its note), and what interrupted it
+/// while it settled, if anything.
+async fn reaction(
+    handler: &McpHandler,
+    before: &NetworkBefore,
+    page: &settle::Page,
+) -> (
+    Option<String>,
+    Option<crate::handler::interruption::Interruption>,
+) {
+    // Bounded even if the page stops answering mid-way (a navigation).
+    let limit = settle::MAX + std::time::Duration::from_secs(1);
+    let watched = settle::settle(page, &before.network, &before.known);
+    let watched = tokio::time::timeout(limit, watched);
+    match unless_blocked(handler, before, page, watched).await {
+        Ok(reaction) => (reaction.ok().flatten().and_then(|r| r.note()), None),
+        // A tab that closed is noted with the tabs closed (ISSUE-90).
+        Err(crate::handler::interruption::Interruption::Closed) => (None, None),
+        Err(interruption) => (None, Some(interruption)),
+    }
 }
 
 /// Appends to the first text of `result` what interrupted the action, if

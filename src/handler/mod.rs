@@ -650,7 +650,8 @@ pub(crate) async fn send_or(
 }
 
 /// A CDP error as the agent reads it: `"<failure>: <error text>"`, or the
-/// message alone for a command a JavaScript dialog interrupted.
+/// message alone for a command something interrupted (a JavaScript dialog,
+/// a debugger pause, a crash or a closing tab).
 pub(crate) fn cdp_failure(failure: &str, error: &cdp_browser_lite::CdpError) -> String {
     match error {
         cdp_browser_lite::CdpError::ProtocolError { message, .. }
@@ -1143,10 +1144,9 @@ impl BrowserSession {
                 self.webmcp_state.clone(),
             ));
         }
-        handles.push(cdp_domains::page::start_dialog_listener(
-            target,
-            self.dialog_state.clone(),
-        ));
+        for handle in cdp_domains::page::start_dialog_listener(target, self.dialog_state.clone()) {
+            handles.push(handle);
+        }
         handles
     }
 
@@ -1282,12 +1282,37 @@ impl BrowserSession {
         &self,
         tab_id: Option<String>,
     ) -> std::result::Result<cdp_domains::cdp_target::CdpTarget, CallToolError> {
+        self.target_if_drawn(tab_id, true).await
+    }
+
+    /// [`Self::target`] for `navigate` and `reload`, which load a crashed
+    /// page again (ISSUE-102).
+    pub(crate) async fn target_to_load(
+        &self,
+        tab_id: Option<String>,
+    ) -> std::result::Result<cdp_domains::cdp_target::CdpTarget, CallToolError> {
+        self.target_if_drawn(tab_id, false).await
+    }
+
+    /// The target of `tab_id` unless a dialog blocks its page, or (with
+    /// `refuse_crashed`) its page crashed.
+    async fn target_if_drawn(
+        &self,
+        tab_id: Option<String>,
+        refuse_crashed: bool,
+    ) -> std::result::Result<cdp_domains::cdp_target::CdpTarget, CallToolError> {
         let found = self.target_ignoring_dialogs(tab_id.clone()).await?;
         // Bound first: the error type is not `Send` across an await.
         let dialog = self.dialog_state(tab_id)?;
-        let open = dialog.lock().await.open.clone();
+        let (open, crashed) = {
+            let state = dialog.lock().await;
+            (state.open.clone(), state.crashed)
+        };
         match open {
             Some(dialog) => Err(CallToolError::from_message(dialog.blocking())),
+            None if crashed && refuse_crashed => {
+                Err(CallToolError::from_message(interruption::PAGE_CRASHED))
+            }
             None => Ok(found),
         }
     }
@@ -1969,6 +1994,21 @@ mod tests {
         // Then it is told to restart, and the dead tab is gone
         assert_eq!(error, BROWSER_GONE);
         assert!(crate::util::sync::read(&session.tabs).tabs.is_empty());
+    }
+
+    /// ISSUE-102 (Chrome): a tool on a tab whose page crashed fails at
+    /// once, saying so and naming reload (it timed out after 10-30 s with
+    /// unrelated errors); reload and navigate still reach it.
+    #[tokio::test]
+    async fn a_crashed_page_is_refused_at_once() {
+        let mock = cdp_domains::tests::spawn_recording_mock().await;
+        let handler = cdp_domains::tests::mock_handler(mock.http_port);
+        let session = handler.session(None).await.unwrap();
+        session.target(None).await.unwrap();
+        session.dialog_state(None).unwrap().lock().await.crashed = true;
+        let error = session.target(None).await.unwrap_err().to_string();
+        assert_eq!(error, interruption::PAGE_CRASHED);
+        assert!(session.target_to_load(None).await.is_ok());
     }
 
     /// ISSUE-101: a connection refused because the browser has no page

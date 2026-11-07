@@ -16,6 +16,15 @@ from a copy of its code: entries describe the differences from that release.
   it failed (`No suitable Chrome target found`), as did every other tool,
   until `restart_browser`. A tool that needs a tab then says to open one
   with `open_tab`, the same on both browsers (#101).
+- Chrome: when a tab's page crashes, a call in flight ends at once and the
+  next ones fail at once (`The tab's page crashed ...: call reload, or
+  navigate, to load it again`) until `reload` or `navigate` loads it again.
+  Each one took 10 to 30 s and failed with unrelated errors (a promise that
+  never settles, a command timeout, an internal error). Firefox lets no page
+  crash on demand, so it is not covered (#102).
+- Chrome: a click whose handler closes its own tab no longer waits 10 s and
+  fails now and then when Chrome never answers the button's release: the
+  tab's closing ends the wait (#90).
 
 ## [0.13.0-beta.23] - 2026-11-07
 

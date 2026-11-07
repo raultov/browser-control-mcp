@@ -151,6 +151,9 @@ pub(crate) async fn press_and_release(
         };
         match released {
             Ok(Ok(_)) => {}
+            // The click closed its own tab (`window.close()` in a handler):
+            // it happened, and the release may never be answered (ISSUE-90).
+            Err(Interruption::Closed) => return Ok(None),
             Ok(Err(e)) => {
                 let failure = crate::handler::cdp_failure("CDP Error", &e);
                 return Err(CallToolError::from_message(failure));
