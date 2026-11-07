@@ -445,6 +445,7 @@ async fn stack_of(
         let entry = debugging::StackFrame {
             function_name: frame.display_name.clone().unwrap_or_default(),
             location: located(&sources, &place.actor, place.line, place.column),
+            scopes: Vec::new(),
         };
         match frame.raw["asyncCause"].as_str() {
             Some(cause) if stack.async_parents.len() < debugging::MAX_ASYNC_CALLERS => {
@@ -933,6 +934,10 @@ pub(crate) async fn evaluate_on_call_frame(
 ) -> ToolResult {
     use crate::handler::cdp_domains::debugger::evaluate_on_call_frame::no_such_frame;
     let args: EvaluateOnCallFrameTool = parse_args(params)?;
+    // Firefox's debugger evaluates in a frame, not in one of its scopes.
+    if args.scope.is_some_and(|scope| scope > 0) {
+        return Err(CallToolError::from_message(FIREFOX_SCOPE));
+    }
     let session = handler.firefox(args.instance_id.as_deref()).await?;
     let index = args.index();
     let value = with_debugger(&session, args.tab_id.as_deref(), async |entry| {
@@ -964,6 +969,9 @@ pub(crate) async fn evaluate_on_call_frame(
     .await?;
     Ok(value.reply())
 }
+
+/// Why `evaluate_on_call_frame` refuses a `scope` on Firefox (ISSUE-100).
+const FIREFOX_SCOPE: &str = "'scope' is not available on Firefox: its debugger evaluates in the frame's innermost scope only (Chrome 156 or later can evaluate in an enclosing one); omit it, or pass 0";
 
 /// `search_scripts`: same query language and output as on Chrome; scripts
 /// are identified by their source actor, with their URL as `scriptHash`.
@@ -1603,6 +1611,21 @@ mod tests {
             assert_eq!(step.params["resumeLimit"]["type"], limit);
             ts::stop(&handler).await;
         }
+    }
+
+    /// ISSUE-100 (Firefox): `scope` above 0 is refused at once, saying
+    /// why (its debugger evaluates in the innermost scope only).
+    #[tokio::test]
+    async fn a_scope_is_refused_on_firefox() {
+        let mock = ts::firefox_with_debugger().await;
+        let handler = ts::handler(&mock);
+        let args = json!({"expression": "v", "scope": 1});
+        let error = evaluate_on_call_frame(ts::call("evaluate_on_call_frame", args), &handler)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert_eq!(error, FIREFOX_SCOPE);
+        ts::stop(&handler).await;
     }
 
     /// ISSUE-67 (Firefox): call_stack lists the thread's frames, innermost

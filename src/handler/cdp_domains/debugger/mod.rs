@@ -273,11 +273,28 @@ fn stack_frames(
                     line: number("lineNumber")?,
                     column: number("columnNumber").unwrap_or(0),
                 },
+                scopes: scope_chain(frame),
             })
         })
         .collect();
     *room = room.saturating_sub(taken.len());
     taken
+}
+
+/// The scope chain of a `Debugger.CallFrame` (at most
+/// [`debugging::MAX_SCOPES`]); none for a `Runtime.CallFrame`.
+fn scope_chain(frame: &serde_json::Value) -> Vec<debugging::Scope> {
+    let chain = frame["scopeChain"].as_array().into_iter().flatten();
+    chain
+        .take(debugging::MAX_SCOPES)
+        .map(|scope| debugging::Scope {
+            kind: scope["type"].as_str().unwrap_or("unknown").to_string(),
+            name: scope["name"]
+                .as_str()
+                .filter(|n| !n.is_empty())
+                .map(str::to_string),
+        })
+        .collect()
 }
 
 /// Where a `Debugger.paused` event stopped (top frame), 0-based as CDP.
@@ -938,6 +955,25 @@ pub(crate) mod tests {
         let started = std::time::Instant::now();
         assert!(pause_recorded(&skipping, 0).await);
         assert!(started.elapsed() < std::time::Duration::from_millis(50));
+    }
+
+    /// ISSUE-100: a paused frame lists its scope chain (type and name), as
+    /// evaluate_on_call_frame's `scope` numbers it; async callers have none.
+    #[test]
+    fn paused_frames_list_their_scopes() {
+        let chain = json!([{"type": "local", "object": {}}, {"type": "closure", "name": "f", "object": {}}, {"type": "global", "object": {}}]);
+        let params = json!({"reason": "other", "callFrames": [{"callFrameId": "c0", "functionName": "g", "url": "",
+            "location": {"scriptId": "3", "lineNumber": 1, "columnNumber": 0}, "scopeChain": chain}]});
+        let (_, stack) = call_stack(&params);
+        let scopes = &stack.frames[0].scopes;
+        let kinds: Vec<&str> = scopes.iter().map(|s| s.kind.as_str()).collect();
+        assert_eq!(kinds, ["local", "closure", "global"]);
+        assert_eq!(scopes[1].name.as_deref(), Some("f"));
+        let listed = stack.to_json();
+        assert_eq!(
+            listed["frames"][0]["scopes"][1],
+            json!({"index": 1, "type": "closure", "name": "f"})
+        );
     }
 
     /// FIX-01: Script start positions are read from integers.

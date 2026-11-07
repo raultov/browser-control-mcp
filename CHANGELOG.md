@@ -18,6 +18,14 @@ from a copy of its code: entries describe the differences from that release.
   new temporary file and answers its path, size and duration. Firefox
   refuses it with a capability error: WebDriver BiDi has no video
   recording (#99).
+- `evaluate_on_call_frame` takes `scope` on Chrome 156 or later: it
+  evaluates in that scope of the frame's chain, to read a variable an inner
+  one of the same name hides; `call_stack` lists each paused frame's scopes
+  (`index`, `type`, `name`) on Chrome. A scope past the chain fails naming
+  the frame's scopes; an older Chrome (which ignores it), or a browser whose
+  version could not be read, refuses it; and Firefox refuses it: its
+  debugger evaluates in the innermost scope only (#100). The E2E suite's
+  Chrome now needs version 156 or later.
 
 ### Changed
 

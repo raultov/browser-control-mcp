@@ -164,9 +164,9 @@ see the note.
 | `step_over` | ✓ | ✓ | |
 | `step_into` | ✓ | ✓ | enters the call on the paused line (Chrome `Debugger.stepInto`, Firefox `resumeLimit: step`) |
 | `step_out` | ✓ | ✓ | runs to the caller (Chrome `Debugger.stepOut`, Firefox `resumeLimit: finish`); `paused: false` when no caller stops |
-| `call_stack` | ✓ | ✓ | the paused stack, innermost first (at most 50 frames): `index`, `function_name`, `url`, 0-based `line_number` and `column_number`, `reason` (`breakpoint`, `step`, `exception`...) and the `exception` thrown; Chrome also lists `async_callers` (`setTimeout`, promises; recorded only while the tab is debugged); Firefox gives no async callers |
+| `call_stack` | ✓ | ✓ | the paused stack, innermost first (at most 50 frames): `index`, `function_name`, `url`, 0-based `line_number` and `column_number`, `reason` (`breakpoint`, `step`, `exception`...) and the `exception` thrown; Chrome also lists each paused frame's `scopes` (`index`, `type`: `local`, `closure`, `block`, `script`, `global`...; `name`) and `async_callers` (`setTimeout`, promises; recorded only while the tab is debugged); Firefox gives no scopes and no async callers |
 | `pause_on_exceptions` | ✓ | ✓ | `state`: `none`, `uncaught` (and unhandled rejections) or `all`, per tab (Chrome `Debugger.setPauseOnExceptions`, Firefox thread configuration `pauseOnExceptions`) |
-| `evaluate_on_call_frame` | ✓ | ✓ | `frame_index` (from `call_stack`) evaluates in a caller's frame; past the stack it fails naming its size |
+| `evaluate_on_call_frame` | ✓ | ✓ | `frame_index` (from `call_stack`) evaluates in a caller's frame; past the stack it fails naming its size; on Chrome 156 or later `scope` evaluates in an enclosing scope of the frame (as `call_stack` numbers them) to read a variable an inner one hides, and past the chain it fails naming its scopes (an older Chrome, or one whose version could not be read, refuses it); Firefox refuses `scope` (its debugger evaluates in the innermost scope only) |
 | `search_scripts` | ✓ | ✓ | a long line's preview is 100 characters on each side of the match; inline scripts and modules included, the server's own evaluations left out (Chrome: an inline script the debugger no longer holds, released while its page sat in the back-forward cache, is found in the page's `<script>` elements, with `scriptId: null`, `lineInScript` and a note to reload before setting a breakpoint in it); `debug` answers `{scripts, errors}` as JSON; frames of another origin too (Chrome ids such as `2.17`) |
 | `pause_on_load` | ✓ | ✗ | TODO on Firefox, see [Limitations and TODO](#limitations-and-todo) |
 | `enable_proxy_auth` | ✓ | partial | needs `--proxy-server`; a request the proxy rejects twice is cancelled; untested on Firefox against a real proxy |
@@ -572,7 +572,7 @@ Both browsers answer the same replies, with 0-based lines everywhere:
 | `remove_breakpoint` | `{"removed": "bp-N"}`; an unknown id fails listing the tab's ids |
 | `step_over`, `step_into`, `step_out`, `resume` | `{"paused", "location": {"url", "script_id"?, "line_number", "column_number"} \| null}`: where the thread stopped next (`script_id` on Chrome, for `set_breakpoint`) (`step_over` waits up to 2 s; `resume` reports a pause only if one follows within 250 ms) |
 | `evaluate_on_call_frame` | the `evaluate_js` shape; an exception fails with `Evaluation threw: <what was thrown>` |
-| `call_stack` | `{"reason", "exception"?, "frames": [{"index", "function_name", "url", "line_number", "column_number"}], "async_callers"?}` |
+| `call_stack` | `{"reason", "exception"?, "frames": [{"index", "function_name", "url", "line_number", "column_number", "scopes"?}], "async_callers"?}` |
 | `pause_on_exceptions` | `{"pause_on_exceptions": "none" \| "uncaught" \| "all"}` |
 
 Breakpoint ids are per tab and MCP-level (`bp-1`, `bp-2`...), like tab ids.
@@ -741,7 +741,8 @@ make compare      # the same tasks on this and other browser MCP servers (tests/
 `make check` is hermetic: it never starts a browser or touches the network.
 `make e2e` runs `tests/run_all_e2e.sh`: the launched-mode smoke for both
 browsers, then the attach mode against browsers started by `tests/chrome.sh`
-and `tests/firefox.sh`. `make compare` runs the scenarios of
+and `tests/firefox.sh` (Chrome 156 or later: it records a video and
+evaluates in an enclosing scope). `make compare` runs the scenarios of
 [tests/compare](tests/compare/README.md) (from common tasks to rare ones, each
 with a check) on browser-control and on Playwright MCP, chrome-devtools-mcp
 and a Puppeteer MCP, and compares the outcome, calls and tokens with a saved

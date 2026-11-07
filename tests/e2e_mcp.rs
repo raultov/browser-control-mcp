@@ -3008,7 +3008,7 @@ mod e2e {
     }
 
     /// Breakpoint pause, frame evaluation, step, resume, script search.
-    fn debugger_steps(instance: &str, base: &str) -> Vec<Step> {
+    fn debugger_steps(instance: &str, base: &str, chrome: bool) -> Vec<Step> {
         let i = json!(instance);
         let bp = json!({"instance_id": i, "url": format!("{base}/app.js"), "line_number": 1});
         let trigger =
@@ -3042,7 +3042,7 @@ mod e2e {
         steps.extend(pause_on_navigate_steps(&i, base));
         steps.extend(loop_breakpoint_steps(&i, base));
         steps.extend(debugger_wording_steps(&i));
-        steps.extend(stack_steps(&i, base));
+        steps.extend(stack_steps(&i, base, chrome));
         steps.extend(exception_pause_steps(&i));
         steps.extend(navigate_while_paused_steps(&i, base));
         steps.extend(conditional_steps(&i));
@@ -3167,8 +3167,9 @@ mod e2e {
     /// snapshot just ran one), and the debugger tools word "not paused" the
     /// same on both browsers.
     /// ISSUE-67: the stack of a pause in nested calls, stepping into and
-    /// out of a call, and evaluating in a caller's frame (both browsers).
-    fn stack_steps(i: &Value, base: &str) -> Vec<Step> {
+    /// out of a call, and evaluating in a caller's frame (both browsers);
+    /// ISSUE-100: in an enclosing scope (Chrome; Firefox refuses it).
+    fn stack_steps(i: &Value, base: &str, chrome: bool) -> Vec<Step> {
         let bp = json!({"instance_id": i, "url": format!("{base}/app.js"), "line_number": 21});
         let trigger = json!({"instance_id": i, "expression": "setTimeout(() => appBuy(), 50); 1"});
         let on = json!({"instance_id": i});
@@ -3206,6 +3207,7 @@ mod e2e {
                 caller,
                 "function",
             ),
+            scope_step(i, chrome),
             (
                 "ISSUE-67 step out to the caller",
                 "step_out",
@@ -3214,6 +3216,19 @@ mod e2e {
             ),
             ("ISSUE-67 resume", "resume", on, "resumed"),
         ]
+    }
+
+    /// ISSUE-100: evaluating in an enclosing scope of the paused frame
+    /// (Chrome; Firefox refuses it).
+    fn scope_step(i: &Value, chrome: bool) -> Step {
+        // `list` is appTotal's parameter: an enclosing scope has none
+        let enclosing = json!({"instance_id": i, "expression": "typeof list", "scope": 1});
+        let in_scope = match chrome {
+            true => "\"value\": \"undefined\"",
+            false => "!'scope' is not available on Firefox",
+        };
+        let label = "ISSUE-100 evaluate in an enclosing scope";
+        (label, "evaluate_on_call_frame", enclosing, in_scope)
     }
 
     /// ISSUE-67: the breakpoint of `stack_steps` removed, then pausing on
@@ -3737,7 +3752,7 @@ mod e2e {
             websocket_steps("e2e", &base),
             other_page_steps("e2e", &base),
             form_issue_steps("e2e", &base, browser == "chrome"),
-            debugger_steps("e2e", &base),
+            debugger_steps("e2e", &base, browser == "chrome"),
             closing_steps(browser),
         ];
         mcp.steps(all.concat()).await;
@@ -3824,7 +3839,7 @@ mod e2e {
             request_detail_steps("default"),
             other_page_steps("default", base),
             form_issue_steps("default", base, chrome),
-            debugger_steps("default", base),
+            debugger_steps("default", base, chrome),
         ]
         .concat()
     }

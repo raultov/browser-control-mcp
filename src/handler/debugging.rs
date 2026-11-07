@@ -309,12 +309,28 @@ pub(crate) const MAX_STACK_FRAMES: usize = 50;
 /// Most async callers (`setTimeout`, a promise...) `call_stack` lists.
 pub(crate) const MAX_ASYNC_CALLERS: usize = 5;
 
+/// Most scopes listed per frame.
+pub(crate) const MAX_SCOPES: usize = 32;
+
+/// One scope of a paused frame's chain, innermost first: what
+/// `evaluate_on_call_frame`'s `scope` numbers (ISSUE-100).
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Scope {
+    /// `local`, `closure`, `block`, `catch`, `script`, `module`, `global`...
+    pub(crate) kind: String,
+    /// The function a closure scope belongs to, when the browser names it.
+    pub(crate) name: Option<String>,
+}
+
 /// One frame of a paused thread's stack.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct StackFrame {
     /// Empty for an anonymous function.
     pub(crate) function_name: String,
     pub(crate) location: PauseLocation,
+    /// Its scope chain, innermost first (Chrome's paused frames; empty for
+    /// async callers and on Firefox).
+    pub(crate) scopes: Vec<Scope>,
 }
 
 impl StackFrame {
@@ -325,6 +341,21 @@ impl StackFrame {
             name => name,
         };
         out["function_name"] = json!(name);
+        if !self.scopes.is_empty() {
+            let scopes: Vec<Value> = self
+                .scopes
+                .iter()
+                .enumerate()
+                .map(|(index, scope)| {
+                    let mut out = json!({"index": index, "type": scope.kind});
+                    if let Some(name) = &scope.name {
+                        out["name"] = json!(name);
+                    }
+                    out
+                })
+                .collect();
+            out["scopes"] = json!(scopes);
+        }
         out
     }
 }
@@ -389,7 +420,7 @@ impl CallStack {
     /// `call_stack`'s reply.
     pub(crate) fn reply(&self) -> CallToolResult {
         let first = format!(
-            "Paused ({}): {} frame(s), innermost first; evaluate_on_call_frame takes a frame_index.",
+            "Paused ({}): {} frame(s), innermost first; evaluate_on_call_frame takes a frame_index (and on Chrome a scope).",
             self.reason,
             self.frames.len()
         );
@@ -657,6 +688,7 @@ mod tests {
     fn call_stacks_list_their_frames() {
         let frame = |name: &str, line: u32| StackFrame {
             function_name: name.into(),
+            scopes: Vec::new(),
             location: PauseLocation {
                 url: Some("http://a/cart.js".into()),
                 script_id: None,
@@ -687,7 +719,7 @@ mod tests {
             rust_mcp_sdk::schema::ContentBlock::TextContent(t) => t.text.clone(),
             _ => String::new(),
         };
-        assert!(text.starts_with("Paused (exception): 2 frame(s), innermost first; evaluate_on_call_frame takes a frame_index."), "{text}");
+        assert!(text.starts_with("Paused (exception): 2 frame(s), innermost first; evaluate_on_call_frame takes a frame_index (and on Chrome a scope)."), "{text}");
         assert_eq!(pause_reason("debuggerStatement"), "debugger_statement");
         assert_eq!(pause_reason("resumeLimit"), "step");
         assert_eq!(pause_reason("promiseRejection"), "promise_rejection");

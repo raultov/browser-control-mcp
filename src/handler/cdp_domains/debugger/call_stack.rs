@@ -12,7 +12,7 @@ use rust_mcp_sdk::{
 
 #[macros::mcp_tool(
     name = "call_stack",
-    description = "Lists the paused stack, innermost frame first: each frame's index (what evaluate_on_call_frame's frame_index takes), function_name, url and 0-based line_number and column_number, why it paused (breakpoint, step, exception...), what was thrown when it paused on an exception, and on Chrome the async callers (setTimeout, a promise...). At most 50 frames."
+    description = "Lists the paused stack, innermost frame first: each frame's index (what evaluate_on_call_frame's frame_index takes), function_name, url and 0-based line_number and column_number, why it paused (breakpoint, step, exception...), what was thrown when it paused on an exception, and on Chrome each paused frame's scopes (index, what evaluate_on_call_frame's scope takes; type: local, closure, block, script, global...; name) and the async callers (setTimeout, a promise...). At most 50 frames."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct CallStackTool {
@@ -110,6 +110,7 @@ mod tests {
             state.scripts.insert("3".into(), script);
             let frame = StackFrame {
                 function_name: "total".into(),
+                scopes: Vec::new(),
                 location: PauseLocation {
                     url: None,
                     script_id: Some("3".into()),
