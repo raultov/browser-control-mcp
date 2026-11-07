@@ -76,7 +76,7 @@ const MAX_ERRORS: usize = 10;
 /// failed. It walks the document and its open shadow roots (at most 20 000
 /// elements) and needs [`ELEMENT_HELPERS`] and [`ELEMENT_LOCATORS`]
 /// declared before it.
-const AUDIT: &str = r#"const audit = (wanted, maxElements) => {
+pub(crate) const AUDIT: &str = r#"const audit = (wanted, maxElements) => {
     const doc = document, notes = [], audits = [], elements = [], MAX = 20000;
     const collect = root => {
         const walker = doc.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
@@ -159,7 +159,7 @@ const AUDIT: &str = r#"const audit = (wanted, maxElements) => {
             while (block && getComputedStyle(block).display.startsWith('inline')) block = block.parentElement;
             return !!block && clean(block.textContent).length > clean(el.textContent).length;
         };
-        const labelled = el => el.tagName === 'INPUT' && ['checkbox', 'radio'].includes(el.type) && el.labels && el.labels.length > 0;
+        const labelled = el => el.tagName === 'INPUT' && ['checkbox', 'radio'].includes(el.type) && labelsOf(el).length > 0;
         const small = t => t.rect.width < 24 || t.rect.height < 24;
         const center = r => [r.left + r.width / 2, r.top + r.height / 2];
         const distance = ([x, y], r) => Math.hypot(Math.max(r.left - x, 0, x - r.right), Math.max(r.top - y, 0, y - r.bottom));

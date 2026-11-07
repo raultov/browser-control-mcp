@@ -46,7 +46,9 @@ const MAX_DEPTH: u32 = 1000;
 /// (approximate: aria-labelledby, aria-label, labels, alt, an input
 /// button's value, the content for roles named by it, a tree item's own
 /// text without its nested items', title, placeholder);
-/// and the text helpers `clean`, `cut`, `textOf` (with the text slotted
+/// `labelsOf(el)`, its `<label>`s, from one map per root built once per
+/// call (`el.labels` scanned the whole document for each element:
+/// ISSUE-104); and the text helpers `clean`, `cut`, `textOf` (with the text slotted
 /// into a shadow tree, which `innerText` misses) and `idText`.
 pub(crate) const ELEMENT_HELPERS: &str = r#"const refsKey = Symbol.for('browser-control-mcp.refs'), refKey = Symbol.for('browser-control-mcp.ref');
 const countKey = Symbol.for('browser-control-mcp.ref-count');
@@ -90,10 +92,25 @@ const ownText = el => {
     el.childNodes.forEach(take);
     return clean(parts.join(' '));
 };
+const labelMaps = new WeakMap();
+const labelsOf = el => {
+    if (!('labels' in el)) return [];
+    const root = el.getRootNode();
+    let map = labelMaps.get(root);
+    if (!map) {
+        map = new Map();
+        for (const label of root.querySelectorAll ? root.querySelectorAll('label') : []) {
+            const control = label.control;
+            if (control) map.set(control, (map.get(control) || []).concat(label));
+        }
+        labelMaps.set(root, map);
+    }
+    return map.get(el) || [];
+};
 const nameOf = (el, role) => {
     const named = idText(el, 'aria-labelledby'); if (named) return named;
     const label = clean(el.getAttribute('aria-label')); if (label) return label;
-    if (el.labels && el.labels.length) { const named = clean(Array.from(el.labels).map(textOf).join(' ')); if (named) return named; }
+    const labels = labelsOf(el); if (labels.length) { const named = clean(labels.map(textOf).join(' ')); if (named) return named; }
     if (el.tagName === 'IMG' || el.tagName === 'AREA' || (el.tagName === 'INPUT' && el.type === 'image')) return clean(el.getAttribute('alt'));
     if (el.tagName === 'INPUT' && ['button', 'submit', 'reset'].includes(el.type)) return clean(el.value) || el.type;
     if (FROM_CONTENT.has(role)) { const named = textOf(el); if (named) return named; }
@@ -493,6 +510,26 @@ mod tests {
             "{OUTLINE}"
         );
         assert!(OUTLINE.contains("valueOf(el, role, name)"), "{OUTLINE}");
+    }
+
+    /// ISSUE-104: an element's labels come from one map of the labels of
+    /// its root, built once per call: `el.labels` scanned the whole
+    /// document for each element (30 000 buttons took 7 s on Chrome).
+    #[test]
+    fn labels_are_read_from_one_map_per_call() {
+        assert!(
+            ELEMENT_HELPERS.contains("const labelsOf = el =>"),
+            "{ELEMENT_HELPERS}"
+        );
+        assert!(
+            ELEMENT_HELPERS.contains("label.control"),
+            "{ELEMENT_HELPERS}"
+        );
+        assert!(
+            !ELEMENT_HELPERS.contains("el.labels.length"),
+            "{ELEMENT_HELPERS}"
+        );
+        assert!(!crate::handler::audit::AUDIT.contains("el.labels"));
     }
 
     /// ISSUE-91: a field's placeholder (often the format it expects) shows
