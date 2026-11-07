@@ -437,7 +437,9 @@ mod tests {
         assert!(error(json!({"action": "start", "path": "/tmp/a.mp4"})).contains("'stop'"));
         assert!(error(json!({"action": "stop", "max_width": 640})).contains("'start'"));
         assert!(error(json!({"action": "stop", "path": "relative.mp4"})).contains("absolute"));
-        assert!(error(json!({"action": "stop", "path": "/tmp/a.webm"})).contains(".mp4"));
+        // Absolute on every platform ("/tmp/..." is not on Windows)
+        let webm = std::env::temp_dir().join("a.webm").display().to_string();
+        assert!(error(json!({"action": "stop", "path": webm})).contains(".mp4"));
         assert_eq!(tool(json!({"action": "stop"})).checked(&[]), Ok(None));
     }
 
