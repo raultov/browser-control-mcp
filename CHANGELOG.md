@@ -31,10 +31,10 @@ from a copy of its code: entries describe the differences from that release.
   lets no automation open (`about:config`, `chrome://`) as a navigation
   failure instead of a raw protocol error (#103).
 - `snapshot`, `find_in_snapshot` and `audit_page` read each field's labels
-  from one map per document built once per call, on both browsers. Each
-  element's `labels` scanned the whole document: the first
-  `find_in_snapshot` on a page with 30 000 buttons took 7 s (now 0.15 s)
-  (#104).
+  from one map per document or shadow root, built once per call, on both
+  browsers. Each element's `labels` scanned the whole document: the first
+  `find_in_snapshot` on a page with 30 000 buttons took 7 s (now about
+  0.15 s) (#104).
 - Chrome: a click whose handler closes its own tab no longer waits 10 s and
   fails now and then when Chrome never answers the button's release: the
   tab's closing ends the wait (#90).

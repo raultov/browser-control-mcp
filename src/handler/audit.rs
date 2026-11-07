@@ -76,7 +76,7 @@ const MAX_ERRORS: usize = 10;
 /// failed. It walks the document and its open shadow roots (at most 20 000
 /// elements) and needs [`ELEMENT_HELPERS`] and [`ELEMENT_LOCATORS`]
 /// declared before it.
-pub(crate) const AUDIT: &str = r#"const audit = (wanted, maxElements) => {
+const AUDIT: &str = r#"const audit = (wanted, maxElements) => {
     const doc = document, notes = [], audits = [], elements = [], MAX = 20000;
     const collect = root => {
         const walker = doc.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
@@ -427,6 +427,14 @@ fn summarize(wanted: &[AuditCategory], url: &str, audits: Vec<Value>, notes: Val
 mod tests {
     use super::*;
     use crate::handler::cdp_domains::log::ConsoleMessage;
+
+    /// ISSUE-104: a checkbox or radio's labels come from the shared map
+    /// (`labelsOf`), not `el.labels`, which scans the document per element.
+    #[test]
+    fn labels_come_from_the_shared_map() {
+        assert!(AUDIT.contains("labelsOf(el).length"), "{AUDIT}");
+        assert!(!AUDIT.contains("el.labels"), "{AUDIT}");
+    }
 
     fn tool(args: Value) -> AuditPageTool {
         serde_json::from_value(args).unwrap()

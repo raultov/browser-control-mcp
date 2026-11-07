@@ -517,19 +517,17 @@ mod tests {
     /// document for each element (30 000 buttons took 7 s on Chrome).
     #[test]
     fn labels_are_read_from_one_map_per_call() {
-        assert!(
-            ELEMENT_HELPERS.contains("const labelsOf = el =>"),
-            "{ELEMENT_HELPERS}"
-        );
-        assert!(
-            ELEMENT_HELPERS.contains("label.control"),
-            "{ELEMENT_HELPERS}"
-        );
-        assert!(
-            !ELEMENT_HELPERS.contains("el.labels.length"),
-            "{ELEMENT_HELPERS}"
-        );
-        assert!(!crate::handler::audit::AUDIT.contains("el.labels"));
+        let parts = [
+            "const labelsOf = el =>",
+            "new WeakMap()",
+            "querySelectorAll('label')",
+            "label.control",
+            "const labels = labelsOf(el);",
+        ];
+        for part in parts {
+            assert!(ELEMENT_HELPERS.contains(part), "{part}");
+        }
+        assert!(!ELEMENT_HELPERS.contains("el.labels"), "{ELEMENT_HELPERS}");
     }
 
     /// ISSUE-91: a field's placeholder (often the format it expects) shows
