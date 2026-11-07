@@ -29,6 +29,9 @@ from a copy of its code: entries describe the differences from that release.
   not tracked`): Chrome announces its open pages again when the server
   starts watching them, and those registered during an action were taken
   for tabs it opened. A page announced twice is counted once (#97).
+- Chrome: `capture_screenshot` of a tab whose window is minimized restores
+  the window for the capture and minimizes it again. It failed telling the
+  agent to use `switch_tab`, which cannot restore a window (#98).
 
 ## [0.12.0-beta.22] - 2026-11-07
 

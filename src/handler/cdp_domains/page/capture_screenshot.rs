@@ -40,6 +40,51 @@ async fn hidden(target: &crate::handler::cdp_domains::cdp_target::CdpTarget) -> 
         .is_some_and(|r| r["result"]["value"] == "hidden")
 }
 
+/// How long a restored window has to show its page.
+const RESTORE_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// The id of the window showing `target`'s tab when it is minimized.
+async fn minimized_window(
+    target: &crate::handler::cdp_domains::cdp_target::CdpTarget,
+) -> Option<u64> {
+    let reply = target
+        .send_raw_command("Browser.getWindowForTarget", json!({}))
+        .await
+        .ok()?
+        .result?;
+    let minimized = reply["bounds"]["windowState"] == "minimized";
+    reply["windowId"].as_u64().filter(|_| minimized)
+}
+
+/// Sets the state (`normal`, `minimized`) of window `window`; best effort.
+async fn set_window_state(
+    target: &crate::handler::cdp_domains::cdp_target::CdpTarget,
+    window: u64,
+    state: &str,
+) {
+    let params = json!({"windowId": window, "bounds": {"windowState": state}});
+    let _ = target
+        .send_raw_command("Browser.setWindowBounds", params)
+        .await;
+}
+
+/// Whether `target`'s page is shown within `limit`.
+async fn shown_within(
+    target: &crate::handler::cdp_domains::cdp_target::CdpTarget,
+    limit: std::time::Duration,
+) -> bool {
+    let deadline = tokio::time::Instant::now() + limit;
+    loop {
+        if !hidden(target).await {
+            return true;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+}
+
 impl CaptureScreenshotTool {
     pub async fn handle(
         params: CallToolRequestParams,
@@ -51,7 +96,26 @@ impl CaptureScreenshotTool {
             crate::handler::resolve_target(handler, args.instance_id.clone(), args.tab_id.clone())
                 .await?;
         let format = image_format(args.format.as_deref())?;
-        args.ensure_drawn(handler, &target).await?;
+        let minimized = args.ensure_drawn(handler, &target).await?;
+        // As text: the error type is not `Send` across the await below.
+        let captured = args
+            .capture(&target, format)
+            .await
+            .map_err(|e| e.to_string());
+        // A window restored for the capture is minimized again (ISSUE-98).
+        if let Some(window) = minimized {
+            set_window_state(&target, window, "minimized").await;
+        }
+        captured.map_err(CallToolError::from_message)
+    }
+
+    /// Captures the page of `target` (shown) as the arguments say.
+    async fn capture(
+        &self,
+        target: &crate::handler::cdp_domains::cdp_target::CdpTarget,
+        format: &'static str,
+    ) -> Result<CallToolResult, CallToolError> {
+        let (args, target) = (self, target);
         let mut command_params = json!({"format": format, "fromSurface": true});
         if let (Some(q), Some(map)) = (args.quality, command_params.as_object_mut()) {
             map.insert("quality".to_string(), json!(q));
@@ -59,19 +123,19 @@ impl CaptureScreenshotTool {
         let note = match (args.selector.as_deref(), args.full_page.unwrap_or(false)) {
             (Some(_), true) => return Err(selector_or_full_page()),
             (Some(selector), false) => {
-                element_clip_params(&target, selector, &mut command_params).await?
+                element_clip_params(target, selector, &mut command_params).await?
             }
-            (None, true) => add_full_page_clip(&target, &mut command_params).await?,
+            (None, true) => add_full_page_clip(target, &mut command_params).await?,
             (None, false) => None,
         };
         let failure = "CDP Error";
         let captured =
-            crate::handler::send_or(&target, "Page.captureScreenshot", command_params, failure)
+            crate::handler::send_or(target, "Page.captureScreenshot", command_params, failure)
                 .await
                 .map_err(|e| e.to_string());
         // The element's scroll is put back, whatever the capture did (ISSUE-89).
         if args.selector.is_some() {
-            restore_scroll(&target).await;
+            restore_scroll(target).await;
         }
         let val = captured.map_err(CallToolError::from_message)?;
         let data = val
@@ -87,25 +151,36 @@ impl CaptureScreenshotTool {
 }
 
 impl CaptureScreenshotTool {
-    /// Chrome draws no frame of a page in the background (`hidden`): a
-    /// capture of it waits for the 10 s timeout. The active tab is brought
-    /// back to the front (the browser may show another one); a page still
-    /// hidden is refused at once, naming switch_tab.
+    /// Chrome draws no frame of a page that is hidden: a capture of it
+    /// waits for the 10 s timeout. So a minimized window is restored (its
+    /// id returned, to minimize it again after the capture: ISSUE-98) and
+    /// the active tab brought to the front; a tab still hidden (in the
+    /// background of its window) is refused at once, naming switch_tab,
+    /// the window minimized again.
     async fn ensure_drawn(
         &self,
         handler: &McpHandler,
         target: &crate::handler::cdp_domains::cdp_target::CdpTarget,
-    ) -> Result<(), CallToolError> {
+    ) -> Result<Option<u64>, CallToolError> {
         if !hidden(target).await {
-            return Ok(());
+            return Ok(None);
+        }
+        let window = minimized_window(target).await;
+        if let Some(window) = window {
+            set_window_state(target, window, "normal").await;
         }
         let session = handler.session(self.instance_id.clone()).await?;
         let active = crate::util::sync::read(&session.tabs).active_tab_id.clone();
         if self.tab_id.is_none() || self.tab_id == active {
             crate::handler::chrome_instance::tab_lifecycle::front_active(&session.tabs).await;
-            if !hidden(target).await {
-                return Ok(());
-            }
+        }
+        // A restored window takes a moment to show its page again.
+        let wait = window.map_or(std::time::Duration::ZERO, |_| RESTORE_WAIT);
+        if shown_within(target, wait).await {
+            return Ok(window);
+        }
+        if let Some(window) = window {
+            set_window_state(target, window, "minimized").await;
         }
         Err(CallToolError::from_message(BACKGROUND))
     }
@@ -376,6 +451,94 @@ mod tests {
         // Then it fails at once naming switch_tab, and nothing is captured
         assert!(error.contains("in the background"), "{error}");
         assert!(error.contains("switch_tab"), "{error}");
+        assert!(mock.commands_named("Page.captureScreenshot").is_empty());
+    }
+
+    /// ISSUE-98 (Chrome): a page hidden because its window is minimized
+    /// is captured: the window is restored for the capture and minimized
+    /// again (the reply sent the agent to switch_tab, which cannot help).
+    #[tokio::test]
+    async fn a_minimized_window_is_restored_for_the_capture() {
+        use crate::handler::cdp_domains::tests::{call, mock_handler, spawn_recording_mock};
+        use std::sync::atomic::{AtomicBool, Ordering};
+        // Given a page hidden until its minimized window is restored
+        let mock = spawn_recording_mock().await;
+        let shown = std::sync::Arc::new(AtomicBool::new(false));
+        let seen = shown.clone();
+        mock.respond_with("Runtime.evaluate", move |_| {
+            let state = if seen.load(Ordering::SeqCst) {
+                "visible"
+            } else {
+                "hidden"
+            };
+            json!({"result": {"result": {"type": "string", "value": state}}})
+        });
+        mock.respond_with(
+            "Browser.getWindowForTarget",
+            |_| json!({"result": {"windowId": 7, "bounds": {"windowState": "minimized"}}}),
+        );
+        let restore = shown.clone();
+        mock.respond_with("Browser.setWindowBounds", move |params| {
+            let state = params["bounds"]["windowState"].as_str() == Some("normal");
+            restore.store(state, Ordering::SeqCst);
+            json!({"result": {}})
+        });
+        mock.respond_with(
+            "Page.captureScreenshot",
+            |_| json!({"result": {"data": "iVBO"}}),
+        );
+        let handler = mock_handler(mock.http_port);
+        // When it is captured
+        let reply =
+            CaptureScreenshotTool::handle(call("capture_screenshot", json!({})), &handler).await;
+        // Then it is captured with the window restored, then minimized again
+        assert!(reply.is_ok(), "{reply:?}");
+        let states: Vec<_> = mock
+            .commands_named("Browser.setWindowBounds")
+            .into_iter()
+            .map(|c| {
+                (
+                    c.params["windowId"].clone(),
+                    c.params["bounds"]["windowState"].clone(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            states,
+            [(json!(7), json!("normal")), (json!(7), json!("minimized"))]
+        );
+    }
+
+    /// ISSUE-98 (Chrome): a tab in the background of a minimized window
+    /// stays hidden once the window is restored: refused naming switch_tab,
+    /// the window minimized again.
+    #[tokio::test]
+    async fn a_background_tab_of_a_minimized_window_is_refused() {
+        use crate::handler::cdp_domains::tests::{call, mock_handler, spawn_recording_mock};
+        // Given a page that stays hidden, in a minimized window
+        let mock = spawn_recording_mock().await;
+        mock.respond_with(
+            "Runtime.evaluate",
+            |_| json!({"result": {"result": {"type": "string", "value": "hidden"}}}),
+        );
+        mock.respond_with(
+            "Browser.getWindowForTarget",
+            |_| json!({"result": {"windowId": 7, "bounds": {"windowState": "minimized"}}}),
+        );
+        let handler = mock_handler(mock.http_port);
+        // When it is captured
+        let error = CaptureScreenshotTool::handle(call("capture_screenshot", json!({})), &handler)
+            .await
+            .unwrap_err()
+            .to_string();
+        // Then it fails naming switch_tab, and the window is minimized again
+        assert!(error.contains("switch_tab"), "{error}");
+        let states: Vec<_> = mock
+            .commands_named("Browser.setWindowBounds")
+            .into_iter()
+            .map(|c| c.params["bounds"]["windowState"].clone())
+            .collect();
+        assert_eq!(states, [json!("normal"), json!("minimized")]);
         assert!(mock.commands_named("Page.captureScreenshot").is_empty());
     }
 
