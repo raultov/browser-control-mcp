@@ -69,6 +69,8 @@ pub enum Capability {
     Screenshot,
     /// Print the page to PDF.
     Print,
+    /// Record a video of the tab (Chrome 156's `Page.startScreenRecording`).
+    VideoRecording,
     /// Buffered console messages.
     ConsoleLogs,
     /// Buffered HTTP requests.
@@ -167,6 +169,7 @@ impl Capabilities {
             Capability::PauseOnLoad,
             Capability::LaunchFeatures,
             Capability::RawCdp,
+            Capability::VideoRecording,
         ] {
             self.grant(c);
         }
@@ -208,6 +211,10 @@ impl Capabilities {
             "launch presets are Chrome command-line switches",
         );
         self.deny(Capability::RawCdp, "it is the Chrome protocol");
+        self.deny(
+            Capability::VideoRecording,
+            "WebDriver BiDi has no video recording",
+        );
     }
 
     fn grant(&mut self, c: Capability) {

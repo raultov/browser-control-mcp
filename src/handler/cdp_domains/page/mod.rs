@@ -2,6 +2,7 @@ pub mod capture_screenshot;
 pub mod emulate;
 pub mod handle_dialog;
 pub mod navigate;
+pub mod record_video;
 pub mod reload;
 pub mod save_pdf;
 pub mod scroll;

@@ -10,6 +10,15 @@ from a copy of its code: entries describe the differences from that release.
 
 ## [Unreleased]
 
+### Added
+
+- `record_video` (`files` group, Chrome 156 or later): `action: "start"`
+  records the tab (`frame_rate`, `max_width`, `max_height`) while other
+  tools act on it, and `action: "stop"` writes the MP4 (AV1) to `path` or a
+  new temporary file and answers its path, size and duration. Firefox
+  refuses it with a capability error: WebDriver BiDi has no video
+  recording (#99).
+
 ### Changed
 
 - Without `--port`, the default Chrome instance launches a Chrome of its

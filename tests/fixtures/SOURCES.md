@@ -8,6 +8,7 @@ test cookie (`probe=1`), kept on purpose for the redaction tests.
 | File(s) | Origin |
 | --- | --- |
 | `bidi/event-load.json`, `bidi/event-log-entry.json`, `bidi/get-tree.json`, `bidi/session-new*.json`, `bidi/session-status-busy.json`, `rdp/*.json` without `bbl_` prefix (except `rdp/thread-sources.json`) | copied from `bidi-lite/tests/fixtures/` (its spike, Firefox 157.0.1; see that repo for hand-made ones: `rdp/source-long-string.json`) |
+| `screen-recording-156.mp4` | ISSUE-99 probe (Chrome 156.0.8078.47, headless): `record_video` start (`frame_rate` 10, 640×480 max), 2 s of a page changing colour every 50 ms, stop; a fragmented MP4 (AV1, 32 frames, 3.1 s by ffprobe) |
 | `rdp/thread-sources.json` | ISSUE-62 probe (Firefox 159): a thread's `sources` reply on a page with an external, a minified, two inline and an imported module script, plus two `debugger eval` sources |
 | `rdp/css-get-applied.json` | ISSUE-86 probe (Firefox 159): the page style `getApplied` reply for `button#go` of the r9 CSS page (an inline `<style>`, an external sheet with `@layer`, `@media`, `@container box (min-width: 100px)`, `!important` and `::before`); rules name their sheet by `parentStyleSheet` only |
 | `bidi/bbl_*.json`, `rdp/bbl_*.json` | copied from `bidi-browser-lite/src/test_support/fixtures/` (its spike, Firefox 157.0.1) |

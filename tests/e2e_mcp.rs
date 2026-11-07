@@ -1992,6 +1992,52 @@ mod e2e {
     /// ISSUE-13: save_pdf writes the first page to a file under the
     /// server's working directory (an upload root), and without a path
     /// returns the PDF in the reply.
+    /// ISSUE-99: Chrome records a video of the tab while it changes;
+    /// Firefox refuses with a capability error.
+    fn video_steps(instance: &str, chrome: bool) -> Vec<Step> {
+        let i = json!(instance);
+        let start = json!({"instance_id": i, "action": "start", "frame_rate": 10});
+        if !chrome {
+            let refused = "!not available on Firefox";
+            return vec![(
+                "ISSUE-99 record_video on Firefox",
+                "record_video",
+                start,
+                refused,
+            )];
+        }
+        let path = format!("{}/target/e2e-{instance}.mp4", env!("CARGO_MANIFEST_DIR"));
+        let animate = "(() => { let n = 0; window.__v99 = setInterval(() => { document.body.style.background = `hsl(${(n += 30) % 360} 80% 50%)`; }, 50); return 1; })()";
+        let stop_animation = "(() => { clearInterval(window.__v99); document.body.style.background = ''; return 1; })()";
+        vec![
+            (
+                "ISSUE-99 start recording",
+                "record_video",
+                start,
+                "Recording the tab",
+            ),
+            (
+                "ISSUE-99 the page changes",
+                "evaluate_js",
+                json!({"instance_id": i, "expression": animate}),
+                "",
+            ),
+            ("ISSUE-99 let it record", "sleep", json!({}), ""),
+            (
+                "ISSUE-99 stop writes the video",
+                "record_video",
+                json!({"instance_id": i, "action": "stop", "path": path}),
+                "(MP4) to",
+            ),
+            (
+                "ISSUE-99 the page stops changing",
+                "evaluate_js",
+                json!({"instance_id": i, "expression": stop_animation}),
+                "",
+            ),
+        ]
+    }
+
     fn pdf_steps(instance: &str) -> Vec<Step> {
         let i = json!(instance);
         let path = format!("{}/target/e2e-{instance}.pdf", env!("CARGO_MANIFEST_DIR"));
@@ -3653,7 +3699,7 @@ mod e2e {
         // Every opt-in tool group: the suite drives them all.
         let secrets = secrets_file(browser);
         let mut mcp = Mcp::start(&["--tool-groups", "all", "--secrets", &secrets]).await;
-        mcp.list_tools(57).await;
+        mcp.list_tools(58).await;
         if browser == "chrome" {
             mcp.own_default_chrome().await;
         }
@@ -3677,6 +3723,7 @@ mod e2e {
             secret_steps("e2e"),
             upload_steps("e2e"),
             pdf_steps("e2e"),
+            video_steps("e2e", browser == "chrome"),
             key_and_pointer_steps("e2e"),
             key_combination_steps("e2e"),
             storage_steps("e2e"),
@@ -3766,6 +3813,7 @@ mod e2e {
             form_steps("default"),
             upload_steps("default"),
             pdf_steps("default"),
+            video_steps("default", chrome),
             key_and_pointer_steps("default"),
             key_combination_steps("default"),
             storage_steps("default"),

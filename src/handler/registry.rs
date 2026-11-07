@@ -202,6 +202,7 @@ fn page_tools() -> Vec<ToolEntry> {
     use cdp_domains::input::{hover::HoverTool as Hover, press_key::PressKeyTool as Key};
     use cdp_domains::page::emulate::EmulateTool as Emulate;
     use cdp_domains::page::handle_dialog::HandleDialogTool as Dialog;
+    use cdp_domains::page::record_video::RecordVideoTool as Video;
     use cdp_domains::page::save_pdf::SavePdfTool as Pdf;
     use cdp_domains::page::wait_for::WaitForTool as Wait;
     use cdp_domains::page::{
@@ -217,6 +218,7 @@ fn page_tools() -> Vec<ToolEntry> {
     vec![
         entry!(Shot, Always, &[Screenshot], ff::capture_screenshot),
         entry!(Pdf, FILES, &[Print], ff::save_pdf),
+        entry!(Video, FILES, &[VideoRecording]),
         entry!(Click, Always, &[Input], ff::click_element),
         entry!(Fill, Always, &[Input], ff::fill_input),
         entry!(Form, Always, &[Input], ff::fill_form),
@@ -1755,7 +1757,7 @@ The page reacted (the DOM changed) and settled after ",
         handler.flags.enable_webmcp = true;
         handler.tool_groups = vec![crate::cli::ToolGroup::All];
         let listed = names(listed_tools(&handler));
-        assert_eq!(listed.len(), 63);
+        assert_eq!(listed.len(), 64);
         assert!(listed.contains("restart_browser") && listed.contains("stop_browser"));
         assert!(!listed.contains("restart_chrome") && !listed.contains("stop_chrome"));
     }
