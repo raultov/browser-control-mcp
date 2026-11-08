@@ -57,7 +57,7 @@ fn_params_excessive_bools = "warn"
 async-trait = "0.1.92"
 # Mocked bodies (Fetch.fulfillRequest) and PDFs (Page.printToPDF) travel in base64.
 base64 = "0.23.1"
-cdp-browser-lite = "0.4.2"
+cdp-browser-lite = "0.4.3"
 bidi-browser-lite = "0.1.6"
 chrono = "0.4.45"
 clap = { version = "4.6.7", features = ["derive"] }
@@ -83,7 +83,7 @@ zune-jpeg = "0.5.15"
 # In-process BiDi/RDP mocks (MockBidi, MockRdp, MockFirefox).
 bidi-browser-lite = { version = "0.1.6", features = ["test-support"] }
 # In-process DevTools mocks for the unit tests only (specs D31).
-cdp-browser-lite = { version = "0.4.2", features = ["test-support"] }
+cdp-browser-lite = { version = "0.4.3", features = ["test-support"] }
 # WebSocket echo server of the E2E smoke (already in the tree via the lifecycle crates).
 futures-util = "0.3.34"
 tokio-tungstenite = "0.30.0"

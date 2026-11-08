@@ -83,7 +83,7 @@ async fn send_each(target: &CdpTarget, commands: &[(&str, Value)], blocked: bool
     let mut failed = Vec::new();
     for (method, params) in commands {
         if blocked {
-            target.queue_raw_command(method, params.clone()).await;
+            target.queue_raw_command(method, params.clone());
         } else if send(target, method, params.clone()).await.is_err() {
             failed.push(method.to_string());
         }
@@ -211,7 +211,7 @@ async fn record(
     let unused = match (recording, blocked) {
         (Ok(recording), None) => recording.finish(target).await,
         (Ok(recording), Some(why)) => {
-            recording.abandon(target).await;
+            recording.abandon(target);
             Err(why)
         }
         (Err(why), _) => Err(why),
@@ -576,6 +576,16 @@ mod tests {
             "{error}"
         );
         assert!(started.elapsed() < Duration::from_secs(5));
+        // Queued without waiting for a reply: it reaches the socket a moment later
+        for _ in 0..100 {
+            if !mock
+                .commands_named("Emulation.clearDeviceMetricsOverride")
+                .is_empty()
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
         let names: Vec<String> = methods_from(mock, "Page.navigate")
             .into_iter()
             .map(|(m, _)| m)

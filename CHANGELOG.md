@@ -54,6 +54,11 @@ from a copy of its code: entries describe the differences from that release.
   and failure modes stay. Parameter descriptions are shorter too.
 - With both changes the default tool list costs 6 668 tokens instead of
   8 994 (8 495 with `--tool-groups debug`).
+- Built with `cdp-browser-lite` 0.4.3 (`cdp-lite` 0.3.2): a command whose
+  caller stops waiting no longer leaves its reply slot behind until Chrome
+  answers, and the commands `lighthouse_report` sends to a page a dialog
+  blocks (to put the tab's emulation back) are written without a reply slot
+  at all.
 
 ### Fixed
 

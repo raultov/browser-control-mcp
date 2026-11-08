@@ -110,12 +110,10 @@ impl Recording {
     /// pause blocks: the stop commands are queued, and Chrome runs them once
     /// the page answers again (sent and awaited, each would wait for the
     /// command timeout).
-    pub(crate) async fn abandon(self, target: &CdpTarget) {
-        target
-            .queue_raw_command("CSS.stopRuleUsageTracking", json!({}))
-            .await;
+    pub(crate) fn abandon(self, target: &CdpTarget) {
+        target.queue_raw_command("CSS.stopRuleUsageTracking", json!({}));
         for method in STOP {
-            target.queue_raw_command(method, json!({})).await;
+            target.queue_raw_command(method, json!({}));
         }
     }
 

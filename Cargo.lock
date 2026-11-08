@@ -242,9 +242,9 @@ dependencies = [
 
 [[package]]
 name = "cdp-browser-lite"
-version = "0.4.2"
+version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "736ff9bc9cb65c3d0af0f5c63508a51c48e86f1e88e4ae57081349a13a41a080"
+checksum = "a4b08b780d7d235a18e9a14b2b1f7b24f881a626cca1dadfab41b963bdfe954a"
 dependencies = [
  "cdp-lite",
  "futures-util",
@@ -259,9 +259,9 @@ dependencies = [
 
 [[package]]
 name = "cdp-lite"
-version = "0.3.1"
+version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e4604f4c8c52955e95fd320684b63ea8674b65e6da1d0ce4afa142f8ee6fa2c7"
+checksum = "4276a36146301a7082840dc6bfb9fb0f30dd312478382bbe249d7a213ea8eacb"
 dependencies = [
  "futures-util",
  "log",
