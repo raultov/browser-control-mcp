@@ -29,6 +29,30 @@ impl CloseTabTool {
     }
 }
 
+/// How long `close_tab` waits for the browser to stop listing the page.
+#[cfg(not(test))]
+const GONE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+#[cfg(test)]
+const GONE_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(200);
+
+/// Waits (at most [`GONE_TIMEOUT`], a slow check included; checking every
+/// 20 ms) until `still_listed` says the closed page is gone, or cannot tell
+/// (`None`).
+async fn until_gone<F, Fut>(mut still_listed: F)
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Option<bool>>,
+{
+    let deadline = tokio::time::Instant::now() + GONE_TIMEOUT;
+    // `timeout_at` polls the check first: a check that answers at once is
+    // stopped by the deadline test, one that never answers by the timeout.
+    while tokio::time::Instant::now() < deadline
+        && tokio::time::timeout_at(deadline, still_listed()).await == Ok(Some(true))
+    {
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+}
+
 /// Why `close_tab` without `tab_id` closed nothing.
 pub(crate) const NO_TAB: &str = "There is no tab to close (no tab_id given and no active tab).";
 
@@ -78,6 +102,13 @@ impl CloseTabTool {
         browser_client.close_tab(&target_id).await.map_err(|e| {
             CallToolError::from_message(format!("Failed to close tab on browser: {}", e))
         })?;
+        // Chrome answers before the page is gone: a tool called right after
+        // would connect to the dying page (ISSUE-101).
+        let still_listed = || async {
+            let pages = browser_client.list_tabs().await.ok()?;
+            Some(pages.iter().any(|page| page.target_id == target_id))
+        };
+        until_gone(still_listed).await;
         let new_active = super::tab_lifecycle::forget_tab(&session.tabs, &tab_id).await;
 
         Ok(CallToolResult::text_content(vec![
@@ -94,6 +125,32 @@ impl CloseTabTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ISSUE-101 (Chrome): close_tab answers once the browser stops listing
+    /// the page (Chrome answers Target.closeTarget before), giving up after
+    /// a bound or when the browser cannot be asked.
+    #[tokio::test]
+    async fn closing_waits_until_the_page_is_gone() {
+        // Given a page listed for three more checks
+        let checks = std::sync::atomic::AtomicUsize::new(0);
+        let listed = || async {
+            let seen = checks.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Some(seen < 3)
+        };
+        // When close_tab waits for it
+        until_gone(listed).await;
+        // Then it asked until the page was gone
+        assert_eq!(checks.load(std::sync::atomic::Ordering::SeqCst), 4);
+        // A page that never goes, or a browser that cannot tell, ends it
+        let started = tokio::time::Instant::now();
+        until_gone(|| async { Some(true) }).await;
+        assert!(started.elapsed() >= GONE_TIMEOUT);
+        until_gone(|| async { None }).await;
+        // A check that never answers does not outlast the bound
+        let started = tokio::time::Instant::now();
+        until_gone(std::future::pending::<Option<bool>>).await;
+        assert!(started.elapsed() < GONE_TIMEOUT * 2);
+    }
 
     /// ISSUE-69 (Chrome): close_tab without tab_id closes the active tab,
     /// as every tool omitting tab_id acts on it; with no tab it says so.

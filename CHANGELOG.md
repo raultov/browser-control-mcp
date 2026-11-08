@@ -65,7 +65,9 @@ from a copy of its code: entries describe the differences from that release.
 - Chrome: once an instance's last tab is closed, `open_tab` opens a new one;
   it failed (`No suitable Chrome target found`), as did every other tool,
   until `restart_browser`. A tool that needs a tab then says to open one
-  with `open_tab`, the same on both browsers (#101).
+  with `open_tab`, the same on both browsers. `close_tab` answers once
+  Chrome stopped listing the page (it answered before the page was gone, and
+  a tool called right after could connect to the dying page) (#101).
 - Chrome: when a tab's page crashes, a call in flight ends at once and the
   next ones fail at once (`The tab's page crashed ...: call reload, or
   navigate, to load it again`) until `reload` or `navigate` loads it again.
