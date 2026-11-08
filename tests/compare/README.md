@@ -15,6 +15,14 @@ python3 -I tests/compare/run.py --only 'frames|shadow' --level 2
 python3 -I tests/compare/run.py --save-baseline   # keep a run you trust
 ```
 
+`bench.py` measures the README's comparison table ("Measured": tool lists,
+snapshots of live pages, a login, latencies, edge cases) on `bc`, `pw` and
+`cd`, and saves the numbers as JSON:
+
+```sh
+make build && python3 -I tests/compare/bench.py [--servers bc,pw] [--runs 10]
+```
+
 ## Servers
 
 | Key | Server | How it runs |
@@ -43,6 +51,7 @@ deliberate change, and its effect shows against the baseline.
   `Unsupported`.
 - `scenarios.py`: the tasks, from level 1 (what every agent does) to level 4
   (rare), each with its check.
+- `bench.py`: the README's comparison table (see above).
 - `run.py`: runs them and writes `results/<time>/` (`report.md`,
   `results.json`, `run.log`; git-ignored); with `baseline.json`, the report
   lists the scenarios whose status changed.

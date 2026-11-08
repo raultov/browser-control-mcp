@@ -1,0 +1,17 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Log in</title></head><body>
+<h1>Log in</h1>
+<form id="login">
+<label for="user">Username</label> <input id="user" name="user" autocomplete="username">
+<label for="pass">Password</label> <input id="pass" name="pass" type="password" autocomplete="current-password">
+<label for="role">Role</label> <select id="role" name="role"><option value="user">User</option><option value="admin">Admin</option></select>
+<label><input id="remember" type="checkbox" name="remember"> Remember me</label>
+<button type="submit">Sign in</button>
+</form>
+<p id="out"></p>
+<script>
+document.getElementById('login').onsubmit = event => {
+  event.preventDefault();
+  const user = document.getElementById('user').value;
+  setTimeout(() => { document.getElementById('out').textContent = 'Welcome, ' + user; }, 300);
+};
+</script></body></html>

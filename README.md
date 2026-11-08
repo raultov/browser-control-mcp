@@ -23,13 +23,13 @@ chrome-devtools-mcp with runtime JavaScript debugging on both browsers.
 
 ## Comparison with Playwright MCP and chrome-devtools-mcp
 
-Measured on 2026-10-31 with browser-control-mcp built from the current
-sources, `@playwright/mcp` 0.0.83 and `chrome-devtools-mcp` 1.12.0, driven by
-the same stdio client through the same tasks on Chrome 156 (headless,
-Linux). Every outcome was checked in the page, not taken from the reply.
-Tokens are estimated as characters / 4 for every server. browser-control's
-tool lists and the HTTP authentication row were measured again on
-2026-11-02, with the changes of #46 to #55.
+Measured on 2026-11-08 with browser-control-mcp 0.13.0-beta.23 built from
+the current sources, `@playwright/mcp` 0.0.84 and `chrome-devtools-mcp`
+1.12.0, driven by the same stdio client through the same tasks on Chrome
+156.0.8078.47 (headless, Linux) with `tests/compare/bench.py`. Every
+outcome was checked in the page, not taken from the reply. Tokens are
+estimated as characters / 4 for every server. The HTTP authentication row
+comes from the `tests/compare` scenarios.
 
 **What each one can do**
 
@@ -59,27 +59,27 @@ tool lists and the HTTP authentication row were measured again on
 
 | Task | browser-control-mcp | Playwright MCP | chrome-devtools-mcp |
 | --- | --- | --- | --- |
-| Tool list in context, default tools | 6 730 tokens | 5 330 tokens | 7 770 tokens |
-| Tool list in context, every opt-in tool on | 10 880 tokens | 12 040 tokens | not measured (optional categories) |
-| Snapshot of Hacker News | **4 588 tokens** | 12 356 tokens | 6 869 tokens |
-| Snapshot of Wikipedia "Web browser" | **12 643 tokens** (cut, searchable) | 34 349 tokens | 27 656 tokens |
-| Snapshot of MDN `<input>` | **12 625 tokens** (cut, searchable) | 158 077 tokens | 76 654 tokens |
-| Log in step by step (8 calls) | **298 tokens, 1.8 s** | 521 tokens, 2.4 s | 364 tokens, 2.6 s |
-| Log in with `fill_form` (5 calls) | **321 tokens, 1.6 s** | 428 tokens, 1.9 s | 352 tokens, 2.0 s |
-| Click, median | 52 ms | 531 ms | 234 ms |
+| Tool list in context, default tools | 8 994 tokens | 5 530 tokens | 7 774 tokens |
+| Tool list in context, every opt-in tool on | 14 296 tokens | 12 291 tokens | not measured (optional categories) |
+| Snapshot of Hacker News | **4 584 tokens** | 12 112 tokens | 6 918 tokens |
+| Snapshot of Wikipedia "Web browser" | **12 569 tokens** (cut, searchable) | 34 316 tokens | 27 648 tokens |
+| Snapshot of MDN `<input>` | **12 565 tokens** (cut, searchable) | 158 037 tokens | 77 206 tokens |
+| Log in step by step (8 calls) | **296 tokens, 0.6 s** | 626 tokens, 1.2 s | 345 tokens, 1.4 s |
+| Log in with `fill_form` (5 calls) | **319 tokens, 0.5 s** | 433 tokens, 0.7 s | 326 tokens, 0.8 s |
+| Click, median | **56 ms** | 516 ms | 235 ms |
 | Evaluate JavaScript, median | **0 ms** | 504 ms | 204 ms |
-| Navigate (local page), median | **13 ms** | 31 ms | 119 ms |
-| Full-page screenshot of a 31 700 px page | cut at 16 384 px, with a note | 3.3 MB image in the reply | saved to a file |
+| Navigate (local page), median | **46 ms** | 62 ms | 117 ms |
+| Full-page screenshot of a 31 700 px page | cut at 16 384 px, with a note | 0.6 MB image in the reply, also saved to a file | saved to a file, with a warning that content past 16 384 px may repeat or be corrupted |
 | Navigation to an unknown host | error | error | success with the error in the text |
-| Navigate, then read the console (log, warning, errors) | 249 tokens | 191 tokens | 117 tokens |
-| Navigate, then read the network log (3 requests) | 168 tokens | 48 tokens | 54 tokens |
+| Navigate, then read the console (log, warning, errors) | 218 tokens (keeps the same site's earlier messages, here a favicon 404) | 190 tokens | 97 tokens |
+| Navigate, then read the network log (3 requests) | 193 tokens (also lists the documents of the 2 pages before) | 115 tokens | 87 tokens |
 
 ## Supported browsers
 
 | Browser | Protocol | Validated with |
 | --- | --- | --- |
-| Chrome / Chromium | Chrome DevTools Protocol | Google Chrome 155.0.8059.39 (Linux) |
-| Firefox | WebDriver BiDi, plus the Firefox Remote Debugging Protocol (RDP) for the JavaScript debugger | Firefox 157.0.1 (Linux, snap) |
+| Chrome / Chromium | Chrome DevTools Protocol | Google Chrome 156.0.8078.47 (Linux) |
+| Firefox | WebDriver BiDi, plus the Firefox Remote Debugging Protocol (RDP) for the JavaScript debugger | Firefox 159.0 (Linux, snap) |
 
 The default browser is Chrome. Every instance runs one browser for its whole
 life: start the server with `--browser firefox`, or pass
@@ -676,7 +676,7 @@ incompatible:
   the next tool call; an attached Firefox keeps its orphan session, so
   restart that Firefox.
 - Firefox debugger: tabs are mapped to the debugger through Firefox's Remote
-  Agent (verified on Firefox 157 only); a Firefox without it answers the
+  Agent (verified on Firefox 157 to 159); a Firefox without it answers the
   debugger tools with an error instead of guessing a tab.
 - `get_network_logs` with `include_details: true` has no total size limit (each
   Firefox body is capped at 2 MB): use `url_filter` on busy pages.
