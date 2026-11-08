@@ -17,13 +17,13 @@ use tokio::sync::Mutex;
 
 #[macros::mcp_tool(
     name = "audit_page",
-    description = "Audits the rendered page for accessibility, SEO and best-practice problems, with the same checks on Chrome and Firefox (one script in the page, no Lighthouse): images without alt text; fields, buttons and links without a name; html lang; heading order; duplicate ids; broken aria references; positive tabindex; targets under 24x24 px; text contrast under WCAG AA; title, meta description, viewport, vague link text, uncrawlable links, canonical, noindex; doctype, HTTPS and mixed content, distorted images and console errors. Returns each failing check with its first 10 elements (ref, selector, snippet, detail), then the ids of the checks that passed or did not apply. 'categories' narrows it. Approximate, not a full WCAG review: text over background images, iframes and closed shadow roots are not checked."
+    description = "Audits the page as it is now for accessibility, SEO and best-practice problems, the same on Chrome and Firefox: images without alt; fields, buttons and links without a name; html lang; heading order; duplicate ids; broken aria references; positive tabindex; targets under 24x24 px; contrast under WCAG AA; title, meta description, viewport, vague link text, uncrawlable links, canonical, noindex; doctype, HTTPS, mixed content, distorted images, console errors. Returns each failing check with its first 10 elements (ref, selector, snippet, detail), then the ids that passed or did not apply. For 0-100 scores of a fresh load use lighthouse_report. Approximate: text over background images, iframes and closed shadow roots are not checked."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct AuditPageTool {
-    /// Instance id; omit for the default instance.
+    /// Default: the default instance.
     pub instance_id: Option<String>,
-    /// Tab id; omit for the active tab.
+    /// Default: the active tab.
     pub tab_id: Option<String>,
     /// Categories to check. Default: all three.
     pub categories: Option<Vec<AuditCategory>>,

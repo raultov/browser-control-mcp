@@ -10,13 +10,13 @@ use serde_json::Value;
 
 #[macros::mcp_tool(
     name = "press_key",
-    description = "Presses one key with optional modifiers ('modifiers', or written before it: Control+a, Shift+Tab), as a user, in the element 'selector' names (focused first) or the focused one; the browser's default action runs (Enter submits, Tab moves the focus). With Control, Alt or Meta held the key types nothing. A dialog or breakpoint it causes is noted, as for 'click_element'."
+    description = "Presses one key, with modifiers (Control+a, Shift+Tab), as a user would, in the element given (focused first) or the focused one; the browser's default action runs (Enter submits, Tab moves the focus). With Control, Alt or Meta held nothing is typed. To type text use fill_input. A dialog or breakpoint it causes is noted, as for click_element."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct PressKeyTool {
-    /// Instance id; omit for the default instance.
+    /// Default: the default instance.
     pub instance_id: Option<String>,
-    /// Tab id; omit for the active tab.
+    /// Default: the active tab.
     pub tab_id: Option<String>,
     /// One character, or Enter, Tab, Escape, Backspace, Delete, ArrowLeft, ArrowUp, ArrowRight, ArrowDown, Home, End, PageUp, PageDown, Insert, Space, F1 to F12; optionally after modifiers joined with '+' (Control+a, Shift+Tab, ControlOrMeta+c: Meta on macOS, Control elsewhere).
     pub key: String,

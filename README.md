@@ -59,8 +59,8 @@ comes from the `tests/compare` scenarios.
 
 | Task | browser-control-mcp | Playwright MCP | chrome-devtools-mcp |
 | --- | --- | --- | --- |
-| Tool list in context, default tools | 8 994 tokens | 5 530 tokens | 7 774 tokens |
-| Tool list in context, every opt-in tool on | 14 296 tokens | 12 291 tokens | not measured (optional categories) |
+| Tool list in context, default tools | 8 405 tokens | 5 530 tokens | 7 774 tokens |
+| Tool list in context, every opt-in tool on | 13 372 tokens | 12 291 tokens | not measured (optional categories) |
 | Snapshot of Hacker News | **4 584 tokens** | 12 112 tokens | 6 918 tokens |
 | Snapshot of Wikipedia "Web browser" | **12 569 tokens** (cut, searchable) | 34 316 tokens | 27 648 tokens |
 | Snapshot of MDN `<input>` | **12 565 tokens** (cut, searchable) | 158 037 tokens | 77 206 tokens |

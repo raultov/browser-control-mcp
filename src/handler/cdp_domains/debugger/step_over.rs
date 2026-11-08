@@ -11,9 +11,9 @@ use rust_mcp_sdk::{
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct StepOverTool {
-    /// Instance id; omit for the default instance.
+    /// Default: the default instance.
     pub instance_id: Option<String>,
-    /// Tab id; omit for the active tab.
+    /// Default: the active tab.
     pub tab_id: Option<String>,
 }
 
@@ -28,13 +28,13 @@ impl StepOverTool {
 
 #[macros::mcp_tool(
     name = "step_into",
-    description = "Enters the call on the paused line (as step_over when it calls nothing). Returns {paused, location: {url, line_number, column_number} | null} (0-based), waiting up to 2 s for the next pause."
+    description = "Enters the call on the paused line (as step_over when it calls nothing), waiting up to 2 s for the next pause; returns as step_over does."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct StepIntoTool {
-    /// Instance id; omit for the default instance.
+    /// Default: the default instance.
     pub instance_id: Option<String>,
-    /// Tab id; omit for the active tab.
+    /// Default: the active tab.
     pub tab_id: Option<String>,
 }
 
@@ -49,13 +49,13 @@ impl StepIntoTool {
 
 #[macros::mcp_tool(
     name = "step_out",
-    description = "Runs to the end of the paused function and stops in its caller. Returns {paused, location: {url, line_number, column_number} | null} (0-based; paused false when no caller stops it), waiting up to 2 s for the next pause."
+    description = "Runs to the end of the paused function and stops in its caller, waiting up to 2 s; returns as step_over does (paused false when no caller stops it)."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct StepOutTool {
-    /// Instance id; omit for the default instance.
+    /// Default: the default instance.
     pub instance_id: Option<String>,
-    /// Tab id; omit for the active tab.
+    /// Default: the active tab.
     pub tab_id: Option<String>,
 }
 

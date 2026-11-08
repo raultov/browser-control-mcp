@@ -10,15 +10,15 @@ use serde_json::{Value, json};
 
 #[macros::mcp_tool(
     name = "fill_input",
-    description = "Replaces the content of a text field, textarea or contenteditable element (or, with append, types after it) by typing key by key (the page's key handlers run; about 1 ms per character), or picks the <select> option whose value or label is the text (on a <select multiple>, exactly the options named one per line), or sets a date, time, range or colour input to it (YYYY-MM-DD, HH:MM, a number, #rrggbb). Fails without typing on disabled, read-only, non-text or unfocusable elements, and when the field rejects the text; notes when the page reformatted it."
+    description = "Types into a text field, textarea or contenteditable, replacing its content (or after it with append), key by key so the page's handlers run (~1 ms per character); picks the <select> option(s) named; sets a date, time, range or colour input (YYYY-MM-DD, HH:MM, a number, #rrggbb). Fails without typing on disabled, read-only, non-text or unfocusable elements and when the field rejects the text; notes a reformatted value. For several fields at once use fill_form."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct FillInputTool {
-    /// Instance id; omit for the default instance.
+    /// Default: the default instance.
     pub instance_id: Option<String>,
-    /// Tab id; omit for the active tab.
+    /// Default: the active tab.
     pub tab_id: Option<String>,
-    /// Element: CSS selector, 'host >>> inner' (inside an open shadow root or same-origin iframe), or a snapshot ref (e12).
+    /// CSS selector, 'host >>> inner' (into an open shadow root or same-origin iframe) or snapshot ref (e12).
     pub selector: String,
     /// Text to type, or the value or label of the option of a `<select>` (of a `<select multiple>`: one per line, exactly those selected).
     pub text: String,

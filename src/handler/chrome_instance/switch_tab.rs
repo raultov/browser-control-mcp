@@ -10,7 +10,7 @@ use rust_mcp_sdk::{
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct SwitchTabTool {
-    /// Instance id; omit for the default instance.
+    /// Default: the default instance.
     pub instance_id: Option<String>,
     /// The Tab ID to switch to (e.g. 'tab-1').
     pub tab_id: String,

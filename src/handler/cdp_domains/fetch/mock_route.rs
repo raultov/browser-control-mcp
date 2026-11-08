@@ -19,13 +19,13 @@ use tokio_stream::StreamExt;
 
 #[macros::mcp_tool(
     name = "mock_route",
-    description = "Answers the tab's requests whose URL matches 'url_pattern' (glob: * any run of characters, ? one, \\ escapes) with a mocked response instead of the network. The latest matching route wins; routes last until remove_route or the tab closes. Returns the route id. On Chrome it cannot run while enable_proxy_auth is active."
+    description = "Answers the tab's requests whose URL matches the 'url_pattern' glob (* any characters, ? one, \\ escapes) with a mocked response instead of the network; the latest matching route wins, until remove_route or the tab closes. Returns the route id. On Chrome it cannot run while enable_proxy_auth is active."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct MockRouteTool {
-    /// Instance id; omit for the default instance.
+    /// Default: the default instance.
     pub instance_id: Option<String>,
-    /// Tab id; omit for the active tab.
+    /// Default: the active tab.
     pub tab_id: Option<String>,
     /// URL glob, e.g. '*/api/users*'.
     pub url_pattern: String,
@@ -54,9 +54,9 @@ pub struct Header {
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct ListRoutesTool {
-    /// Instance id; omit for the default instance.
+    /// Default: the default instance.
     pub instance_id: Option<String>,
-    /// Tab id; omit for the active tab.
+    /// Default: the active tab.
     pub tab_id: Option<String>,
 }
 
@@ -66,9 +66,9 @@ pub struct ListRoutesTool {
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct RemoveRouteTool {
-    /// Instance id; omit for the default instance.
+    /// Default: the default instance.
     pub instance_id: Option<String>,
-    /// Tab id; omit for the active tab.
+    /// Default: the active tab.
     pub tab_id: Option<String>,
     /// The id mock_route returned; omit to remove every route.
     pub route_id: Option<String>,

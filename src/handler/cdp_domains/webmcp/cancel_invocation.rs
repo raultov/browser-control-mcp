@@ -10,9 +10,9 @@ use rust_mcp_sdk::{
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct CancelWebmcpInvocationTool {
-    /// Instance id; omit for the default instance.
+    /// Default: the default instance.
     pub instance_id: Option<String>,
-    /// Tab id; omit for the active tab.
+    /// Default: the active tab.
     pub tab_id: Option<String>,
     /// Id from webmcp_invoke_tool or webmcp_list_invocations.
     #[serde(rename = "invocationId")]

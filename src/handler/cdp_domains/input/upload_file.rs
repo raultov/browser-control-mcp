@@ -9,15 +9,15 @@ use std::path::{Path, PathBuf};
 
 #[macros::mcp_tool(
     name = "upload_file",
-    description = "Sets the files of an <input type=file> as if picked in the file chooser (the page gets input and change). Paths must be absolute files under the upload roots: the server's working and temp directories, or its --upload-root directories."
+    description = "Sets the files of an <input type=file> as if picked in the file chooser (the page gets input and change). Paths: absolute files under the upload roots (the working and temp directories and --upload-root ones)."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct UploadFileTool {
-    /// Instance id; omit for the default instance.
+    /// Default: the default instance.
     pub instance_id: Option<String>,
-    /// Tab id; omit for the active tab.
+    /// Default: the active tab.
     pub tab_id: Option<String>,
-    /// Element: CSS selector, 'host >>> inner' (inside an open shadow root or same-origin iframe), or a snapshot ref (e12).
+    /// CSS selector, 'host >>> inner' (into an open shadow root or same-origin iframe) or snapshot ref (e12).
     pub selector: String,
     /// 1 to 20 absolute paths of existing files (several need a 'multiple' input).
     pub paths: Vec<String>,

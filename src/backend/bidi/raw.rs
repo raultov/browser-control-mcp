@@ -23,13 +23,13 @@ const REFUSED: &[(&str, &str)] = &[
 
 #[macros::mcp_tool(
     name = "send_bidi_command",
-    description = "Sends a raw WebDriver BiDi command and returns its result; params go untouched (give the context, e.g. {\"context\": \"<target_id from list_tabs>\"}). Modules subscribed with session.subscribe feed 'get_custom_events'. Refuses session.new, session.end and browser.close, and with --local non-local navigations. Firefox only (not available on Chrome)."
+    description = "Sends a raw WebDriver BiDi command, for what other tools do not cover, and returns its result; params go as given (include the context, e.g. {\"context\": \"<target_id from list_tabs>\"}). Modules subscribed with session.subscribe feed get_custom_events. Refuses session.new, session.end and browser.close, and with --local non-local navigations. Firefox only (not available on Chrome)."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct SendBidiCommandTool {
-    /// Instance id; omit for the default instance.
+    /// Default: the default instance.
     pub instance_id: Option<String>,
-    /// Tab id; omit for the active tab.
+    /// Default: the active tab.
     pub tab_id: Option<String>,
     /// e.g. 'browsingContext.getTree'.
     pub method: String,
@@ -40,15 +40,15 @@ pub struct SendBidiCommandTool {
 
 #[macros::mcp_tool(
     name = "send_rdp_request",
-    description = "Sends a raw Firefox Remote Debugging Protocol request and returns the reply packet; the event packets the actor sends afterwards (e.g. evaluationResult after evaluateJSAsync) go to 'get_custom_events' as rdp.<type>. 'to' is an actor id or 'thread', 'console' (the tab's debugger) or 'root'. With --local, non-local navigateTo URLs are refused. Needs the Firefox debugger port. Firefox only (not available on Chrome)."
+    description = "Sends a raw Firefox Remote Debugging Protocol request, for what other tools do not cover, and returns the reply; the actor's later event packets (e.g. evaluationResult) go to get_custom_events as rdp.<type>. With --local, non-local navigateTo URLs are refused. Needs the Firefox debugger port. Firefox only (not available on Chrome)."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct SendRdpRequestTool {
-    /// Instance id; omit for the default instance.
+    /// Default: the default instance.
     pub instance_id: Option<String>,
-    /// Tab id; omit for the active tab.
+    /// Default: the active tab.
     pub tab_id: Option<String>,
-    /// Actor id, or 'thread', 'console' or 'root'.
+    /// Actor id, or 'thread', 'console' (the tab's debugger) or 'root'.
     pub to: String,
     /// RDP request type, e.g. 'frames' or 'sources'.
     pub request_type: String,

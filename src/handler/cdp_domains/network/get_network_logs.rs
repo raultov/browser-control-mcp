@@ -9,13 +9,13 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 #[macros::mcp_tool(
     name = "get_network_logs",
-    description = "Returns the tab's HTTP requests (one line each: id, method, URL, status, type; the last 3 navigations, oldest first) and WebSocket frames, filtered. 'request_id' gives one request's headers and body; include_details: true gives them for every request (bodies cut at 64000 characters; one over 2 MB is omitted, saying its size). A redirected request is one line, found by any hop's URL, its hops with status and Location in its details. Credential headers and request bodies are redacted unless include_sensitive_headers. 'clear' removes what was returned."
+    description = "Lists the tab's HTTP requests (id, method, URL, status, type; the last 3 navigations, oldest first) and WebSocket frames, with filters. request_id or include_details gives headers and bodies (cut at 64000 characters; a body over 2 MB is omitted, with its size). A redirect chain is one request, found by any hop's URL; its details list each hop's status and Location. Credential headers and request bodies are redacted unless include_sensitive_headers."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct GetNetworkLogsTool {
-    /// Instance id; omit for the default instance.
+    /// Default: the default instance.
     pub instance_id: Option<String>,
-    /// Tab id; omit for the active tab.
+    /// Default: the active tab.
     pub tab_id: Option<String>,
     /// Remove the returned entries. Default: false.
     #[serde(default)]

@@ -12,9 +12,9 @@ use serde_json::{Value, json};
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct WebStorageTool {
-    /// Instance id; omit for the default instance.
+    /// Default: the default instance.
     pub instance_id: Option<String>,
-    /// Tab id; omit for the active tab.
+    /// Default: the active tab.
     pub tab_id: Option<String>,
     /// get, set, delete or clear.
     pub action: StorageAction,
@@ -22,7 +22,7 @@ pub struct WebStorageTool {
     pub kind: Option<StorageKind>,
     /// Item key: required for set and delete; for get, only this item.
     pub key: Option<String>,
-    /// Value (set).
+    /// Value: required for set.
     pub value: Option<String>,
     /// Return the values (get). Default: false.
     pub show_values: Option<bool>,

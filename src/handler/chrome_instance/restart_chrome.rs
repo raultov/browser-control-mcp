@@ -7,17 +7,17 @@ use rust_mcp_sdk::{
 
 #[macros::mcp_tool(
     name = "restart_browser",
-    description = "Restarts an instance's browser (closing its tabs), optionally with another proxy or presets ('features': WEBGL_SOFTWARE = software WebGL for GPU-less hosts). A browser the server attached to (not launched) is not restarted: the call fails saying so."
+    description = "Restarts an instance's browser (closing its tabs), optionally with another proxy or presets. A browser the server attached to (not launched) is not restarted: the call fails saying so."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct RestartChromeTool {
-    /// Instance id; omit for the default instance.
+    /// Default: the default instance.
     pub instance_id: Option<String>,
     /// Proxy URL; credentials go to enable_proxy_auth. Default: the instance's current proxy.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub proxy_server: Option<String>,
 
-    /// Presets for the new process: WEBGL_SOFTWARE (software WebGL). Default: none.
+    /// Presets for the new process: WEBGL_SOFTWARE (software WebGL, for GPU-less hosts). Default: none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub features: Option<Vec<ChromeFeature>>,
 
@@ -381,12 +381,16 @@ mod tests {
 
     #[test]
     fn given_every_feature_preset_when_building_tool_descriptions_then_literal_is_documented() {
-        let open_instance_description = OpenInstanceTool::tool()
-            .description
-            .expect("open_instance must publish a tool description");
-        let restart_chrome_description = RestartChromeTool::tool()
-            .description
-            .expect("restart_chrome must publish a tool description");
+        // Documented where the agent fills it in: the `features` argument.
+        let features = |tool: rust_mcp_sdk::schema::Tool| {
+            let schema = serde_json::to_value(tool.input_schema).unwrap();
+            schema["properties"]["features"]["description"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string()
+        };
+        let open_instance_description = features(OpenInstanceTool::tool());
+        let restart_chrome_description = features(RestartChromeTool::tool());
 
         for feature in ALL_FEATURE_PRESETS {
             // Matched exhaustively on purpose: a new variant fails to compile
@@ -396,11 +400,11 @@ mod tests {
             };
             assert!(
                 open_instance_description.contains(literal),
-                "open_instance description must name the '{literal}' preset; got: {open_instance_description}"
+                "open_instance's features argument must name the '{literal}' preset; got: {open_instance_description}"
             );
             assert!(
                 restart_chrome_description.contains(literal),
-                "restart_chrome description must name the '{literal}' preset; got: {restart_chrome_description}"
+                "restart_browser's features argument must name the '{literal}' preset; got: {restart_chrome_description}"
             );
         }
     }

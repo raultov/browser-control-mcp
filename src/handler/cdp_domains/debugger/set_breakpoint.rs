@@ -12,13 +12,13 @@ use tokio::sync::Mutex;
 
 #[macros::mcp_tool(
     name = "set_breakpoint",
-    description = "Sets a breakpoint at a 0-based line of a script (by url; on Chrome also by script id or hash from 'search_scripts'). A url without a scheme ('app.js', 'js/app.js') names the loaded script whose URL ends with it (several: it fails naming them; none: on Chrome it binds to the first script ending with it that loads, on Firefox it fails). 'condition' pauses only when that expression is truthy in the paused frame; 'log' makes a logpoint: the expression's value goes to the console (get_console_logs, 'logpoint <url>:<line>:') each time the line runs, and it never pauses (with 'condition', only when it holds). Returns {breakpoint_id, url, line_number, column_number, resolved} where the browser bound it; resolved is false until a script with that URL loads, and the reply says so. A line without code fails. The page's own debugger statements pause only while the tab has a breakpoint. Firefox: by url only."
+    description = "Sets a breakpoint at a 0-based line of a script, by url (on Chrome also by script id or hash from search_scripts). A url without a scheme ('app.js') names the loaded script ending with it (several: fails naming them; none: Chrome binds to the first such script that loads, Firefox fails). 'condition' pauses only when it is truthy; 'log' makes a logpoint that writes to the console (get_console_logs, 'logpoint <url>:<line>:') instead of pausing. Returns {breakpoint_id, url, line_number, column_number, resolved}; resolved is false until a matching script loads. A line without code fails. The page's own debugger statements pause only while the tab has a breakpoint. Firefox: by url only."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct SetBreakpointTool {
-    /// Instance id; omit for the default instance.
+    /// Default: the default instance.
     pub instance_id: Option<String>,
-    /// Tab id; omit for the active tab.
+    /// Default: the active tab.
     pub tab_id: Option<String>,
     /// Script hash from search_scripts (Chrome).
     pub script_hash: Option<String>,

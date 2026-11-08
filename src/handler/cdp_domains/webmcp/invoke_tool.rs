@@ -11,9 +11,9 @@ use serde_json::Value;
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct InvokeWebmcpToolTool {
-    /// Instance id; omit for the default instance.
+    /// Default: the default instance.
     pub instance_id: Option<String>,
-    /// Tab id; omit for the active tab.
+    /// Default: the active tab.
     pub tab_id: Option<String>,
     /// Frame id from webmcp_list_tools; omit it when one frame registers the tool.
     #[serde(rename = "frameId")]

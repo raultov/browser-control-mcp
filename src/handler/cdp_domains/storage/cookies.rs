@@ -8,19 +8,19 @@ use serde_json::{Value, json};
 
 #[macros::mcp_tool(
     name = "cookies",
-    description = "Gets, sets or deletes cookies ('action'). get and delete select the cookies sent to the page's URL (or 'url'), or all those of a 'domain', optionally by 'name'; values are hidden (value_length) unless show_values. set needs 'name' and 'value'."
+    description = "Gets, sets or deletes cookies. get and delete pick those sent to the page's URL (or 'url'), or all of a 'domain', optionally by 'name'; values are hidden (value_length) unless show_values."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct CookiesTool {
-    /// Instance id; omit for the default instance.
+    /// Default: the default instance.
     pub instance_id: Option<String>,
-    /// Tab id; omit for the active tab.
+    /// Default: the active tab.
     pub tab_id: Option<String>,
     /// get, set or delete.
     pub action: CookieAction,
     /// Cookie name: required for set, a filter otherwise.
     pub name: Option<String>,
-    /// Value (set).
+    /// Value: required for set.
     pub value: Option<String>,
     /// URL the cookies are for. Default: the page's.
     pub url: Option<String>,

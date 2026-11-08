@@ -16,13 +16,13 @@ use std::path::PathBuf;
 
 #[macros::mcp_tool(
     name = "record_video",
-    description = "Records a video of the tab (Chrome 156 or later). action 'start' starts recording (optional max_width, max_height, frame_rate); the page goes on and other tools act on it meanwhile; action 'stop' ends it and writes an MP4 (AV1) to 'path' (an absolute .mp4 path under the upload roots: the server's working and temp directories, or its --upload-root directories) or, without it, to a new file in the temp directory, and returns {path, bytes, duration_s}. One recording per tab; it ends when the tab closes. Chrome draws no frames of a hidden tab (in the background, or a minimized window), so a recording shows only what was on screen. Chrome only (not available on Firefox)."
+    description = "Records an MP4 (AV1) video of the tab (Chrome 156+): action 'start' begins while other tools keep acting on the page; 'stop' writes it to 'path' (under the upload roots: the working and temp directories and --upload-root ones) or a new temp file and returns {path, bytes, duration_s}. One recording per tab; it ends when the tab closes. Chrome draws no frames of a hidden tab (background or minimized), so only what was on screen is recorded. Chrome only (not available on Firefox)."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct RecordVideoTool {
-    /// Instance id; omit for the default instance.
+    /// Default: the default instance.
     pub instance_id: Option<String>,
-    /// Tab id; omit for the active tab.
+    /// Default: the active tab.
     pub tab_id: Option<String>,
     /// 'start' or 'stop'.
     pub action: String,

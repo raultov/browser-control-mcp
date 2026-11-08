@@ -8,13 +8,13 @@ use serde_json::Value;
 
 #[macros::mcp_tool(
     name = "snapshot",
-    description = "Outlines the page for acting on it: one line per element with a role (button, link, textbox, heading...), its name, states, value and a ref ([ref=e12]), indented under its parent; a rejected field is [invalid] [error='why']; a <select>'s options under it (the first 25; pick one with fill_input); through open shadow roots and iframes (a frame of another origin is marked [frame=f2], its refs are f2e5; selector 'f2' outlines it alone), hidden elements left out, password values never shown; at most 50000 characters. Pass a ref as the selector of the input tools; refs last until the page navigates. Computed in the page, the same on Chrome and Firefox."
+    description = "Outlines the page to act on it: one line per element with a role (button, link, textbox, heading...), name, states, value and a ref ([ref=e12]), indented under its parent; an invalid field shows [invalid] [error='why'], a <select> its first 25 options (pick one with fill_input); through open shadow roots and iframes (another origin's frame is [frame=f2], refs f2e5; selector 'f2' outlines it alone); hidden elements left out, passwords never shown; at most 50000 characters (find_in_snapshot searches it whole). Refs work as the selector of the input tools until the page navigates. Same on Chrome and Firefox."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct SnapshotTool {
-    /// Instance id; omit for the default instance.
+    /// Default: the default instance.
     pub instance_id: Option<String>,
-    /// Tab id; omit for the active tab.
+    /// Default: the active tab.
     pub tab_id: Option<String>,
     /// Outline only this element (CSS, 'host >>> inner' or a ref). Default: the whole page.
     pub selector: Option<String>,

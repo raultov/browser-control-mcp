@@ -24,13 +24,13 @@ const LOAD_PAUSE_WAIT: std::time::Duration = std::time::Duration::from_millis(30
 
 #[macros::mcp_tool(
     name = "pause_on_load",
-    description = "Reloads the tab and pauses it before any of its scripts runs, to debug page startup: the pause is at a `debugger;` statement this tool injects (url browser-control-mcp://pause_on_load, reason pause_on_load in call_stack). Set breakpoints in the page's scripts then (set_breakpoint by url binds once they load), and continue with 'resume'. Answers where it paused, or that it had not paused within 5 s. Chrome only (not available on Firefox)."
+    description = "Reloads the tab and pauses it before any of its scripts runs, to debug startup: at a `debugger;` this tool injects (call_stack shows url browser-control-mcp://pause_on_load, reason pause_on_load). Then set_breakpoint (by url they bind as scripts load) and continue with resume. Answers where it paused, or that it did not within 5 s. Chrome only (not available on Firefox)."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct PauseOnLoadTool {
-    /// Instance id; omit for the default instance.
+    /// Default: the default instance.
     pub instance_id: Option<String>,
-    /// Tab id; omit for the active tab.
+    /// Default: the active tab.
     pub tab_id: Option<String>,
 }
 

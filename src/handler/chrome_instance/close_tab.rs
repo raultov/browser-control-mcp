@@ -10,7 +10,7 @@ use rust_mcp_sdk::{
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct CloseTabTool {
-    /// Instance id; omit for the default instance.
+    /// Default: the default instance.
     pub instance_id: Option<String>,
     /// The Tab ID of the tab to close (e.g. 'tab-1'); omit it for the active tab.
     pub tab_id: Option<String>,

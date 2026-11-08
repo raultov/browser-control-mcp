@@ -14,13 +14,13 @@ use tokio::sync::Mutex;
 
 #[macros::mcp_tool(
     name = "navigate",
-    description = "Loads a URL in the tab, or goes back or forward in its history ('history' instead of 'url'), and waits for load (at most 30 s; a page that pauses at a breakpoint or opens a dialog while loading fails at once saying so). Returns {url (after redirects), tab_id, browser, status?, notes?}; a network error, a download or a page behind HTTP authentication (log in with http://user:password@host/path) fails with 'Navigation failed: <reason> (<url>)'. With --local only local addresses are allowed. Note: copy_cookies imports the user's real Chrome cookies: ask the user first. On a running instance it relaunches it, closing its tabs: the call first fails listing them, then re-issue it with confirm_restart: true."
+    description = "Loads a URL in the tab, or moves back or forward in its history, and waits for load (at most 30 s; a breakpoint or dialog while loading fails at once saying so). Returns {url (after redirects), tab_id, browser, status?, notes?}. A network error, a download or a page behind HTTP authentication (log in with http://user:password@host/path) fails with 'Navigation failed: <reason> (<url>)'. With --local only local addresses are allowed. Note: copy_cookies imports the user's real Chrome cookies: ask the user first. On a running instance it relaunches it, closing its tabs: the call first fails listing them, then re-issue it with confirm_restart: true."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct NavigateTool {
-    /// Instance id; omit for the default instance.
+    /// Default: the default instance.
     pub instance_id: Option<String>,
-    /// Tab id; omit for the active tab.
+    /// Default: the active tab.
     pub tab_id: Option<String>,
     /// Absolute URL (http, https or file). Omit it to move in the tab's history with 'history'.
     pub url: Option<String>,

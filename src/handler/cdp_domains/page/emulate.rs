@@ -8,13 +8,13 @@ use serde_json::{Value, json};
 
 #[macros::mcp_tool(
     name = "emulate",
-    description = "Emulates, in the tab, its viewport ('width' and 'height', device_scale_factor, 'mobile' with touch), CSS media (color_scheme, reduced_motion, forced_colors, 'media'), user_agent, locale, timezone, geolocation (the page is granted the permission to read it), cpu_throttling, cpu_performance_tier (navigator.cpuPerformance) and network_throttling. Each call adds to the earlier ones (options it does not give keep their value); 'reset' removes every emulation. Returns what the page now sees. Firefox has no media, touch or throttling emulation (WebDriver BiDi): 'mobile', the media options, cpu_throttling, cpu_performance_tier and network_throttling fail there."
+    description = "Emulates a device and environment in the tab: viewport, device pixel ratio, mobile with touch, CSS media features, user agent, locale, time zone, geolocation (permission granted), CPU and network throttling, CPU performance tier. Each call adds to the earlier ones; 'reset' removes them all. Returns what the page now sees. For offline use set_offline. Firefox emulates only the viewport, pixel ratio, user agent, locale, time zone and geolocation: the other options fail there."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct EmulateTool {
-    /// Instance id; omit for the default instance.
+    /// Default: the default instance.
     pub instance_id: Option<String>,
-    /// Tab id; omit for the active tab.
+    /// Default: the active tab.
     pub tab_id: Option<String>,
     /// Viewport width in CSS pixels (with 'height'), 1 to 10000.
     pub width: Option<u32>,

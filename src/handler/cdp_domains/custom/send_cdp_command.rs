@@ -38,13 +38,13 @@ const NOTED: &[(&str, &str)] = &[(
 
 #[macros::mcp_tool(
     name = "send_cdp_command",
-    description = "Sends a raw Chrome DevTools Protocol command and returns Chrome's reply. Refuses Network/Page/Runtime/Log/Debugger.disable and Browser.close (they would break what the server captures); Fetch.enable comes with a note (requests then wait for an answer). With --local, Page.navigate and Target.createTarget URLs are checked. Chrome only (not available on Firefox)."
+    description = "Sends a raw Chrome DevTools Protocol command, for what other tools do not cover, and returns Chrome's reply. Refuses Network/Page/Runtime/Log/Debugger.disable and Browser.close (they break what the server captures); Fetch.enable gets a note (requests then wait for an answer). With --local, Page.navigate and Target.createTarget URLs are checked. Chrome only (not available on Firefox)."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct SendCdpCommandTool {
-    /// Instance id; omit for the default instance.
+    /// Default: the default instance.
     pub instance_id: Option<String>,
-    /// Tab id; omit for the active tab.
+    /// Default: the active tab.
     pub tab_id: Option<String>,
     /// e.g. 'DOM.getDocument'.
     pub method: String,

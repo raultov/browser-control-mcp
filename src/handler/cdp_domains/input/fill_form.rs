@@ -8,13 +8,13 @@ use serde_json::{Value, json};
 
 #[macros::mcp_tool(
     name = "fill_form",
-    description = "Fills several fields in one call, in order: text fields and <select>s as 'fill_input' does; a checkbox or radio takes 'true' or 'false' and is clicked only when its state differs. Returns each field's outcome (filled, selected, checked, unchecked, unchanged), never the values. Stops at the first failing field, naming it and what was done."
+    description = "Fills several fields in one call, in order: text fields and <select>s as fill_input does; a checkbox or radio takes 'true' or 'false' and is clicked only when its state differs. Returns each field's outcome (filled, selected, checked, unchecked, unchanged), never the values; stops at the first failing field, naming it and what was done."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct FillFormTool {
-    /// Instance id; omit for the default instance.
+    /// Default: the default instance.
     pub instance_id: Option<String>,
-    /// Tab id; omit for the active tab.
+    /// Default: the active tab.
     pub tab_id: Option<String>,
     /// 1 to 50 fields, filled in order.
     pub fields: Vec<FormField>,
@@ -23,7 +23,7 @@ pub struct FillFormTool {
 /// One field of `fill_form`.
 #[derive(Debug, Clone, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct FormField {
-    /// Element: CSS selector, 'host >>> inner' (inside an open shadow root or same-origin iframe), or a snapshot ref (e12).
+    /// CSS selector, 'host >>> inner' (into an open shadow root or same-origin iframe) or snapshot ref (e12).
     pub selector: String,
     /// Text, option value or label, or 'true' / 'false' for a checkbox or radio.
     pub value: String,

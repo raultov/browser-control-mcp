@@ -8,15 +8,15 @@ use serde_json::json;
 
 #[macros::mcp_tool(
     name = "drag",
-    description = "Drags an element onto another with the mouse: presses on 'from' (scrolled into view; fails when hidden, covered or disabled, after waiting up to 2 s for it to appear or be enabled), moves in steps to the centre of 'to' (which must then be in the viewport) and releases. For sortable lists, boards, sliders and HTML5 drag and drop (on Firefox, HTML5 drag and drop is simulated with script events)."
+    description = "Drags an element onto another with the mouse, for sortable lists, boards, sliders and HTML5 drag and drop: presses on 'from' (scrolled into view; waits up to 2 s for it to appear or be enabled; fails when hidden, covered or disabled), moves in steps to the centre of 'to' (which must be in the viewport) and releases. Firefox simulates HTML5 drag and drop with script events."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct DragTool {
-    /// Instance id; omit for the default instance.
+    /// Default: the default instance.
     pub instance_id: Option<String>,
-    /// Tab id; omit for the active tab.
+    /// Default: the active tab.
     pub tab_id: Option<String>,
-    /// Element to drag: CSS selector, 'host >>> inner' (inside an open shadow root or same-origin iframe), or a snapshot ref (e12).
+    /// Element to drag: CSS selector, 'host >>> inner' (into an open shadow root or same-origin iframe) or snapshot ref (e12).
     pub from: String,
     /// Element to drop onto, same forms as 'from'.
     pub to: String,

@@ -11,9 +11,9 @@ use serde_json::json;
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct SearchScriptsTool {
-    /// Instance id; omit for the default instance.
+    /// Default: the default instance.
     pub instance_id: Option<String>,
-    /// Tab id; omit for the active tab.
+    /// Default: the active tab.
     pub tab_id: Option<String>,
     /// Text to find. '' returns the script count, '@source' the first 1000 characters of each script, 'debug' their lengths and errors.
     pub query: String,

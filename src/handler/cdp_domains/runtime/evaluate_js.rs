@@ -9,13 +9,13 @@ use serde_json::{Value, json};
 
 #[macros::mcp_tool(
     name = "evaluate_js",
-    description = "Evaluates JavaScript in the page (promises awaited; `await` at the top level works, the last statement giving the value). Returns {value, type, subtype?, description?, preview?}: value is the JSON.stringify form; a value without one gets a bounded preview with preview: true (a Map as [key, value] pairs, a Set or typed array as its items, an Error as {name, message, stack}, '[Circular]' for a cycle, '[Thrown: message]' for a getter that throws; description names it: Map(2), Uint8Array(3), TypeError: bad); null for functions, nodes and symbols (description says what it was: a function's source). Cut over 100000 characters with truncated: true. An exception fails with its message, and its line and column when they are in the expression. Chrome stops a script after 8 s; Firefox cannot (close a frozen tab with 'close_tab')."
+    description = "Evaluates JavaScript in the page and returns its value (promises awaited; top-level await works, the last statement giving the value): {value, type, subtype?, description?, preview?}. value is the JSON form; a Map, Set, typed array, Error, cycle or throwing getter gets a bounded preview (preview: true; a Map as [key, value] pairs, a Set or typed array as items, an Error as {name, message, stack}, '[Circular]', '[Thrown: message]') that description names (Map(2), TypeError: bad); functions, nodes and symbols give null, described (a function's source). Cut over 100000 characters (truncated: true). An exception fails with its message, and its 1-based line and column when they are in the expression. In a paused frame use evaluate_on_call_frame. Chrome stops a script after 8 s; Firefox cannot (close a frozen tab with close_tab)."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct EvaluateJsTool {
-    /// Instance id; omit for the default instance.
+    /// Default: the default instance.
     pub instance_id: Option<String>,
-    /// Tab id; omit for the active tab.
+    /// Default: the active tab.
     pub tab_id: Option<String>,
     /// A JavaScript expression or IIFE.
     pub expression: String,

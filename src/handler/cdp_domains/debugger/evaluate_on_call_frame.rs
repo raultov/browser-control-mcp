@@ -8,20 +8,19 @@ use serde_json::json;
 
 #[macros::mcp_tool(
     name = "evaluate_on_call_frame",
-    description = "Evaluates JavaScript in a paused frame (the top one, or 'frame_index' from call_stack), with its locals and closures in scope. On Chrome 156 or later, 'scope' evaluates in one scope of the frame's chain as call_stack lists it (0 is the innermost), to read a variable an inner one of the same name hides; Chrome drops closure variables nothing uses, so a closure scope may be missing; Firefox evaluates only in the innermost scope. Returns the 'evaluate_js' shape; an exception fails with 'Evaluation threw: <what>'."
+    description = "Evaluates JavaScript in a paused frame (the top one, or one from call_stack) with its locals and closures in scope; outside a pause use evaluate_js. On Chrome 156+ 'scope' picks one scope of the chain (as call_stack lists them), to read a variable an inner one hides; Chrome drops unused closure variables, so a closure scope may be missing; Firefox evaluates only in the innermost scope. Returns the evaluate_js shape; an exception fails with 'Evaluation threw: <what>'."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct EvaluateOnCallFrameTool {
-    /// Instance id; omit for the default instance.
+    /// Default: the default instance.
     pub instance_id: Option<String>,
-    /// Tab id; omit for the active tab.
+    /// Default: the active tab.
     pub tab_id: Option<String>,
     /// A JavaScript expression.
     pub expression: String,
     /// The frame to evaluate in, as call_stack numbers them (0, the default, is the innermost).
     pub frame_index: Option<u32>,
-    /// Chrome 156+: the scope of the frame's chain to evaluate in, as
-    /// call_stack lists them (0, the default, is the innermost).
+    /// Chrome 156+: the scope of the frame's chain to evaluate in, as call_stack lists them (0, the default, is the innermost).
     pub scope: Option<u32>,
 }
 

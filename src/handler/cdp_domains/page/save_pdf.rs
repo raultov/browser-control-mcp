@@ -16,13 +16,13 @@ use std::path::{Path, PathBuf};
 
 #[macros::mcp_tool(
     name = "save_pdf",
-    description = "Prints the tab to PDF as the browser's print does (print CSS applies). With 'path', writes the file there (an absolute .pdf path under the upload roots: the server's working and temp directories, or its --upload-root directories) and returns {path, bytes, pages}; without it, returns the PDF as an embedded resource (at most 5 MB)."
+    description = "Prints the tab to PDF as the browser's print does (print CSS applies). With 'path' (an absolute .pdf under the upload roots: the working and temp directories and --upload-root ones) writes it and returns {path, bytes, pages}; without it, returns the PDF embedded (at most 5 MB)."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct SavePdfTool {
-    /// Instance id; omit for the default instance.
+    /// Default: the default instance.
     pub instance_id: Option<String>,
-    /// Tab id; omit for the active tab.
+    /// Default: the active tab.
     pub tab_id: Option<String>,
     /// Absolute path of the .pdf file to write (overwritten if it exists).
     pub path: Option<String>,

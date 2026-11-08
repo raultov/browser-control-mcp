@@ -387,13 +387,13 @@ fn code_matches(filter: Option<&str>, code: &str) -> bool {
 
 #[macros::mcp_tool(
     name = "get_issues",
-    description = "Returns the problems the browser diagnosed in the tab, which the console hides or words vaguely: a cookie blocked or warned and why, a CORS or Content-Security-Policy block, mixed content, a deprecated feature, and on Chrome every code of its DevTools Issues panel (form fields without id or name or label, LazyLoadImageIssue, WebInstallIssue...). One line each, oldest first: [code] title: summary @ url [xN] (a title for the common Chrome codes; N distinct reports, as many as the elements or requests it is about), then on Chrome the elements it is about (selector [ref=eN], refs as snapshot's, at most 10). include_details gives the browser's details as JSON. 'code' filters (substring), 'clear' removes what was returned. Firefox has no Issues panel: its security console messages and deprecation warnings are read as issues (cookies, CSP, mixed content, CORS, DeprecationIssue; it needs its debugger port)."
+    description = "Lists the problems the browser diagnosed in the tab that the console hides or words vaguely: blocked or warned cookies and why, CORS and Content-Security-Policy blocks, mixed content, deprecated features, and on Chrome every code of its DevTools Issues panel (form fields without id, name or label, LazyLoadImageIssue...). One line each, oldest first: [code] title: summary @ url [xN] (a title for the common Chrome codes; N distinct reports, one per element or request), then on Chrome its elements (selector [ref=eN], refs as snapshot's, at most 10). For console messages use get_console_logs. Firefox has no Issues panel: its security and deprecation console messages are read as issues (cookies, CSP, mixed content, CORS, DeprecationIssue; needs its debugger port)."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct GetIssuesTool {
-    /// Instance id; omit for the default instance.
+    /// Default: the default instance.
     pub instance_id: Option<String>,
-    /// Tab id; omit for the active tab.
+    /// Default: the active tab.
     pub tab_id: Option<String>,
     /// Only the issues whose code contains this (case-insensitive), e.g. 'Cookie'.
     pub code: Option<String>,

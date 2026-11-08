@@ -10,13 +10,13 @@ use tokio::sync::mpsc;
 
 #[macros::mcp_tool(
     name = "profile_page_performance",
-    description = "Traces the page for duration_ms and returns FCP, LCP, DCL, Load, total blocking time and the top 5 long tasks; 'action': reload with disable_cache measures a cold load; 'save_path' saves the raw trace (.json or .json.gz) on Chrome; 'insights': true adds what explains them (LCP breakdown and discovery, INP, layout shifts, render-blocking and slowest requests, long scripts, DOM size, oversized/unsized images, third-party weight, forced reflows on Chrome, findings), and with 'reload' on Chrome the JavaScript and CSS each file left unused. On Firefox: partial, no trace (vitals and insights from the Web Performance APIs and DOM; blocking time, long tasks, layout shifts, render-blocking requests, long scripts, forced reflows and unused code are null, with notes; 'save_path' fails)."
+    description = "Traces the page for duration_ms and returns FCP, LCP, DCL, Load, total blocking time and the 5 longest tasks; action 'reload' measures a load (cold with disable_cache). 'insights' adds what explains the numbers; 'save_path' saves the raw trace (Chrome). For 0-100 scores use lighthouse_report; for heap and node counts, get_performance_metrics. Firefox: partial, no trace (vitals and insights from the Web Performance APIs and DOM; blocking time, long tasks, layout shifts, render-blocking requests, long scripts, forced reflows and unused code are null, with notes; 'save_path' fails)."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct ProfilePagePerformanceTool {
-    /// Instance id; omit for the default instance.
+    /// Default: the default instance.
     pub instance_id: Option<String>,
-    /// Tab id; omit for the active tab.
+    /// Default: the active tab.
     pub tab_id: Option<String>,
     /// 500 to 15000. Default: 3000.
     #[serde(default)]
@@ -34,7 +34,7 @@ pub struct ProfilePagePerformanceTool {
     #[serde(default)]
     pub save_path: Option<String>,
 
-    /// Add what explains the numbers (LCP element, breakdown and discovery, INP, layout shifts, render-blocking and slowest requests, scripts of long frames, DOM size, oversized/unsized images, third-party origins, forced reflows on Chrome, findings; with action 'reload' on Chrome, the unused JavaScript and CSS of the load). Default: false.
+    /// Add what explains the numbers: LCP element, breakdown and discovery, INP, layout shifts, render-blocking and slowest requests, long-frame scripts, DOM size, oversized/unsized images, third parties, findings; on Chrome forced reflows and, with action 'reload', unused JavaScript and CSS. Default: false.
     #[serde(default)]
     pub insights: Option<bool>,
 }
@@ -702,6 +702,6 @@ mod tests {
         let description = ProfilePagePerformanceTool::tool()
             .description
             .unwrap_or_default();
-        assert!(description.contains(&format!("top {TOP_LONG_TASKS} long tasks")));
+        assert!(description.contains(&format!("the {TOP_LONG_TASKS} longest tasks")));
     }
 }

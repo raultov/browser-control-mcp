@@ -7,13 +7,13 @@ use serde_json::{Value, json};
 
 #[macros::mcp_tool(
     name = "scroll",
-    description = "Scrolls the window by x/y pixels or by viewport heights ('pages'), or brings 'selector' into view. Returns the window positions {before, after, element_in_view?} and says when nothing moved (on a page that scrolls an inner element, pass a 'selector' inside it). wheel: true dispatches a real mouse wheel event instead (x/y pixels, default 100 down) at 'selector' or the viewport's centre, for a canvas or map that listens to wheel events."
+    description = "Scrolls the window by pixels or viewport heights, or brings an element into view; wheel: true sends a real mouse wheel event instead, for a canvas or map. Returns the window positions {before, after, element_in_view?} and says when nothing moved (on a page that scrolls an inner element, pass a selector inside it)."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct ScrollTool {
-    /// Instance id; omit for the default instance.
+    /// Default: the default instance.
     pub instance_id: Option<String>,
-    /// Tab id; omit for the active tab.
+    /// Default: the active tab.
     pub tab_id: Option<String>,
     /// Horizontal pixels (negative = left).
     pub x: Option<i32>,
@@ -23,7 +23,7 @@ pub struct ScrollTool {
     pub pages: Option<f64>,
     /// Element to bring into view (CSS, 'host >>> inner' or a snapshot ref); overrides x, y and pages.
     pub selector: Option<String>,
-    /// Dispatch a real mouse wheel event instead (deltaX = x, deltaY = y pixels; default 100 down) at 'selector', or at the viewport's centre, for a canvas or map that listens to `wheel`. Default: false.
+    /// Send a real mouse wheel event instead (x, y as deltas in pixels; default 100 down) at 'selector' or the viewport's centre. Default: false.
     pub wheel: Option<bool>,
 }
 

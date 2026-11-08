@@ -11,9 +11,9 @@ use serde_json::json;
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct CaptureScreenshotTool {
-    /// Instance id; omit for the default instance.
+    /// Default: the default instance.
     pub instance_id: Option<String>,
-    /// Tab id; omit for the active tab.
+    /// Default: the active tab.
     pub tab_id: Option<String>,
     /// 'png' (default), 'jpeg' (or 'jpg') or 'webp'.
     pub format: Option<String>,
@@ -21,7 +21,7 @@ pub struct CaptureScreenshotTool {
     pub quality: Option<u32>,
     /// Capture the whole scrollable page. Default: false.
     pub full_page: Option<bool>,
-    /// Capture only this element's box. Element: CSS selector, 'host >>> inner' (inside an open shadow root or same-origin iframe), or a snapshot ref (e12).
+    /// Capture only this element's box: CSS selector, 'host >>> inner' (into an open shadow root or same-origin iframe) or snapshot ref (e12).
     pub selector: Option<String>,
 }
 

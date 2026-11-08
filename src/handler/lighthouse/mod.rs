@@ -28,15 +28,15 @@ use trace::LoadMetrics;
 
 #[macros::mcp_tool(
     name = "lighthouse_report",
-    description = "A Lighthouse-style report of a cold load of 'url' (default: the tab's page, loaded again): scores 0-100 for performance, accessibility, SEO and best practices, the five performance metrics (FCP, LCP, TBT, CLS, Speed Index) with their scores, the failing checks with the points each one costs and its elements (snapshot refs), and the insights that explain the metrics. 'device': 'mobile' (default, as Lighthouse: 412x823 at 1.75x with touch, CPU 4x slower, Slow 4G network) or 'desktop' (1350x940, no throttling); the cache is bypassed, the user agent is left as it is, and the tab's own emulation is put back afterwards. Approximate, not Lighthouse: the metrics are measured under applied throttling (Lighthouse simulates it), TBT runs to the end of the trace instead of Time to Interactive, and the other categories come from the audit_page checks (fewer than Lighthouse's). On Firefox: partial, no trace or throttling (FCP and LCP from the Web Performance APIs, no performance score; the other three categories are scored)."
+    description = "Loads a page cold in the tab (from about:blank) and scores it Lighthouse-style: 0-100 for performance, accessibility, SEO and best practices; FCP, LCP, TBT, CLS and Speed Index with their scores; each failing check with the points it costs and its elements (snapshot refs); insights explaining the metrics. For problems without reloading use audit_page; for raw timings, profile_page_performance. mobile: 412x823 at 1.75x, touch, CPU 4x slower, Slow 4G; desktop: 1350x940, unthrottled. Cache bypassed, user agent kept, the tab's emulation put back. Approximate: throttling is applied (Lighthouse simulates it), TBT runs to the trace's end, and the other categories use audit_page's checks (fewer than Lighthouse's). Firefox: partial, no trace or throttling (FCP and LCP only, no performance score; the other three categories are scored)."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct LighthouseReportTool {
-    /// Instance id; omit for the default instance.
+    /// Default: the default instance.
     pub instance_id: Option<String>,
-    /// Tab id; omit for the active tab.
+    /// Default: the active tab.
     pub tab_id: Option<String>,
-    /// Absolute URL to load. Default: the tab's current page.
+    /// Absolute URL to load. Default: the tab's current page (an http or file page, else the call fails asking for 'url').
     pub url: Option<String>,
     /// 'mobile' (default) or 'desktop'.
     pub device: Option<Device>,

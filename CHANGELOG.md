@@ -25,6 +25,16 @@ from a copy of its code: entries describe the differences from that release.
   is put back afterwards. Firefox: partial (no throttling or trace; FCP and
   LCP only, no performance score; the other categories are scored).
 
+### Changed
+
+- Tool descriptions are shorter and say when to use a sibling instead
+  (`audit_page` vs `lighthouse_report`, `evaluate_js` vs
+  `evaluate_on_call_frame`, `get_console_logs` vs `get_issues`...), following
+  the TDQS criteria: what a parameter's own description says is no longer
+  repeated (a few details moved to the parameters), and the browser limits
+  and failure modes stay. The tool list
+  costs about 7% fewer tokens (8 405 instead of 8 994 with the default tools).
+
 ### Fixed
 
 - Chrome: once an instance's last tab is closed, `open_tab` opens a new one;

@@ -12,13 +12,13 @@ use rust_mcp_sdk::{
 
 #[macros::mcp_tool(
     name = "call_stack",
-    description = "Lists the paused stack, innermost frame first: each frame's index (what evaluate_on_call_frame's frame_index takes), function_name, url and 0-based line_number and column_number, why it paused (breakpoint, step, exception...), what was thrown when it paused on an exception, and on Chrome each paused frame's scopes (index, what evaluate_on_call_frame's scope takes; type: local, closure, block, script, global...; name) and the async callers (setTimeout, a promise...). At most 50 frames."
+    description = "Lists the paused stack, innermost first: each frame's index (evaluate_on_call_frame's frame_index), function_name, url, 0-based line_number and column_number; why it paused (breakpoint, step, exception...) and what was thrown; on Chrome each frame's scopes (index for evaluate_on_call_frame's scope; type: local, closure, block, script, global...; name) and its async callers (setTimeout, promises). At most 50 frames."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct CallStackTool {
-    /// Instance id; omit for the default instance.
+    /// Default: the default instance.
     pub instance_id: Option<String>,
-    /// Tab id; omit for the active tab.
+    /// Default: the active tab.
     pub tab_id: Option<String>,
 }
 
@@ -50,13 +50,13 @@ impl CallStackTool {
 
 #[macros::mcp_tool(
     name = "pause_on_exceptions",
-    description = "Sets when the tab's debugger pauses on exceptions: 'uncaught' (and unhandled promise rejections), 'all' (caught ones too) or 'none'. The pause is then inspected with call_stack (which names what was thrown) and evaluate_on_call_frame, and continued with resume or a step. Per tab; it stays across navigations."
+    description = "Sets when the tab's debugger pauses on exceptions: uncaught (and unhandled promise rejections), all (caught ones too) or none. Inspect the pause with call_stack (it names what was thrown) and evaluate_on_call_frame; continue with resume or a step. Per tab, kept across navigations."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct PauseOnExceptionsTool {
-    /// Instance id; omit for the default instance.
+    /// Default: the default instance.
     pub instance_id: Option<String>,
-    /// Tab id; omit for the active tab.
+    /// Default: the active tab.
     pub tab_id: Option<String>,
     /// 'none', 'uncaught' or 'all'.
     pub state: PauseOnExceptions,

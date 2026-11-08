@@ -10,15 +10,15 @@ use serde_json::{Value, json};
 
 #[macros::mcp_tool(
     name = "click_element",
-    description = "Clicks an element with real mouse input after scrolling it into view; fails without clicking when it is hidden, covered (naming the overlay) or a disabled control; waits up to 2 s for a CSS selector's element to appear or be enabled. A dialog the click opens or a breakpoint its handler hits does not fail it: the reply notes it with {dialog} or {paused, location} (see 'handle_dialog', 'evaluate_on_call_frame', 'resume')."
+    description = "Clicks an element with real mouse input after scrolling it into view; waits up to 2 s for a CSS selector's element to appear or be enabled, and fails without clicking when it is hidden, covered (naming the overlay) or disabled. A dialog or breakpoint the click triggers is noted in the reply ({dialog} or {paused, location}), not an error: continue with handle_dialog, evaluate_on_call_frame or resume."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct ClickElementTool {
-    /// Instance id; omit for the default instance.
+    /// Default: the default instance.
     pub instance_id: Option<String>,
-    /// Tab id; omit for the active tab.
+    /// Default: the active tab.
     pub tab_id: Option<String>,
-    /// Element: CSS selector, 'host >>> inner' (inside an open shadow root or same-origin iframe), or a snapshot ref (e12).
+    /// CSS selector, 'host >>> inner' (into an open shadow root or same-origin iframe) or snapshot ref (e12).
     pub selector: String,
     /// Mouse button ('right' opens context menus). Default: 'left'.
     pub button: Option<MouseButton>,

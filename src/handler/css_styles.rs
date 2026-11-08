@@ -655,13 +655,13 @@ pub(crate) fn sheet_lookup(element: &str, samples: &[SheetSample]) -> String {
 
 #[macros::mcp_tool(
     name = "get_css_styles",
-    description = "Explains how an element is styled: the CSS rules that match it, highest priority first (the style attribute, then the rules), each with its selector, stylesheet URL (or the page's for an inline <style>), 0-based line and column in that stylesheet, the at-rules around it (@media, @container, @layer, @supports) and its declarations marked important, invalid or overridden; its pseudo-elements (::before...); with include_inherited the rules of its ancestors (nearest first); and the computed values of the properties declared (or of 'properties'). 'properties' also limits the declarations shown; user-agent rules are left out unless include_user_agent; at most max_rules rules (default 30). Firefox reads them with its inspector, which needs its debugger port."
+    description = "Explains why an element looks as it does: the CSS rules matching it, highest priority first (style attribute, then rules), each with selector, stylesheet URL (the page's for an inline <style>), 0-based line and column, enclosing at-rules (@media, @container, @layer, @supports) and declarations marked important, invalid or overridden; its pseudo-elements; and the computed values of the declared properties. Options add the ancestors' rules (nearest first) and the browser's, or narrow to some properties (declarations included). Firefox reads them with its inspector (needs its debugger port)."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct GetCssStylesTool {
-    /// Instance id; omit for the default instance.
+    /// Default: the default instance.
     pub instance_id: Option<String>,
-    /// Tab id; omit for the active tab.
+    /// Default: the active tab.
     pub tab_id: Option<String>,
     /// The element (CSS, 'host >>> inner' or a snapshot ref).
     pub selector: String,

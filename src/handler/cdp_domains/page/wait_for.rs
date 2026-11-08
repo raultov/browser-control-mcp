@@ -9,19 +9,19 @@ use std::time::Duration;
 
 #[macros::mcp_tool(
     name = "wait_for",
-    description = "Waits, checking every 100 ms, until every condition given holds: visible text appears ('text') or is gone (text_gone), 'selector' reaches 'state', or the URL contains 'url'. Returns the time waited; after timeout_ms it fails naming what is missing. Text includes open shadow roots and same-origin iframes. A dialog or a debugger pause ends the wait at once."
+    description = "Waits until every condition given holds: visible text appears or disappears (open shadow roots and same-origin iframes included), an element reaches a state, or the URL contains a text; checks every 100 ms. Returns the time waited; on timeout it fails naming what is missing. A dialog or debugger pause ends it at once."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct WaitForTool {
-    /// Instance id; omit for the default instance.
+    /// Default: the default instance.
     pub instance_id: Option<String>,
-    /// Tab id; omit for the active tab.
+    /// Default: the active tab.
     pub tab_id: Option<String>,
     /// Visible text to wait for (case-sensitive).
     pub text: Option<String>,
     /// Visible text to wait to disappear, e.g. 'Loading'.
     pub text_gone: Option<String>,
-    /// Element: CSS selector, 'host >>> inner' (inside an open shadow root or same-origin iframe), or a snapshot ref (e12).
+    /// CSS selector, 'host >>> inner' (into an open shadow root or same-origin iframe) or snapshot ref (e12).
     pub selector: Option<String>,
     /// State 'selector' must reach ('hidden' = missing or without a visible box). Default: 'visible'.
     pub state: Option<WaitState>,
