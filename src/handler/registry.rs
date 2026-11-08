@@ -377,6 +377,12 @@ fn observation_tools() -> Vec<ToolEntry> {
             &[Evaluate, ConsoleLogs],
             ff::audit_page
         ),
+        entry!(
+            crate::handler::lighthouse::LighthouseReportTool,
+            PERF,
+            &[Tracing, Evaluate, ConsoleLogs],
+            crate::backend::bidi::lighthouse::report
+        ),
         entry!(custom::send_cdp_command::SendCdpCommandTool, RAW, &[RawCdp]),
         entry!(
             custom::get_custom_events::GetCustomEventsTool,
@@ -1775,7 +1781,7 @@ The page reacted (the DOM changed) and settled after ",
         handler.flags.enable_webmcp = true;
         handler.tool_groups = vec![crate::cli::ToolGroup::All];
         let listed = names(listed_tools(&handler));
-        assert_eq!(listed.len(), 64);
+        assert_eq!(listed.len(), 65);
         assert!(listed.contains("restart_browser") && listed.contains("stop_browser"));
         assert!(!listed.contains("restart_chrome") && !listed.contains("stop_chrome"));
     }

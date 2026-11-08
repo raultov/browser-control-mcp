@@ -10,6 +10,21 @@ from a copy of its code: entries describe the differences from that release.
 
 ## [Unreleased]
 
+### Added
+
+- `lighthouse_report` (`perf` group): a Lighthouse-style report of a cold
+  load, without the Lighthouse bundle. The page loads from `about:blank` in
+  Lighthouse's mobile conditions (412×823 at 1.75×, touch, CPU 4× slower,
+  Slow 4G) or its desktop ones, with the cache bypassed, and gets scores
+  0-100 for performance, accessibility, SEO and best practices with
+  Lighthouse's curves and weights: FCP, LCP, TBT, CLS and Speed Index (from
+  the trace's screenshots) on Chrome, and the `audit_page` checks weighted
+  as Lighthouse weighs its matching audits. Each failing check says how
+  many points it costs in each category and lists its elements with
+  snapshot refs; the insights explain the metrics. The tab's own emulation
+  is put back afterwards. Firefox: partial (no throttling or trace; FCP and
+  LCP only, no performance score; the other categories are scored).
+
 ### Fixed
 
 - Chrome: once an instance's last tab is closed, `open_tab` opens a new one;

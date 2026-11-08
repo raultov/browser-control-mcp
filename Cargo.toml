@@ -76,6 +76,8 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 thiserror = "2.0.21"
 # profile_page_performance writes traces as .json.gz (pure Rust backend).
 flate2 = { version = "1.1.10", default-features = false, features = ["rust_backend"] }
+# lighthouse_report's Speed Index reads the trace's JPEG screenshots (pure Rust).
+zune-jpeg = "0.5.15"
 
 [dev-dependencies]
 # In-process BiDi/RDP mocks (MockBidi, MockRdp, MockFirefox).

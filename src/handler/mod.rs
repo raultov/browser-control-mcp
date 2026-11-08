@@ -10,6 +10,7 @@ pub(crate) mod frames;
 pub(crate) mod insights;
 pub(crate) mod interruption;
 pub(crate) mod issues;
+pub(crate) mod lighthouse;
 pub(crate) mod navigation;
 mod registry;
 pub(crate) mod routes;

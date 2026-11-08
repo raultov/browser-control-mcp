@@ -23,7 +23,7 @@ pub(crate) const LONG_TASKS_NOTE: &str =
 
 /// `cacheBehavior` for the tab (`bypass` or `default`); Firefox has no
 /// `ignoreCache` argument on `browsingContext.reload`.
-async fn set_cache_behavior(
+pub(crate) async fn set_cache_behavior(
     tab: &bidi_browser_lite::Tab,
     behavior: &str,
 ) -> Result<(), BackendError> {
@@ -40,10 +40,10 @@ async fn set_cache_behavior(
 const SAVE_UNSUPPORTED: &str = "save_path is only available on Chrome: Firefox has no tracing over WebDriver BiDi, so there is no trace to save; nothing was profiled";
 
 /// Why Firefox has no `forced_reflows`.
-const NO_TRACE: &str = "Firefox has no trace over WebDriver BiDi, which is where Chrome records the layouts a script forced";
+pub(crate) const NO_TRACE: &str = "Firefox has no trace over WebDriver BiDi, which is where Chrome records the layouts a script forced";
 
 /// Why Firefox has no `unused_code`.
-const NO_COVERAGE: &str =
+pub(crate) const NO_COVERAGE: &str =
     "Firefox has no code coverage over WebDriver BiDi (Chrome's Profiler and CSS domains give it)";
 
 /// `get_performance_metrics`: the metrics the page can read, plus a note.

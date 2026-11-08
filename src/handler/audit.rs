@@ -69,6 +69,35 @@ const MAX_ELEMENTS: usize = 10;
 /// Most console errors the `errors-in-console` check lists.
 const MAX_ERRORS: usize = 10;
 
+/// Every check, `(category, id)`, in the order of the snippet (then the
+/// console's): `lighthouse_report` weighs each one (its tests check it).
+#[cfg(test)]
+pub(crate) const CHECK_IDS: [(&str, &str); 23] = [
+    ("accessibility", "image-alt"),
+    ("accessibility", "label"),
+    ("accessibility", "button-name"),
+    ("accessibility", "link-name"),
+    ("accessibility", "html-lang"),
+    ("accessibility", "heading-order"),
+    ("accessibility", "duplicate-id"),
+    ("accessibility", "aria-references"),
+    ("accessibility", "tabindex"),
+    ("accessibility", "target-size"),
+    ("accessibility", "color-contrast"),
+    ("seo", "document-title"),
+    ("seo", "meta-description"),
+    ("seo", "viewport"),
+    ("seo", "link-text"),
+    ("seo", "crawlable-anchors"),
+    ("seo", "canonical"),
+    ("seo", "is-crawlable"),
+    ("best_practices", "doctype"),
+    ("best_practices", "is-on-https"),
+    ("best_practices", "mixed-content"),
+    ("best_practices", "image-aspect-ratio"),
+    ("best_practices", "errors-in-console"),
+];
+
 /// Declares `audit(wanted, maxElements)`: `{url, audits: [{category, id,
 /// title, checked, count, elements: [{ref?, selector?, snippet?,
 /// detail?}]}], notes}` for the categories in `wanted`. `checked` is how
@@ -294,13 +323,26 @@ impl AuditPageTool {
     /// with their elements, the ids of the passed and not applicable ones,
     /// and notes.
     pub(crate) async fn report(&self, found: Value, log: &Arc<Mutex<LogState>>) -> CallToolResult {
-        let mut audits = found["audits"].as_array().cloned().unwrap_or_default();
-        if self.wanted().contains(&AuditCategory::BestPractices) {
-            audits.push(console_audit(log).await);
-        }
+        let audits = self.checks(&found, log, None).await;
         let url = found["url"].as_str().unwrap_or_default();
         let notes = found["notes"].clone();
         CallToolResult::text_content(vec![summarize(&self.wanted(), url, audits, notes).into()])
+    }
+
+    /// The checks the page ran, then (with best practices) the console's,
+    /// counting the errors logged from `since` (ms since the epoch) on, or
+    /// all of them.
+    pub(crate) async fn checks(
+        &self,
+        found: &Value,
+        log: &Arc<Mutex<LogState>>,
+        since: Option<f64>,
+    ) -> Vec<Value> {
+        let mut audits = found["audits"].as_array().cloned().unwrap_or_default();
+        if self.wanted().contains(&AuditCategory::BestPractices) {
+            audits.push(console_audit(log, since).await);
+        }
+        audits
     }
 
     /// Chrome: runs the checks in the tab's page and reads its console.
@@ -317,13 +359,15 @@ impl AuditPageTool {
     }
 }
 
-/// The `errors-in-console` check: the errors the tab's console holds.
-async fn console_audit(log: &Arc<Mutex<LogState>>) -> Value {
+/// The `errors-in-console` check: the errors the tab's console holds
+/// (those logged from `since` on, when given).
+async fn console_audit(log: &Arc<Mutex<LogState>>, since: Option<f64>) -> Value {
     let state = log.lock().await;
     let errors: Vec<Value> = state
         .messages
         .iter()
         .filter(|m| canonical_level(&m.level) == "error")
+        .filter(|m| since.is_none_or(|since| m.timestamp >= since))
         .map(|m| {
             let at = match (&m.url, m.line_number) {
                 (Some(url), Some(line)) => format!(" @ {url}:{line}"),
@@ -427,6 +471,27 @@ fn summarize(wanted: &[AuditCategory], url: &str, audits: Vec<Value>, notes: Val
 mod tests {
     use super::*;
     use crate::handler::cdp_domains::log::ConsoleMessage;
+
+    /// LH-SCORE-03: `CHECK_IDS` lists the snippet's checks, in order, and
+    /// the console's.
+    #[test]
+    fn check_ids_are_the_snippets() {
+        let added: Vec<(String, String)> = AUDIT
+            .split("add('")
+            .skip(1)
+            .filter_map(|rest| {
+                let (category, rest) = rest.split_once("', '")?;
+                let id = rest.split('\'').next()?;
+                Some((category.to_string(), id.to_string()))
+            })
+            .collect();
+        let listed: Vec<(String, String)> = CHECK_IDS[..CHECK_IDS.len() - 1]
+            .iter()
+            .map(|(c, i)| (c.to_string(), i.to_string()))
+            .collect();
+        assert_eq!(added, listed);
+        assert_eq!(CHECK_IDS[CHECK_IDS.len() - 1].1, "errors-in-console");
+    }
 
     /// ISSUE-104: a checkbox or radio's labels come from the shared map
     /// (`labelsOf`), not `el.labels`, which scans the document per element.

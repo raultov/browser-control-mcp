@@ -3632,10 +3632,53 @@ mod e2e {
         ]
     }
 
-    /// Instances that lose their page: the last tab closed (ISSUE-101) or
-    /// the page crashed (ISSUE-102).
-    fn lost_page_steps(browser: &str, base: &str) -> Vec<Step> {
-        [last_tab_steps(browser, base), crash_steps(browser, base)].concat()
+    /// Steps on instances of their own: the last tab closed (ISSUE-101),
+    /// the page crashed (ISSUE-102), a Lighthouse-style report.
+    fn own_instance_steps(browser: &str, base: &str) -> Vec<Step> {
+        [
+            last_tab_steps(browser, base),
+            crash_steps(browser, base),
+            lighthouse_steps(browser, base),
+        ]
+        .concat()
+    }
+
+    /// lighthouse_report scores a cold mobile load (performance from the
+    /// trace on Chrome; none on Firefox, with a note), narrows to desktop
+    /// SEO, and puts the tab's viewport back.
+    fn lighthouse_steps(browser: &str, base: &str) -> Vec<Step> {
+        let i = json!("lh");
+        let open = json!({"browser": browser, "label": "lh", "headless": true});
+        let url = format!("{base}/");
+        let mobile = json!({"instance_id": i, "url": url});
+        let desktop = json!({"instance_id": i, "device": "desktop", "categories": ["seo"]});
+        let performance = match browser {
+            "chrome" => "\"speed_index_ms\": {\n      \"points_lost\"",
+            _ => "performance has no score",
+        };
+        let width = json!({"instance_id": i, "expression": "innerWidth > 800"});
+        vec![
+            ("LH an instance", "open_instance", open, "\"lh\""),
+            (
+                "LH a mobile report and its performance",
+                "lighthouse_report",
+                mobile,
+                performance,
+            ),
+            (
+                "LH desktop SEO of the page",
+                "lighthouse_report",
+                desktop,
+                "(desktop, ",
+            ),
+            ("LH the viewport is put back", "evaluate_js", width, "true"),
+            (
+                "LH close the instance",
+                "close_instance",
+                json!({"instance_id": i}),
+                "\"stopped\":true",
+            ),
+        ]
     }
 
     /// ISSUE-101: once an instance's last tab is closed, a tool says to
@@ -3841,7 +3884,7 @@ mod e2e {
         // Every opt-in tool group: the suite drives them all.
         let secrets = secrets_file(browser);
         let mut mcp = Mcp::start(&["--tool-groups", "all", "--secrets", &secrets]).await;
-        mcp.list_tools(58).await;
+        mcp.list_tools(59).await;
         if browser == "chrome" {
             mcp.own_default_chrome().await;
         }
@@ -3880,7 +3923,7 @@ mod e2e {
             other_page_steps("e2e", &base),
             form_issue_steps("e2e", &base, browser == "chrome"),
             debugger_steps("e2e", &base, browser == "chrome"),
-            lost_page_steps(browser, &base),
+            own_instance_steps(browser, &base),
             closing_steps(browser),
         ];
         mcp.steps(all.concat()).await;

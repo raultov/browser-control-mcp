@@ -106,6 +106,19 @@ async fn stop(target: &CdpTarget) {
 }
 
 impl Recording {
+    /// Ends the recording without reading it, on a page a dialog or a
+    /// pause blocks: the stop commands are queued, and Chrome runs them once
+    /// the page answers again (sent and awaited, each would wait for the
+    /// command timeout).
+    pub(crate) async fn abandon(self, target: &CdpTarget) {
+        target
+            .queue_raw_command("CSS.stopRuleUsageTracking", json!({}))
+            .await;
+        for method in STOP {
+            target.queue_raw_command(method, json!({})).await;
+        }
+    }
+
     /// Ends the recording and returns `unused_code`: `{unused_js_bytes,
     /// unused_css_bytes, top_unused: [{url, kind, total_bytes,
     /// unused_bytes, unused_percent}]}`. The domains are disabled on every

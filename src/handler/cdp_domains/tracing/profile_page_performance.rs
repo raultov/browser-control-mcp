@@ -80,9 +80,9 @@ const TOP_LONG_TASKS: usize = 5;
 
 /// How long to wait for `Tracing.tracingComplete` after `Tracing.end`.
 #[cfg(not(test))]
-const COMPLETION_TIMEOUT: Duration = Duration::from_secs(10);
+pub(crate) const COMPLETION_TIMEOUT: Duration = Duration::from_secs(10);
 #[cfg(test)]
-const COMPLETION_TIMEOUT: Duration = Duration::from_millis(100);
+pub(crate) const COMPLETION_TIMEOUT: Duration = Duration::from_millis(100);
 
 /// Trace categories recorded by `profile_page_performance`.
 const CATEGORIES: &str = "devtools.timeline,v8.execute,blink.user_timing,blink,cc,gpu,toplevel,disabled-by-default-devtools.timeline.stack";
@@ -236,7 +236,7 @@ async fn write_trace(path: &std::path::Path, raw: &str) -> Result<serde_json::Va
 
 /// The trace's events: Chrome writes a top-level array or an object with
 /// `traceEvents`; nothing for anything else.
-fn trace_events(raw: &str) -> Vec<serde_json::Value> {
+pub(crate) fn trace_events(raw: &str) -> Vec<serde_json::Value> {
     let root = serde_json::from_str::<serde_json::Value>(raw).unwrap_or_default();
     match root {
         serde_json::Value::Array(events) => events,
@@ -255,7 +255,7 @@ const TOP_CALL_SITES: usize = 5;
 /// them, with `disabled-by-default-devtools.timeline.stack`), grouped by the
 /// frame that forced them: `{count, total_ms, top_call_sites: [{function,
 /// url, line, count, total_ms}]}`.
-fn forced_reflows(events: &[serde_json::Value]) -> serde_json::Value {
+pub(crate) fn forced_reflows(events: &[serde_json::Value]) -> serde_json::Value {
     let round = |ms: f64| (ms * 10.0).round() / 10.0 + 0.0;
     let mut sites: Vec<(serde_json::Value, u64, f64)> = Vec::new();
     for ev in events {
@@ -407,7 +407,7 @@ async fn set_cache_disabled(target: &Target, disabled: bool) {
 }
 
 /// Reads a CDP IO stream to the end, then closes it.
-async fn read_stream(target: &Target, handle: &str) -> String {
+pub(crate) async fn read_stream(target: &Target, handle: &str) -> String {
     let mut data = String::new();
     loop {
         let reply = target

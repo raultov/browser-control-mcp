@@ -10,6 +10,7 @@ pub(crate) mod debugger;
 pub(crate) mod frames;
 pub(crate) mod grip;
 pub(crate) mod launch;
+pub(crate) mod lighthouse;
 pub(crate) mod page;
 pub(crate) mod performance;
 pub(crate) mod proxy;

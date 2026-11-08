@@ -123,6 +123,20 @@ impl CdpTarget {
             .unwrap_or_else(|interruption| Err(interrupted_error(&interruption, method)))
     }
 
+    /// Sends `method` without waiting for its reply, for a page that cannot
+    /// answer now (a dialog or a debugger pause blocks it): Chrome runs it
+    /// once the page answers again. cdp-lite writes a command before it
+    /// awaits the reply, so the one poll of a zero timeout sends it.
+    pub(crate) async fn queue_raw_command(&self, method: &str, params: serde_json::Value) {
+        let send = async {
+            match &self.connection {
+                Connection::Client(c) => c.send_raw_command(method, params).await,
+                Connection::Tab(t) => t.send_raw_command(method, params).await,
+            }
+        };
+        let _ = tokio::time::timeout(std::time::Duration::ZERO, send).await;
+    }
+
     /// Sends a command, or says what interrupted it (see `send_raw_command`),
     /// for input actions whose effect happened anyway.
     pub(crate) async fn send_interruptible<P: Serialize>(

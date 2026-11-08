@@ -102,6 +102,56 @@ pub(crate) struct Emulation {
 }
 
 impl Emulation {
+    /// `Emulation.setDeviceMetricsOverride` and touch for the viewport this
+    /// emulation sets (0 leaves a size or scale as the window has it).
+    fn device_metrics(&self) -> [(&'static str, Value); 2] {
+        let mobile = self.mobile.unwrap_or(false);
+        [
+            (
+                "Emulation.setDeviceMetricsOverride",
+                json!({"width": self.width.unwrap_or(0), "height": self.height.unwrap_or(0),
+                       "deviceScaleFactor": self.device_scale_factor.unwrap_or(0.0), "mobile": mobile}),
+            ),
+            (
+                "Emulation.setTouchEmulationEnabled",
+                json!({"enabled": mobile}),
+            ),
+        ]
+    }
+
+    /// The CDP commands that put this emulation's viewport back, after a
+    /// tool emulated another one for a while (`lighthouse_report`): its
+    /// overrides, or none when it sets no viewport.
+    pub(crate) fn viewport_commands(&self) -> Vec<(&'static str, Value)> {
+        let sets = self.width.is_some()
+            || self.height.is_some()
+            || self.device_scale_factor.is_some()
+            || self.mobile.is_some();
+        if sets {
+            return self.device_metrics().to_vec();
+        }
+        vec![
+            ("Emulation.clearDeviceMetricsOverride", json!({})),
+            (
+                "Emulation.setTouchEmulationEnabled",
+                json!({"enabled": false}),
+            ),
+        ]
+    }
+
+    /// The CDP commands that put this emulation's CPU and network
+    /// throttling back (none when it sets none).
+    pub(crate) fn throttling_commands(&self) -> Vec<(&'static str, Value)> {
+        let network = self.network_throttling.unwrap_or(NetworkThrottling::None);
+        vec![
+            (
+                "Emulation.setCPUThrottlingRate",
+                json!({"rate": self.cpu_throttling.unwrap_or(1.0)}),
+            ),
+            ("Network.emulateNetworkConditions", network.cdp_conditions()),
+        ]
+    }
+
     /// This emulation with what `args` gives (nothing after a reset; `1`
     /// for `cpu_throttling` and `"none"` for `network_throttling` clear
     /// them).
@@ -185,7 +235,7 @@ pub enum NetworkThrottling {
 
 impl NetworkThrottling {
     /// Its canonical name in the reply.
-    fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Slow3g => "slow-3g",
             Self::Fast3g => "fast-3g",
@@ -196,7 +246,7 @@ impl NetworkThrottling {
 
     /// Its `Network.emulateNetworkConditions` parameters (`latency` in ms,
     /// throughput in bytes/s).
-    fn cdp_conditions(self) -> Value {
+    pub(crate) fn cdp_conditions(self) -> Value {
         let (latency, down, up) = match self {
             Self::Slow3g => (2000.0, 50_000.0, 50_000.0),
             Self::Fast3g => (562.5, 180_000.0, 84_375.0),
@@ -508,16 +558,7 @@ impl EmulateTool {
         }
         let mut commands = Vec::new();
         if self.sets_viewport() {
-            let mobile = state.mobile.unwrap_or(false);
-            commands.push((
-                "Emulation.setDeviceMetricsOverride",
-                json!({"width": state.width.unwrap_or(0), "height": state.height.unwrap_or(0),
-                       "deviceScaleFactor": state.device_scale_factor.unwrap_or(0.0), "mobile": mobile}),
-            ));
-            commands.push((
-                "Emulation.setTouchEmulationEnabled",
-                json!({"enabled": mobile}),
-            ));
+            commands.extend(state.device_metrics());
         }
         if !self.media_options().is_empty() {
             commands.push(("Emulation.setEmulatedMedia", cdp_media(state)));
@@ -726,6 +767,27 @@ mod tests {
 
     fn tool(args: Value) -> EmulateTool {
         serde_json::from_value(args).unwrap()
+    }
+
+    /// LH-EMU-01: what a tab emulates is put back after a tool emulated
+    /// something else: its viewport and throttling, or none of them.
+    #[test]
+    fn an_emulation_is_put_back() {
+        // Given a tab that emulates nothing, and one with a phone on 3G
+        let none = Emulation::default();
+        let args = tool(
+            json!({"width": 390, "height": 844, "mobile": true, "network_throttling": "slow-3g"}),
+        );
+        let phone = none.merged(&args);
+        // When their commands are asked for
+        let (blank, viewport) = (none.viewport_commands(), phone.viewport_commands());
+        // Then nothing set clears the overrides, a set one comes again
+        assert_eq!(blank[0].0, "Emulation.clearDeviceMetricsOverride");
+        assert_eq!(viewport[0].1["width"], 390);
+        assert_eq!(viewport[1].1["enabled"], true);
+        assert_eq!(none.throttling_commands()[0].1["rate"], 1.0);
+        let network = &phone.throttling_commands()[1].1;
+        assert_eq!(network["latency"], 2000.0);
     }
 
     /// ISSUE-92: a mobile viewport the page lays out wider than asked (no
