@@ -10,6 +10,22 @@ from a copy of its code: entries describe the differences from that release.
 
 ## [Unreleased]
 
+## [0.14.0-beta.24] - 2026-11-08
+
+Public **BETA**. A Lighthouse-style report, a smaller tool list and fixes
+found by a test round on Chrome 156 and Firefox 159. `lighthouse_report`
+scores a cold mobile or desktop load 0-100 for performance (FCP, LCP, TBT,
+CLS and Speed Index from a Chrome trace), accessibility, SEO and best
+practices, with the points each failing check costs. The default tool list
+costs 26% fewer tokens: shorter descriptions after the TDQS criteria, MCP
+read-only and non-destructive annotations, and the debugger in a group of
+its own. Chrome: an instance whose last tab was closed can open one again,
+and a crashed page is refused at once naming `reload`; `navigate` and
+`open_tab` refuse `javascript:` URLs and URLs without a scheme on both
+browsers; `find_in_snapshot` is fast on large pages. Behaviour changes: the
+debugger tools (but `resume`) are listed only with `--tool-groups debug`;
+a new tool in the `perf` group.
+
 ### Added
 
 - MCP tool annotations: the tools that only read carry `readOnlyHint`
