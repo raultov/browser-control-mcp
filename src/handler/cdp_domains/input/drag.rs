@@ -12,7 +12,7 @@ use serde_json::json;
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct DragTool {
-    /// Default: the default instance.
+    /// Default: 'default'.
     pub instance_id: Option<String>,
     /// Default: the active tab.
     pub tab_id: Option<String>,

@@ -6,11 +6,12 @@ use rust_mcp_sdk::{
 
 #[macros::mcp_tool(
     name = "switch_tab",
-    description = "Makes a tab the target of the tools that omit tab_id, and brings it to the foreground unless 'activate' is false."
+    description = "Makes a tab the target of the tools that omit tab_id, and brings it to the foreground unless 'activate' is false.",
+    destructive_hint = false
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct SwitchTabTool {
-    /// Default: the default instance.
+    /// Default: 'default'.
     pub instance_id: Option<String>,
     /// The Tab ID to switch to (e.g. 'tab-1').
     pub tab_id: String,

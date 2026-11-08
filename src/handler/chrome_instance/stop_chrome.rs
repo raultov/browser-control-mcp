@@ -10,7 +10,7 @@ use rust_mcp_sdk::{
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct StopChromeTool {
-    /// Default: the default instance.
+    /// Default: 'default'.
     pub instance_id: Option<String>,
 }
 

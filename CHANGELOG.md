@@ -12,6 +12,17 @@ from a copy of its code: entries describe the differences from that release.
 
 ### Added
 
+- MCP tool annotations: the tools that only read carry `readOnlyHint`
+  (`snapshot`, `find_in_snapshot`, `inspect_dom`, `capture_screenshot`,
+  `wait_for`, `audit_page`, `call_stack`, `search_scripts`, `get_css_styles`,
+  `get_performance_metrics`, the `list_*` and the WebMCP list and get tools;
+  not those whose `clear` removes what they read), and those whose effect is
+  easy to undo
+  `destructiveHint: false` (`open_tab`, `open_instance`, `switch_tab`,
+  `scroll`, `hover`, `emulate`, `set_offline`, `mock_route`, `remove_route`,
+  `set_breakpoint`, `remove_breakpoint`, `pause_on_exceptions`,
+  `webmcp_cancel_invocation`), so clients can tell them
+  apart.
 - `lighthouse_report` (`perf` group): a Lighthouse-style report of a cold
   load, without the Lighthouse bundle. The page loads from `about:blank` in
   Lighthouse's mobile conditions (412×823 at 1.75×, touch, CPU 4× slower,
@@ -27,13 +38,22 @@ from a copy of its code: entries describe the differences from that release.
 
 ### Changed
 
+- **The debugger tools are opt-in**: `set_breakpoint`, `remove_breakpoint`,
+  `step_over`, `step_into`, `step_out`, `call_stack`,
+  `evaluate_on_call_frame`, `pause_on_exceptions`, `search_scripts` and
+  `pause_on_load` are listed only with `--tool-groups debug` (or `all`); add
+  it to the server's arguments to debug JavaScript. Called without it, they
+  fail naming the flag. `resume` stays listed, so a page that paused itself
+  (an older Firefox ignores the option that turns `debugger;` off) can go on.
+  The default tool list drops from 41 to 31 tools.
 - Tool descriptions are shorter and say when to use a sibling instead
   (`audit_page` vs `lighthouse_report`, `evaluate_js` vs
   `evaluate_on_call_frame`, `get_console_logs` vs `get_issues`...), following
   the TDQS criteria: what a parameter's own description says is no longer
   repeated (a few details moved to the parameters), and the browser limits
-  and failure modes stay. The tool list
-  costs about 7% fewer tokens (8 405 instead of 8 994 with the default tools).
+  and failure modes stay. Parameter descriptions are shorter too.
+- With both changes the default tool list costs 6 668 tokens instead of
+  8 994 (8 495 with `--tool-groups debug`).
 
 ### Fixed
 

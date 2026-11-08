@@ -391,7 +391,7 @@ fn code_matches(filter: Option<&str>, code: &str) -> bool {
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct GetIssuesTool {
-    /// Default: the default instance.
+    /// Default: 'default'.
     pub instance_id: Option<String>,
     /// Default: the active tab.
     pub tab_id: Option<String>,

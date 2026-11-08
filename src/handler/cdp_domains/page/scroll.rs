@@ -7,11 +7,12 @@ use serde_json::{Value, json};
 
 #[macros::mcp_tool(
     name = "scroll",
-    description = "Scrolls the window by pixels or viewport heights, or brings an element into view; wheel: true sends a real mouse wheel event instead, for a canvas or map. Returns the window positions {before, after, element_in_view?} and says when nothing moved (on a page that scrolls an inner element, pass a selector inside it)."
+    description = "Scrolls the window by pixels or viewport heights, or brings an element into view; wheel: true sends a real mouse wheel event instead, for a canvas or map. Returns the window positions {before, after, element_in_view?} and says when nothing moved (on a page that scrolls an inner element, pass a selector inside it).",
+    destructive_hint = false
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct ScrollTool {
-    /// Default: the default instance.
+    /// Default: 'default'.
     pub instance_id: Option<String>,
     /// Default: the active tab.
     pub tab_id: Option<String>,

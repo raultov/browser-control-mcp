@@ -13,7 +13,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct GetNetworkLogsTool {
-    /// Default: the default instance.
+    /// Default: 'default'.
     pub instance_id: Option<String>,
     /// Default: the active tab.
     pub tab_id: Option<String>,
@@ -37,7 +37,7 @@ pub struct GetNetworkLogsTool {
     #[serde(default)]
     pub ws_content_filter: Option<String>,
 
-    /// Headers and bodies of every request, as JSON. Default: false (one line per request).
+    /// Every request's headers and bodies, as JSON. Default: false (one line each).
     #[serde(default)]
     pub include_details: Option<bool>,
 

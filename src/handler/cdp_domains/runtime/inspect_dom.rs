@@ -6,19 +6,20 @@ use rust_mcp_sdk::{
 
 #[macros::mcp_tool(
     name = "inspect_dom",
-    description = "Returns the page's HTML (open shadow roots as <template shadowrootmode>, same-origin iframes appended after <!-- iframe src: -->; at most 100000 characters), or with 'query' the first match and its context. To find elements to act on, prefer 'snapshot'."
+    description = "Returns the page's HTML (open shadow roots as <template shadowrootmode>, same-origin iframes appended after <!-- iframe src: -->; at most 100000 characters), or with 'query' the first match and its context. To find elements to act on, prefer 'snapshot'.",
+    read_only_hint = true
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct InspectDomTool {
-    /// Default: the default instance.
+    /// Default: 'default'.
     pub instance_id: Option<String>,
     /// Default: the active tab.
     pub tab_id: Option<String>,
     /// Case-sensitive text to find: returns its context instead of the whole HTML.
     pub query: Option<String>,
-    /// Characters of context before the match, at most 10000. Default: 200.
+    /// Characters before the match, at most 10000. Default: 200.
     pub before: Option<u32>,
-    /// Characters of context after the match, at most 10000. Default: 200.
+    /// Characters after the match, at most 10000. Default: 200.
     pub after: Option<u32>,
 }
 

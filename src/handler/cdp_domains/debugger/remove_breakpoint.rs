@@ -7,11 +7,12 @@ use serde_json::json;
 
 #[macros::mcp_tool(
     name = "remove_breakpoint",
-    description = "Removes a breakpoint by the id 'set_breakpoint' returned; an unknown id fails listing the tab's breakpoint ids."
+    description = "Removes a breakpoint by the id 'set_breakpoint' returned; an unknown id fails listing the tab's breakpoint ids.",
+    destructive_hint = false
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct RemoveBreakpointTool {
-    /// Default: the default instance.
+    /// Default: 'default'.
     pub instance_id: Option<String>,
     /// Default: the active tab.
     pub tab_id: Option<String>,

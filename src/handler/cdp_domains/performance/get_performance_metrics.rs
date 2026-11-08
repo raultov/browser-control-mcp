@@ -8,15 +8,16 @@ use std::collections::BTreeMap;
 
 #[macros::mcp_tool(
     name = "get_performance_metrics",
-    description = "Returns runtime counters (JSHeapUsedSize, Nodes, Documents, JSEventListeners, LayoutCount...); with collect_garbage, reads repeated after an action show what it leaked. For load timings use profile_page_performance. Firefox: partial, only Nodes, Frames, Resources and TransferSize, no garbage collection (the reply says what is missing)."
+    description = "Returns runtime counters (JSHeapUsedSize, Nodes, Documents, JSEventListeners, LayoutCount...); with collect_garbage, reads repeated after an action show what it leaked. For load timings use profile_page_performance. Firefox: partial, only Nodes, Frames, Resources and TransferSize, no garbage collection (the reply says what is missing).",
+    read_only_hint = true
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct GetPerformanceMetricsTool {
-    /// Default: the default instance.
+    /// Default: 'default'.
     pub instance_id: Option<String>,
     /// Default: the active tab.
     pub tab_id: Option<String>,
-    /// Collect garbage before reading (Chrome), so the heap and node counts hold only what is still reachable. Default: false.
+    /// Collect garbage first (Chrome), so heap and node counts hold only what is reachable. Default: false.
     pub collect_garbage: Option<bool>,
 }
 

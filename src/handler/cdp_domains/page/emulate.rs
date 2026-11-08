@@ -8,11 +8,12 @@ use serde_json::{Value, json};
 
 #[macros::mcp_tool(
     name = "emulate",
-    description = "Emulates a device and environment in the tab: viewport, device pixel ratio, mobile with touch, CSS media features, user agent, locale, time zone, geolocation (permission granted), CPU and network throttling, CPU performance tier. Each call adds to the earlier ones; 'reset' removes them all. Returns what the page now sees. For offline use set_offline. Firefox emulates only the viewport, pixel ratio, user agent, locale, time zone and geolocation: the other options fail there."
+    description = "Emulates a device and environment in the tab: viewport, device pixel ratio, mobile with touch, CSS media features, user agent, locale, time zone, geolocation (permission granted), CPU and network throttling, CPU performance tier. Each call adds to the earlier ones; 'reset' removes them all. Returns what the page now sees. For offline use set_offline. Firefox emulates only the viewport, pixel ratio, user agent, locale, time zone and geolocation: the other options fail there.",
+    destructive_hint = false
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct EmulateTool {
-    /// Default: the default instance.
+    /// Default: 'default'.
     pub instance_id: Option<String>,
     /// Default: the active tab.
     pub tab_id: Option<String>,
@@ -42,9 +43,9 @@ pub struct EmulateTool {
     pub geolocation: Option<Geolocation>,
     /// CPU slowdown factor, 1 to 20 (4 = 4x slower, 1 = no throttling; Chrome only).
     pub cpu_throttling: Option<f64>,
-    /// The tier navigator.cpuPerformance reports ('low', 'mid', 'high', 'ultra', 'unknown', or 'none' to remove; Chrome only).
+    /// The tier navigator.cpuPerformance reports; 'none' removes it (Chrome only).
     pub cpu_performance_tier: Option<CpuPerformanceTier>,
-    /// Network preset ('slow-3g', 'fast-3g', '4g', or 'none' to remove; Chrome only; use set_offline for offline).
+    /// Network preset; 'none' removes it (Chrome only; for offline use set_offline).
     pub network_throttling: Option<NetworkThrottling>,
     /// Remove every emulation; takes no other option.
     pub reset: Option<bool>,

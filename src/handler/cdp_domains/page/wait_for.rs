@@ -9,11 +9,12 @@ use std::time::Duration;
 
 #[macros::mcp_tool(
     name = "wait_for",
-    description = "Waits until every condition given holds: visible text appears or disappears (open shadow roots and same-origin iframes included), an element reaches a state, or the URL contains a text; checks every 100 ms. Returns the time waited; on timeout it fails naming what is missing. A dialog or debugger pause ends it at once."
+    description = "Waits until every condition given holds: visible text appears or disappears (open shadow roots and same-origin iframes included), an element reaches a state, or the URL contains a text; checks every 100 ms. Returns the time waited; on timeout it fails naming what is missing. A dialog or debugger pause ends it at once.",
+    read_only_hint = true
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct WaitForTool {
-    /// Default: the default instance.
+    /// Default: 'default'.
     pub instance_id: Option<String>,
     /// Default: the active tab.
     pub tab_id: Option<String>,

@@ -67,6 +67,7 @@ impl Gate {
 }
 
 /// The opt-in groups' gates.
+const DEBUG: Gate = Gate::Group(ToolGroup::Debug);
 const STORAGE: Gate = Gate::Group(ToolGroup::Storage);
 const FILES: Gate = Gate::Group(ToolGroup::Files);
 const RAW: Gate = Gate::Group(ToolGroup::Raw);
@@ -242,7 +243,6 @@ fn page_tools() -> Vec<ToolEntry> {
 fn debugger_tools() -> Vec<ToolEntry> {
     use crate::backend::bidi::debugger as ff;
     use Capability::{JsDebugger, PauseOnLoad};
-    use Gate::Always;
     use cdp_domains::debugger::evaluate_on_call_frame::EvaluateOnCallFrameTool as Frame;
     use cdp_domains::debugger::pause_on_load::PauseOnLoadTool as PauseLoad;
     use cdp_domains::debugger::remove_breakpoint::RemoveBreakpointTool as Remove;
@@ -252,19 +252,21 @@ fn debugger_tools() -> Vec<ToolEntry> {
         search_scripts::SearchScriptsTool as Search, set_breakpoint::SetBreakpointTool as Set,
     };
     vec![
-        entry!(PauseLoad, Always, &[JsDebugger, PauseOnLoad]),
-        entry!(Step, Always, &[JsDebugger], ff::step_over),
-        entry!(Resume, Always, &[JsDebugger], ff::resume),
-        entry!(Search, Always, &[JsDebugger], ff::search_scripts),
-        entry!(Set, Always, &[JsDebugger], ff::set_breakpoint),
-        entry!(Frame, Always, &[JsDebugger], ff::evaluate_on_call_frame),
-        entry!(Remove, Always, &[JsDebugger], ff::remove_breakpoint),
-        entry!(steps::StepIntoTool, Always, &[JsDebugger], ff::step_into),
-        entry!(steps::StepOutTool, Always, &[JsDebugger], ff::step_out),
-        entry!(stack::CallStackTool, Always, &[JsDebugger], ff::call_stack),
+        entry!(PauseLoad, DEBUG, &[JsDebugger, PauseOnLoad]),
+        entry!(Step, DEBUG, &[JsDebugger], ff::step_over),
+        // Always listed: a page can pause itself (an older Firefox ignores
+        // the option that turns its `debugger;` statements off).
+        entry!(Resume, Gate::Always, &[JsDebugger], ff::resume),
+        entry!(Search, DEBUG, &[JsDebugger], ff::search_scripts),
+        entry!(Set, DEBUG, &[JsDebugger], ff::set_breakpoint),
+        entry!(Frame, DEBUG, &[JsDebugger], ff::evaluate_on_call_frame),
+        entry!(Remove, DEBUG, &[JsDebugger], ff::remove_breakpoint),
+        entry!(steps::StepIntoTool, DEBUG, &[JsDebugger], ff::step_into),
+        entry!(steps::StepOutTool, DEBUG, &[JsDebugger], ff::step_out),
+        entry!(stack::CallStackTool, DEBUG, &[JsDebugger], ff::call_stack),
         entry!(
             stack::PauseOnExceptionsTool,
-            Always,
+            DEBUG,
             &[JsDebugger],
             ff::pause_on_exceptions
         ),
@@ -1608,10 +1610,12 @@ The page reacted (the DOM changed) and settled after ",
             "emulate",
             "send_bidi_command",
             "send_rdp_request",
+            "set_breakpoint",
+            "call_stack",
         ] {
             assert!(!listed.contains(name), "{name} listed by default");
         }
-        assert!(listed.contains("set_breakpoint") && listed.contains("snapshot"));
+        assert!(listed.contains("snapshot") && listed.contains("evaluate_js"));
         let message = format!(
             "{:?}",
             call(
@@ -1623,11 +1627,22 @@ The page reacted (the DOM changed) and settled after ",
             .unwrap()
         );
         assert!(message.contains("--tool-groups storage"), "{message}");
+        let line = serde_json::json!({"url": "a.js", "line_number": 1});
+        let refused = call(&handler, params("set_breakpoint", line)).await.err();
+        let message = format!("{refused:?}");
+        assert!(message.contains("--tool-groups debug"), "{message}");
         // When one group is enabled, only its tools are added
         handler.tool_groups = vec![ToolGroup::Storage];
         let with_storage = names(listed_tools(&handler));
         assert_eq!(with_storage.len(), listed.len() + 2);
         assert!(with_storage.contains("cookies") && !with_storage.contains("emulate"));
+        // The debugger is a group of its own: its 10 tools (resume is always
+        // listed, so a page that paused itself can go on)
+        assert!(listed.contains("resume"));
+        handler.tool_groups = vec![ToolGroup::Debug];
+        let with_debug = names(listed_tools(&handler));
+        assert_eq!(with_debug.len(), listed.len() + 10);
+        assert!(with_debug.contains("set_breakpoint") && with_debug.contains("pause_on_load"));
     }
 
     /// RFC-04: Every listed tool is callable and every callable tool is listed.
@@ -1964,6 +1979,79 @@ The page reacted (the DOM changed) and settled after ",
             let chrome_only = entry.needs.iter().any(|c| !firefox.has(*c));
             let says_so = description.ends_with("Chrome only (not available on Firefox).");
             assert_eq!(chrome_only, says_so, "{}: {description}", tool.name);
+        }
+    }
+
+    /// The `readOnlyHint` and `destructiveHint` a tool declares.
+    fn hints(name: &str) -> (Option<bool>, Option<bool>) {
+        let tool = all_tools().into_iter().find(|t| t.name == name).unwrap();
+        let annotations = tool.annotations.unwrap_or_default();
+        (annotations.read_only_hint, annotations.destructive_hint)
+    }
+
+    /// TOOL-ANN-01: the MCP annotations say which tools only read (every
+    /// `get_*` and `list_*` among them) and which change nothing that cannot
+    /// be undone; a tool that can lose data or act for the user keeps the
+    /// protocol's defaults (not read-only, maybe destructive).
+    #[test]
+    fn annotations_mark_read_only_and_harmless_tools() {
+        for tool in all_tools() {
+            // A tool whose `clear` removes what it read is not read-only.
+            let schema = serde_json::to_value(&tool.input_schema).unwrap();
+            let clears = schema["properties"]["clear"].is_object();
+            let reads = tool.name.starts_with("get_") || tool.name.starts_with("list_");
+            let expected = match (reads, clears) {
+                (_, true) => (None, None),
+                (true, false) => (Some(true), None),
+                (false, false) => continue,
+            };
+            assert_eq!(hints(&tool.name), expected, "{}", tool.name);
+        }
+        for name in [
+            "snapshot",
+            "find_in_snapshot",
+            "capture_screenshot",
+            "wait_for",
+            "call_stack",
+        ] {
+            assert_eq!(hints(name), (Some(true), None), "{name}");
+        }
+        for name in [
+            "emulate",
+            "open_tab",
+            "set_breakpoint",
+            "mock_route",
+            "scroll",
+        ] {
+            assert_eq!(hints(name), (None, Some(false)), "{name}");
+        }
+    }
+
+    /// TOOL-ANN-02: a tool that can lose data or act for the user keeps
+    /// the protocol's default annotations.
+    #[test]
+    fn risky_tools_keep_the_default_annotations() {
+        let risky = [
+            "navigate",
+            "click_element",
+            "fill_input",
+            "evaluate_js",
+            "close_tab",
+            "close_instance",
+            "stop_browser",
+            "restart_browser",
+            "cookies",
+            "web_storage",
+            "save_pdf",
+            "handle_dialog",
+            "send_cdp_command",
+            "send_bidi_command",
+            "send_rdp_request",
+            "webmcp_invoke_tool",
+            "enable_proxy_auth",
+        ];
+        for name in risky {
+            assert_eq!(hints(name), (None, None), "{name}");
         }
     }
 

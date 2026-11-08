@@ -10,7 +10,7 @@ use rust_mcp_sdk::{
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct GetConsoleLogsTool {
-    /// Default: the default instance.
+    /// Default: 'default'.
     pub instance_id: Option<String>,
     /// Default: the active tab.
     pub tab_id: Option<String>,
@@ -26,7 +26,7 @@ pub struct GetConsoleLogsTool {
     #[serde(default)]
     pub limit: Option<u32>,
 
-    /// Every field (source, timestamp...) as JSON. Default: false (one line per message).
+    /// Every field (source, timestamp...) as JSON. Default: false (one line each).
     #[serde(default)]
     pub include_details: Option<bool>,
 }

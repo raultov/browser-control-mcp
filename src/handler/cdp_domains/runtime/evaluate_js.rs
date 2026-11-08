@@ -9,11 +9,11 @@ use serde_json::{Value, json};
 
 #[macros::mcp_tool(
     name = "evaluate_js",
-    description = "Evaluates JavaScript in the page and returns its value (promises awaited; top-level await works, the last statement giving the value): {value, type, subtype?, description?, preview?}. value is the JSON form; a Map, Set, typed array, Error, cycle or throwing getter gets a bounded preview (preview: true; a Map as [key, value] pairs, a Set or typed array as items, an Error as {name, message, stack}, '[Circular]', '[Thrown: message]') that description names (Map(2), TypeError: bad); functions, nodes and symbols give null, described (a function's source). Cut over 100000 characters (truncated: true). An exception fails with its message, and its 1-based line and column when they are in the expression. In a paused frame use evaluate_on_call_frame. Chrome stops a script after 8 s; Firefox cannot (close a frozen tab with close_tab)."
+    description = "Evaluates JavaScript in the page and returns its value (promises awaited; top-level await works, the last statement giving the value): {value, type, subtype?, description?, preview?}. value is the JSON form; a Map, Set, typed array, Error, cycle or throwing getter gets a bounded preview (preview: true; a Map as [key, value] pairs, a Set or typed array as items, an Error as {name, message, stack}, '[Circular]', '[Thrown: message]') that description names (Map(2), TypeError: bad); functions, nodes and symbols give null, described (a function's source). Cut over 100000 characters (truncated: true). An exception fails with its message, and its 1-based line and column when they are in the expression. In a paused frame use evaluate_on_call_frame (--tool-groups debug). Chrome stops a script after 8 s; Firefox cannot (close a frozen tab with close_tab)."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct EvaluateJsTool {
-    /// Default: the default instance.
+    /// Default: 'default'.
     pub instance_id: Option<String>,
     /// Default: the active tab.
     pub tab_id: Option<String>,

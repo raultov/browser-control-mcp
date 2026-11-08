@@ -261,11 +261,12 @@ pub(crate) async fn wait_ended(
 
 #[macros::mcp_tool(
     name = "list_downloads",
-    description = "Lists the files the instance's pages downloaded, oldest first (id, url, file_name, path once complete, state: in_progress, completed or canceled, sizes, tab_id), and their directory (--downloads-dir/<instance id>, else the instance's temporary profile, deleted with it). An action that starts a download also says where the file went."
+    description = "Lists the files the instance's pages downloaded, oldest first (id, url, file_name, path once complete, state: in_progress, completed or canceled, sizes, tab_id), and their directory (--downloads-dir/<instance id>, else the instance's temporary profile, deleted with it). An action that starts a download also says where the file went.",
+    read_only_hint = true
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct ListDownloadsTool {
-    /// Default: the default instance.
+    /// Default: 'default'.
     pub instance_id: Option<String>,
 }
 

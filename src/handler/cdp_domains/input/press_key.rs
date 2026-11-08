@@ -14,11 +14,11 @@ use serde_json::Value;
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct PressKeyTool {
-    /// Default: the default instance.
+    /// Default: 'default'.
     pub instance_id: Option<String>,
     /// Default: the active tab.
     pub tab_id: Option<String>,
-    /// One character, or Enter, Tab, Escape, Backspace, Delete, ArrowLeft, ArrowUp, ArrowRight, ArrowDown, Home, End, PageUp, PageDown, Insert, Space, F1 to F12; optionally after modifiers joined with '+' (Control+a, Shift+Tab, ControlOrMeta+c: Meta on macOS, Control elsewhere).
+    /// One character or Enter, Tab, Escape, Backspace, Delete, ArrowLeft, ArrowUp, ArrowRight, ArrowDown, Home, End, PageUp, PageDown, Insert, Space, F1-F12; optionally after modifiers joined with '+' (Control+a, Shift+Tab, ControlOrMeta+c: Meta on macOS, else Control).
     pub key: String,
     /// Keys held while it is pressed.
     pub modifiers: Option<Vec<Modifier>>,

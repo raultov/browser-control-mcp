@@ -69,7 +69,7 @@ pub struct SecretArgs {
 /// costs the agent context on every turn, and these are niche or risky.
 #[derive(clap::Args, Debug, Clone, Default, PartialEq, Eq)]
 pub struct ToolArgs {
-    /// Opt-in tool groups, comma separated: storage, files, raw, perf, emulation, or all.
+    /// Opt-in tool groups, comma separated: debug, storage, files, raw, perf, emulation, network, or all.
     #[arg(long = "tool-groups", value_enum, value_delimiter = ',')]
     pub tool_groups: Vec<ToolGroup>,
 }
@@ -77,10 +77,14 @@ pub struct ToolArgs {
 /// A group of tools listed only when `--tool-groups` names it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum ToolGroup {
+    /// The JavaScript debugger: breakpoints, stepping, call frames, pause on
+    /// load or on exceptions, script search (10 tools; `resume` is always listed,
+    /// so a page that paused itself can go on).
+    Debug,
     /// `cookies` and `web_storage`: they read and change session tokens.
     Storage,
-    /// `upload_file` and `save_pdf`: they read and write files of the
-    /// machine.
+    /// `upload_file`, `save_pdf` and `record_video`: they read and write
+    /// files of the machine.
     Files,
     /// The raw protocol tools and `get_custom_events`: anything goes.
     Raw,
@@ -100,6 +104,7 @@ impl ToolGroup {
     /// The name `--tool-groups` takes.
     pub fn name(self) -> &'static str {
         match self {
+            Self::Debug => "debug",
             Self::Storage => "storage",
             Self::Files => "files",
             Self::Raw => "raw",

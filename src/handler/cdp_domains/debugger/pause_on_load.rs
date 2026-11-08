@@ -28,7 +28,7 @@ const LOAD_PAUSE_WAIT: std::time::Duration = std::time::Duration::from_millis(30
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct PauseOnLoadTool {
-    /// Default: the default instance.
+    /// Default: 'default'.
     pub instance_id: Option<String>,
     /// Default: the active tab.
     pub tab_id: Option<String>,

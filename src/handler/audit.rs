@@ -17,11 +17,12 @@ use tokio::sync::Mutex;
 
 #[macros::mcp_tool(
     name = "audit_page",
-    description = "Audits the page as it is now for accessibility, SEO and best-practice problems, the same on Chrome and Firefox: images without alt; fields, buttons and links without a name; html lang; heading order; duplicate ids; broken aria references; positive tabindex; targets under 24x24 px; contrast under WCAG AA; title, meta description, viewport, vague link text, uncrawlable links, canonical, noindex; doctype, HTTPS, mixed content, distorted images, console errors. Returns each failing check with its first 10 elements (ref, selector, snippet, detail), then the ids that passed or did not apply. For 0-100 scores of a fresh load use lighthouse_report. Approximate: text over background images, iframes and closed shadow roots are not checked."
+    description = "Audits the page as it is now for accessibility, SEO and best-practice problems, the same on Chrome and Firefox: images without alt; fields, buttons and links without a name; html lang; heading order; duplicate ids; broken aria references; positive tabindex; targets under 24x24 px; contrast under WCAG AA; title, meta description, viewport, vague link text, uncrawlable links, canonical, noindex; doctype, HTTPS, mixed content, distorted images, console errors. Returns each failing check with its first 10 elements (ref, selector, snippet, detail), then the ids that passed or did not apply. For 0-100 scores of a fresh load use lighthouse_report. Approximate: text over background images, iframes and closed shadow roots are not checked.",
+    read_only_hint = true
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct AuditPageTool {
-    /// Default: the default instance.
+    /// Default: 'default'.
     pub instance_id: Option<String>,
     /// Default: the active tab.
     pub tab_id: Option<String>,

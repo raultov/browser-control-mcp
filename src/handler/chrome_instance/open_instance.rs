@@ -13,7 +13,8 @@ use tokio::sync::Mutex;
 
 #[macros::mcp_tool(
     name = "open_instance",
-    description = "Starts a new browser instance, Chrome or Firefox, with its own profile; its 'label' becomes the instance_id other tools take. Fails in --user-profile mode."
+    description = "Starts a new browser instance, Chrome or Firefox, with its own profile; its 'label' becomes the instance_id other tools take. Fails in --user-profile mode.",
+    destructive_hint = false
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct OpenInstanceTool {
@@ -28,9 +29,9 @@ pub struct OpenInstanceTool {
     pub proxy: Option<String>,
     /// Presets: WEBGL_SOFTWARE (software WebGL, for GPU-less hosts). Default: none.
     pub features: Option<Vec<ChromeFeature>>,
-    /// Import cookies from the user's Chrome profile (needs --allow-cookie-import; Chrome only).
+    /// Import the user's Chrome cookies (needs --allow-cookie-import; Chrome only).
     pub copy_cookies: Option<bool>,
-    /// Chrome profile to import cookies from (e.g. 'Profile 1'). Default: the last used.
+    /// Chrome profile to import from (e.g. 'Profile 1'). Default: the last used.
     pub source_profile: Option<String>,
 }
 

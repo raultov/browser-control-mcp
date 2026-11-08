@@ -8,11 +8,12 @@ use serde_json::{Value, json};
 
 #[macros::mcp_tool(
     name = "webmcp_list_tools",
-    description = "Lists the WebMCP tools the page registered, with schemas, frame ids and the page's annotations (readOnly, consequential, untrustedContent...). Chrome only (not available on Firefox)."
+    description = "Lists the WebMCP tools the page registered, with schemas, frame ids and the page's annotations (readOnly, consequential, untrustedContent...). Chrome only (not available on Firefox).",
+    read_only_hint = true
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct ListWebmcpToolsTool {
-    /// Default: the default instance.
+    /// Default: 'default'.
     pub instance_id: Option<String>,
     /// Default: the active tab.
     pub tab_id: Option<String>,

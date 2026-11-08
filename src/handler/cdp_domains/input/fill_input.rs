@@ -14,13 +14,13 @@ use serde_json::{Value, json};
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct FillInputTool {
-    /// Default: the default instance.
+    /// Default: 'default'.
     pub instance_id: Option<String>,
     /// Default: the active tab.
     pub tab_id: Option<String>,
     /// CSS selector, 'host >>> inner' (into an open shadow root or same-origin iframe) or snapshot ref (e12).
     pub selector: String,
-    /// Text to type, or the value or label of the option of a `<select>` (of a `<select multiple>`: one per line, exactly those selected).
+    /// Text to type, or a `<select>` option's value or label (`<select multiple>`: one per line, exactly those selected).
     pub text: String,
     /// Type the text at the end of the current content instead of replacing it. Default: false.
     pub append: Option<bool>,

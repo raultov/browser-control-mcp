@@ -12,15 +12,15 @@ use serde_json::json;
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct EvaluateOnCallFrameTool {
-    /// Default: the default instance.
+    /// Default: 'default'.
     pub instance_id: Option<String>,
     /// Default: the active tab.
     pub tab_id: Option<String>,
     /// A JavaScript expression.
     pub expression: String,
-    /// The frame to evaluate in, as call_stack numbers them (0, the default, is the innermost).
+    /// The frame, as call_stack numbers them. Default: 0, the innermost.
     pub frame_index: Option<u32>,
-    /// Chrome 156+: the scope of the frame's chain to evaluate in, as call_stack lists them (0, the default, is the innermost).
+    /// Chrome 156+: the scope of the frame's chain, as call_stack lists them. Default: 0, the innermost.
     pub scope: Option<u32>,
 }
 

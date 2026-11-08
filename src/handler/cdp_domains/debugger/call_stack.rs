@@ -12,11 +12,12 @@ use rust_mcp_sdk::{
 
 #[macros::mcp_tool(
     name = "call_stack",
-    description = "Lists the paused stack, innermost first: each frame's index (evaluate_on_call_frame's frame_index), function_name, url, 0-based line_number and column_number; why it paused (breakpoint, step, exception...) and what was thrown; on Chrome each frame's scopes (index for evaluate_on_call_frame's scope; type: local, closure, block, script, global...; name) and its async callers (setTimeout, promises). At most 50 frames."
+    description = "Lists the paused stack, innermost first: each frame's index (evaluate_on_call_frame's frame_index), function_name, url, 0-based line_number and column_number; why it paused (breakpoint, step, exception...) and what was thrown; on Chrome each frame's scopes (index for evaluate_on_call_frame's scope; type: local, closure, block, script, global...; name) and its async callers (setTimeout, promises). At most 50 frames.",
+    read_only_hint = true
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct CallStackTool {
-    /// Default: the default instance.
+    /// Default: 'default'.
     pub instance_id: Option<String>,
     /// Default: the active tab.
     pub tab_id: Option<String>,
@@ -50,11 +51,12 @@ impl CallStackTool {
 
 #[macros::mcp_tool(
     name = "pause_on_exceptions",
-    description = "Sets when the tab's debugger pauses on exceptions: uncaught (and unhandled promise rejections), all (caught ones too) or none. Inspect the pause with call_stack (it names what was thrown) and evaluate_on_call_frame; continue with resume or a step. Per tab, kept across navigations."
+    description = "Sets when the tab's debugger pauses on exceptions: uncaught (and unhandled promise rejections), all (caught ones too) or none. Inspect the pause with call_stack (it names what was thrown) and evaluate_on_call_frame; continue with resume or a step. Per tab, kept across navigations.",
+    destructive_hint = false
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct PauseOnExceptionsTool {
-    /// Default: the default instance.
+    /// Default: 'default'.
     pub instance_id: Option<String>,
     /// Default: the active tab.
     pub tab_id: Option<String>,

@@ -35,7 +35,7 @@ comes from the `tests/compare` scenarios.
 
 | | browser-control-mcp | Playwright MCP | chrome-devtools-mcp |
 | --- | --- | --- | --- |
-| JavaScript debugger (breakpoints, call frames, stepping, script search) | **✓ Chrome and Firefox** (pause on load: Chrome) | ✗ | ✗ |
+| JavaScript debugger (breakpoints, call frames, stepping, script search) | **✓ Chrome and Firefox** (pause on load: Chrome; `--tool-groups debug`) | ✗ | ✗ |
 | Firefox | **✓ next to Chrome, same tools** | ✓ one browser per server | ✗ |
 | Several browsers and instances at once | **✓** | ✗ | ✗ |
 | Selectors | CSS, snapshot refs, `host >>> inner` into shadow roots and iframes | CSS, snapshot refs | snapshot refs only |
@@ -59,8 +59,8 @@ comes from the `tests/compare` scenarios.
 
 | Task | browser-control-mcp | Playwright MCP | chrome-devtools-mcp |
 | --- | --- | --- | --- |
-| Tool list in context, default tools | 8 405 tokens | 5 530 tokens | 7 774 tokens |
-| Tool list in context, every opt-in tool on | 13 372 tokens | 12 291 tokens | not measured (optional categories) |
+| Tool list in context, default tools | 6 668 tokens (8 495 with the debugger, `--tool-groups debug`) | 5 530 tokens | 7 774 tokens |
+| Tool list in context, every opt-in tool on | 13 447 tokens | 12 291 tokens | not measured (optional categories) |
 | Snapshot of Hacker News | **4 584 tokens** | 12 112 tokens | 6 918 tokens |
 | Snapshot of Wikipedia "Web browser" | **12 569 tokens** (cut, searchable) | 34 316 tokens | 27 648 tokens |
 | Snapshot of MDN `<input>` | **12 565 tokens** (cut, searchable) | 158 037 tokens | 77 206 tokens |
@@ -93,18 +93,26 @@ tools are off by default and listed only with `--tool-groups`:
 
 | Group | Tools | Why it is opt-in |
 | --- | --- | --- |
+| `debug` | `set_breakpoint`, `remove_breakpoint`, `step_over`, `step_into`, `step_out`, `call_stack`, `evaluate_on_call_frame`, `pause_on_exceptions`, `search_scripts`, `pause_on_load` | the JavaScript debugger: 10 tools only a debugging session needs (`resume` is always listed, so a page that paused itself can go on) |
 | `storage` | `cookies`, `web_storage` | reads and changes session tokens |
-| `files` | `upload_file`, `save_pdf` | reads and writes files of the machine |
+| `files` | `upload_file`, `save_pdf`, `record_video` | reads and writes files of the machine |
 | `raw` | `send_cdp_command`, `send_bidi_command`, `send_rdp_request`, `get_custom_events` | anything the protocol allows |
 | `perf` | `get_performance_metrics`, `profile_page_performance`, `audit_page`, `lighthouse_report` | niche |
 | `emulation` | `emulate` | niche |
 | `network` | `mock_route`, `list_routes`, `remove_route`, `set_offline` | changes what the page receives |
 
-`--tool-groups all` lists every group. The page, input, observation and
-debugger tools are always listed (34 tools), plus `enable_proxy_auth` with
+`--tool-groups all` lists every group. The page, input and observation
+tools and `resume` are always listed (31 tools), plus `enable_proxy_auth` with
 `--proxy-server` and the WebMCP tools with `--enable-webmcp`. A tool of a
 group that is off fails naming the flag. The list is fixed for the server's
-life: it never changes during a session, so clients can cache it.
+life: it never changes during a session, so clients can cache it. Tools
+that only read (`snapshot`, `find_in_snapshot`, `inspect_dom`,
+`capture_screenshot`, `wait_for`, `audit_page`, `call_stack`,
+`search_scripts`, `get_css_styles`, `get_performance_metrics`, the `list_*`
+and WebMCP list/get tools) carry the MCP annotation `readOnlyHint` (not
+those whose `clear` removes what they read), and those whose effect is easy to undo
+(`open_tab`, `emulate`, `set_breakpoint`, `mock_route`...)
+`destructiveHint: false`; the others keep the protocol's defaults.
 
 ## Feature matrix
 
@@ -159,17 +167,17 @@ see the note.
 | `profile_page_performance` | ✓ | partial | `perf` group; on Chrome a trace in which nothing loaded (no `action: "reload"`) gives the current page's FCP, LCP, DCL and Load from the Web Performance APIs, as Firefox does, with a note; `save_path` (Chrome only) writes the raw trace (`.json` or `.json.gz`, under the upload roots) for Chrome DevTools or Perfetto; `insights: true` adds what explains the numbers, read with the Web Performance APIs and the DOM (same JavaScript on both): the document's TTFB, server time and compression, the LCP element, its breakdown (TTFB, load delay, load, render delay) and image discovery (`lazy_loaded`, `fetch_priority`), Interaction to Next Paint (`inp`: duration, event, target and input/processing/presentation breakdown), layout-shift culprits, render-blocking requests, the slowest requests, the scripts of long animation frames, DOM size (`nodes`, `max_depth`, `widest_element`, `max_children`), oversized or unsized images, and third-party origins by duration and bytes (at most 5 each), plus `findings` from the web.dev and Lighthouse thresholds; on Chrome, `forced_reflows` from the trace (`Layout`/`UpdateLayoutTree` forced by a script, grouped by call site, a finding over 30 ms) and, with `action: "reload"`, `unused_code` (`unused_js_bytes`, `unused_css_bytes` and the 5 files with most unused bytes, from the `Profiler` precise coverage and `CSS` rule usage of the reload; a finding over 50 KB; without a reload it is `null`: code run before the recording would count as unused); Firefox: FCP, LCP, DCL and Load; no trace (`save_path` fails), so `total_blocking_time_ms` and `top_long_tasks` are `null`, and its insights have no layout shifts, render-blocking requests, long frames, forced reflows or unused code (`null`, with notes) |
 | `audit_page` | ✓ | ✓ | `perf` group; accessibility (images without alt, fields, buttons and links without a name, `html lang`, heading order, duplicate ids, broken `aria-labelledby`/`aria-describedby`, `tabindex` > 0, targets under 24×24 px too close to another, text contrast under WCAG AA), SEO (title, meta description, viewport, vague link text, uncrawlable links, canonical, `noindex`) and best practices (doctype and quirks mode, HTTPS, mixed content, distorted images, console errors); the same script on both browsers; each failing check lists its first 10 elements with a snapshot ref, a selector, its start tag and a detail (the contrast ratio, the size...), then the ids that passed or did not apply; `categories` narrows it; not checked: text over background images or gradients, iframes, closed shadow roots, response headers |
 | `lighthouse_report` | ✓ | partial | `perf` group; a cold load of `url` (default: the tab's page, loaded again) from `about:blank` in Lighthouse's conditions: `device: "mobile"` (default: 412×823 at 1.75×, touch, CPU 4× slower, Slow 4G) or `"desktop"` (1350×940, no throttling), the cache bypassed, the user agent left alone, the tab's own emulation put back afterwards and the cache re-enabled (a note names any override Chrome refused to put back); `scores` 0-100 for `performance`, `accessibility`, `seo` and `best_practices` (`categories` narrows them) with Lighthouse's formula: its log-normal curves for FCP, LCP, TBT, CLS and Speed Index (from the trace's screenshots) with weights 10/25/30/25/10, and its audit weights for the `audit_page` checks plus `http-status-code` (1 for `viewport` and `mixed-content`, which it does not score, and 3 for `duplicate-id`, which flags any duplicate id; `document-title` and `image-alt` count in two categories; a check that did not apply is left out); `metrics` gives each value, score and the points it costs, `failed` each failing check with `points_lost` per category (costliest first) and its elements with snapshot refs, then `passed` and `not_applicable` ids, `insights` as `profile_page_performance` gives them (with the load's unused JS/CSS and forced reflows on Chrome), and notes; Chrome: about 5-15 s; Firefox: viewport and device pixel ratio only (no throttling, touch or trace), FCP and LCP from the Web Performance APIs, `performance` `null` with a note |
-| `set_breakpoint` | ✓ | partial | `condition` pauses only when the expression is truthy; `log` makes a logpoint (its value goes to the console as `logpoint <url>:<line>: <value>`, and it never pauses; with `condition`, only when it holds), both as the breakpoint's condition; a `url` without a scheme (`app.js`, `js/app.js`) names the loaded script whose URL ends with it (several: refused, naming them); with none loaded, Chrome binds it to the first such script that loads (`urlRegex`) and Firefox refuses it; Firefox: by URL only (no `script_id` / `script_hash`) |
-| `remove_breakpoint` | ✓ | ✓ | |
-| `resume` | ✓ | ✓ | on a page that is not paused: `The debugger was not paused: nothing to resume.` with `{paused: false}` |
-| `step_over` | ✓ | ✓ | |
-| `step_into` | ✓ | ✓ | enters the call on the paused line (Chrome `Debugger.stepInto`, Firefox `resumeLimit: step`) |
-| `step_out` | ✓ | ✓ | runs to the caller (Chrome `Debugger.stepOut`, Firefox `resumeLimit: finish`); `paused: false` when no caller stops |
-| `call_stack` | ✓ | ✓ | the paused stack, innermost first (at most 50 frames): `index`, `function_name`, `url`, 0-based `line_number` and `column_number`, `reason` (`breakpoint`, `step`, `exception`...) and the `exception` thrown; Chrome also lists each paused frame's `scopes` (`index`, `type`: `local`, `closure`, `block`, `script`, `global`...; `name`) and `async_callers` (`setTimeout`, promises; recorded only while the tab is debugged); Firefox gives no scopes and no async callers |
-| `pause_on_exceptions` | ✓ | ✓ | `state`: `none`, `uncaught` (and unhandled rejections) or `all`, per tab (Chrome `Debugger.setPauseOnExceptions`, Firefox thread configuration `pauseOnExceptions`) |
-| `evaluate_on_call_frame` | ✓ | ✓ | `frame_index` (from `call_stack`) evaluates in a caller's frame; past the stack it fails naming its size; on Chrome 156 or later `scope` evaluates in an enclosing scope of the frame (as `call_stack` numbers them) to read a variable an inner one hides, and past the chain it fails naming its scopes (an older Chrome, or one whose version could not be read, refuses it); Firefox refuses `scope` (its debugger evaluates in the innermost scope only) |
-| `search_scripts` | ✓ | ✓ | a long line's preview is 100 characters on each side of the match; inline scripts and modules included, the server's own evaluations left out (Chrome: an inline script the debugger no longer holds, released while its page sat in the back-forward cache, is found in the page's `<script>` elements, with `scriptId: null`, `lineInScript` and a note to reload before setting a breakpoint in it); `debug` answers `{scripts, errors}` as JSON; frames of another origin too (Chrome ids such as `2.17`) |
-| `pause_on_load` | ✓ | ✗ | TODO on Firefox, see [Limitations and TODO](#limitations-and-todo) |
+| `set_breakpoint` | ✓ | partial | `debug` group; `condition` pauses only when the expression is truthy; `log` makes a logpoint (its value goes to the console as `logpoint <url>:<line>: <value>`, and it never pauses; with `condition`, only when it holds), both as the breakpoint's condition; a `url` without a scheme (`app.js`, `js/app.js`) names the loaded script whose URL ends with it (several: refused, naming them); with none loaded, Chrome binds it to the first such script that loads (`urlRegex`) and Firefox refuses it; Firefox: by URL only (no `script_id` / `script_hash`) |
+| `remove_breakpoint` | ✓ | ✓ | `debug` group |
+| `resume` | ✓ | ✓ | always listed (a page can pause itself); on a page that is not paused: `The debugger was not paused: nothing to resume.` with `{paused: false}` |
+| `step_over` | ✓ | ✓ | `debug` group |
+| `step_into` | ✓ | ✓ | `debug` group; enters the call on the paused line (Chrome `Debugger.stepInto`, Firefox `resumeLimit: step`) |
+| `step_out` | ✓ | ✓ | `debug` group; runs to the caller (Chrome `Debugger.stepOut`, Firefox `resumeLimit: finish`); `paused: false` when no caller stops |
+| `call_stack` | ✓ | ✓ | `debug` group; the paused stack, innermost first (at most 50 frames): `index`, `function_name`, `url`, 0-based `line_number` and `column_number`, `reason` (`breakpoint`, `step`, `exception`...) and the `exception` thrown; Chrome also lists each paused frame's `scopes` (`index`, `type`: `local`, `closure`, `block`, `script`, `global`...; `name`) and `async_callers` (`setTimeout`, promises; recorded only while the tab is debugged); Firefox gives no scopes and no async callers |
+| `pause_on_exceptions` | ✓ | ✓ | `debug` group; `state`: `none`, `uncaught` (and unhandled rejections) or `all`, per tab (Chrome `Debugger.setPauseOnExceptions`, Firefox thread configuration `pauseOnExceptions`) |
+| `evaluate_on_call_frame` | ✓ | ✓ | `debug` group; `frame_index` (from `call_stack`) evaluates in a caller's frame; past the stack it fails naming its size; on Chrome 156 or later `scope` evaluates in an enclosing scope of the frame (as `call_stack` numbers them) to read a variable an inner one hides, and past the chain it fails naming its scopes (an older Chrome, or one whose version could not be read, refuses it); Firefox refuses `scope` (its debugger evaluates in the innermost scope only) |
+| `search_scripts` | ✓ | ✓ | `debug` group; a long line's preview is 100 characters on each side of the match; inline scripts and modules included, the server's own evaluations left out (Chrome: an inline script the debugger no longer holds, released while its page sat in the back-forward cache, is found in the page's `<script>` elements, with `scriptId: null`, `lineInScript` and a note to reload before setting a breakpoint in it); `debug` answers `{scripts, errors}` as JSON; frames of another origin too (Chrome ids such as `2.17`) |
+| `pause_on_load` | ✓ | ✗ | `debug` group; TODO on Firefox, see [Limitations and TODO](#limitations-and-todo) |
 | `enable_proxy_auth` | ✓ | partial | needs `--proxy-server`; a request the proxy rejects twice is cancelled; untested on Firefox against a real proxy |
 | `send_cdp_command` | ✓ | ✗ | `raw` group; raw Chrome DevTools Protocol; refuses `Network`/`Page`/`Runtime`/`Log`/`Debugger.disable` and `Browser.close`; `Fetch.enable` comes with a note |
 | `send_bidi_command` | ✗ | ✓ | `raw` group; raw WebDriver BiDi; refuses `session.new`, `session.end`, `browser.close` |
@@ -391,6 +399,9 @@ claude mcp add browser-control-firefox -- browser-control-mcp --browser firefox
 claude mcp add browser-control-mcp -- npx -y @raultov/browser-control-mcp
 ```
 
+To debug JavaScript, add `--tool-groups debug` (see [Tool groups](#tool-groups)):
+`claude mcp add browser-control-mcp -- browser-control-mcp --tool-groups debug`.
+
 ## Usage concepts
 
 - **Instances.** A `default` instance always exists and uses the `--browser`
@@ -490,7 +501,7 @@ claude mcp add browser-control-mcp -- npx -y @raultov/browser-control-mcp
 | `--user-profile` | off | your default profile (no `--user-data-dir`) | only with `--firefox-port` (attach to your running Firefox) |
 | `--allow-cookie-import` | off | exposes `copy_cookies` | capability error |
 | `--secrets <FILE>` | none | dotenv file (`NAME=value`, at least 4 characters per value) whose values every tool result and error shows as `<secret:NAME>`; `fill_input` and `fill_form` type the value of a `<secret:NAME>` (see [Security notes](#security-notes)) | same |
-| `--tool-groups <GROUPS>` | none | lists the opt-in tool groups, comma separated: `storage`, `files`, `raw`, `perf`, `emulation`, `network` or `all` (see [Tool groups](#tool-groups)) | same |
+| `--tool-groups <GROUPS>` | none | lists the opt-in tool groups, comma separated: `debug`, `storage`, `files`, `raw`, `perf`, `emulation`, `network` or `all` (see [Tool groups](#tool-groups)) | same |
 | `--upload-root <DIR>` | working + temp dir | directory `upload_file` may read files from and `save_pdf` may write PDFs to (repeatable; replaces the defaults) | same |
 | `--downloads-dir <DIR>` | inside the instance's profile | each instance saves downloads in `<DIR>/<instance id>` (kept after the instance closes); without it, in a `downloads` folder of the instance's temporary profile (deleted with it), or a new folder in the system temp directory for an attached browser or `--user-profile` | same; snap Firefox can only write to non-hidden folders of `$HOME` (not `~/.local/...`): it cancels the download otherwise |
 | `--enable-webmcp` | off | WebMCP switches and `webmcp_*` tools | capability error |
@@ -541,7 +552,10 @@ one subscription per session, routed by browsing context id.
 
 ## Debugging JavaScript
 
-Chrome and Firefox take the same calls:
+The debugger tools are listed with `--tool-groups debug` (or `all`): add it
+to the server's arguments in the MCP client configuration (`resume` is
+always listed, so a page that paused itself can go on). Chrome and
+Firefox take the same calls:
 
 1. `navigate` to the page (or `open_tab`).
 2. `search_scripts` with a needle to find the script URL and line.

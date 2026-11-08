@@ -12,11 +12,12 @@ use tokio::sync::Mutex;
 
 #[macros::mcp_tool(
     name = "set_breakpoint",
-    description = "Sets a breakpoint at a 0-based line of a script, by url (on Chrome also by script id or hash from search_scripts). A url without a scheme ('app.js') names the loaded script ending with it (several: fails naming them; none: Chrome binds to the first such script that loads, Firefox fails). 'condition' pauses only when it is truthy; 'log' makes a logpoint that writes to the console (get_console_logs, 'logpoint <url>:<line>:') instead of pausing. Returns {breakpoint_id, url, line_number, column_number, resolved}; resolved is false until a matching script loads. A line without code fails. The page's own debugger statements pause only while the tab has a breakpoint. Firefox: by url only."
+    description = "Sets a breakpoint at a 0-based line of a script, by url (on Chrome also by script id or hash from search_scripts). A url without a scheme ('app.js') names the loaded script ending with it (several: fails naming them; none: Chrome binds to the first such script that loads, Firefox fails). 'condition' pauses only when it is truthy; 'log' makes a logpoint that writes to the console (get_console_logs, 'logpoint <url>:<line>:') instead of pausing. Returns {breakpoint_id, url, line_number, column_number, resolved}; resolved is false until a matching script loads. A line without code fails. The page's own debugger statements pause only while the tab has a breakpoint. Firefox: by url only.",
+    destructive_hint = false
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct SetBreakpointTool {
-    /// Default: the default instance.
+    /// Default: 'default'.
     pub instance_id: Option<String>,
     /// Default: the active tab.
     pub tab_id: Option<String>,

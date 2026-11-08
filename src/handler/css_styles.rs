@@ -655,11 +655,12 @@ pub(crate) fn sheet_lookup(element: &str, samples: &[SheetSample]) -> String {
 
 #[macros::mcp_tool(
     name = "get_css_styles",
-    description = "Explains why an element looks as it does: the CSS rules matching it, highest priority first (style attribute, then rules), each with selector, stylesheet URL (the page's for an inline <style>), 0-based line and column, enclosing at-rules (@media, @container, @layer, @supports) and declarations marked important, invalid or overridden; its pseudo-elements; and the computed values of the declared properties. Options add the ancestors' rules (nearest first) and the browser's, or narrow to some properties (declarations included). Firefox reads them with its inspector (needs its debugger port)."
+    description = "Explains why an element looks as it does: the CSS rules matching it, highest priority first (style attribute, then rules), each with selector, stylesheet URL (the page's for an inline <style>), 0-based line and column, enclosing at-rules (@media, @container, @layer, @supports) and declarations marked important, invalid or overridden; its pseudo-elements; and the computed values of the declared properties. Options add the ancestors' rules (nearest first) and the browser's, or narrow to some properties (declarations included). Firefox reads them with its inspector (needs its debugger port).",
+    read_only_hint = true
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct GetCssStylesTool {
-    /// Default: the default instance.
+    /// Default: 'default'.
     pub instance_id: Option<String>,
     /// Default: the active tab.
     pub tab_id: Option<String>,
@@ -667,7 +668,7 @@ pub struct GetCssStylesTool {
     pub selector: String,
     /// Only these properties (e.g. ['color', 'margin']); a shorthand also matches its longhands.
     pub properties: Option<Vec<String>>,
-    /// The rules of its ancestors too (what it inherits). Default: false.
+    /// Also its ancestors' rules (what it inherits). Default: false.
     pub include_inherited: Option<bool>,
     /// The browser's own rules too. Default: false.
     pub include_user_agent: Option<bool>,

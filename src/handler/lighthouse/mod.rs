@@ -32,11 +32,11 @@ use trace::LoadMetrics;
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct LighthouseReportTool {
-    /// Default: the default instance.
+    /// Default: 'default'.
     pub instance_id: Option<String>,
     /// Default: the active tab.
     pub tab_id: Option<String>,
-    /// Absolute URL to load. Default: the tab's current page (an http or file page, else the call fails asking for 'url').
+    /// Absolute URL. Default: the tab's page (an http or file one, else the call fails asking for 'url').
     pub url: Option<String>,
     /// 'mobile' (default) or 'desktop'.
     pub device: Option<Device>,

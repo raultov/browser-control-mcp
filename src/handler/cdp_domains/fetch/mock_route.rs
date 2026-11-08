@@ -19,11 +19,12 @@ use tokio_stream::StreamExt;
 
 #[macros::mcp_tool(
     name = "mock_route",
-    description = "Answers the tab's requests whose URL matches the 'url_pattern' glob (* any characters, ? one, \\ escapes) with a mocked response instead of the network; the latest matching route wins, until remove_route or the tab closes. Returns the route id. On Chrome it cannot run while enable_proxy_auth is active."
+    description = "Answers the tab's requests whose URL matches the 'url_pattern' glob (* any characters, ? one, \\ escapes) with a mocked response instead of the network; the latest matching route wins, until remove_route or the tab closes. Returns the route id. On Chrome it cannot run while enable_proxy_auth is active.",
+    destructive_hint = false
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct MockRouteTool {
-    /// Default: the default instance.
+    /// Default: 'default'.
     pub instance_id: Option<String>,
     /// Default: the active tab.
     pub tab_id: Option<String>,
@@ -50,11 +51,12 @@ pub struct Header {
 
 #[macros::mcp_tool(
     name = "list_routes",
-    description = "Lists the tab's mocked routes: {routes: [{route_id, url_pattern, status, hits}]}, oldest first; hits counts the requests each answered."
+    description = "Lists the tab's mocked routes: {routes: [{route_id, url_pattern, status, hits}]}, oldest first; hits counts the requests each answered.",
+    read_only_hint = true
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct ListRoutesTool {
-    /// Default: the default instance.
+    /// Default: 'default'.
     pub instance_id: Option<String>,
     /// Default: the active tab.
     pub tab_id: Option<String>,
@@ -62,11 +64,12 @@ pub struct ListRoutesTool {
 
 #[macros::mcp_tool(
     name = "remove_route",
-    description = "Removes the tab's mocked route 'route_id', or every route when omitted: matching requests reach the network again."
+    description = "Removes the tab's mocked route 'route_id', or every route when omitted: matching requests reach the network again.",
+    destructive_hint = false
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct RemoveRouteTool {
-    /// Default: the default instance.
+    /// Default: 'default'.
     pub instance_id: Option<String>,
     /// Default: the active tab.
     pub tab_id: Option<String>,

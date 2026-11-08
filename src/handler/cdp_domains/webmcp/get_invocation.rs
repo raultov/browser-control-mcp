@@ -6,11 +6,12 @@ use rust_mcp_sdk::{
 
 #[macros::mcp_tool(
     name = "webmcp_get_invocation",
-    description = "Returns a WebMCP invocation's status (Pending, Completed, Error, Canceled) and output, e.g. to poll one waiting for the user's consent on the page. Chrome only (not available on Firefox)."
+    description = "Returns a WebMCP invocation's status (Pending, Completed, Error, Canceled) and output, e.g. to poll one waiting for the user's consent on the page. Chrome only (not available on Firefox).",
+    read_only_hint = true
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct GetWebmcpInvocationTool {
-    /// Default: the default instance.
+    /// Default: 'default'.
     pub instance_id: Option<String>,
     /// Default: the active tab.
     pub tab_id: Option<String>,

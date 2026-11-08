@@ -18,18 +18,18 @@ use tokio::sync::Mutex;
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct NavigateTool {
-    /// Default: the default instance.
+    /// Default: 'default'.
     pub instance_id: Option<String>,
     /// Default: the active tab.
     pub tab_id: Option<String>,
-    /// Absolute URL (http, https or file). Omit it to move in the tab's history with 'history'.
+    /// Absolute URL (http, https or file); omit it to use 'history'.
     pub url: Option<String>,
     /// 'back' or 'forward' in the tab's history, instead of a 'url'.
     pub history: Option<HistoryStep>,
-    /// Import cookies from the user's Chrome profile (needs --allow-cookie-import; Chrome only).
+    /// Import the user's Chrome cookies (needs --allow-cookie-import; Chrome only).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub copy_cookies: Option<bool>,
-    /// Chrome profile to import cookies from (e.g. 'Profile 1'). Default: the last used.
+    /// Chrome profile to import from (e.g. 'Profile 1'). Default: the last used.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_profile: Option<String>,
     /// Allow relaunching a running instance to import cookies (closes its tabs). Default: false.

@@ -7,11 +7,12 @@ use serde_json::json;
 
 #[macros::mcp_tool(
     name = "hover",
-    description = "Moves the mouse over an element (scrolled into view; fails when hidden or covered) so hover menus, tooltips and :hover styles appear."
+    description = "Moves the mouse over an element (scrolled into view; fails when hidden or covered) so hover menus, tooltips and :hover styles appear.",
+    destructive_hint = false
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct HoverTool {
-    /// Default: the default instance.
+    /// Default: 'default'.
     pub instance_id: Option<String>,
     /// Default: the active tab.
     pub tab_id: Option<String>,

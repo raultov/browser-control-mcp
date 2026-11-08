@@ -7,11 +7,12 @@ use serde_json::json;
 
 #[macros::mcp_tool(
     name = "capture_screenshot",
-    description = "Screenshot of the tab's viewport, of the whole page with full_page, or of one element with selector (at most 16384 CSS pixels per side; a larger capture gets a note). To find elements to act on, prefer 'snapshot'."
+    description = "Screenshot of the tab's viewport, of the whole page with full_page, or of one element with selector (at most 16384 CSS pixels per side; a larger capture gets a note). To find elements to act on, prefer 'snapshot'.",
+    read_only_hint = true
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct CaptureScreenshotTool {
-    /// Default: the default instance.
+    /// Default: 'default'.
     pub instance_id: Option<String>,
     /// Default: the active tab.
     pub tab_id: Option<String>,
@@ -21,7 +22,7 @@ pub struct CaptureScreenshotTool {
     pub quality: Option<u32>,
     /// Capture the whole scrollable page. Default: false.
     pub full_page: Option<bool>,
-    /// Capture only this element's box: CSS selector, 'host >>> inner' (into an open shadow root or same-origin iframe) or snapshot ref (e12).
+    /// Only this element's box: CSS selector, 'host >>> inner' (into an open shadow root or same-origin iframe) or snapshot ref (e12).
     pub selector: Option<String>,
 }
 

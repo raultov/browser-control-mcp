@@ -11,7 +11,7 @@ use serde_json::Value;
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct InvokeWebmcpToolTool {
-    /// Default: the default instance.
+    /// Default: 'default'.
     pub instance_id: Option<String>,
     /// Default: the active tab.
     pub tab_id: Option<String>,
@@ -27,7 +27,7 @@ pub struct InvokeWebmcpToolTool {
     #[serde(default = "default_empty_json_object")]
     pub input: String,
 
-    /// How long to wait for the page tool's answer, 1 to 60000. Default: 10000.
+    /// Wait for the page tool's answer, 1 to 60000 ms. Default: 10000.
     pub timeout_ms: Option<u64>,
 }
 

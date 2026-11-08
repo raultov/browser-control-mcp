@@ -6,11 +6,12 @@ use rust_mcp_sdk::{
 
 #[macros::mcp_tool(
     name = "open_tab",
-    description = "Opens a tab (launching the instance if needed), makes it the active tab in front, and waits for 'url' to load. Returns {tab_id, target_id, url, label}; a network error fails naming the tab, which stays open."
+    description = "Opens a tab (launching the instance if needed), makes it the active tab in front, and waits for 'url' to load. Returns {tab_id, target_id, url, label}; a network error fails naming the tab, which stays open.",
+    destructive_hint = false
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct OpenTabTool {
-    /// Default: the default instance.
+    /// Default: 'default'.
     pub instance_id: Option<String>,
     /// URL to load. Default: about:blank.
     pub url: Option<String>,

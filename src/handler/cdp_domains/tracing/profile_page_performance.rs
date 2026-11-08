@@ -14,7 +14,7 @@ use tokio::sync::mpsc;
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct ProfilePagePerformanceTool {
-    /// Default: the default instance.
+    /// Default: 'default'.
     pub instance_id: Option<String>,
     /// Default: the active tab.
     pub tab_id: Option<String>,
@@ -30,11 +30,11 @@ pub struct ProfilePagePerformanceTool {
     #[serde(default)]
     pub disable_cache: Option<bool>,
 
-    /// Absolute path of a .json or .json.gz file (under the upload roots) to save the raw trace to, for Chrome DevTools or Perfetto (Chrome only).
+    /// Absolute .json or .json.gz path under the upload roots for the raw trace, for Chrome DevTools or Perfetto (Chrome only).
     #[serde(default)]
     pub save_path: Option<String>,
 
-    /// Add what explains the numbers: LCP element, breakdown and discovery, INP, layout shifts, render-blocking and slowest requests, long-frame scripts, DOM size, oversized/unsized images, third parties, findings; on Chrome forced reflows and, with action 'reload', unused JavaScript and CSS. Default: false.
+    /// Add what explains the numbers: LCP element, breakdown and discovery, INP, layout shifts, slow and render-blocking requests, long scripts, DOM size, oversized or unsized images, third parties, findings; on Chrome forced reflows and, with 'reload', unused JS and CSS. Default: false.
     #[serde(default)]
     pub insights: Option<bool>,
 }

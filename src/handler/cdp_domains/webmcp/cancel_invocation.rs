@@ -6,11 +6,12 @@ use rust_mcp_sdk::{
 
 #[macros::mcp_tool(
     name = "webmcp_cancel_invocation",
-    description = "Cancels a pending WebMCP invocation (e.g. one waiting for the user's consent on the page). Returns its status. Chrome only (not available on Firefox)."
+    description = "Cancels a pending WebMCP invocation (e.g. one waiting for the user's consent on the page). Returns its status. Chrome only (not available on Firefox).",
+    destructive_hint = false
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct CancelWebmcpInvocationTool {
-    /// Default: the default instance.
+    /// Default: 'default'.
     pub instance_id: Option<String>,
     /// Default: the active tab.
     pub tab_id: Option<String>,

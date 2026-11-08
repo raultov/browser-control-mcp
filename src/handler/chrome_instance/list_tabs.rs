@@ -6,11 +6,12 @@ use rust_mcp_sdk::{
 
 #[macros::mcp_tool(
     name = "list_tabs",
-    description = "Lists the instance's tabs: {active_tab_id, tabs: [{tab_id, label, target_id, url}]}."
+    description = "Lists the instance's tabs: {active_tab_id, tabs: [{tab_id, label, target_id, url}]}.",
+    read_only_hint = true
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct ListTabsTool {
-    /// Default: the default instance.
+    /// Default: 'default'.
     pub instance_id: Option<String>,
 }
 
