@@ -96,11 +96,17 @@ async fn open_url(
     })?;
     // The blank page the tab was created with is not a page of its history
     // (#112: 'back' went to about:blank): the URL is its first entry, as on
-    // Firefox. Best effort: the tab is usable either way.
-    let reset = serde_json::json!({});
-    let _ = registered
-        .send_raw_command("Page.resetNavigationHistory", reset)
-        .await;
+    // Firefox. Best effort: the tab is usable either way (Chrome refuses
+    // while the tab is not selected or a navigation is pending).
+    let method = "Page.resetNavigationHistory";
+    let reset = registered.send_raw_command(method, serde_json::json!({}));
+    if reset.await.is_err() {
+        tracing::debug!(
+            method,
+            tab_id,
+            "open_tab kept the blank page in the history"
+        );
+    }
     Ok(outcome.url)
 }
 
