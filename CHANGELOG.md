@@ -12,6 +12,11 @@ from a copy of its code: entries describe the differences from that release.
 
 ### Fixed
 
+- Chrome: a tab `open_tab` opened with a `url` kept the blank page it was
+  created with as its first history entry, so `navigate` `history: "back"`
+  from that page went to `about:blank`. The URL is now the first entry, and
+  'back' fails without moving, as on Firefox (#112).
+
 - An unknown argument's hint listed `copy_cookies`, `source_profile` and
   `confirm_restart`, which tools/list hides without
   `--allow-cookie-import`; it now lists the arguments tools/list shows

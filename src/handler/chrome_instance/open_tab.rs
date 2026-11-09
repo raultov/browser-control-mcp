@@ -94,6 +94,13 @@ async fn open_url(
             tab_id,
         ))
     })?;
+    // The blank page the tab was created with is not a page of its history
+    // (#112: 'back' went to about:blank): the URL is its first entry, as on
+    // Firefox. Best effort: the tab is usable either way.
+    let reset = serde_json::json!({});
+    let _ = registered
+        .send_raw_command("Page.resetNavigationHistory", reset)
+        .await;
     Ok(outcome.url)
 }
 
@@ -195,6 +202,57 @@ mod tests {
             Some("http://127.0.0.1/")
         );
         assert_eq!(deferred_navigation(BLANK), None);
+    }
+
+    /// TAB-OPEN2 (#112): the URL open_tab loads is the tab's first history
+    /// entry: the blank page the tab was created with is dropped
+    /// (`Page.resetNavigationHistory` once the URL loaded), so history
+    /// 'back' from it fails without moving, as on Firefox.
+    #[tokio::test]
+    async fn open_tab_url_is_the_first_history_entry() {
+        use crate::handler::cdp_domains::tests::{
+            committed_url, fire_events_after, mock_handler, spawn_recording_mock,
+        };
+        // Given a tab open_tab created, whose navigation loads
+        let mock = spawn_recording_mock().await;
+        mock.respond_with(
+            "Page.navigate",
+            |_| serde_json::json!({"frameId": "F1", "loaderId": "L1"}),
+        );
+        committed_url(mock, "http://127.0.0.1:8/page");
+        let frame = serde_json::json!({"frame": {"id": "F1", "loaderId": "L1", "url": "http://127.0.0.1:8/page"}, "type": "Navigation"});
+        let load = serde_json::json!({"timestamp": 1.0});
+        fire_events_after(
+            mock,
+            "Page.navigate",
+            vec![
+                ("Page.frameNavigated", frame),
+                ("Page.loadEventFired", load),
+            ],
+        );
+        let handler = mock_handler(mock.http_port);
+        let session = handler.session(None).await.unwrap();
+        let browser = cdp_browser_lite::BrowserClient::connect(
+            &format!("127.0.0.1:{}", mock.http_port),
+            std::time::Duration::from_secs(5),
+        )
+        .await
+        .unwrap();
+        let tab = browser.attach("T-page-1").await.unwrap();
+        let info = super::super::tab_registry::NewTab::new(None, BLANK);
+        let tab_id = crate::util::sync::write(&session.tabs)
+            .register_tab(tab, info, false)
+            .unwrap();
+        // When it navigates the tab to the URL
+        let url = open_url(&session, &tab_id, "http://127.0.0.1:8/page", false).await;
+        // Then the history before the URL was dropped, after it loaded
+        assert_eq!(url.unwrap(), "http://127.0.0.1:8/page");
+        let names: Vec<String> = mock.commands().into_iter().map(|c| c.method).collect();
+        let navigated = names.iter().position(|m| m == "Page.navigate");
+        let reset = names
+            .iter()
+            .position(|m| m == "Page.resetNavigationHistory");
+        assert!(navigated.is_some() && reset > navigated, "{names:?}");
     }
 
     /// NAV-04: open_tab to an unreachable host fails and names the tab.
