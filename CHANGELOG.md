@@ -10,49 +10,23 @@ from a copy of its code: entries describe the differences from that release.
 
 ## [Unreleased]
 
+## [0.15.0-beta.25] - 2026-11-09
+
+Public **BETA**. Fixes for the nine bugs an automated test round (qa-loop)
+found in 0.14.0-beta.24, several of them in the security features. Output
+files (`save_pdf`, `record_video`, `profile_page_performance`) can no longer
+be written outside the upload roots through a symlink; `--secrets` also
+masks a value the browser URL-encoded (a GET form); `--local` checks where
+the tab ended, so a redirect to a remote address fails and the tab goes back
+to `about:blank`. `--proxy-server host:port` works (it means `http://`).
+Firefox: `wait_for` ends at once when its tab or instance closes, and the
+docs no longer claim mocked routes answer while offline. Chrome: `open_tab`'s
+URL is the tab's first history entry. Behaviour changes: an invalid
+`--proxy-server` stops the server at start-up; a `--downloads-dir` instance
+label that is not lowercase letters, digits, `-` and `_` gets a new folder
+name with a hash.
+
 ### Fixed
-
-- `--downloads-dir`: instances labelled `a/b` and `a_b` (or `A` and `a`, on
-  a case-insensitive file system) shared one downloads folder, so their
-  files mixed and were renumbered. A label that is not already lowercase
-  letters, digits, `-` and `_`, is empty, or is a device name Windows
-  reserves (`con`, `nul`) now gets `~` and a hash after its cleaned name
-  (`a_b~3a8e75c1`). Behaviour change: such a label's folder has a new
-  name; `default` and the generated ids (`chrome-1`) keep theirs (#113).
-
-- Chrome: a tab `open_tab` opened with a `url` kept the blank page it was
-  created with as its first history entry, so `navigate` `history: "back"`
-  from that page went to `about:blank`. The URL is now the first entry, and
-  'back' fails without moving, as on Firefox (#112).
-
-- An unknown argument's hint listed `copy_cookies`, `source_profile` and
-  `confirm_restart`, which tools/list hides without
-  `--allow-cookie-import`; it now lists the arguments tools/list shows
-  (#111).
-
-- Firefox: `set_offline` documented that mocked routes still answer while
-  the tab is offline, but Firefox's offline emulation fails their requests
-  too (`NetworkError`). The README and the tool description now say so,
-  and on Firefox `set_offline` (with routes) and `mock_route` (while
-  offline) add a note to their reply (#108).
-
-- Firefox: a `wait_for` whose instance was closed (`close_instance`) kept
-  checking the page until its timeout (up to 30 s more) and blamed "a
-  reply over 256 MB"; one whose tab was closed also ran to its timeout. It
-  now ends at once: `The connection to Firefox dropped while running
-  wait_for: the instance was closed ...`, or, when Firefox destroys the tab
-  (`browsingContext.contextDestroyed`), `The tab closed while running
-  wait_for.`, as on Chrome (#107).
-
-- `--proxy-server host:port` (no scheme) launched Chrome with
-  `--proxy-server=<unparsable url>`, so every navigation failed with
-  `net::ERR_NO_SUPPORTED_PROXIES`, and Firefox failed at its first tool. A
-  proxy without a scheme now means `http://host:port`, also for
-  `open_instance`'s `proxy` and `restart_browser`'s `proxy_server`. A value
-  that is not an `http`, `https`, `socks4` or `socks5` proxy URL (or
-  `direct://`) stops the server at start-up, or fails the tool, with a
-  message that does not repeat it; Firefox still takes only `http` and
-  `socks5`, and says so when it launches (#110).
 
 - `--local`: a `navigate`, `open_tab` or `lighthouse_report` to a local URL
   that redirected to an address that is not local loaded that page and
@@ -67,7 +41,6 @@ from a copy of its code: entries describe the differences from that release.
   they start: the raw tools and the `enable_proxy_auth` pre-warm page; not
   checked: the reloads of `profile_page_performance` and `pause_on_load`
   (#105).
-
 - `save_pdf`, `record_video` (`path`) and `profile_page_performance`
   (`save_path`) could write outside the upload roots through a dangling
   symlink under them: the check fell back to the unresolved path, and the
@@ -76,6 +49,18 @@ from a copy of its code: entries describe the differences from that release.
   the file is written by moving a new file into place, so a symlink created
   after the check is replaced instead of followed (#106). A replaced file
   keeps its mode; writing now needs write access to the file's directory.
+- Firefox: a `wait_for` whose instance was closed (`close_instance`) kept
+  checking the page until its timeout (up to 30 s more) and blamed "a
+  reply over 256 MB"; one whose tab was closed also ran to its timeout. It
+  now ends at once: `The connection to Firefox dropped while running
+  wait_for: the instance was closed ...`, or, when Firefox destroys the tab
+  (`browsingContext.contextDestroyed`), `The tab closed while running
+  wait_for.`, as on Chrome (#107).
+- Firefox: `set_offline` documented that mocked routes still answer while
+  the tab is offline, but Firefox's offline emulation fails their requests
+  too (`NetworkError`). The README and the tool description now say so,
+  and on Firefox `set_offline` (with routes) and `mock_route` (while
+  offline) add a note to their reply (#108).
 - `--secrets`: a secret typed into a form that the page submits with GET
   reached the agent URL-encoded (`p%40ss+w%26rd9`) in `list_tabs`,
   `wait_for`, `evaluate_js`, `get_network_logs` and `snapshot`. Values are
@@ -83,6 +68,30 @@ from a copy of its code: entries describe the differences from that release.
   them, with upper- or lowercase hex digits (#109). A value that starts or
   ends with `"` is now masked whole inside JSON; it was masked short of its
   quote, which left the reply's JSON malformed.
+- `--proxy-server host:port` (no scheme) launched Chrome with
+  `--proxy-server=<unparsable url>`, so every navigation failed with
+  `net::ERR_NO_SUPPORTED_PROXIES`, and Firefox failed at its first tool. A
+  proxy without a scheme now means `http://host:port`, also for
+  `open_instance`'s `proxy` and `restart_browser`'s `proxy_server`. A value
+  that is not an `http`, `https`, `socks4` or `socks5` proxy URL (or
+  `direct://`) stops the server at start-up, or fails the tool, with a
+  message that does not repeat it; Firefox still takes only `http` and
+  `socks5`, and says so when it launches (#110).
+- An unknown argument's hint listed `copy_cookies`, `source_profile` and
+  `confirm_restart`, which tools/list hides without
+  `--allow-cookie-import`; it now lists the arguments tools/list shows
+  (#111).
+- Chrome: a tab `open_tab` opened with a `url` kept the blank page it was
+  created with as its first history entry, so `navigate` `history: "back"`
+  from that page went to `about:blank`. The URL is now the first entry, and
+  'back' fails without moving, as on Firefox (#112).
+- `--downloads-dir`: instances labelled `a/b` and `a_b` (or `A` and `a`, on
+  a case-insensitive file system) shared one downloads folder, so their
+  files mixed and were renumbered. A label that is not already lowercase
+  letters, digits, `-` and `_`, is empty, or is a device name Windows
+  reserves (`con`, `nul`) now gets `~` and a hash after its cleaned name
+  (`a_b~3a8e75c1`). Behaviour change: such a label's folder has a new
+  name; `default` and the generated ids (`chrome-1`) keep theirs (#113).
 
 ## [0.14.0-beta.24] - 2026-11-08
 
