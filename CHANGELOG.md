@@ -12,6 +12,11 @@ from a copy of its code: entries describe the differences from that release.
 
 ### Fixed
 
+- An unknown argument's hint listed `copy_cookies`, `source_profile` and
+  `confirm_restart`, which tools/list hides without
+  `--allow-cookie-import`; it now lists the arguments tools/list shows
+  (#111).
+
 - Firefox: `set_offline` documented that mocked routes still answer while
   the tab is offline, but Firefox's offline emulation fails their requests
   too (`NetworkError`). The README and the tool description now say so,

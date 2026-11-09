@@ -15,15 +15,19 @@ pub(crate) fn normalize_tool_with_options(mut tool: Tool, allow_cookie_import: b
     tool
 }
 
+/// The arguments tools/list hides without `--allow-cookie-import`.
+pub(crate) const COOKIE_IMPORT_ARGS: [&str; 3] =
+    ["copy_cookies", "source_profile", "confirm_restart"];
+
 fn filter_cookie_import(tool: &mut Tool) {
     if let Some(properties) = tool.input_schema.properties.as_mut() {
-        properties.remove("copy_cookies");
-        properties.remove("source_profile");
-        properties.remove("confirm_restart");
+        for name in COOKIE_IMPORT_ARGS {
+            properties.remove(name);
+        }
     }
     tool.input_schema
         .required
-        .retain(|r| r != "copy_cookies" && r != "source_profile" && r != "confirm_restart");
+        .retain(|r| !COOKIE_IMPORT_ARGS.contains(&r.as_str()));
     if let Some(desc) = tool.description.as_mut()
         && let Some(idx) = desc.find(" Note: copy_cookies")
     {

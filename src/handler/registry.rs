@@ -479,7 +479,7 @@ async fn dispatch(
             entry.gate.disabled_message(&params.name),
         ));
     }
-    check_arguments(&(entry.tool)(), &params)?;
+    check_arguments(&(entry.tool)(), handler.flags.allow_cookie_import, &params)?;
     let browser = target_browser(handler, &params);
     let needs = argument_needs(&params).chain(entry.needs.iter().copied());
     handler
@@ -1145,13 +1145,25 @@ fn unknown_tool(name: String) -> CallToolError {
 /// Refuses an argument the tool's schema does not have: serde ignores
 /// unknown fields, so a typo (`tabId`) silently fell back to a default (the
 /// active tab) and the call ran on the wrong target.
-fn check_arguments(tool: &Tool, params: &CallToolRequestParams) -> Result<(), CallToolError> {
+///
+/// The hint names only the arguments tools/list shows: without
+/// `allow_cookie_import` the cookie-import ones are hidden there (#111),
+/// yet still accepted here, so the tool's own error names the flag.
+fn check_arguments(
+    tool: &Tool,
+    allow_cookie_import: bool,
+    params: &CallToolRequestParams,
+) -> Result<(), CallToolError> {
     let known: Vec<&str> = tool
         .input_schema
         .properties
         .iter()
         .flat_map(|properties| properties.keys().map(String::as_str))
         .collect();
+    let hidden = |name: &&str| {
+        !allow_cookie_import && crate::handler::schema_compat::COOKIE_IMPORT_ARGS.contains(name)
+    };
+    let shown: Vec<&str> = known.iter().copied().filter(|name| !hidden(name)).collect();
     let unknown = params
         .arguments
         .iter()
@@ -1161,10 +1173,10 @@ fn check_arguments(tool: &Tool, params: &CallToolRequestParams) -> Result<(), Ca
         return Ok(());
     };
     let squashed = |name: &str| name.replace('_', "").to_ascii_lowercase();
-    let hint = match known.iter().find(|k| squashed(k) == squashed(unknown)) {
+    let hint = match shown.iter().find(|k| squashed(k) == squashed(unknown)) {
         Some(meant) => format!("did you mean `{meant}`?"),
-        None if known.is_empty() => "it takes no arguments".to_string(),
-        None => format!("Valid arguments: {}", known.join(", ")),
+        None if shown.is_empty() => "it takes no arguments".to_string(),
+        None => format!("Valid arguments: {}", shown.join(", ")),
     };
     Err(CallToolError::from_message(format!(
         "Unknown argument `{unknown}` for `{}`; {hint}",
@@ -1770,6 +1782,25 @@ The page reacted (the DOM changed) and settled after ",
         assert!(error.contains("Valid arguments: instance_id"), "{error}");
         let error = error_of(&handler, "list_instances", serde_json::json!({"all": true})).await;
         assert!(error.contains("it takes no arguments"), "{error}");
+    }
+
+    /// AUD-RW-13 (#111): without --allow-cookie-import the hint lists the
+    /// arguments tools/list shows, not the hidden cookie-import ones; one
+    /// of those still reaches the tool, whose error names the flag.
+    #[tokio::test]
+    async fn the_hint_lists_only_the_arguments_tools_list_shows() {
+        // Given a handler without --allow-cookie-import
+        let handler = McpHandler::new_test();
+        // When navigate gets an argument it does not have
+        let args = serde_json::json!({"url": "about:blank", "foo": 1});
+        let error = error_of(&handler, "navigate", args).await;
+        // Then the hint lists the arguments tools/list shows
+        let listed = "Valid arguments: history, instance_id, tab_id, url)";
+        assert!(error.ends_with(listed), "{error}");
+        // And a hidden one is not "unknown": the tool says what enables it
+        let args = serde_json::json!({"url": "about:blank", "copy_cookies": true});
+        let error = error_of(&handler, "navigate", args).await;
+        assert!(error.contains("--allow-cookie-import"), "{error}");
     }
 
     /// REV-10: once shutdown started, tool calls are refused (a call in
