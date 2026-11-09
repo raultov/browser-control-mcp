@@ -47,11 +47,20 @@ pub enum BrowserArg {
 }
 
 impl OpenInstanceTool {
+    /// The arguments with `proxy` as the browsers take it (`host:port` gets
+    /// `http://`); a proxy of another shape fails before anything launches
+    /// (#110).
+    pub(crate) fn with_checked_proxy(mut self) -> Result<Self, CallToolError> {
+        self.proxy = checked_proxy("proxy", self.proxy)?;
+        Ok(self)
+    }
+
     pub async fn handle(
         params: CallToolRequestParams,
         handler: &McpHandler,
     ) -> Result<CallToolResult, CallToolError> {
         let args: OpenInstanceTool = crate::handler::parse_args(params)?;
+        let args = args.with_checked_proxy()?;
         // Chrome's singleton profile lock: --user-profile allows one instance.
         if handler.base_params.browser.user_profile
             && !handler.registry.list_descriptors().is_empty()
@@ -134,6 +143,18 @@ impl OpenInstanceTool {
     }
 }
 
+/// A tool's `proxy` argument (named `name`), checked by
+/// [`crate::util::url::proxy_with_scheme`].
+pub(crate) fn checked_proxy(
+    name: &str,
+    proxy: Option<String>,
+) -> Result<Option<String>, CallToolError> {
+    proxy
+        .map(|p| crate::util::url::proxy_with_scheme(&p))
+        .transpose()
+        .map_err(|e| CallToolError::from_message(format!("'{name}': {e}")))
+}
+
 /// The session of the new Chrome instance `id`, launched by `manager`.
 fn new_session(
     handler: &McpHandler,
@@ -203,6 +224,30 @@ async fn launch(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// PROXY-12 (#110): open_instance's `proxy` and restart_browser's
+    /// `proxy_server` get `http://` when they are `host:port`; one of
+    /// another shape fails naming the argument, before anything launches.
+    #[test]
+    fn tool_proxies_get_a_scheme_or_fail() {
+        use crate::handler::chrome_instance::restart_chrome::RestartChromeTool;
+        let open = |proxy: &str| {
+            serde_json::from_value::<OpenInstanceTool>(serde_json::json!({ "proxy": proxy }))
+                .unwrap()
+                .with_checked_proxy()
+        };
+        let opened = open("127.0.0.1:18790").unwrap();
+        assert_eq!(opened.proxy.as_deref(), Some("http://127.0.0.1:18790"));
+        let error = open("ftp://h:21").unwrap_err().to_string();
+        assert!(
+            error.starts_with("'proxy': ") && error.contains("http://host:port"),
+            "{error}"
+        );
+        let restart = serde_json::json!({ "proxy_server": "h:3128" });
+        let restart: RestartChromeTool = serde_json::from_value(restart).unwrap();
+        let restart = restart.with_checked_proxy().unwrap();
+        assert_eq!(restart.proxy_server.as_deref(), Some("http://h:3128"));
+    }
 
     /// AUD-LC-30: without `headless`, a new instance follows the server's
     /// --headless flag (it opened a window even with --headless, which fails

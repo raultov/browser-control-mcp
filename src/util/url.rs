@@ -15,6 +15,40 @@ pub fn without_userinfo(raw: &str) -> String {
     }
 }
 
+/// The proxy URL `raw` (`--proxy-server`, or a tool's proxy) as the
+/// browsers take it (#110): `host:port` alone gets `http://`, as browsers'
+/// proxy settings read it (Chrome's own flag needs the scheme, and was
+/// launched with `--proxy-server=<unparsable url>`). Anything else must be
+/// `scheme://host[:port]` with an `http`, `https`, `socks4` or `socks5`
+/// scheme (Firefox takes `http` and `socks5` only, and says so at launch),
+/// or Chrome's `direct://` (no proxy). The scheme is lower-cased so both
+/// browsers get the same value. Credentials are kept (`enable_proxy_auth`
+/// reads them); the launchers drop them ([`without_userinfo`]). The error
+/// repeats at most the scheme, never the rest: it may hold a password.
+pub fn proxy_with_scheme(raw: &str) -> Result<String, String> {
+    const SHAPE: &str = "the proxy must look like http://host:port (or https://, socks4://, socks5://; host:port alone means http://)";
+    let raw = raw.trim();
+    let proxy = match raw.split_once("://") {
+        Some((scheme, rest)) => format!("{}://{rest}", scheme.to_ascii_lowercase()),
+        None => format!("http://{raw}"),
+    };
+    if proxy == "direct://" {
+        return Ok(proxy);
+    }
+    let Ok(parsed) = url::Url::parse(&proxy) else {
+        return Err(SHAPE.to_string());
+    };
+    let scheme = parsed.scheme();
+    if !matches!(scheme, "http" | "https" | "socks4" | "socks5") {
+        return Err(format!("{SHAPE}: the scheme '{scheme}' is not a proxy's"));
+    }
+    let bare = matches!(parsed.path(), "" | "/") && parsed.query().is_none();
+    if parsed.host_str().is_none_or(str::is_empty) || !bare || parsed.fragment().is_some() {
+        return Err(SHAPE.to_string());
+    }
+    Ok(proxy)
+}
+
 /// The `(username, password)` written in `raw` (e.g. a proxy URL),
 /// percent-decoded; `None` without a username.
 pub fn userinfo(raw: &str) -> Option<(String, String)> {
@@ -96,6 +130,38 @@ mod tests {
         assert_eq!(found, Some(("al@ice".into(), "s3:cr3t".into())));
         assert_eq!(userinfo("http://p:3128"), None);
         assert_eq!(userinfo("not a url"), None);
+    }
+
+    /// PROXY-10 (#110): `host:port` gets `http://` (Chrome launched with
+    /// `--proxy-server=<unparsable url>` and every navigation failed);
+    /// proxies of another shape are refused without repeating the value.
+    #[test]
+    fn proxies_get_a_scheme_or_are_refused() {
+        for (raw, expected) in [
+            ("127.0.0.1:18790", "http://127.0.0.1:18790"),
+            ("localhost:8080", "http://localhost:8080"),
+            (" proxy.example.com:3128 ", "http://proxy.example.com:3128"),
+            ("http://u:p@proxy:8080", "http://u:p@proxy:8080"),
+            ("socks5://h:1080", "socks5://h:1080"),
+            ("HTTPS://h:443", "https://h:443"),
+            ("[::1]:8080", "http://[::1]:8080"),
+            ("direct://", "direct://"),
+            ("u:s3cr3t@h:8080", "http://u:s3cr3t@h:8080"),
+        ] {
+            assert_eq!(proxy_with_scheme(raw).as_deref(), Ok(expected), "{raw}");
+        }
+        for raw in [
+            "ftp://h:21",
+            "http://",
+            "http://h:8080/path",
+            "not a proxy s3cr3t",
+            "",
+            "http://u:s3cr3t@:8080",
+        ] {
+            let error = proxy_with_scheme(raw).unwrap_err();
+            assert!(error.contains("http://host:port"), "{raw}: {error}");
+            assert!(!error.contains("s3cr3t"), "{raw}: {error}");
+        }
     }
 
     #[test]

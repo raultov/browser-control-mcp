@@ -257,10 +257,14 @@ pub struct ProxyArgs {
 impl std::fmt::Debug for ProxyArgs {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let secret = |v: &Option<String>| v.as_ref().map(|_| REDACTED);
-        let server = self
-            .proxy_server
-            .as_deref()
-            .map(crate::util::url::without_userinfo);
+        // As the browsers get it (`host:port` read as `http://`).
+        let server = self.proxy_server.as_deref().map(|raw| {
+            let proxy = crate::util::url::proxy_with_scheme(raw);
+            proxy.map_or_else(
+                |_| "<invalid proxy>".into(),
+                |p| crate::util::url::without_userinfo(&p),
+            )
+        });
         f.debug_struct("ProxyArgs")
             .field("proxy_server", &server)
             .field("proxy_username", &secret(&self.proxy_username))

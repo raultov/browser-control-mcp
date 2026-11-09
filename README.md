@@ -505,7 +505,7 @@ To debug JavaScript, add `--tool-groups debug` (see [Tool groups](#tool-groups))
 | `--upload-root <DIR>` | working + temp dir | directory `upload_file` may read files from and `save_pdf` may write PDFs to (repeatable; replaces the defaults) | same |
 | `--downloads-dir <DIR>` | inside the instance's profile | each instance saves downloads in `<DIR>/<instance id>` (kept after the instance closes); without it, in a `downloads` folder of the instance's temporary profile (deleted with it), or a new folder in the system temp directory for an attached browser or `--user-profile` | same; snap Firefox can only write to non-hidden folders of `$HOME` (not `~/.local/...`): it cancels the download otherwise |
 | `--enable-webmcp` | off | WebMCP switches and `webmcp_*` tools | capability error |
-| `--proxy-server <URL>` | none | proxy for every instance; exposes `enable_proxy_auth` | `http://` and `socks5://` proxies |
+| `--proxy-server <URL>` | none | proxy for every instance (`host:port` alone means `http://host:port`; a value that is not a proxy URL stops the server at start-up); exposes `enable_proxy_auth` | `http://` and `socks5://` proxies |
 | `--proxy-username <USER>` | none | answers proxy (407) challenges | same (untested) |
 | `--proxy-password <PASS>` | none | never logged | same |
 | `--firefox-path <PATH>` | discovered | — | Firefox binary to launch |

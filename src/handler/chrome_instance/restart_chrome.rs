@@ -31,6 +31,14 @@ pub struct RestartChromeTool {
 }
 
 impl RestartChromeTool {
+    /// The arguments with `proxy_server` as the browsers take it
+    /// (`host:port` gets `http://`); one of another shape fails before the
+    /// browser stops (#110).
+    pub(crate) fn with_checked_proxy(mut self) -> Result<Self, CallToolError> {
+        self.proxy_server = super::open_instance::checked_proxy("proxy_server", self.proxy_server)?;
+        Ok(self)
+    }
+
     pub async fn handle(
         params: CallToolRequestParams,
         handler: &McpHandler,
@@ -39,6 +47,7 @@ impl RestartChromeTool {
             params.arguments.unwrap_or_default(),
         ))
         .map_err(|e| CallToolError::from_message(format!("Failed to parse arguments: {}", e)))?;
+        let tool = tool.with_checked_proxy()?;
 
         let session = handler.session(tool.instance_id.clone()).await?;
 

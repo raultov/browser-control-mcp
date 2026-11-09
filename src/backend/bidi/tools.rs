@@ -1103,6 +1103,7 @@ pub(crate) async fn open_instance(
     handler: &McpHandler,
 ) -> ToolResult {
     let args: open_instance::OpenInstanceTool = parse_args(params)?;
+    let args = args.with_checked_proxy()?;
     let id = match &args.label {
         Some(label) => label.clone(),
         None => handler.registry.generate_id(BrowserKind::Firefox),
@@ -1172,6 +1173,7 @@ pub(crate) async fn restart_browser(
 ) -> ToolResult {
     let args: crate::handler::chrome_instance::restart_chrome::RestartChromeTool =
         parse_args(params)?;
+    let args = args.with_checked_proxy()?;
     let session = handler.firefox(args.instance_id.as_deref()).await?;
     session.stop().await?;
     if let Some(proxy) = &args.proxy_server {

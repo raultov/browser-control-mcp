@@ -12,6 +12,16 @@ from a copy of its code: entries describe the differences from that release.
 
 ### Fixed
 
+- `--proxy-server host:port` (no scheme) launched Chrome with
+  `--proxy-server=<unparsable url>`, so every navigation failed with
+  `net::ERR_NO_SUPPORTED_PROXIES`, and Firefox failed at its first tool. A
+  proxy without a scheme now means `http://host:port`, also for
+  `open_instance`'s `proxy` and `restart_browser`'s `proxy_server`. A value
+  that is not an `http`, `https`, `socks4` or `socks5` proxy URL (or
+  `direct://`) stops the server at start-up, or fails the tool, with a
+  message that does not repeat it; Firefox still takes only `http` and
+  `socks5`, and says so when it launches (#110).
+
 - `--local`: a `navigate`, `open_tab` or `lighthouse_report` to a local URL
   that redirected to an address that is not local loaded that page and
   answered as if nothing happened. `navigate` (also `history` back or

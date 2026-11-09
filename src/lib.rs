@@ -33,12 +33,10 @@ pub async fn run(args: Args) -> std::process::ExitCode {
             return std::process::ExitCode::FAILURE;
         }
     };
-    let secrets = match args.secrets.secrets.as_deref().map(secrets::Secrets::load) {
-        None => secrets::Secrets::default(),
-        Some(Ok(secrets)) => secrets,
-        // The message names the file and the line, never a value.
-        Some(Err(e)) => {
-            tracing::error!(error = %e, "cannot load the secrets");
+    let (args, secrets) = match prepare(args) {
+        Ok(prepared) => prepared,
+        Err(e) => {
+            tracing::error!(error = %e, "cannot start");
             return std::process::ExitCode::FAILURE;
         }
     };
@@ -107,6 +105,29 @@ fn init_logging() {
 
 /// Builds the MCP handler from the command line. Logs the arguments through
 /// their redacting `Debug` (never the raw values).
+/// The arguments and secrets the server starts with, or why it cannot
+/// start: the message names the flag, the file and the line, never a value.
+fn prepare(mut args: Args) -> Result<(Args, secrets::Secrets), String> {
+    checked_proxy_server(&mut args)?;
+    let secrets = match args.secrets.secrets.as_deref() {
+        None => secrets::Secrets::default(),
+        Some(path) => secrets::Secrets::load(path)?,
+    };
+    Ok((args, secrets))
+}
+
+/// `--proxy-server` as the browsers take it: `host:port` gets `http://`;
+/// a proxy of another shape stops the server at start-up (#110: Chrome ran
+/// with `--proxy-server=<unparsable url>` and every navigation failed).
+fn checked_proxy_server(args: &mut Args) -> Result<(), String> {
+    if let Some(raw) = &args.proxy.proxy_server {
+        let proxy =
+            util::url::proxy_with_scheme(raw).map_err(|e| format!("--proxy-server: {e}"))?;
+        args.proxy.proxy_server = Some(proxy);
+    }
+    Ok(())
+}
+
 fn build_handler(args: Args, secrets: secrets::Secrets) -> McpHandler {
     tracing::info!(args = ?args, "starting browser-control-mcp");
     let max_instances = args.max_instances;
@@ -133,6 +154,29 @@ fn build_handler(args: Args, secrets: secrets::Secrets) -> McpHandler {
 mod tests {
     use super::*;
     use clap::Parser;
+
+    /// PROXY-11 (#110): `--proxy-server host:port` reaches the browsers as
+    /// `http://host:port`; a proxy of another shape stops the start-up with
+    /// a message that never repeats the value.
+    #[test]
+    fn proxy_server_gets_a_scheme_at_start_up() {
+        let args = |proxy: &str| Args::parse_from(["browser-control-mcp", "--proxy-server", proxy]);
+        let mut plain = args("127.0.0.1:18790");
+        checked_proxy_server(&mut plain).unwrap();
+        assert_eq!(
+            plain.proxy.proxy_server.as_deref(),
+            Some("http://127.0.0.1:18790")
+        );
+        let mut odd = args("ftp://u:s3cr3t@h:21");
+        let error = checked_proxy_server(&mut odd).unwrap_err();
+        assert!(
+            error.starts_with("--proxy-server: ") && !error.contains("s3cr3t"),
+            "{error}"
+        );
+        let mut none = Args::parse_from(["browser-control-mcp"]);
+        checked_proxy_server(&mut none).unwrap();
+        assert_eq!(none.proxy.proxy_server, None);
+    }
 
     /// SEC-02: Startup logs never carry secrets.
     #[test]
