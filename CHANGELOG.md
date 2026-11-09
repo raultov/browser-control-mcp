@@ -12,6 +12,12 @@ from a copy of its code: entries describe the differences from that release.
 
 ### Fixed
 
+- Firefox: `set_offline` documented that mocked routes still answer while
+  the tab is offline, but Firefox's offline emulation fails their requests
+  too (`NetworkError`). The README and the tool description now say so,
+  and on Firefox `set_offline` (with routes) and `mock_route` (while
+  offline) add a note to their reply (#108).
+
 - Firefox: a `wait_for` whose instance was closed (`close_instance`) kept
   checking the page until its timeout (up to 30 s more) and blamed "a
   reply over 256 MB"; one whose tab was closed also ran to its timeout. It

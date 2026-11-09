@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 
 #[macros::mcp_tool(
     name = "set_offline",
-    description = "Takes the tab offline (its requests fail as without a network, navigator.onLine is false) or back online. Lasts until set again or the tab closes; mocked routes still answer, and Chrome still serves what its HTTP cache holds (Firefox does not). Returns what the page now sees.",
+    description = "Takes the tab offline (its requests fail as without a network, navigator.onLine is false) or back online. Lasts until set again or the tab closes. Chrome still answers mocked routes and serves what its HTTP cache holds; Firefox fails both. Returns what the page now sees.",
     destructive_hint = false
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]

@@ -2509,7 +2509,7 @@ mod e2e {
         ]
     }
 
-    fn network_steps(instance: &str) -> Vec<Step> {
+    fn network_steps(instance: &str, chrome: bool) -> Vec<Step> {
         let i = json!(instance);
         let fetch = |url: &str| fresh_fetch(&i, url);
         let route = json!({"instance_id": i, "url_pattern": "*/api/mocked*",
@@ -2540,8 +2540,40 @@ mod e2e {
                 "0 left",
             ),
         ];
+        // Before remove_route: offline with the route on.
+        let at = steps.len() - 1;
+        steps.splice(at..at, offline_route_steps(&i, chrome));
         steps.extend(offline_steps(&i));
         steps
+    }
+
+    /// ISSUE-108: Chrome answers a mocked route while offline; Firefox
+    /// fails its request too, and set_offline says so.
+    fn offline_route_steps(i: &Value, chrome: bool) -> Vec<Step> {
+        vec![
+            (
+                "ISSUE-108 offline with a route",
+                "set_offline",
+                json!({"instance_id": i, "offline": true}),
+                if chrome {
+                    "\"navigator_online\": false"
+                } else {
+                    "mocked routes do not answer while it is offline"
+                },
+            ),
+            (
+                "ISSUE-108 the route while offline",
+                "evaluate_js",
+                fresh_fetch(i, "/api/mocked?"),
+                if chrome { "from-the-route" } else { "failed: " },
+            ),
+            (
+                "ISSUE-108 back online",
+                "set_offline",
+                json!({"instance_id": i, "offline": false}),
+                "online again",
+            ),
+        ]
     }
 
     /// ISSUE-12: offline makes an uncached fetch fail, then online again.
@@ -3916,7 +3948,7 @@ mod e2e {
             closed_root_steps("e2e", browser == "chrome"),
             observation_steps("e2e"),
             memory_steps("e2e"),
-            network_steps("e2e"),
+            network_steps("e2e", browser == "chrome"),
             worker_steps("e2e"),
             request_detail_steps("e2e"),
             websocket_steps("e2e", &base),
@@ -4005,7 +4037,7 @@ mod e2e {
             storage_steps("default"),
             emulate_steps("default", chrome),
             closed_root_steps("default", chrome),
-            network_steps("default"),
+            network_steps("default", chrome),
             worker_steps("default"),
             request_detail_steps("default"),
             other_page_steps("default", base),

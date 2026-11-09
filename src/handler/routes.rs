@@ -41,6 +41,9 @@ pub(crate) struct RouteState {
     pub(crate) listener: ListenerHandles,
     /// Firefox: the `network.addIntercept` id blocking the tab's requests.
     pub(crate) intercept: Option<String>,
+    /// Firefox: the tab is offline (`set_offline`), which fails the mocked
+    /// requests too (#108).
+    pub(crate) offline: bool,
 }
 
 impl RouteState {

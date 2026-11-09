@@ -2,7 +2,9 @@
 //! a `beforeRequestSent` intercept on the tab blocks its requests while it
 //! has routes; a blocked request gets `network.provideResponse` from the
 //! latest matching route, or `network.continueRequest`. Offline is
-//! `emulation.setNetworkConditions`.
+//! `emulation.setNetworkConditions`, which fails the mocked requests too:
+//! Firefox accepts the `provideResponse`, then the page gets a network
+//! error (#108). The tools say so instead of answering as on Chrome.
 
 use super::page;
 use super::session::FirefoxTab;
@@ -29,7 +31,8 @@ pub(crate) async fn mock_route(params: CallToolRequestParams, handler: &McpHandl
     let (_, _, tab) = target(handler, &ids(&args.instance_id, &args.tab_id)).await?;
     let added = add_route(&tab, &args.url_pattern, response.clone()).await;
     let id = added.map_err(CallToolError::from_message)?;
-    Ok(args.reply(&id, &response))
+    let offline = tab.routes.lock().await.offline;
+    Ok(noted(args.reply(&id, &response), offline))
 }
 
 /// `list_routes`.
@@ -63,8 +66,39 @@ pub(crate) async fn set_offline(params: CallToolRequestParams, handler: &McpHand
     let conditions = args.offline.then(|| json!({"type": "offline"}));
     let params = json!({"networkConditions": conditions, "contexts": [tab.tab.context_id()]});
     page::command(&tab.tab, "emulation.setNetworkConditions", params).await?;
+    let routed = {
+        let mut routes = tab.routes.lock().await;
+        routes.offline = args.offline;
+        !routes.is_empty()
+    };
     let online = page::run_snippet(&tab.tab, set_offline::MEASURE).await?;
-    Ok(args.reply(&online))
+    Ok(noted(args.reply(&online), args.offline && routed))
+}
+
+/// What Firefox does to mocked routes while the tab is offline (#108).
+const OFFLINE_ROUTES: &str = "Note: on Firefox the tab's mocked routes do not answer while it is offline (its offline emulation fails their requests too, unlike Chrome): call set_offline with offline false to use them.";
+
+/// `reply` with [`OFFLINE_ROUTES`] as its second line when
+/// `offline_with_routes`: after the first line, before the reply object
+/// (as its first block when the reply starts with no text).
+fn noted(mut reply: CallToolResult, offline_with_routes: bool) -> CallToolResult {
+    if !offline_with_routes {
+        return reply;
+    }
+    match reply.content.first_mut() {
+        Some(rust_mcp_sdk::schema::ContentBlock::TextContent(first)) => {
+            first.text = match first.text.split_once('\n') {
+                Some((line, body)) => format!("{line}\n{OFFLINE_ROUTES}\n{body}"),
+                None => format!("{}\n{OFFLINE_ROUTES}", first.text),
+            };
+        }
+        _ => {
+            let note =
+                rust_mcp_sdk::schema::ContentBlock::TextContent(OFFLINE_ROUTES.to_string().into());
+            reply.content.insert(0, note);
+        }
+    }
+    reply
 }
 
 /// Adds a route to the tab's table; the first one adds the intercept and
@@ -273,6 +307,43 @@ mod tests {
         );
         assert_eq!(sent[1].params["networkConditions"], Value::Null);
         assert_eq!(sent[0].params["contexts"], json!(["ctx-0"]));
+        ts::stop(&handler).await;
+    }
+
+    /// NET-08 (#108, Firefox): Firefox's offline emulation fails mocked
+    /// requests too, so set_offline with routes, and mock_route while
+    /// offline, say so; going online, or offline without routes, does not.
+    #[tokio::test]
+    async fn firefox_says_mocked_routes_fail_while_offline() {
+        // Given a Firefox tab
+        let mock = bidi_browser_lite::test_support::MockFirefox::start(false)
+            .await
+            .unwrap();
+        mock.bidi()
+            .respond_with("network.addIntercept", |_| json!({"intercept": "i1"}));
+        let handler = ts::handler(&mock);
+        let offline =
+            |on: bool| set_offline(ts::call("set_offline", json!({"offline": on})), &handler);
+        let route = |glob: &str| {
+            mock_route(
+                ts::call("mock_route", json!({"url_pattern": glob})),
+                &handler,
+            )
+        };
+        let noted = |reply: &CallToolResult| {
+            // The reply object still follows the first lines
+            assert!(ts::json_of(reply).is_object(), "{}", ts::text(reply));
+            ts::text(reply).lines().nth(1) == Some(OFFLINE_ROUTES)
+        };
+        // When it goes offline without routes, Then no note
+        assert!(!noted(&offline(true).await.unwrap()));
+        // When a route is added while offline, Then the note
+        assert!(noted(&route("*/a/*").await.unwrap()));
+        // When it goes online, Then no note; a route added then, none either
+        assert!(!noted(&offline(false).await.unwrap()));
+        assert!(!noted(&route("*/b/*").await.unwrap()));
+        // When it goes offline with routes, Then the note
+        assert!(noted(&offline(true).await.unwrap()));
         ts::stop(&handler).await;
     }
 }
