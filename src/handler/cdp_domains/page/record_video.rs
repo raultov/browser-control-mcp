@@ -214,7 +214,7 @@ async fn write_video(video: &[u8], path: Option<PathBuf>) -> Result<CallToolResu
         Some(path) => path,
         None => temporary_path().map_err(CallToolError::from_message)?,
     };
-    if let Err(e) = tokio::fs::write(&path, video).await {
+    if let Err(e) = super::save_pdf::write_output(&path, video).await {
         // No empty file of the server's own is left behind.
         if temporary {
             let _ = tokio::fs::remove_file(&path).await;

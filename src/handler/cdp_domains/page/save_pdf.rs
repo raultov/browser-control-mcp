@@ -118,7 +118,7 @@ impl SavePdfTool {
         let Some(path) = path else {
             return embedded(&pdf, pages);
         };
-        let written = tokio::fs::write(&path, &pdf).await;
+        let written = write_output(&path, &pdf).await;
         if let Err(e) = written {
             let shown = path.display();
             return Err(CallToolError::from_message(format!(
@@ -191,8 +191,19 @@ pub(crate) fn output_path(
     if file.is_dir() {
         return Err(format!("'{path}' is a directory"));
     }
-    // An existing file (or symlink) must resolve under the roots too.
-    let resolved = std::fs::canonicalize(&file).unwrap_or_else(|_| file.clone());
+    // An existing file (or symlink) must resolve under the roots too. A
+    // dangling symlink is refused: writing through it would create its
+    // target wherever it points, outside the roots too (#106).
+    let is_link = std::fs::symlink_metadata(&file).is_ok_and(|meta| meta.is_symlink());
+    let resolved = match std::fs::canonicalize(&file) {
+        Ok(resolved) => resolved,
+        Err(_) if is_link => {
+            return Err(format!(
+                "'{path}' is a symlink whose target does not exist; name a regular file under the upload roots"
+            ));
+        }
+        Err(_) => file,
+    };
     let roots = allowed_roots(roots);
     if !roots.iter().any(|root| resolved.starts_with(root)) {
         let shown: Vec<String> = roots.iter().map(|r| r.display().to_string()).collect();
@@ -201,7 +212,46 @@ pub(crate) fn output_path(
             shown.join(", ")
         ));
     }
-    Ok(file)
+    Ok(resolved)
+}
+
+/// Writes `bytes` to `path`, a file `output_path` checked, by moving a new
+/// file of the same directory into place: a symlink created at `path` after
+/// the check is replaced, never followed (#106), and a failed write leaves
+/// no partial file.
+pub(crate) async fn write_output(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let path = path.to_path_buf();
+    let bytes = bytes.to_vec();
+    let write = move || {
+        let Some(directory) = path.parent() else {
+            return Err(std::io::Error::other("the path names no directory"));
+        };
+        let mut builder = tempfile::Builder::new();
+        builder.prefix(".browser-control-mcp-");
+        #[cfg(unix)]
+        let replaced = {
+            // A new file gets the mode `std::fs::write` gives it (the umask
+            // applies), not the private 0600 of a temporary file.
+            use std::os::unix::fs::PermissionsExt;
+            builder.permissions(std::fs::Permissions::from_mode(0o666));
+            std::fs::symlink_metadata(&path)
+                .ok()
+                .filter(std::fs::Metadata::is_file)
+                .map(|meta| meta.permissions())
+        };
+        let mut file = builder.tempfile_in(directory)?;
+        // A replaced file keeps its mode, as an overwrite in place did: a
+        // private file (e.g. record_video's own 0600 temp file) stays so.
+        #[cfg(unix)]
+        if let Some(permissions) = replaced {
+            file.as_file().set_permissions(permissions)?;
+        }
+        std::io::Write::write_all(&mut file, &bytes)?;
+        file.persist(&path).map(drop).map_err(|e| e.error)
+    };
+    tokio::task::spawn_blocking(write)
+        .await
+        .map_err(std::io::Error::other)?
 }
 
 /// The PDF's page objects (`/Type /Page`, not `/Pages`), when it has any
@@ -333,6 +383,100 @@ mod tests {
         );
         let sent = &mock.commands_named("Page.printToPDF")[0].params;
         assert_eq!(sent["landscape"], true);
+    }
+
+    /// The names in `dir`, sorted.
+    #[cfg(unix)]
+    fn names(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// PDF-05 (#106): a path that is a symlink is followed only to an
+    /// existing file under the roots; a dangling one is refused, since the
+    /// write would create its target wherever it points.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_output_must_resolve_under_the_roots() {
+        use std::os::unix::fs::symlink;
+        // Given links in the root: dangling to outside, to an existing file
+        // outside, and to an existing file inside
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let roots = vec![root.path().to_path_buf()];
+        std::fs::write(outside.path().join("there.pdf"), "x").unwrap();
+        std::fs::write(root.path().join("real.pdf"), "x").unwrap();
+        symlink(
+            outside.path().join("escaped.pdf"),
+            root.path().join("dangling.pdf"),
+        )
+        .unwrap();
+        symlink(
+            outside.path().join("there.pdf"),
+            root.path().join("out.pdf"),
+        )
+        .unwrap();
+        symlink(root.path().join("real.pdf"), root.path().join("in.pdf")).unwrap();
+        let check = |name: &str| {
+            let path = root.path().join(name).display().to_string();
+            tool(json!({ "path": path })).checked(&roots)
+        };
+        // When each is checked
+        let dangling = check("dangling.pdf").unwrap_err().to_string();
+        let out = check("out.pdf").unwrap_err().to_string();
+        let inside = check("in.pdf").unwrap();
+        // Then only the link to a file inside passes, as the file it names
+        assert!(
+            dangling.contains("symlink whose target does not exist"),
+            "{dangling}"
+        );
+        assert!(out.contains("outside the upload roots"), "{out}");
+        let real = std::fs::canonicalize(root.path().join("real.pdf")).unwrap();
+        assert_eq!(inside, Some(real));
+        assert_eq!(names(outside.path()), ["there.pdf"]);
+    }
+
+    /// PDF-06 (#106): the file is written by moving a new file into place,
+    /// so a symlink created after the check is replaced, never followed,
+    /// and no partial file is left behind.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn writing_replaces_a_symlink_planted_after_the_check() {
+        // Given a checked path in the root, then a link planted there
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let roots = vec![root.path().to_path_buf()];
+        let path = root.path().join("late.pdf").display().to_string();
+        let checked = tool(json!({ "path": path }))
+            .checked(&roots)
+            .unwrap()
+            .unwrap();
+        let escaped = outside.path().join("escaped.pdf");
+        std::os::unix::fs::symlink(&escaped, &checked).unwrap();
+        // When the PDF is written
+        write_output(&checked, PDF).await.unwrap();
+        // Then the path holds the PDF as a regular file and nothing escaped
+        assert!(!std::fs::symlink_metadata(&checked).unwrap().is_symlink());
+        assert_eq!(std::fs::read(&checked).unwrap(), PDF);
+        assert!(!escaped.exists());
+        assert_eq!(names(root.path()), ["late.pdf"]);
+        // And it has the mode std::fs::write gives a new file
+        use std::os::unix::fs::PermissionsExt;
+        let reference = outside.path().join("reference");
+        std::fs::write(&reference, "x").unwrap();
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode();
+        assert_eq!(mode(&checked), mode(&reference));
+        // And overwriting an existing private file keeps it private
+        let private = root.path().join("private.pdf");
+        std::fs::write(&private, "x").unwrap();
+        std::fs::set_permissions(&private, std::fs::Permissions::from_mode(0o600)).unwrap();
+        write_output(&private, PDF).await.unwrap();
+        assert_eq!(mode(&private) & 0o777, 0o600);
+        assert_eq!(std::fs::read(&private).unwrap(), PDF);
     }
 
     /// PDF-04: without a path the PDF comes back as an embedded resource;

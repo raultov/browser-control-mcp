@@ -740,7 +740,12 @@ incompatible:
   name defined twice (the error names the line, never a value). Values
   never reach the logs.
 - `save_pdf` writes only `.pdf` files, under the same upload roots and
-  resolved the same way; it overwrites an existing `.pdf` there.
+  resolved the same way; it overwrites an existing `.pdf` there. The same
+  holds for the `.mp4` of `record_video` and the `save_path` of
+  `profile_page_performance`. A path that is a symlink is followed only to
+  an existing file under the roots (a dangling one is refused), and the
+  file is written by moving a new file into place, so a symlink created
+  there after the check is replaced, not followed.
 - The proxy password is never logged and is given only to proxy (407)
   challenges, never to a site's own authentication.
 - The Firefox debugger port needs `devtools.chrome.enabled`: any local

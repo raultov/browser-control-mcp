@@ -228,7 +228,7 @@ async fn write_trace(path: &std::path::Path, raw: &str) -> Result<serde_json::Va
         }
         false => raw.as_bytes().to_vec(),
     };
-    tokio::fs::write(path, &bytes)
+    crate::handler::cdp_domains::page::save_pdf::write_output(path, &bytes)
         .await
         .map_err(|e| format!("could not write '{}': {e}", path.display()))?;
     Ok(json!({"path": path.display().to_string(), "bytes": bytes.len()}))

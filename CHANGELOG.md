@@ -10,6 +10,17 @@ from a copy of its code: entries describe the differences from that release.
 
 ## [Unreleased]
 
+### Fixed
+
+- `save_pdf`, `record_video` (`path`) and `profile_page_performance`
+  (`save_path`) could write outside the upload roots through a dangling
+  symlink under them: the check fell back to the unresolved path, and the
+  write created the link's target wherever it pointed. A dangling symlink is
+  now refused, a symlink to a file under the roots writes that file, and
+  the file is written by moving a new file into place, so a symlink created
+  after the check is replaced instead of followed (#106). A replaced file
+  keeps its mode; writing now needs write access to the file's directory.
+
 ## [0.14.0-beta.24] - 2026-11-08
 
 Public **BETA**. A Lighthouse-style report, a smaller tool list and fixes
