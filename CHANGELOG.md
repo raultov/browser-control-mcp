@@ -12,6 +12,14 @@ from a copy of its code: entries describe the differences from that release.
 
 ### Fixed
 
+- `--downloads-dir`: instances labelled `a/b` and `a_b` (or `A` and `a`, on
+  a case-insensitive file system) shared one downloads folder, so their
+  files mixed and were renumbered. A label that is not already lowercase
+  letters, digits, `-` and `_`, is empty, or is a device name Windows
+  reserves (`con`, `nul`) now gets `~` and a hash after its cleaned name
+  (`a_b~3a8e75c1`). Behaviour change: such a label's folder has a new
+  name; `default` and the generated ids (`chrome-1`) keep theirs (#113).
+
 - Chrome: a tab `open_tab` opened with a `url` kept the blank page it was
   created with as its first history entry, so `navigate` `history: "back"`
   from that page went to `about:blank`. The URL is now the first entry, and

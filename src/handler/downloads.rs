@@ -1,6 +1,6 @@
 //! The files pages download, the same on both browsers (#77). Each
 //! instance saves them in a directory of its own: `--downloads-dir`'s
-//! `<instance id>` folder when given, else a `downloads` folder inside the
+//! folder named after the instance id when given (see [`instance_folder`]), else a `downloads` folder inside the
 //! instance's temporary profile (deleted with it; snap Firefox can only
 //! write under its profile's root), else a new folder in the system temp
 //! directory (an attached browser, or `--user-profile`). The browser
@@ -160,11 +160,41 @@ impl DownloadState {
 }
 
 /// The folder of instance `id` in `--downloads-dir` `dir`: its id with
-/// only letters, digits, `-` and `_` (a label is the agent's text).
+/// only lowercase ASCII letters, digits, `-` and `_` (a label is the
+/// agent's text). When that changed the id, or the id is empty or a name
+/// Windows reserves (`con`, `nul`, `com1`...), `~` and a hash of the id
+/// follow: `~` is in no cleaned id, so two ids never share a folder (#113:
+/// `a/b` and `a_b` did), on case-insensitive file systems either.
 pub(crate) fn instance_folder(dir: &Path, id: &str) -> PathBuf {
-    let safe = |c: char| c.is_alphanumeric() || c == '-' || c == '_';
-    let name: String = id.chars().map(|c| if safe(c) { c } else { '_' }).collect();
-    dir.join(name)
+    let safe = |c: char| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_';
+    let name: String = id
+        .chars()
+        .map(|c| c.to_ascii_lowercase())
+        .map(|c| if safe(c) { c } else { '_' })
+        .collect();
+    if name == id && !name.is_empty() && !is_reserved_on_windows(&name) {
+        return dir.join(name);
+    }
+    let name = if name.is_empty() { "instance" } else { &name };
+    dir.join(format!("{name}~{:08x}", fnv1a(id)))
+}
+
+/// Whether Windows reserves `name` (a device name) in every directory.
+fn is_reserved_on_windows(name: &str) -> bool {
+    const DEVICES: [&str; 4] = ["con", "prn", "aux", "nul"];
+    let numbered = ["com", "lpt"].iter().any(|prefix| {
+        name.strip_prefix(prefix)
+            .is_some_and(|n| n.len() == 1 && n.bytes().all(|b| (b'1'..=b'9').contains(&b)))
+    });
+    DEVICES.contains(&name) || numbered
+}
+
+/// FNV-1a (32 bits) of `text`: a hash that stays the same across Rust
+/// releases, so an instance keeps its downloads folder.
+fn fnv1a(text: &str) -> u32 {
+    text.bytes().fold(0x811c_9dc5, |hash, byte| {
+        (hash ^ u32::from(byte)).wrapping_mul(0x0100_0193)
+    })
 }
 
 /// Gives the file Chrome saved as `saved` (named by its guid) the name
@@ -261,7 +291,7 @@ pub(crate) async fn wait_ended(
 
 #[macros::mcp_tool(
     name = "list_downloads",
-    description = "Lists the files the instance's pages downloaded, oldest first (id, url, file_name, path once complete, state: in_progress, completed or canceled, sizes, tab_id), and their directory (--downloads-dir/<instance id>, else the instance's temporary profile, deleted with it). An action that starts a download also says where the file went.",
+    description = "Lists the files the instance's pages downloaded, oldest first (id, url, file_name, path once complete, state: in_progress, completed or canceled, sizes, tab_id), and their directory (a folder of --downloads-dir named after the instance id, else the instance's temporary profile, deleted with it). An action that starts a download also says where the file went.",
     read_only_hint = true
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
@@ -331,13 +361,41 @@ mod tests {
     }
 
     /// ISSUE-77: an instance's folder is named after its id, which cannot
-    /// leave `--downloads-dir`.
+    /// leave `--downloads-dir`. #113: two ids never share a folder (`a/b`
+    /// and `a_b` did), on case-insensitive file systems either (`A`, `a`),
+    /// not even with a hashed one's name; a safe lowercase id keeps its own
+    /// name, unless empty or a device name Windows reserves.
     #[test]
-    fn instance_folders_stay_inside_the_directory() {
+    fn instance_folders_stay_inside_the_directory_and_apart() {
         let dir = Path::new("dl");
-        assert_eq!(instance_folder(dir, "firefox-2"), dir.join("firefox-2"));
-        assert_eq!(instance_folder(dir, "../up"), dir.join("___up"));
-        assert_eq!(instance_folder(dir, "a/b\\c"), dir.join("a_b_c"));
+        let folder = |id: &str| instance_folder(dir, id);
+        for id in [
+            "default",
+            "firefox-2",
+            "chrome-1",
+            "a_b",
+            "a",
+            "com",
+            "com0",
+            "console",
+        ] {
+            assert_eq!(folder(id), dir.join(id), "{id}");
+        }
+        for (id, name) in [
+            ("../up", "___up~b3c48bfb"),
+            ("a/b\\c", "a_b_c~3eb53d0c"),
+            ("a/b", "a_b~3a8e75c1"),
+            ("A", "a~c40bf6cc"),
+            ("MyLabel", "mylabel~e3a5529b"),
+            ("", "instance~811c9dc5"),
+            ("con", "con~f08dd14b"),
+            ("NUL", "nul~4fad0f80"),
+        ] {
+            assert_eq!(folder(id), dir.join(name), "{id:?}");
+        }
+        assert!(folder("lpt9").to_string_lossy().contains("lpt9~"));
+        // A plain id cannot take a hashed one's folder
+        assert_eq!(folder("a_b-3a8e75c1"), dir.join("a_b-3a8e75c1"));
     }
 
     /// ISSUE-77: the downloads an action started are those begun after it

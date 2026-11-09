@@ -503,7 +503,7 @@ To debug JavaScript, add `--tool-groups debug` (see [Tool groups](#tool-groups))
 | `--secrets <FILE>` | none | dotenv file (`NAME=value`, at least 4 characters per value) whose values every tool result and error shows as `<secret:NAME>`; `fill_input` and `fill_form` type the value of a `<secret:NAME>` (see [Security notes](#security-notes)) | same |
 | `--tool-groups <GROUPS>` | none | lists the opt-in tool groups, comma separated: `debug`, `storage`, `files`, `raw`, `perf`, `emulation`, `network` or `all` (see [Tool groups](#tool-groups)) | same |
 | `--upload-root <DIR>` | working + temp dir | directory `upload_file` may read files from and `save_pdf` may write PDFs to (repeatable; replaces the defaults) | same |
-| `--downloads-dir <DIR>` | inside the instance's profile | each instance saves downloads in `<DIR>/<instance id>` (kept after the instance closes); without it, in a `downloads` folder of the instance's temporary profile (deleted with it), or a new folder in the system temp directory for an attached browser or `--user-profile` | same; snap Firefox can only write to non-hidden folders of `$HOME` (not `~/.local/...`): it cancels the download otherwise |
+| `--downloads-dir <DIR>` | inside the instance's profile | each instance saves downloads in a folder of `<DIR>` named after its id (see [Security notes](#security-notes); kept after the instance closes); without it, in a `downloads` folder of the instance's temporary profile (deleted with it), or a new folder in the system temp directory for an attached browser or `--user-profile` | same; snap Firefox can only write to non-hidden folders of `$HOME` (not `~/.local/...`): it cancels the download otherwise |
 | `--enable-webmcp` | off | WebMCP switches and `webmcp_*` tools | capability error |
 | `--proxy-server <URL>` | none | proxy for every instance (`host:port` alone means `http://host:port`; a value that is not a proxy URL stops the server at start-up); exposes `enable_proxy_auth` | `http://` and `socks5://` proxies |
 | `--proxy-username <USER>` | none | answers proxy (407) challenges | same (untested) |
@@ -732,8 +732,10 @@ incompatible:
   `show_values: true`; values never reach the logs.
 - Downloads are written only to the instance's downloads directory (see
   `--downloads-dir`): a suggested name keeps only its file name, an
-  instance label only letters, digits, `-` and `_`, and an existing file is
-  never replaced.
+  instance's folder only lowercase letters, digits, `-` and `_` (plus `~`
+  and a hash of the label when that changed it, or for an empty label or
+  a device name Windows reserves, so two instances never share a folder),
+  and an existing file is never replaced.
 - `upload_file` hands the page a file's contents: it only reads files under
   the upload roots (the server's working directory and the system temp
   directory, or the `--upload-root` directories), resolved so `..` and
