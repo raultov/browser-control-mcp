@@ -50,7 +50,8 @@ pub enum BackendError {
     Navigation {
         /// `net::ERR_NAME_NOT_RESOLVED`, `NS_ERROR_UNKNOWN_HOST`, ...
         reason: String,
-        /// The URL the agent asked for.
+        /// The URL the agent asked for (with `--local`, the address that is
+        /// not local a redirect reached).
         url: String,
     },
 }

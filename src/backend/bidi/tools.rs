@@ -172,7 +172,7 @@ pub(crate) async fn navigate(params: CallToolRequestParams, handler: &McpHandler
     };
     check_local(handler, &url)?;
     let (session, id, tab) = target(handler, &ids(&args.instance_id, &args.tab_id)).await?;
-    let navigation = unless_auth(&tab, page::navigate(&tab.tab, &url));
+    let navigation = unless_auth(&tab, page::navigate(&tab.tab, &url, handler.flags.local));
     let outcome = unless_paused_replacing(&session, &id, "navigate", navigation).await?;
     let document = navigation_document(&tab, &outcome, &url).await;
     let attachment = document.as_ref().is_some_and(NetworkRequest::is_attachment);
@@ -197,6 +197,8 @@ async fn traverse_history(
     let (session, id, tab) = target(handler, &ids(&args.instance_id, &args.tab_id)).await?;
     let traversal = page::traverse(&tab.tab, step);
     let outcome = unless_paused_replacing(&session, &id, "navigate", traversal).await?;
+    // The entry may be one a redirect left on a remote address.
+    page::stay_local(&tab.tab, handler.flags.local, &outcome.url).await?;
     let document = navigation_document(&tab, &outcome, &outcome.url).await;
     let outcome = outcome.with_status(document.and_then(|d| d.response_status));
     Ok(outcome.reply(&format!("{} {}.", step.went(), outcome.url), Some(&id)))
@@ -280,6 +282,8 @@ pub(crate) async fn reload(params: CallToolRequestParams, handler: &McpHandler) 
     let (session, id, tab) = target(handler, &ids).await?;
     let reload = unless_auth(&tab, page::reload(&tab.tab));
     let outcome = unless_paused_replacing(&session, &id, "reload", reload).await?;
+    // The page's server may now redirect elsewhere.
+    page::stay_local(&tab.tab, handler.flags.local, &outcome.url).await?;
     let document = navigation_document(&tab, &outcome, &outcome.url).await;
     let outcome = outcome.with_status(document.and_then(|d| d.response_status));
     Ok(outcome.reply("Page reloaded.", Some(&id)))
@@ -1011,7 +1015,7 @@ pub(crate) async fn open_tab(params: CallToolRequestParams, handler: &McpHandler
     let url = match url.as_str() {
         "about:blank" => url,
         _ => {
-            page::navigate(&tab, &url)
+            page::navigate(&tab, &url, handler.flags.local)
                 .await
                 .map_err(|e| {
                     CallToolError::from_message(
@@ -1416,6 +1420,74 @@ mod tests {
                 .params,
             json!({"root": "ctx-0", "maxDepth": 0})
         );
+        ts::stop(&handler).await;
+    }
+
+    /// NAV-05 (#105, Firefox): with --local, a navigation that a redirect
+    /// takes to an address that is not local fails naming --local and that
+    /// URL, and the tab is sent back to about:blank.
+    #[tokio::test]
+    async fn local_mode_refuses_a_redirect_to_a_remote_address() {
+        // Given a --local Firefox whose navigation to a local URL ends remote
+        let mock = MockFirefox::start(false).await.unwrap();
+        mock.bidi().respond_with("browsingContext.getTree", |_| {
+            json!({"contexts": [{"context": "ctx-0", "url": "http://127.0.0.2:8/m.html", "children": null}]})
+        });
+        let mut handler = ts::handler(&mock);
+        handler.flags.local = true;
+        // When navigate runs
+        let args = json!({"url": "http://127.0.0.1:8/redirect"});
+        let error = navigate(call("navigate", args), &handler)
+            .await
+            .unwrap_err()
+            .to_string();
+        // Then it fails naming --local and the remote origin (not its path)
+        assert!(
+            error.contains("--local") && error.ends_with("(http://127.0.0.2:8)"),
+            "{error}"
+        );
+        // And the tab was sent back to about:blank, waiting for it
+        let sent = mock.bidi().commands_named("browsingContext.navigate");
+        assert_eq!(sent.len(), 2);
+        assert_eq!(sent[1].params["url"], "about:blank");
+        assert_eq!(sent[1].params["wait"], "complete");
+        ts::stop(&handler).await;
+    }
+
+    /// NAV-06 / NAV-07 (#105, Firefox): with --local, a history move or a
+    /// reload that ends on an address that is not local fails the same way.
+    #[tokio::test]
+    async fn local_mode_refuses_history_and_reload_that_end_remote() {
+        // Given a --local Firefox tab whose page is now remote
+        let mock = MockFirefox::start(false).await.unwrap();
+        mock.bidi().respond_with(
+            "browsingContext.traverseHistory",
+            |_| json!({"type": "success", "result": {}}),
+        );
+        mock.bidi().respond_with(
+            "browsingContext.reload",
+            |_| json!({"navigation": "n2", "url": "http://127.0.0.2:8/m.html"}),
+        );
+        mock.bidi().respond_with("browsingContext.getTree", |_| {
+            json!({"contexts": [{"context": "ctx-0", "url": "http://127.0.0.2:8/m.html", "children": null}]})
+        });
+        page_with_point(&mock, json!(true));
+        let mut handler = ts::handler(&mock);
+        handler.flags.local = true;
+        // When it goes back, then reloads
+        let back = navigate(call("navigate", json!({"history": "back"})), &handler).await;
+        let reloaded = reload(call("reload", json!({})), &handler).await;
+        // Then both fail naming --local, and the tab is sent to about:blank
+        for result in [back, reloaded] {
+            let error = result.unwrap_err().to_string();
+            assert!(
+                error.contains("--local") && error.ends_with("(http://127.0.0.2:8)"),
+                "{error}"
+            );
+        }
+        let sent = mock.bidi().commands_named("browsingContext.navigate");
+        assert_eq!(sent.len(), 2);
+        assert!(sent.iter().all(|c| c.params["url"] == "about:blank"));
         ts::stop(&handler).await;
     }
 

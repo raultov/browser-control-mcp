@@ -20,6 +20,39 @@ pub(crate) const NOT_LOADED_NOTE: &str =
 /// `net::ERR_ABORTED`, Firefox "Navigated to" the previous page).
 pub(crate) const DOWNLOAD: &str = "the URL is a download: the browser saves it instead of opening a page, and the tab stays where it was";
 
+/// Why a navigation, history move or reload of a server started with
+/// `--local` fails when the tab ended on an address that is not local
+/// (#105). The browser follows a redirect before the server sees it, so the
+/// request was made; the tab is sent back to about:blank so the agent never
+/// reads that page ([`left_local_error`] says whether that worked).
+pub(crate) const LEFT_LOCAL: &str = "the tab ended on an address that is not local (after a redirect, or on a history entry one left), and this server runs with --local (localhost, 127.0.0.1, 192.168.x.x or *.local only)";
+
+/// Whether a tab that ended on `landed` must fail with [`LEFT_LOCAL`]: the
+/// server runs with `--local` (`local`) and `landed` is a network address
+/// that is not local. Any other page (blank, a browser error page such as
+/// `chrome-error:` or `about:neterror`, `file:`, `data:`) loaded nothing
+/// from a remote host: it never fails.
+pub(crate) fn left_local(local: bool, landed: &str) -> bool {
+    let networked = url::Url::parse(landed)
+        .is_ok_and(|url| matches!(url.scheme(), "http" | "https" | "ws" | "wss"));
+    local && networked && !crate::handler::is_local_address(landed)
+}
+
+/// The [`LEFT_LOCAL`] error for a tab that ended on `landed`, shown as its
+/// origin only (the path and query a remote server chose may carry
+/// tokens), saying whether the tab is now on about:blank (`blanked`).
+pub(crate) fn left_local_error(landed: &str, blanked: bool) -> crate::backend::BackendError {
+    let now = if blanked {
+        "the tab was sent back to about:blank"
+    } else {
+        "sending the tab back to about:blank failed, so it may still show that page (close it with close_tab)"
+    };
+    crate::backend::BackendError::Navigation {
+        reason: format!("{LEFT_LOCAL}; {now}"),
+        url: crate::util::url::redacted(landed),
+    }
+}
+
 /// Why a navigation to a page behind HTTP authentication fails (401), from
 /// its `WWW-Authenticate` challenge when known, with how an agent logs in:
 /// Chrome failed with `net::ERR_INVALID_AUTH_CREDENTIALS`, and Firefox
@@ -210,6 +243,45 @@ pub(crate) fn open_tab_navigation_failed(message: &str, tab_id: &str) -> String 
 
 #[cfg(test)]
 mod tests {
+    /// NAV-08 (#105): only a page on a network address that is not local
+    /// leaves --local; pages without a host (blank, error, file and data
+    /// pages) do not, and nothing does without --local.
+    #[test]
+    fn only_remote_network_pages_leave_local_mode() {
+        for remote in [
+            "http://127.0.0.2:8/m.html",
+            "https://example.com/",
+            "ws://10.0.0.1/",
+        ] {
+            assert!(super::left_local(true, remote), "{remote}");
+            assert!(!super::left_local(false, remote), "{remote}");
+        }
+        for stays in [
+            "http://127.0.0.1:8/",
+            "http://localhost/",
+            "about:blank",
+            "about:blank#top",
+            "about:neterror?e=dnsNotFound&u=http%3A//a.test/",
+            "chrome-error://chromewebdata/",
+            "file:///tmp/page.html",
+            "data:text/html,x",
+        ] {
+            assert!(!super::left_local(true, stays), "{stays}");
+        }
+        // The error shows the origin only, and whether the tab was blanked
+        let landed = "http://127.0.0.2:8/cb?token=secret";
+        let sent = super::left_local_error(landed, true).to_string();
+        assert!(
+            sent.ends_with("; the tab was sent back to about:blank (http://127.0.0.2:8)"),
+            "{sent}"
+        );
+        let failed = super::left_local_error(landed, false).to_string();
+        assert!(
+            failed.contains("about:blank failed") && !failed.contains("secret"),
+            "{failed}"
+        );
+    }
+
     /// ISSUE-50: a page behind HTTP authentication is named as such, with
     /// the scheme and realm of its challenge, and how to log in.
     /// ISSUE-103: absolute URLs pass, also those whose body starts with a

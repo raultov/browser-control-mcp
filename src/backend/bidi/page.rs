@@ -63,7 +63,36 @@ async fn race_prompt<T>(
 
 /// `browsingContext.navigate` waiting for `load` (spike H2). A network
 /// error is a navigation error with Firefox's code (`NS_ERROR_UNKNOWN_HOST`).
-pub(crate) async fn navigate(tab: &Tab, url: &str) -> Result<NavigationOutcome, BackendError> {
+/// With `local` (the server runs with `--local`), a navigation that ends,
+/// after redirects, on an address that is not local fails and the tab is
+/// sent back to about:blank ([`crate::handler::navigation::LEFT_LOCAL`]).
+pub(crate) async fn navigate(
+    tab: &Tab,
+    url: &str,
+    local: bool,
+) -> Result<NavigationOutcome, BackendError> {
+    let outcome = load(tab, url).await?;
+    stay_local(tab, local, &outcome.url).await?;
+    Ok(outcome)
+}
+
+/// With `local` (the server runs with `--local`), fails when the tab ended
+/// on `landed`, an address that is not local, after sending it back to
+/// about:blank and waiting for it, so the next tool never reads the page
+/// ([`crate::handler::navigation::LEFT_LOCAL`]).
+pub(crate) async fn stay_local(tab: &Tab, local: bool, landed: &str) -> Result<(), BackendError> {
+    if !crate::handler::navigation::left_local(local, landed) {
+        return Ok(());
+    }
+    let blank = tab.navigate("about:blank", ReadinessState::Complete).await;
+    Err(crate::handler::navigation::left_local_error(
+        landed,
+        blank.is_ok(),
+    ))
+}
+
+/// [`navigate`] without the `--local` check.
+async fn load(tab: &Tab, url: &str) -> Result<NavigationOutcome, BackendError> {
     let method = "browsingContext.navigate";
     let wait = tab.navigate(url, ReadinessState::Complete);
     let Some(reply) = outlasting_timeout(tab, method, wait).await? else {

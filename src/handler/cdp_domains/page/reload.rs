@@ -55,6 +55,8 @@ impl ReloadTool {
         let network = session.network_state(ids.tab_id.clone())?;
         let outcome = super::navigate::finish(&target, "", browser, loaded).await;
         let outcome = super::navigate::with_status(outcome, &target, &network).await;
+        // The page's server may now redirect elsewhere.
+        super::navigate::stay_local(&target, handler.flags.local, &outcome.url).await?;
         let tab_id = session.tab_id_of(ids.tab_id.as_deref());
         Ok(outcome.reply("Page reloaded.", tab_id.as_deref()))
     }
@@ -110,6 +112,32 @@ mod tests {
         assert_eq!(body["url"], "http://127.0.0.1:8/page");
         assert!(body.get("tab_id").is_some() && body.get("browser").is_some());
         assert!(body.get("notes").is_none(), "load fired: {body}");
+    }
+
+    /// NAV-07 (#105): with --local, a reload that ends (after a redirect the
+    /// server now answers) on an address that is not local fails naming
+    /// --local, and the tab is sent back to about:blank.
+    #[tokio::test]
+    async fn local_mode_refuses_a_reload_that_ends_remote() {
+        // Given a --local Chrome whose reload lands on a remote page
+        let mock = spawn_recording_mock().await;
+        committed_url(mock, "http://127.0.0.2:8/m.html");
+        fire_load_after(mock, "Page.reload");
+        let mut handler = mock_handler(mock.http_port);
+        handler.flags.local = true;
+        // When reload runs
+        let error = ReloadTool::handle(call("reload", json!({})), &handler)
+            .await
+            .unwrap_err()
+            .to_string();
+        // Then it fails naming --local, and the tab is sent to about:blank
+        assert!(
+            error.contains("--local") && error.ends_with("(http://127.0.0.2:8)"),
+            "{error}"
+        );
+        let sent = mock.commands_named("Page.navigate");
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].params["url"], "about:blank");
     }
 
     /// A pause announced right after Chrome answers `Page.reload`, before

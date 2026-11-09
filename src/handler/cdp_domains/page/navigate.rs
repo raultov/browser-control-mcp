@@ -123,7 +123,7 @@ impl NavigateTool {
         let navigation = async {
             Ok(match destination {
                 Destination::Url(url) => (
-                    navigate_and_wait(&target, &network, url).await?,
+                    navigate_and_wait(&target, &network, url, handler.flags.local).await?,
                     "Navigated to",
                 ),
                 Destination::History(step) => (
@@ -140,6 +140,8 @@ impl NavigateTool {
             .unwrap_or_else(|stopped| {
                 Err(CallToolError::from_message(stopped.during("navigate")))
             })?;
+        // A history entry may be one a redirect left on a remote address.
+        stay_local(&target, handler.flags.local, &outcome.url).await?;
         let tab_id = session.tab_id_of(args.tab_id.as_deref());
         Ok(outcome.reply(&format!("{went} {}.", outcome.url), tab_id.as_deref()))
     }
@@ -196,12 +198,59 @@ impl NavigateTool {
     }
 }
 
+/// Navigates `target` to `url` and waits for its `load` ([`load_and_wait`]).
+/// With `local` (the server runs with `--local`), a navigation that ends,
+/// after redirects, on an address that is not local fails and the tab is
+/// sent back to about:blank ([`crate::handler::navigation::LEFT_LOCAL`]).
+pub(crate) async fn navigate_and_wait(
+    target: &CdpTarget,
+    network: &Mutex<NetworkState>,
+    url: &str,
+    local: bool,
+) -> Result<NavigationOutcome, CallToolError> {
+    let outcome = load_and_wait(target, network, url).await?;
+    stay_local(target, local, &outcome.url).await?;
+    Ok(outcome)
+}
+
+/// With `local` (the server runs with `--local`), fails when the tab ended
+/// on `landed`, an address that is not local, after sending it back to
+/// about:blank ([`crate::handler::navigation::LEFT_LOCAL`]).
+pub(crate) async fn stay_local(
+    target: &CdpTarget,
+    local: bool,
+    landed: &str,
+) -> Result<(), CallToolError> {
+    if !crate::handler::navigation::left_local(local, landed) {
+        return Ok(());
+    }
+    // Best effort: the error says where the tab is meant to be. Waited for
+    // until about:blank loads: Chrome answers `Page.navigate` before that,
+    // and a tool called right after met "Not attached to an active page".
+    let mut page_events = target.on_domain("Page");
+    let blank = json!({"url": "about:blank"});
+    let reply = target.send_raw_command("Page.navigate", blank).await;
+    let result = reply.ok().and_then(|reply| reply.result);
+    // Chrome reports a failed navigation as `errorText` in a success.
+    let blanked = result
+        .as_ref()
+        .is_some_and(|r| r.get("errorText").is_none());
+    if let Some(loader) = result.as_ref().and_then(|r| r["loaderId"].as_str()) {
+        let loaded = wait_for_load_of(&mut page_events, loader);
+        let _ = tokio::time::timeout(BLANK_WAIT, loaded).await;
+    }
+    Err(crate::handler::navigation::left_local_error(landed, blanked).into())
+}
+
+/// How long [`stay_local`] waits for about:blank to load (it loads nothing).
+const BLANK_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// Navigates `target` and waits (at most [`LOAD_TIMEOUT`]) for the new
 /// document to fire `load`. Chrome answers `Page.navigate` as soon as the
 /// navigation starts and reports a network error only as `errorText` inside
 /// a successful reply: that becomes a tool error here ([`check_error`]).
 /// `network` is the tab's request log, where the document's HTTP status is.
-pub(crate) async fn navigate_and_wait(
+async fn load_and_wait(
     target: &CdpTarget,
     network: &Mutex<NetworkState>,
     url: &str,
@@ -575,12 +624,25 @@ pub(crate) mod tests {
         mock: &'static cdp_browser_lite::test_support::mock_devtools::MockDevTools,
         current: u64,
     ) {
+        history_of(
+            mock,
+            current,
+            ["http://127.0.0.1:8/one", "http://127.0.0.1:8/two"],
+        );
+    }
+
+    /// [`two_entry_history`] with the entries' `urls`.
+    fn history_of(
+        mock: &'static cdp_browser_lite::test_support::mock_devtools::MockDevTools,
+        current: u64,
+        urls: [&'static str; 2],
+    ) {
         let index = Arc::new(std::sync::atomic::AtomicU64::new(current));
         let read = index.clone();
         mock.respond_with("Page.getNavigationHistory", move |_| {
             let current = read.load(std::sync::atomic::Ordering::SeqCst);
-            let entries = [(7, "http://127.0.0.1:8/one"), (8, "http://127.0.0.1:8/two")]
-                .map(|(id, url)| json!({"id": id, "url": url}));
+            let entries =
+                [(7, urls[0]), (8, urls[1])].map(|(id, url)| json!({"id": id, "url": url}));
             json!({"currentIndex": current, "entries": entries})
         });
         mock.respond_with("Page.navigateToHistoryEntry", move |params| {
@@ -679,6 +741,110 @@ pub(crate) mod tests {
         assert_eq!(body["browser"]["loaderId"], "L1");
         assert!(body.get("tab_id").is_some());
         assert!(body.get("notes").is_none(), "load fired: {body}");
+    }
+
+    /// NAV-05 (#105): with --local, a navigation that a redirect takes to an
+    /// address that is not local fails naming --local and that URL, and the
+    /// tab is sent back to about:blank (Chrome followed the redirect before
+    /// the server could see it).
+    #[tokio::test]
+    async fn local_mode_refuses_a_redirect_to_a_remote_address() {
+        // Given a --local Chrome whose navigation to a local URL ends remote
+        // (about:blank answered without a loader: the mock fires the events
+        // of the first navigation only)
+        let mock = spawn_recording_mock().await;
+        mock.respond_with("Page.navigate", |params| match params["url"].as_str() {
+            Some("about:blank") => json!({"frameId": "F1"}),
+            _ => json!({"frameId": "F1", "loaderId": "L1"}),
+        });
+        committed_url(mock, "http://127.0.0.2:8/m.html");
+        fire_events_after(mock, "Page.navigate", vec![committed("L1"), load_event()]);
+        let mut handler = mock_handler(mock.http_port);
+        handler.flags.local = true;
+        // When navigate runs
+        let args = json!({"url": "http://127.0.0.1:8/redirect"});
+        let error = NavigateTool::handle(call("navigate", args), &handler)
+            .await
+            .unwrap_err()
+            .to_string();
+        // Then it fails naming --local and the remote origin (not its path)
+        assert!(
+            error.contains("--local") && error.ends_with("(http://127.0.0.2:8)"),
+            "{error}"
+        );
+        // And the tab was sent back to about:blank
+        let sent = mock.commands_named("Page.navigate");
+        assert_eq!(sent.len(), 2);
+        assert_eq!(sent[1].params["url"], "about:blank");
+    }
+
+    /// NAV-05 (#105): the tool answers only once about:blank has loaded (by
+    /// its loader): a tool called right after met "Not attached to an
+    /// active page" while Chrome was still committing it.
+    #[tokio::test]
+    async fn local_mode_answers_once_about_blank_has_loaded() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        // Given a --local Chrome whose navigation ends remote, and whose
+        // about:blank loads 200 ms after Chrome answers its Page.navigate
+        let mock = spawn_recording_mock().await;
+        mock.respond_with("Page.navigate", |params| match params["url"].as_str() {
+            Some("about:blank") => json!({"frameId": "F1", "loaderId": "L2"}),
+            _ => json!({"frameId": "F1", "loaderId": "L1"}),
+        });
+        committed_url(mock, "http://127.0.0.2:8/m.html");
+        fire_events_after(mock, "Page.navigate", vec![committed("L1"), load_event()]);
+        let blank_loaded = Arc::new(AtomicBool::new(false));
+        let loaded = blank_loaded.clone();
+        tokio::spawn(async move {
+            while mock.commands_named("Page.navigate").len() < 2 {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+            let session = mock.commands_named("Page.navigate")[1].session_id.clone();
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            loaded.store(true, Ordering::SeqCst);
+            for (event, params) in [committed("L2"), load_event()] {
+                mock.emit(event, params, session.as_deref());
+            }
+        });
+        let mut handler = mock_handler(mock.http_port);
+        handler.flags.local = true;
+        // When navigate runs
+        let started = std::time::Instant::now();
+        let args = json!({"url": "http://127.0.0.1:8/redirect"});
+        let error = NavigateTool::handle(call("navigate", args), &handler).await;
+        // Then it failed after about:blank loaded, not at the wait's bound
+        assert!(error.is_err());
+        assert!(
+            blank_loaded.load(Ordering::SeqCst),
+            "answered before about:blank loaded"
+        );
+        assert!(started.elapsed() < BLANK_WAIT, "{:?}", started.elapsed());
+    }
+
+    /// NAV-06 (#105): with --local, a history move to an entry that is not
+    /// local (left there by a redirect before the tab was sent back to
+    /// about:blank) fails the same way.
+    #[tokio::test]
+    async fn local_mode_refuses_a_history_entry_on_a_remote_address() {
+        // Given a --local tab whose previous entry is remote
+        let mock = spawn_recording_mock().await;
+        history_of(mock, 1, ["http://127.0.0.2:8/m.html", "about:blank"]);
+        let mut handler = mock_handler(mock.http_port);
+        handler.flags.local = true;
+        // When it goes back
+        let args = json!({"history": "back"});
+        let error = NavigateTool::handle(call("navigate", args), &handler)
+            .await
+            .unwrap_err()
+            .to_string();
+        // Then it fails naming --local, and the tab is sent to about:blank
+        assert!(
+            error.contains("--local") && error.ends_with("(http://127.0.0.2:8)"),
+            "{error}"
+        );
+        let sent = mock.commands_named("Page.navigate");
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].params["url"], "about:blank");
     }
 
     /// ISSUE-94: only the `load` of the document the navigation commits

@@ -67,27 +67,33 @@ async fn create_tab(
 /// first, with its own session, and still be enabling its domains. Chrome
 /// answers a session's commands in order, so once this (idempotent)
 /// `Network.enable` replies, the page's first requests will be recorded.
-/// Waits for `load` like `navigate`; a network error fails, naming the tab
-/// that stays open.
+/// Waits for `load` like `navigate`; a network error (or, with `local`, a
+/// redirect to an address that is not local) fails, naming the tab that
+/// stays open.
 async fn open_url(
     session: &crate::handler::BrowserSession,
     tab_id: &str,
     url: &str,
+    local: bool,
 ) -> Result<String, CallToolError> {
     let registered = session.target(Some(tab_id.to_string())).await?;
     let _ = registered
         .send_raw_command("Network.enable", serde_json::json!({}))
         .await;
     let network = session.network_state(Some(tab_id.to_string()))?;
-    let outcome =
-        crate::handler::cdp_domains::page::navigate::navigate_and_wait(&registered, &network, url)
-            .await
-            .map_err(|e| {
-                CallToolError::from_message(crate::handler::navigation::open_tab_navigation_failed(
-                    &e.to_string(),
-                    tab_id,
-                ))
-            })?;
+    let outcome = crate::handler::cdp_domains::page::navigate::navigate_and_wait(
+        &registered,
+        &network,
+        url,
+        local,
+    )
+    .await
+    .map_err(|e| {
+        CallToolError::from_message(crate::handler::navigation::open_tab_navigation_failed(
+            &e.to_string(),
+            tab_id,
+        ))
+    })?;
     Ok(outcome.url)
 }
 
@@ -156,7 +162,7 @@ impl OpenTabTool {
             .await
             .map_err(CallToolError::from_message)?;
         let url = match deferred_navigation(&url) {
-            Some(url) => open_url(&session, &tab_id, url).await?,
+            Some(url) => open_url(&session, &tab_id, url, handler.flags.local).await?,
             None => url,
         };
 
@@ -214,7 +220,7 @@ mod tests {
             .register_tab(tab, info, false)
             .unwrap();
         // When it navigates the tab to the URL
-        let error = open_url(&session, &tab_id, "http://nonexistent-host.invalid/")
+        let error = open_url(&session, &tab_id, "http://nonexistent-host.invalid/", false)
             .await
             .unwrap_err()
             .to_string();

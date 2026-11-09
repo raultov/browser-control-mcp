@@ -81,14 +81,17 @@ fn metrics_of(vitals: &Value) -> LoadMetrics {
 
 /// Loads `url` from `about:blank` in the device's viewport, the cache
 /// bypassed, and reads what the report needs.
+/// With `local` (`--local`), a load redirected to an address that is not
+/// local fails (#105).
 async fn examine(
     args: &LighthouseReportTool,
     tab: &super::session::FirefoxTab,
     url: &str,
+    local: bool,
 ) -> Result<Findings, BackendError> {
-    page::navigate(&tab.tab, "about:blank").await?;
+    page::navigate(&tab.tab, "about:blank", local).await?;
     let since = crate::handler::lighthouse::now_ms();
-    let mut outcome = page::navigate(&tab.tab, url).await?;
+    let mut outcome = page::navigate(&tab.tab, url, local).await?;
     // BiDi's navigation gives no status: the page's own timing does.
     if outcome.status.is_none() {
         let status = page::run_snippet(&tab.tab, STATUS).await.ok();
@@ -124,7 +127,9 @@ pub(crate) async fn report(
     super::debugger::watch_session_tab(&session, &id, &tab).await;
     let url = match given {
         Some(url) => url,
-        None if tab.url.starts_with("http") || tab.url.starts_with("file:") => tab.url.clone(),
+        None if tab.url.starts_with("http") || tab.url.starts_with("file:") => {
+            LighthouseReportTool::checked_page(tab.url.clone(), handler.flags.local)?
+        }
         None => {
             return Err(CallToolError::from_message(
                 "The tab shows no web page to report on: give 'url'.",
@@ -135,7 +140,7 @@ pub(crate) async fn report(
     let c = args.device().conditions();
     set_viewport(&tab.tab, Some((c.width.into(), c.height.into(), c.scale))).await?;
     super::performance::set_cache_behavior(&tab.tab, "bypass").await?;
-    let found = examine(&args, &tab, &url).await;
+    let found = examine(&args, &tab, &url, handler.flags.local).await;
     let _ = super::performance::set_cache_behavior(&tab.tab, "default").await;
     restore_viewport(&tab.tab, before).await;
     Ok(args.report("Firefox", found?))

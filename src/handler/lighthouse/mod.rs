@@ -339,6 +339,20 @@ impl LighthouseReportTool {
         Ok(Some(url))
     }
 
+    /// The tab's current page, `url`, to report on when no 'url' is given:
+    /// with `local_only` (`--local`), a page on an address that is not
+    /// local is refused before anything loads (#105), naming its origin only
+    /// (its path and query may carry tokens).
+    pub(crate) fn checked_page(url: String, local_only: bool) -> Result<String, CallToolError> {
+        if crate::handler::navigation::left_local(local_only, &url) {
+            let origin = crate::util::url::redacted(&url);
+            return Err(CallToolError::from_message(format!(
+                "The tab's page ({origin}) is not a local address: the server runs with the 'local' argument, which allows local addresses only. Give a local 'url'."
+            )));
+        }
+        Ok(url)
+    }
+
     /// The conditions of the reply: the device's, with the throttling only
     /// when the load was throttled.
     fn conditions(&self, throttled: bool) -> Value {

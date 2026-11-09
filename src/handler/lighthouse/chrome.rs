@@ -47,6 +47,9 @@ struct States {
     network: Arc<Mutex<NetworkState>>,
     tracing: Arc<Mutex<TracingState>>,
     log: Arc<Mutex<LogState>>,
+    /// The server runs with `--local`: a load redirected to an address
+    /// that is not local fails (#105).
+    local: bool,
 }
 
 /// What the load recorded.
@@ -136,10 +139,10 @@ fn emulation(conditions: Conditions, throttle: bool) -> Vec<(&'static str, Value
 /// debugger pause.
 async fn navigation(
     target: &CdpTarget,
-    network: &Mutex<NetworkState>,
+    states: &States,
     url: &str,
 ) -> Result<NavigationOutcome, String> {
-    let work = navigate_and_wait(target, network, url);
+    let work = navigate_and_wait(target, &states.network, url, states.local);
     match target.race_interruptions("lighthouse_report", work).await {
         Ok(Ok(outcome)) => Ok(outcome),
         Ok(Err(error)) => Err(error.to_string()),
@@ -184,11 +187,11 @@ async fn record(
     url: &str,
     (conditions, perf): (Conditions, bool),
 ) -> Result<Recorded, String> {
-    navigation(target, &states.network, "about:blank").await?;
+    navigation(target, states, "about:blank").await?;
     send_all(target, &emulation(conditions, perf)).await?;
     let since = super::now_ms();
     if !perf {
-        let outcome = navigation(target, &states.network, url).await?;
+        let outcome = navigation(target, states, url).await?;
         tokio::time::sleep(QUIET).await;
         let unused = Err(coverage::NEEDS_RELOAD.to_string());
         return Ok(Recorded {
@@ -200,7 +203,7 @@ async fn record(
     }
     let recording = coverage::start(target).await;
     let load = async {
-        let outcome = navigation(target, &states.network, url).await;
+        let outcome = navigation(target, states, url).await;
         if outcome.is_ok() {
             tokio::time::sleep(SETTLE).await;
         }
@@ -358,7 +361,7 @@ impl LighthouseReportTool {
         let target = session.target(args.tab_id.clone()).await?;
         let url = match given {
             Some(url) => url,
-            None => current_page(&target).await?,
+            None => Self::checked_page(current_page(&target).await?, handler.flags.local)?,
         };
         let tab = || args.tab_id.clone();
         let states = States {
@@ -367,6 +370,7 @@ impl LighthouseReportTool {
             network: session.network_state(tab())?,
             tracing: session.tracing_state(tab())?,
             log: session.log_state(tab())?,
+            local: handler.flags.local,
         };
         let found = run(&args, &target, &states, &url).await;
         found
@@ -403,6 +407,33 @@ mod tests {
             .iter()
             .map(|c| (c.method.clone(), c.params.clone()))
             .collect()
+    }
+
+    /// LH-CDP-08 (#105): with --local and no 'url', a tab whose page is not
+    /// local is refused before anything loads, as a given URL would be.
+    #[tokio::test]
+    async fn local_mode_refuses_a_current_page_that_is_not_local() {
+        // Given a --local tab showing a remote page
+        let mock = spawn_recording_mock().await;
+        mock.respond_with(
+            "Runtime.evaluate",
+            |_| json!({"result": {"result": {"type": "string", "value": "http://a.test/page"}}}),
+        );
+        let mut handler = mock_handler(mock.http_port);
+        handler.flags.local = true;
+        // When the report runs on the current page
+        let args = json!({"categories": ["seo"]});
+        let error = LighthouseReportTool::handle(call("lighthouse_report", args), &handler)
+            .await
+            .unwrap_err()
+            .to_string();
+        // Then it is refused naming the page, and nothing was loaded
+        assert!(
+            error.contains("(http://a.test) is not a local address"),
+            "{error}"
+        );
+        assert!(!error.contains("/page"), "{error}");
+        assert!(mock.commands_named("Page.navigate").is_empty());
     }
 
     /// LH-CDP-01: without performance, the tab goes to about:blank, takes

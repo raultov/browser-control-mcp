@@ -12,6 +12,20 @@ from a copy of its code: entries describe the differences from that release.
 
 ### Fixed
 
+- `--local`: a `navigate`, `open_tab` or `lighthouse_report` to a local URL
+  that redirected to an address that is not local loaded that page and
+  answered as if nothing happened. `navigate` (also `history` back or
+  forward), `open_tab`, `reload` and `lighthouse_report` now check where the
+  tab ended: on a network address that is not local they fail
+  (`Navigation failed: the tab ended on an address that is not local ...
+  (<origin>)`) and the tab goes back to `about:blank`, on Chrome and
+  Firefox. `lighthouse_report` without `url` refuses a current page that is
+  not local before loading it. The redirected request is still sent: the
+  browser follows it before the server sees it. Still checked only before
+  they start: the raw tools and the `enable_proxy_auth` pre-warm page; not
+  checked: the reloads of `profile_page_performance` and `pause_on_load`
+  (#105).
+
 - `save_pdf`, `record_video` (`path`) and `profile_page_performance`
   (`save_path`) could write outside the upload roots through a dangling
   symlink under them: the check fell back to the unresolved path, and the
