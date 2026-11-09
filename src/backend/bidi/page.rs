@@ -458,8 +458,16 @@ pub(crate) async fn set_files(
 
 /// One check of a wait (a `util::js` snippet): a failed command is retried
 /// (a navigation replaced the realm), the page's exception ends the wait.
-/// No dialog race per check: the caller races the whole wait.
-pub(crate) async fn poll_snippet(tab: &Tab, expression: &str) -> Result<Value, CheckError> {
+/// So do a dropped connection, which only the next tool call reconnects,
+/// and [`GONE_AFTER`] "no such frame" answers since the last check that
+/// answered (`gone` counts them): a fallback for a closed tab, which
+/// [`destroyed`] reports first (ISSUE-107). No dialog race per check: the
+/// caller races the whole wait.
+pub(crate) async fn poll_snippet(
+    tab: &Tab,
+    expression: &str,
+    gone: &std::sync::atomic::AtomicU32,
+) -> Result<Value, CheckError> {
     let params = json!({
         "expression": expression,
         "target": tab.script_target(),
@@ -467,11 +475,58 @@ pub(crate) async fn poll_snippet(tab: &Tab, expression: &str) -> Result<Value, C
         "resultOwnership": "none",
     });
     let method = "script.evaluate";
-    let reply = tab
-        .send_raw_command(method, params)
-        .await
-        .map_err(|e| CheckError::Retry(protocol_error(method, &e).to_string()))?;
+    let stop = |message: String| {
+        CheckError::Stop(rust_mcp_sdk::schema::CallToolError::from_message(message))
+    };
+    let relaxed = std::sync::atomic::Ordering::Relaxed;
+    let reply = match tab.send_raw_command(method, params).await {
+        Ok(reply) => reply,
+        // Only the next tool call reconnects: checking again cannot succeed.
+        Err(BidiError::Disconnected) => return Err(stop(DROPPED_DURING_WAIT.to_string())),
+        Err(e @ BidiError::ProtocolError { .. }) if is_no_such_frame(&e) => {
+            if gone.fetch_add(1, relaxed) + 1 >= GONE_AFTER {
+                return Err(stop(Interruption::Closed.during("wait_for")));
+            }
+            return Err(CheckError::Retry(protocol_error(method, &e).to_string()));
+        }
+        Err(e) => return Err(CheckError::Retry(protocol_error(method, &e).to_string())),
+    };
+    gone.store(0, relaxed);
     outcome(&reply.result.unwrap_or(Value::Null)).map_err(|e| CheckError::Stop(e.into()))
+}
+
+/// "No such frame" answers since the last check that answered after which
+/// [`poll_snippet`] takes the tab as closed (ISSUE-107): Firefox may give
+/// one for a moment while a navigation replaces the tab's document.
+const GONE_AFTER: u32 = 3;
+
+/// Why `wait_for` ends when the connection to Firefox drops (ISSUE-107:
+/// it checked again until its timeout).
+const DROPPED_DURING_WAIT: &str = "The connection to Firefox dropped while running wait_for: the instance was closed or Firefox stopped (or a reply over 256 MB closed it). If the instance is still listed (list_instances), the next call reconnects and tab ids are re-assigned (call list_tabs).";
+
+/// Resolves once Firefox destroys `tab`'s browsing context
+/// (`browsingContext.contextDestroyed`: the tab closed), never on a
+/// navigation, which keeps the context. Subscribed when called, so the
+/// event cannot pass before it is listened for.
+pub(crate) fn destroyed(tab: &Tab) -> impl std::future::Future<Output = ()> + use<> {
+    let mut events = tab.on_module("browsingContext");
+    async move {
+        use tokio_stream::StreamExt;
+        while let Some(event) = events.next().await {
+            let is_destroyed = event
+                .as_ref()
+                .is_ok_and(|e| e.method.as_deref() == Some("browsingContext.contextDestroyed"));
+            if is_destroyed {
+                return;
+            }
+        }
+        // The stream ended (the connection dropped): the checks say so.
+        std::future::pending::<()>().await;
+    }
+}
+
+fn is_no_such_frame(error: &BidiError) -> bool {
+    matches!(error, BidiError::ProtocolError { error, .. } if error == codes::NO_SUCH_FRAME)
 }
 
 /// `true`/`false`/value of a snippet built by `util::js`.

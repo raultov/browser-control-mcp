@@ -1,6 +1,7 @@
 //! What stops the page from answering a call: a JavaScript dialog it
 //! opened, or a debugger pause its code hit (both browsers); on Chrome also
-//! its renderer crashing, or its tab closing (ISSUE-102). A call
+//! its renderer crashing, or its tab closing (ISSUE-102), and on Firefox
+//! its tab closing during `wait_for` (ISSUE-107). A call
 //! whose answer is missing fails with it ([`Interruption::during`]); an
 //! input action whose effect happened (a click) succeeds and says so
 //! ([`Interruption::note`], [`Interruption::to_json`]).
@@ -18,8 +19,9 @@ pub(crate) enum Interruption {
     Paused(Option<PauseLocation>),
     /// Its renderer process died (Chrome's `Inspector.targetCrashed`).
     Crashed,
-    /// Its tab closed (Chrome's `Inspector.detached`): a page that closed
-    /// itself, for example with `window.close()`.
+    /// Its tab closed (Chrome's `Inspector.detached`; Firefox's "no such
+    /// frame" during `wait_for`): a page that closed itself, for example
+    /// with `window.close()`, or a tab `close_tab` closed.
     Closed,
 }
 

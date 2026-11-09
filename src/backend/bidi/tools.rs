@@ -451,7 +451,20 @@ pub(crate) async fn wait_for(params: CallToolRequestParams, handler: &McpHandler
     let ids = ids(&args.instance_id, &args.tab_id);
     let (session, id, tab) = target_at(handler, &ids, args.selector.as_deref()).await?;
     let expression = args.expression();
-    let checks = args.poll(|| page::poll_snippet(&tab.tab, &expression));
+    // "no such frame" answers since the last check that answered.
+    let gone = std::sync::atomic::AtomicU32::new(0);
+    let checks = args.poll(|| page::poll_snippet(&tab.tab, &expression, &gone));
+    // Ends at once when Firefox destroys the tab (ISSUE-107), as on Chrome.
+    let destroyed = page::destroyed(&tab.tab);
+    let checks = async {
+        tokio::select! {
+            outcome = checks => outcome,
+            () = destroyed => {
+                let closed = crate::handler::interruption::Interruption::Closed;
+                Err(CallToolError::from_message(closed.during("wait_for")))
+            }
+        }
+    };
     let waiting = page::unless_prompt(&tab.tab, "wait_for", checks);
     unless_paused(&session, &id, "wait_for", async { waiting.await? }).await
 }
@@ -1883,6 +1896,141 @@ mod tests {
             "{}",
             ts::text(&reply)
         );
+        ts::stop(&handler).await;
+    }
+
+    /// The arguments of a wait that never ends by itself (30 s).
+    fn never_ending_wait() -> Value {
+        json!({"text": "NeverThere", "timeout_ms": 30000})
+    }
+
+    /// ISSUE-107 (Firefox): a wait_for whose instance is closed (the
+    /// connection drops) ends at once saying so; it retried until its
+    /// timeout and blamed a 256 MB reply.
+    #[tokio::test]
+    async fn wait_for_ends_at_once_when_the_instance_closes() {
+        // Given a page where the text never shows
+        let mock = MockFirefox::start(false).await.unwrap();
+        page_with_point(&mock, json!({"href": "http://a/", "text": false}));
+        let handler = ts::handler(&mock);
+        // When the connection drops while wait_for runs (close_instance)
+        let waiting = wait_for(call("wait_for", never_ending_wait()), &handler);
+        let dropping = async {
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            mock.bidi().drop_connections();
+        };
+        let started = std::time::Instant::now();
+        let (outcome, ()) = tokio::join!(waiting, dropping);
+        // Then it fails at once, saying the connection dropped and why
+        let error = outcome.unwrap_err().to_string();
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "{:?}",
+            started.elapsed()
+        );
+        let dropped =
+            "The connection to Firefox dropped while running wait_for: the instance was closed";
+        assert!(error.starts_with(dropped), "{error}");
+        ts::stop(&handler).await;
+    }
+
+    /// ISSUE-107 (Firefox): a wait_for whose tab is gone ("no such frame"
+    /// three checks in a row) ends at once, as on Chrome.
+    #[tokio::test]
+    async fn wait_for_ends_at_once_when_the_tab_is_gone() {
+        // Given a tab whose browsing context no longer exists
+        let mock = MockFirefox::start(false).await.unwrap();
+        page_with_point(&mock, json!({"href": "http://a/", "text": false}));
+        let handler = ts::handler(&mock);
+        handler
+            .firefox(None)
+            .await
+            .unwrap()
+            .browser()
+            .await
+            .unwrap();
+        mock.bidi().respond_with("script.evaluate", |_| {
+            json!({"type": "error", "error": "no such frame", "message": "Browsing Context with id ctx-0 not found"})
+        });
+        // When wait_for runs
+        let started = std::time::Instant::now();
+        let outcome = wait_for(call("wait_for", never_ending_wait()), &handler).await;
+        // Then it fails at once, saying the tab closed
+        let error = outcome.unwrap_err().to_string();
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "{:?}",
+            started.elapsed()
+        );
+        assert!(
+            error.starts_with("The tab closed while running wait_for"),
+            "{error}"
+        );
+        ts::stop(&handler).await;
+    }
+
+    /// ISSUE-107 (Firefox): a tab Firefox destroys
+    /// (`browsingContext.contextDestroyed`: close_tab, window.close()) ends
+    /// a wait_for at once, while its checks still answer.
+    #[tokio::test]
+    async fn wait_for_ends_when_firefox_destroys_the_tab() {
+        // Given a page where the text never shows
+        let mock = MockFirefox::start(false).await.unwrap();
+        page_with_point(&mock, json!({"href": "http://a/", "text": false}));
+        let handler = ts::handler(&mock);
+        // When Firefox destroys the tab while wait_for runs
+        let waiting = wait_for(call("wait_for", never_ending_wait()), &handler);
+        let destroying = async {
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            let destroyed = json!({"context": "ctx-0", "url": "http://a/", "children": null});
+            mock.bidi()
+                .emit("browsingContext.contextDestroyed", destroyed);
+        };
+        let started = std::time::Instant::now();
+        let (outcome, ()) = tokio::join!(waiting, destroying);
+        // Then it fails at once, saying the tab closed
+        let error = outcome.unwrap_err().to_string();
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "{:?}",
+            started.elapsed()
+        );
+        assert!(
+            error.starts_with("The tab closed while running wait_for"),
+            "{error}"
+        );
+        ts::stop(&handler).await;
+    }
+
+    /// ISSUE-107 (Firefox): a "no such frame" now and then (a navigation
+    /// replacing the context) and other failed checks are checked again:
+    /// the wait goes on and answers once the page shows the text.
+    #[tokio::test]
+    async fn wait_for_checks_again_after_passing_failures() {
+        // Given a page whose checks fail twice "no such frame" with another
+        // error between, then show the text
+        let mock = MockFirefox::start(false).await.unwrap();
+        let handler = ts::handler(&mock);
+        handler
+            .firefox(None)
+            .await
+            .unwrap()
+            .browser()
+            .await
+            .unwrap();
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        mock.bidi().respond_with("script.evaluate", move |_| {
+            let error = |code: &str| json!({"type": "error", "error": code, "message": "m"});
+            match calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) {
+                0 | 2 => error("no such frame"),
+                1 => error("unknown error"),
+                _ => evaluate_success(ts::remote(&json!({"href": "http://a/", "text": true}))),
+            }
+        });
+        // When wait_for runs
+        let reply = wait_for(call("wait_for", never_ending_wait()), &handler).await;
+        // Then it answered once the text showed
+        assert!(ts::text(&reply.unwrap()).starts_with("Waited "));
         ts::stop(&handler).await;
     }
 

@@ -12,6 +12,14 @@ from a copy of its code: entries describe the differences from that release.
 
 ### Fixed
 
+- Firefox: a `wait_for` whose instance was closed (`close_instance`) kept
+  checking the page until its timeout (up to 30 s more) and blamed "a
+  reply over 256 MB"; one whose tab was closed also ran to its timeout. It
+  now ends at once: `The connection to Firefox dropped while running
+  wait_for: the instance was closed ...`, or, when Firefox destroys the tab
+  (`browsingContext.contextDestroyed`), `The tab closed while running
+  wait_for.`, as on Chrome (#107).
+
 - `--proxy-server host:port` (no scheme) launched Chrome with
   `--proxy-server=<unparsable url>`, so every navigation failed with
   `net::ERR_NO_SUPPORTED_PROXIES`, and Firefox failed at its first tool. A
