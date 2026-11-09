@@ -3,9 +3,11 @@
 //! and `fill_form` type the value of a `<secret:NAME>` they are given, so a
 //! password can be typed without the agent ever seeing it.
 //!
-//! A convenience, not a security boundary: a page can transform a value
-//! (encode it, split it) into something no longer masked, and images
-//! (screenshots, PDFs) are not masked.
+//! Values are masked as is, escaped inside JSON, and URL-encoded as a form,
+//! `encodeURIComponent` or `encodeURI` encodes them (a GET form puts a typed password
+//! in the URL). A convenience, not a security boundary: a page can
+//! transform a value (encode it otherwise, split it) into something no
+//! longer masked, and images (screenshots, PDFs) are not masked.
 
 use rust_mcp_sdk::schema::{
     CallToolError, CallToolRequestParams, CallToolResult, ContentBlock, EmbeddedResourceResource,
@@ -27,6 +29,9 @@ const TYPING_TOOLS: &[&str] = &["fill_input", "fill_form"];
 pub struct Secrets {
     /// `(name, value)`, in the file's order.
     entries: Vec<(String, String)>,
+    /// Every written form of the values with its token, the longest first
+    /// (see [`forms_of`]): built once, since `mask` runs on every result.
+    forms: Vec<(String, String)>,
 }
 
 impl std::fmt::Debug for Secrets {
@@ -84,7 +89,8 @@ impl Secrets {
             }
             entries.push((name.to_string(), value));
         }
-        Ok(Self { entries })
+        let forms = forms_of(&entries);
+        Ok(Self { entries, forms })
     }
 
     /// Whether no secret is configured.
@@ -92,10 +98,10 @@ impl Secrets {
         self.entries.is_empty()
     }
 
-    /// `text` with every secret value (as is, and as escaped inside a JSON
-    /// string) replaced by `<secret:NAME>`.
+    /// `text` with every secret value (as is, escaped inside a JSON string,
+    /// or URL-encoded as the browser does) replaced by `<secret:NAME>`.
     pub fn mask(&self, text: &str) -> String {
-        let forms = self.forms();
+        let forms = &self.forms;
         if !forms.iter().any(|(form, _)| text.contains(form.as_str())) {
             return text.to_string();
         }
@@ -104,7 +110,7 @@ impl Secrets {
         let mut out = String::with_capacity(text.len());
         let mut rest = text;
         'scan: while let Some(c) = rest.chars().next() {
-            for (form, token) in &forms {
+            for (form, token) in forms {
                 if let Some(after) = rest.strip_prefix(form.as_str()) {
                     out.push_str(token);
                     rest = after;
@@ -115,23 +121,6 @@ impl Secrets {
             rest = &rest[c.len_utf8()..];
         }
         out
-    }
-
-    /// Each value, as is and as escaped inside a JSON string, with its
-    /// token: the longest first, so a value containing another is masked whole.
-    fn forms(&self) -> Vec<(String, String)> {
-        let mut forms = Vec::new();
-        for (name, value) in &self.entries {
-            let token = format!("<secret:{name}>");
-            let escaped = serde_json::to_string(value).unwrap_or_default();
-            let escaped = escaped.trim_matches('"');
-            if escaped != value {
-                forms.push((escaped.to_string(), token.clone()));
-            }
-            forms.push((value.clone(), token));
-        }
-        forms.sort_by_key(|(form, _)| std::cmp::Reverse(form.len()));
-        forms
     }
 
     /// `outcome` with the secrets masked in its text, its embedded text
@@ -261,6 +250,83 @@ impl Secrets {
     }
 }
 
+/// Each value with its token, as is, as escaped inside a JSON string and
+/// as the browser URL-encodes it (#109): the longest first, so a value
+/// containing another is masked whole.
+fn forms_of(entries: &[(String, String)]) -> Vec<(String, String)> {
+    let mut forms = Vec::new();
+    for (name, value) in entries {
+        let token = format!("<secret:{name}>");
+        let escaped = serde_json::to_string(value).unwrap_or_default();
+        // Only the quotes JSON adds: the value's own may start or end it.
+        let escaped = escaped.strip_prefix('"').and_then(|e| e.strip_suffix('"'));
+        let mut written = vec![value.clone(), escaped.unwrap_or(value).to_string()];
+        for encoded in url_encoded(value) {
+            written.push(lowercase_hex(&encoded));
+            written.push(encoded);
+        }
+        written.sort();
+        written.dedup();
+        forms.extend(written.into_iter().map(|form| (form, token.clone())));
+    }
+    forms.sort_by_key(|(form, _)| std::cmp::Reverse(form.len()));
+    forms
+}
+
+/// What `encodeURIComponent` escapes: all but ASCII letters, digits and
+/// `-_.!~*'()`.
+const URI_COMPONENT: &percent_encoding::AsciiSet = &percent_encoding::NON_ALPHANUMERIC
+    .remove(b'-')
+    .remove(b'_')
+    .remove(b'.')
+    .remove(b'!')
+    .remove(b'~')
+    .remove(b'*')
+    .remove(b'\'')
+    .remove(b'(')
+    .remove(b')');
+
+/// What `encodeURI` escapes: also keeps the URL delimiters `;,/?:@&=+$#`.
+const URI: &percent_encoding::AsciiSet = &URI_COMPONENT
+    .remove(b';')
+    .remove(b',')
+    .remove(b'/')
+    .remove(b'?')
+    .remove(b':')
+    .remove(b'@')
+    .remove(b'&')
+    .remove(b'=')
+    .remove(b'+')
+    .remove(b'$')
+    .remove(b'#');
+
+/// `value` as the browser URL-encodes it: as a form does (GET query, POST
+/// body; `+` for a space), as `encodeURIComponent` and as `encodeURI` do,
+/// with uppercase hex digits.
+fn url_encoded(value: &str) -> [String; 3] {
+    let form: String = url::form_urlencoded::byte_serialize(value.as_bytes()).collect();
+    let encode = |set| percent_encoding::utf8_percent_encode(value, set).to_string();
+    [form, encode(URI_COMPONENT), encode(URI)]
+}
+
+/// `encoded` with the two hex digits after each `%` in lowercase.
+fn lowercase_hex(encoded: &str) -> String {
+    let mut out = String::with_capacity(encoded.len());
+    let mut hex_left = 0;
+    for c in encoded.chars() {
+        if hex_left > 0 {
+            out.push(c.to_ascii_lowercase());
+            hex_left -= 1;
+        } else {
+            out.push(c);
+            if c == '%' {
+                hex_left = 2;
+            }
+        }
+    }
+    out
+}
+
 /// `NAME`: letters, digits and `_`, not starting with a digit.
 fn valid_name(name: &str) -> bool {
     let mut chars = name.chars();
@@ -330,6 +396,31 @@ mod tests {
         let json = serde_json::to_string(&json!({"t": "abc\"def"})).unwrap();
         assert_eq!(s.mask(&json), "{\"t\":\"<secret:TOKEN>\"}");
         assert_eq!(Secrets::default().mask("hunter22"), "hunter22");
+        // A value that starts or ends with a quote is masked whole in JSON
+        let quoted = Secrets::parse("Q='\"abcd\"'").unwrap();
+        let json = serde_json::to_string(&json!({"k": "\"abcd\""})).unwrap();
+        assert_eq!(quoted.mask(&json), "{\"k\":\"<secret:Q>\"}");
+    }
+
+    /// SECRETS-05 (#109): a value is also masked as a form encodes it (a GET
+    /// query or a POST body: `+` for a space) and as `encodeURIComponent`
+    /// does, with upper- or lowercase hex digits.
+    #[test]
+    fn url_encoded_values_are_masked() {
+        // Given a secret with characters both encodings change
+        let s = Secrets::parse("PW=p@ss w&rd9~\n").unwrap();
+        // When the text holds it encoded, Then it is masked whole
+        assert_eq!(
+            s.mask("/status/200?user=a&pass=p%40ss+w%26rd9%7E&x=1"),
+            "/status/200?user=a&pass=<secret:PW>&x=1"
+        );
+        assert_eq!(s.mask("q=p%40ss%20w%26rd9~"), "q=<secret:PW>");
+        assert_eq!(s.mask("q=p%40ss+w%26rd9%7e"), "q=<secret:PW>");
+        assert_eq!(s.mask("q=p@ss%20w&rd9~"), "q=<secret:PW>"); // encodeURI
+        let json = serde_json::to_string(&json!({"url": "?pass=p%40ss+w%26rd9%7E"})).unwrap();
+        assert_eq!(s.mask(&json), "{\"url\":\"?pass=<secret:PW>\"}");
+        // And a value with nothing to encode is masked as before
+        assert_eq!(secrets().mask("pw=hunter22"), "pw=<secret:PASS>");
     }
 
     /// SECRETS-03: a tool's text, embedded text, structured content and

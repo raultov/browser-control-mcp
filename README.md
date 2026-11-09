@@ -731,10 +731,12 @@ incompatible:
 - `--secrets <file>` keeps known values (test passwords, API keys) out of
   what the agent reads: every tool result and error (text, embedded text,
   structured content) shows them as `<secret:NAME>`, also when escaped
-  inside JSON, and `fill_input` / `fill_form` type the value of a
+  inside JSON or URL-encoded as a form, `encodeURIComponent` or
+  `encodeURI` encodes them (a GET form puts a typed password in the URL),
+  and `fill_input` / `fill_form` type the value of a
   `<secret:NAME>` they are given, so the agent can log in without seeing
   the password. It is a convenience, not a security boundary: the page can
-  transform a value (encode it, split it) past the masking, images
+  transform a value (encode it otherwise, split it) past the masking, images
   (screenshots, PDFs) are not masked, and the server stops at start-up if
   the file has a malformed line, a value shorter than 4 characters or a
   name defined twice (the error names the line, never a value). Values

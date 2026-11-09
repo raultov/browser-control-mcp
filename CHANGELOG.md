@@ -20,6 +20,13 @@ from a copy of its code: entries describe the differences from that release.
   the file is written by moving a new file into place, so a symlink created
   after the check is replaced instead of followed (#106). A replaced file
   keeps its mode; writing now needs write access to the file's directory.
+- `--secrets`: a secret typed into a form that the page submits with GET
+  reached the agent URL-encoded (`p%40ss+w%26rd9`) in `list_tabs`,
+  `wait_for`, `evaluate_js`, `get_network_logs` and `snapshot`. Values are
+  now also masked as a form, `encodeURIComponent` and `encodeURI` encode
+  them, with upper- or lowercase hex digits (#109). A value that starts or
+  ends with `"` is now masked whole inside JSON; it was masked short of its
+  quote, which left the reply's JSON malformed.
 
 ## [0.14.0-beta.24] - 2026-11-08
 
