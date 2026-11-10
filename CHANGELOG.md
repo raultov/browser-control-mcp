@@ -12,6 +12,16 @@ from a copy of its code: entries describe the differences from that release.
 
 ### Fixed
 
+- Chrome: `open_tab` dropped the history entries a page pushes while it
+  loads (`pushState`, as SPA routers do), so `history: "back"` failed
+  where Firefox went back (#116). The blank creation page is now dropped
+  only when the history is exactly that page and the URL; and `navigate`
+  `history: "back"` never moves to a blank first entry, so 'back' behaves
+  as on Firefox also after `open_tab` without `url` and a `navigate`
+  (behaviour change: it went to `about:blank`). On Chrome,
+  `history.length` still counts that blank page when the page pushed
+  entries while loading.
+
 - `RUST_LOG=trace` (or `debug`) wrote every WebSocket frame to and from
   the browser to stderr, `--secrets` values typed with `fill_input`
   included (`tungstenite::protocol`). The WebSocket (`tungstenite`,

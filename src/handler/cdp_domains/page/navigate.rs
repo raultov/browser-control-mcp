@@ -353,6 +353,7 @@ async fn traverse_and_wait(
     let index = history["currentIndex"].as_i64().unwrap_or_default() + step.delta();
     let entry = usize::try_from(index)
         .ok()
+        .filter(|&index| !is_creation_page(&history, index))
         .and_then(|index| history["entries"].get(index))
         .ok_or_else(|| CallToolError::from_message(step.missing()))?;
     let url = entry["url"].as_str().unwrap_or_default().to_string();
@@ -365,6 +366,15 @@ async fn traverse_and_wait(
         && document_loaded(target, deadline).await;
     let outcome = finish(target, &url, json!({}), loaded).await;
     Ok(with_status(outcome, target, network).await)
+}
+
+/// Whether entry `index` of `history` (`Page.getNavigationHistory`) is the
+/// blank page the tab was created with: its first entry, on about:blank.
+/// It is not a page of the tab's history (#116): Firefox replaces it on the
+/// first navigation, and open_tab drops it when it can (#112), but not once
+/// the page pushed entries of its own while loading.
+pub(crate) fn is_creation_page(history: &Value, index: usize) -> bool {
+    index == 0 && history["entries"][0]["url"] == "about:blank"
 }
 
 /// Whether `event` commits a new document in the top frame, or moves
@@ -684,6 +694,29 @@ pub(crate) mod tests {
             reply_text(&reply)
         );
         assert!(body(&reply).get("notes").is_none(), "{}", body(&reply));
+    }
+
+    /// NAV-09 (#116): on Chrome a blank first entry is the page the tab was
+    /// created with, not a page of its history (Firefox replaces it on the
+    /// first navigation): 'back' to it fails without moving, as on Firefox.
+    #[tokio::test]
+    async fn history_back_never_reaches_the_blank_first_entry() {
+        // Given a tab on the page it loaded after its blank creation page
+        let mock = spawn_recording_mock().await;
+        history_of(mock, 1, ["about:blank", "http://127.0.0.1:8/one"]);
+        let handler = mock_handler(mock.http_port);
+        // When it goes back
+        let back = json!({"history": "back"});
+        let error = NavigateTool::handle(call("navigate", back), &handler)
+            .await
+            .unwrap_err()
+            .to_string();
+        // Then it fails without moving
+        assert!(error.contains("no previous page"), "{error}");
+        assert!(
+            mock.commands_named("Page.navigateToHistoryEntry")
+                .is_empty()
+        );
     }
 
     /// ISSUE-31: at the last entry 'forward' fails without moving; a call

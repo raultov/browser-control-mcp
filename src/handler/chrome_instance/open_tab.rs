@@ -94,20 +94,48 @@ async fn open_url(
             tab_id,
         ))
     })?;
-    // The blank page the tab was created with is not a page of its history
-    // (#112: 'back' went to about:blank): the URL is its first entry, as on
-    // Firefox. Best effort: the tab is usable either way (Chrome refuses
-    // while the tab is not selected or a navigation is pending).
+    drop_creation_page(&registered, tab_id).await;
+    Ok(outcome.url)
+}
+
+/// Drops the blank page the tab was created with from its history (#112:
+/// 'back' went to about:blank), so the URL is its first entry, as on
+/// Firefox. `Page.resetNavigationHistory` keeps only the current entry, so
+/// it runs only on a history of exactly `[about:blank, url]`: entries the
+/// page pushed while loading (#116: `pushState`) are kept, and 'back' never
+/// reaches the blank page anyway (`navigate::is_creation_page`). Best
+/// effort: Chrome refuses while the tab is not selected or a navigation is
+/// pending, and the tab is usable either way.
+async fn drop_creation_page(
+    tab: &crate::handler::cdp_domains::cdp_target::CdpTarget,
+    tab_id: &str,
+) {
+    let history = tab
+        .send_raw_command("Page.getNavigationHistory", serde_json::json!({}))
+        .await;
+    let history = history
+        .ok()
+        .and_then(|reply| reply.result)
+        .unwrap_or_default();
+    let entries = history["entries"].as_array().map_or(0, Vec::len);
+    let blank_then_url = entries == 2
+        && history["currentIndex"] == 1
+        && crate::handler::cdp_domains::page::navigate::is_creation_page(&history, 0);
+    if !blank_then_url {
+        return;
+    }
     let method = "Page.resetNavigationHistory";
-    let reset = registered.send_raw_command(method, serde_json::json!({}));
-    if reset.await.is_err() {
+    if tab
+        .send_raw_command(method, serde_json::json!({}))
+        .await
+        .is_err()
+    {
         tracing::debug!(
             method,
             tab_id,
             "open_tab kept the blank page in the history"
         );
     }
-    Ok(outcome.url)
 }
 
 /// Connects the session, then creates the tab. The session connection
@@ -210,32 +238,32 @@ mod tests {
         assert_eq!(deferred_navigation(BLANK), None);
     }
 
-    /// TAB-OPEN2 (#112): the URL open_tab loads is the tab's first history
-    /// entry: the blank page the tab was created with is dropped
-    /// (`Page.resetNavigationHistory` once the URL loaded), so history
-    /// 'back' from it fails without moving, as on Firefox.
-    #[tokio::test]
-    async fn open_tab_url_is_the_first_history_entry() {
-        use crate::handler::cdp_domains::tests::{
-            committed_url, fire_events_after, mock_handler, spawn_recording_mock,
-        };
-        // Given a tab open_tab created, whose navigation loads
-        let mock = spawn_recording_mock().await;
+    /// What [`loading_tab`] keeps alive: the handler, the session, the
+    /// browser connection and the tab id.
+    type LoadingTab = (
+        crate::handler::McpHandler,
+        std::sync::Arc<crate::handler::BrowserSession>,
+        cdp_browser_lite::BrowserClient,
+        String,
+    );
+
+    /// A blank tab open_tab created, on a mock Chrome whose navigation to
+    /// http://127.0.0.1:8/page commits and loads.
+    async fn loading_tab(
+        mock: &'static cdp_browser_lite::test_support::mock_devtools::MockDevTools,
+    ) -> LoadingTab {
+        use crate::handler::cdp_domains::tests::{fire_events_after, mock_handler};
         mock.respond_with(
             "Page.navigate",
             |_| serde_json::json!({"frameId": "F1", "loaderId": "L1"}),
         );
-        committed_url(mock, "http://127.0.0.1:8/page");
         let frame = serde_json::json!({"frame": {"id": "F1", "loaderId": "L1", "url": "http://127.0.0.1:8/page"}, "type": "Navigation"});
         let load = serde_json::json!({"timestamp": 1.0});
-        fire_events_after(
-            mock,
-            "Page.navigate",
-            vec![
-                ("Page.frameNavigated", frame),
-                ("Page.loadEventFired", load),
-            ],
-        );
+        let events = vec![
+            ("Page.frameNavigated", frame),
+            ("Page.loadEventFired", load),
+        ];
+        fire_events_after(mock, "Page.navigate", events);
         let handler = mock_handler(mock.http_port);
         let session = handler.session(None).await.unwrap();
         let browser = cdp_browser_lite::BrowserClient::connect(
@@ -249,6 +277,21 @@ mod tests {
         let tab_id = crate::util::sync::write(&session.tabs)
             .register_tab(tab, info, false)
             .unwrap();
+        (handler, session, browser, tab_id)
+    }
+
+    /// TAB-OPEN2 (#112): the URL open_tab loads is the tab's first history
+    /// entry: the blank page the tab was created with is dropped
+    /// (`Page.resetNavigationHistory` once the URL loaded, the history
+    /// being `[about:blank, url]`), so history 'back' from it fails without
+    /// moving, as on Firefox.
+    #[tokio::test]
+    async fn open_tab_url_is_the_first_history_entry() {
+        use crate::handler::cdp_domains::tests::{committed_url, spawn_recording_mock};
+        // Given a tab open_tab created, whose navigation loads
+        let mock = spawn_recording_mock().await;
+        committed_url(mock, "http://127.0.0.1:8/page");
+        let (_handler, session, _browser, tab_id) = loading_tab(mock).await;
         // When it navigates the tab to the URL
         let url = open_url(&session, &tab_id, "http://127.0.0.1:8/page", false).await;
         // Then the history before the URL was dropped, after it loaded
@@ -259,6 +302,38 @@ mod tests {
             .iter()
             .position(|m| m == "Page.resetNavigationHistory");
         assert!(navigated.is_some() && reset > navigated, "{names:?}");
+    }
+
+    /// TAB-OPEN3 (#116): a page that adds history entries while it loads
+    /// (`pushState`, as SPA routers do) keeps them: the history is left as
+    /// it is (the reset would keep only the last entry), and 'back' never
+    /// reaches the blank page (NAV-09).
+    #[tokio::test]
+    async fn open_tab_keeps_the_entries_the_page_pushes() {
+        use crate::handler::cdp_domains::tests::spawn_recording_mock;
+        // Given a tab whose page pushed an entry while it loaded
+        let mock = spawn_recording_mock().await;
+        mock.respond_with("Page.getNavigationHistory", |_| {
+            let urls = [
+                "about:blank",
+                "http://127.0.0.1:8/page",
+                "http://127.0.0.1:8/page?step=2",
+            ];
+            let entries: Vec<_> = (1..)
+                .zip(urls)
+                .map(|(id, url)| serde_json::json!({"id": id, "url": url}))
+                .collect();
+            serde_json::json!({"currentIndex": 2, "entries": entries})
+        });
+        let (_handler, session, _browser, tab_id) = loading_tab(mock).await;
+        // When open_tab navigates the tab to the URL
+        let url = open_url(&session, &tab_id, "http://127.0.0.1:8/page", false).await;
+        // Then the history is not reset
+        assert_eq!(url.unwrap(), "http://127.0.0.1:8/page?step=2");
+        assert!(
+            mock.commands_named("Page.resetNavigationHistory")
+                .is_empty()
+        );
     }
 
     /// NAV-04: open_tab to an unreachable host fails and names the tab.
