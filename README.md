@@ -771,7 +771,10 @@ incompatible:
   `get_network_logs` unless `include_sensitive_headers: true`. URLs and
   response bodies are returned as they are.
 - Logs carry tool names, ids, protocol method names and sizes, never
-  payloads, cookies or URLs with queries.
+  payloads, cookies or URLs with queries, whatever `RUST_LOG` asks for:
+  the libraries that log protocol payloads or wire frames (the CDP
+  client, the MCP transport, the WebSocket and HTTP crates) are capped at
+  `info`.
 
 ## Development
 

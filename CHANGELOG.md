@@ -10,6 +10,14 @@ from a copy of its code: entries describe the differences from that release.
 
 ## [Unreleased]
 
+### Fixed
+
+- `RUST_LOG=trace` (or `debug`) wrote every WebSocket frame to and from
+  the browser to stderr, `--secrets` values typed with `fill_input`
+  included (`tungstenite::protocol`). The WebSocket (`tungstenite`,
+  `tokio_tungstenite`) and HTTP (`hyper`, `hyper_util`, `h2`) crates are
+  now capped at `info` whatever `RUST_LOG` says (#114).
+
 ## [0.15.0-beta.25] - 2026-11-09
 
 Public **BETA**. Fixes for the nine bugs an automated test round (qa-loop)
