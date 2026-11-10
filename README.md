@@ -774,9 +774,9 @@ incompatible:
   response bodies are returned as they are.
 - Logs carry tool names, ids, protocol method names and sizes, never
   payloads, cookies or URLs with queries, whatever `RUST_LOG` asks for:
-  the libraries that log protocol payloads or wire frames (the CDP
-  client, the MCP transport, the WebSocket and HTTP crates) are capped at
-  `info`.
+  the libraries that log protocol payloads, proxy URLs or wire frames (the
+  CDP client, the MCP transport, `reqwest`, the WebSocket and HTTP crates)
+  are capped at `info`, also when `RUST_LOG` names one of their modules.
 
 ## Development
 

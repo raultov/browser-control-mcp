@@ -30,12 +30,15 @@ impl Write for Captured {
 /// current thread (a `#[tokio::test]` runtime is single-threaded, so spawned
 /// tasks log into it too) until the guard is dropped.
 pub(crate) fn capture() -> (Captured, tracing::subscriber::DefaultGuard) {
+    capture_with("trace")
+}
+
+/// [`capture`] with `rust_log` as the `RUST_LOG` the filter starts from.
+pub(crate) fn capture_with(rust_log: &str) -> (Captured, tracing::subscriber::DefaultGuard) {
     let captured = Captured::default();
     let writer = captured.clone();
     let subscriber = tracing_subscriber::fmt()
-        .with_env_filter(super::log_filter(tracing_subscriber::EnvFilter::new(
-            "trace",
-        )))
+        .with_env_filter(super::log_filter(rust_log))
         .with_ansi(false)
         .with_writer(move || writer.clone())
         .finish();

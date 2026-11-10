@@ -94,10 +94,9 @@ async fn stop_signal() {
 /// Logs go to stderr (stdout is the MCP channel), filtered by `RUST_LOG`
 /// (default `info`). A second call is a no-op, which keeps tests simple.
 fn init_logging() {
-    let base = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+    let rust_log = std::env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string());
     let _ = tracing_subscriber::fmt()
-        .with_env_filter(util::log_filter(base))
+        .with_env_filter(util::log_filter(&rust_log))
         .with_writer(std::io::stderr)
         .with_ansi(false)
         .try_init();

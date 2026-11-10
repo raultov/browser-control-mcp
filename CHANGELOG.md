@@ -31,9 +31,12 @@ from a copy of its code: entries describe the differences from that release.
 
 - `RUST_LOG=trace` (or `debug`) wrote every WebSocket frame to and from
   the browser to stderr, `--secrets` values typed with `fill_input`
-  included (`tungstenite::protocol`). The WebSocket (`tungstenite`,
-  `tokio_tungstenite`) and HTTP (`hyper`, `hyper_util`, `h2`) crates are
-  now capped at `info` whatever `RUST_LOG` says (#114).
+  included (`tungstenite::protocol`), and `reqwest` logged a proxy URL
+  with its credentials at `debug`. The WebSocket (`tungstenite`,
+  `tokio_tungstenite`) and HTTP (`hyper`, `hyper_util`, `h2`) crates and
+  `reqwest` are now capped at `info`, like the CDP client and the MCP
+  transport, and a `RUST_LOG` directive that asks one of them, or one of
+  their modules (`tungstenite::protocol=trace`), for more is dropped (#114).
 
 ## [0.15.0-beta.25] - 2026-11-09
 
