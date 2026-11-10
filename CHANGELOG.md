@@ -26,8 +26,8 @@ from a copy of its code: entries describe the differences from that release.
   `history: "back"` never moves to a blank first entry, so 'back' behaves
   as on Firefox also after `open_tab` without `url` and a `navigate`
   (behaviour change: it went to `about:blank`). On Chrome,
-  `history.length` still counts that blank page when the page pushed
-  entries while loading.
+  `history.length` still counts that blank page when the page added
+  entries while loading (`pushState`, a script redirect).
 
 - `RUST_LOG=trace` (or `debug`) wrote every WebSocket frame to and from
   the browser to stderr, `--secrets` values typed with `fill_input`
