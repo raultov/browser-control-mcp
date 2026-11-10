@@ -12,6 +12,13 @@ from a copy of its code: entries describe the differences from that release.
 
 ### Fixed
 
+- `save_pdf`, `record_video` and `profile_page_performance` could still
+  write outside the upload roots when a directory under them was swapped
+  for a symlink between the path check and the write (the #106 fix
+  checked the resolved path, then wrote by name). The file is now written
+  from a handle on its upload root (`cap-std`): the swapped directory
+  fails the write, and no file, final or temporary, lands outside (#115).
+
 - Chrome: `open_tab` dropped the history entries a page pushes while it
   loads (`pushState`, as SPA routers do), so `history: "back"` failed
   where Firefox went back (#116). The blank creation page is now dropped

@@ -41,7 +41,7 @@ const MAX_INLINE: usize = 5_000_000;
 
 impl SavePdfTool {
     /// Checks the arguments before any browser work: the file to write, if any.
-    pub(crate) fn checked(&self, roots: &[PathBuf]) -> Result<Option<PathBuf>, CallToolError> {
+    pub(crate) fn checked(&self, roots: &[PathBuf]) -> Result<Option<OutputFile>, CallToolError> {
         let fail = |message: String| Err(CallToolError::from_message(message));
         if let Some(scale) = self.scale
             && !(0.1..=2.0).contains(&scale)
@@ -106,7 +106,7 @@ impl SavePdfTool {
     pub(crate) async fn deliver(
         &self,
         data: Option<&str>,
-        path: Option<PathBuf>,
+        path: Option<OutputFile>,
     ) -> Result<CallToolResult, CallToolError> {
         let decoded = data.and_then(|d| base64::engine::general_purpose::STANDARD.decode(d).ok());
         let Some(pdf) = decoded.filter(|bytes| bytes.starts_with(b"%PDF-")) else {
@@ -115,10 +115,11 @@ impl SavePdfTool {
             ));
         };
         let pages = page_count(&pdf);
-        let Some(path) = path else {
+        let Some(file) = path else {
             return embedded(&pdf, pages);
         };
-        let written = write_output(&path, &pdf).await;
+        let written = write_output(&file, &pdf).await;
+        let path = file.path();
         if let Err(e) = written {
             let shown = path.display();
             return Err(CallToolError::from_message(format!(
@@ -166,6 +167,31 @@ fn valid_range(range: &str) -> bool {
     }
 }
 
+/// A file to write that [`output_path`] checked: `relative`, a path below
+/// `root`, the canonical upload root it is under. [`write_output`] reaches
+/// it from `root` again, never by its whole path (#115).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct OutputFile {
+    root: PathBuf,
+    relative: PathBuf,
+}
+
+impl OutputFile {
+    /// The file `name` in `directory`, a directory of the server's own
+    /// (`record_video`'s temporary file in the system temp directory).
+    pub(crate) fn in_directory(directory: &Path, name: &std::ffi::OsStr) -> Self {
+        Self {
+            root: directory.to_path_buf(),
+            relative: PathBuf::from(name),
+        }
+    }
+
+    /// The file's whole path, for replies.
+    pub(crate) fn path(&self) -> PathBuf {
+        self.root.join(&self.relative)
+    }
+}
+
 /// The file `path` names, once checked: absolute, ending in one of the
 /// `endings` (case-insensitive; `kind` names them in the error), in an
 /// existing directory under one of `roots` (default: the working and temp
@@ -174,7 +200,7 @@ pub(crate) fn output_path(
     path: &str,
     roots: &[PathBuf],
     (kind, endings): (&str, &[&str]),
-) -> Result<PathBuf, String> {
+) -> Result<OutputFile, String> {
     let given = Path::new(path);
     if !given.is_absolute() {
         return Err(format!("'{path}' is not an absolute path"));
@@ -205,53 +231,93 @@ pub(crate) fn output_path(
         Err(_) => file,
     };
     let roots = allowed_roots(roots);
-    if !roots.iter().any(|root| resolved.starts_with(root)) {
+    let under = roots.iter().find_map(|root| {
+        let relative = resolved.strip_prefix(root).ok()?;
+        Some(OutputFile {
+            root: root.clone(),
+            relative: relative.to_path_buf(),
+        })
+    });
+    under.ok_or_else(|| {
         let shown: Vec<String> = roots.iter().map(|r| r.display().to_string()).collect();
-        return Err(format!(
+        format!(
             "'{path}' is outside the upload roots ({}); start the server with --upload-root <dir> to allow another directory",
             shown.join(", ")
-        ));
-    }
-    Ok(resolved)
+        )
+    })
 }
 
-/// Writes `bytes` to `path`, a file `output_path` checked, by moving a new
-/// file of the same directory into place: a symlink created at `path` after
-/// the check is replaced, never followed (#106), and a failed write leaves
-/// no partial file.
-pub(crate) async fn write_output(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    let path = path.to_path_buf();
+/// Writes `bytes` to `file`: from a handle on its upload root, it opens the
+/// file's directory without leaving the root (a directory swapped for a
+/// symlink to outside after the check fails the write, #115), creates a new
+/// file there and moves it into place, so a symlink planted at the file
+/// itself is replaced, never followed (#106). A replaced file keeps its
+/// mode; a failed write leaves no file behind.
+pub(crate) async fn write_output(file: &OutputFile, bytes: &[u8]) -> std::io::Result<()> {
+    let file = file.clone();
     let bytes = bytes.to_vec();
-    let write = move || {
-        let Some(directory) = path.parent() else {
-            return Err(std::io::Error::other("the path names no directory"));
-        };
-        let mut builder = tempfile::Builder::new();
-        builder.prefix(".browser-control-mcp-");
-        #[cfg(unix)]
-        let replaced = {
-            // A new file gets the mode `std::fs::write` gives it (the umask
-            // applies), not the private 0600 of a temporary file.
-            use std::os::unix::fs::PermissionsExt;
-            builder.permissions(std::fs::Permissions::from_mode(0o666));
-            std::fs::symlink_metadata(&path)
-                .ok()
-                .filter(std::fs::Metadata::is_file)
-                .map(|meta| meta.permissions())
-        };
-        let mut file = builder.tempfile_in(directory)?;
-        // A replaced file keeps its mode, as an overwrite in place did: a
-        // private file (e.g. record_video's own 0600 temp file) stays so.
-        #[cfg(unix)]
-        if let Some(permissions) = replaced {
-            file.as_file().set_permissions(permissions)?;
-        }
-        std::io::Write::write_all(&mut file, &bytes)?;
-        file.persist(&path).map(drop).map_err(|e| e.error)
-    };
-    tokio::task::spawn_blocking(write)
+    tokio::task::spawn_blocking(move || write_beneath(&file, &bytes))
         .await
         .map_err(std::io::Error::other)?
+}
+
+/// [`write_output`]'s blocking work.
+fn write_beneath(file: &OutputFile, bytes: &[u8]) -> std::io::Result<()> {
+    use cap_std::fs::Dir;
+    let root = Dir::open_ambient_dir(&file.root, cap_std::ambient_authority())?;
+    let Some(name) = file.relative.file_name() else {
+        return Err(std::io::Error::other("the path names no file"));
+    };
+    let directory = match file.relative.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => root.open_dir(parent).map_err(|e| {
+            // cap-std's own words ("a path led outside of the filesystem").
+            let left = e.kind() == std::io::ErrorKind::PermissionDenied
+                && e.to_string().contains("outside of the filesystem");
+            match left {
+                true => std::io::Error::other(format!(
+                    "its directory now leads outside the upload root {} (was it replaced by a symlink?)",
+                    file.root.display()
+                )),
+                false => e,
+            }
+        })?,
+        _ => root,
+    };
+    let replaced = directory
+        .symlink_metadata(name)
+        .ok()
+        .filter(cap_std::fs::Metadata::is_file)
+        .map(|meta| meta.permissions());
+    let (mut temporary, temporary_name) = new_file(&directory)?;
+    // The mode first: a private file's bytes never sit in a readable one.
+    let written = match replaced {
+        Some(permissions) => temporary.set_permissions(permissions),
+        None => Ok(()),
+    }
+    .and_then(|()| std::io::Write::write_all(&mut temporary, bytes))
+    .and_then(|()| directory.rename(&temporary_name, &directory, name));
+    if written.is_err() {
+        let _ = directory.remove_file(&temporary_name);
+    }
+    written
+}
+
+/// A new file of `directory`, named `.browser-control-mcp-<pid>-<n>`, with
+/// the mode `std::fs::write` gives a new file (the umask applies).
+fn new_file(directory: &cap_std::fs::Dir) -> std::io::Result<(cap_std::fs::File, String)> {
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let mut options = cap_std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    for _ in 0..100 {
+        let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let name = format!(".browser-control-mcp-{}-{n}", std::process::id());
+        match directory.open_with(&name, &options) {
+            Ok(file) => return Ok((file, name)),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    Err(std::io::Error::other("no free name for a new file"))
 }
 
 /// The PDF's page objects (`/Type /Page`, not `/Pages`), when it has any
@@ -436,7 +502,7 @@ mod tests {
         );
         assert!(out.contains("outside the upload roots"), "{out}");
         let real = std::fs::canonicalize(root.path().join("real.pdf")).unwrap();
-        assert_eq!(inside, Some(real));
+        assert_eq!(inside.map(|file| file.path()), Some(real));
         assert_eq!(names(outside.path()), ["there.pdf"]);
     }
 
@@ -456,9 +522,10 @@ mod tests {
             .unwrap()
             .unwrap();
         let escaped = outside.path().join("escaped.pdf");
-        std::os::unix::fs::symlink(&escaped, &checked).unwrap();
+        std::os::unix::fs::symlink(&escaped, checked.path()).unwrap();
         // When the PDF is written
         write_output(&checked, PDF).await.unwrap();
+        let checked = checked.path();
         // Then the path holds the PDF as a regular file and nothing escaped
         assert!(!std::fs::symlink_metadata(&checked).unwrap().is_symlink());
         assert_eq!(std::fs::read(&checked).unwrap(), PDF);
@@ -474,9 +541,54 @@ mod tests {
         let private = root.path().join("private.pdf");
         std::fs::write(&private, "x").unwrap();
         std::fs::set_permissions(&private, std::fs::Permissions::from_mode(0o600)).unwrap();
-        write_output(&private, PDF).await.unwrap();
+        let path = private.display().to_string();
+        let checked = tool(json!({ "path": path }))
+            .checked(&roots)
+            .unwrap()
+            .unwrap();
+        write_output(&checked, PDF).await.unwrap();
         assert_eq!(mode(&private) & 0o777, 0o600);
         assert_eq!(std::fs::read(&private).unwrap(), PDF);
+    }
+
+    /// PDF-07 (#115): the file is created and moved into place inside the
+    /// upload root it was checked under, resolved again from that root: a
+    /// directory swapped for a symlink to outside after the check fails the
+    /// write, and nothing (not even the temporary file) lands outside.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn writing_never_follows_a_directory_swapped_after_the_check() {
+        // Given a checked path in a subdirectory of the root
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let roots = vec![root.path().to_path_buf()];
+        let sub = root.path().join("sub");
+        std::fs::create_dir(&sub).unwrap();
+        let path = sub.join("race.pdf").display().to_string();
+        let checked = tool(json!({ "path": path }))
+            .checked(&roots)
+            .unwrap()
+            .unwrap();
+        // When the subdirectory is swapped for a link to outside, then the
+        // PDF is written
+        std::fs::rename(&sub, root.path().join("sub.real")).unwrap();
+        std::os::unix::fs::symlink(outside.path(), &sub).unwrap();
+        let written = write_output(&checked, PDF).await;
+        // Then the write fails, saying why, and nothing is left anywhere
+        let error = written.unwrap_err().to_string();
+        assert!(error.contains("leads outside the upload root"), "{error}");
+        assert!(
+            names(outside.path()).is_empty(),
+            "{:?}",
+            names(outside.path())
+        );
+        assert!(names(&root.path().join("sub.real")).is_empty());
+        // And once the directory is back, the same file is written in it
+        std::fs::remove_file(&sub).unwrap();
+        std::fs::rename(root.path().join("sub.real"), &sub).unwrap();
+        write_output(&checked, PDF).await.unwrap();
+        assert_eq!(std::fs::read(sub.join("race.pdf")).unwrap(), PDF);
+        assert_eq!(names(&sub), ["race.pdf"]);
     }
 
     /// PDF-04: without a path the PDF comes back as an embedded resource;

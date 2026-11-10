@@ -1,4 +1,5 @@
 use super::coverage;
+use crate::handler::cdp_domains::page::save_pdf::OutputFile;
 use crate::handler::{McpHandler, insights};
 use rust_mcp_sdk::{
     macros,
@@ -134,7 +135,7 @@ impl ProfilePagePerformanceTool {
     pub(crate) fn trace_file(
         &self,
         roots: &[std::path::PathBuf],
-    ) -> Result<Option<std::path::PathBuf>, CallToolError> {
+    ) -> Result<Option<OutputFile>, CallToolError> {
         let Some(path) = &self.save_path else {
             return Ok(None);
         };
@@ -214,7 +215,8 @@ async fn traced(
 
 /// Writes the raw trace to `path`, gzipped when it ends in `.gz`:
 /// `{path, bytes}` (the bytes written).
-async fn write_trace(path: &std::path::Path, raw: &str) -> Result<serde_json::Value, String> {
+async fn write_trace(file: &OutputFile, raw: &str) -> Result<serde_json::Value, String> {
+    let path = file.path();
     let gzipped = path.to_string_lossy().to_ascii_lowercase().ends_with(".gz");
     let bytes = match gzipped {
         true => {
@@ -228,7 +230,7 @@ async fn write_trace(path: &std::path::Path, raw: &str) -> Result<serde_json::Va
         }
         false => raw.as_bytes().to_vec(),
     };
-    crate::handler::cdp_domains::page::save_pdf::write_output(path, &bytes)
+    crate::handler::cdp_domains::page::save_pdf::write_output(file, &bytes)
         .await
         .map_err(|e| format!("could not write '{}': {e}", path.display()))?;
     Ok(json!({"path": path.display().to_string(), "bytes": bytes.len()}))
@@ -656,11 +658,12 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let raw = r#"{"traceEvents":[{"name":"Layout"}]}"#;
         let plain = root.path().join("t.json");
-        let saved = write_trace(&plain, raw).await.unwrap();
+        let in_root = |name: &str| OutputFile::in_directory(root.path(), name.as_ref());
+        let saved = write_trace(&in_root("t.json"), raw).await.unwrap();
         assert_eq!(std::fs::read_to_string(&plain).unwrap(), raw);
         assert_eq!(saved["bytes"], raw.len());
         let packed = root.path().join("t.json.gz");
-        let saved = write_trace(&packed, raw).await.unwrap();
+        let saved = write_trace(&in_root("t.json.gz"), raw).await.unwrap();
         let mut unpacked = String::new();
         let file = std::fs::File::open(&packed).unwrap();
         flate2::read::GzDecoder::new(file)

@@ -757,9 +757,11 @@ incompatible:
   resolved the same way; it overwrites an existing `.pdf` there. The same
   holds for the `.mp4` of `record_video` and the `save_path` of
   `profile_page_performance`. A path that is a symlink is followed only to
-  an existing file under the roots (a dangling one is refused), and the
-  file is written by moving a new file into place, so a symlink created
-  there after the check is replaced, not followed.
+  an existing file under the roots (a dangling one is refused). The file
+  is written from a handle on its upload root, never by its whole path
+  again: a directory swapped for a symlink after the check fails the
+  write, and a symlink created at the file is replaced, not followed (a
+  new file is moved into place).
 - The proxy password is never logged and is given only to proxy (407)
   challenges, never to a site's own authentication.
 - The Firefox debugger port needs `devtools.chrome.enabled`: any local

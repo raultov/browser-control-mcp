@@ -59,6 +59,11 @@ async-trait = "0.1.92"
 base64 = "0.23.1"
 cdp-browser-lite = "0.4.3"
 bidi-browser-lite = "0.1.6"
+# Output files (save_pdf, record_video, profile_page_performance) are written
+# through a handle on their upload root, never by path again: a directory
+# swapped for a symlink after the check cannot redirect the write (#115).
+# std has no openat/renameat and unsafe is denied.
+cap-std = "4.0.3"
 chrono = "0.4.45"
 clap = { version = "4.6.7", features = ["derive"] }
 # Registrable domain (eTLD+1) for "same site" (Public Suffix List, embedded).

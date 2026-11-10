@@ -4,6 +4,7 @@
 //! refuses a second start and a stop without a start), so the server keeps
 //! none. WebDriver BiDi has no video recording: Firefox lacks the capability.
 
+use super::save_pdf::OutputFile;
 use crate::handler::McpHandler;
 use crate::handler::cdp_domains::cdp_target::CdpTarget;
 use base64::Engine;
@@ -46,7 +47,7 @@ const MAX_VIDEO: usize = 256 * 1024 * 1024;
 impl RecordVideoTool {
     /// Checks the arguments before any browser work: what to do, and for
     /// 'stop' the file to write (`None`: a new temporary file).
-    fn checked(&self, roots: &[PathBuf]) -> Result<Option<PathBuf>, String> {
+    fn checked(&self, roots: &[PathBuf]) -> Result<Option<OutputFile>, String> {
         let range = |name: &str, value: Option<u32>, (low, high): (u32, u32)| match value {
             Some(v) if !(low..=high).contains(&v) => {
                 Err(format!("'{name}' must be {low} to {high}, got {v}"))
@@ -203,18 +204,22 @@ fn append_chunk(video: &mut Vec<u8>, chunk: &serde_json::Value) -> Result<(), St
 
 /// Writes `video` to `path` (or a new temporary file) and answers what was
 /// written.
-async fn write_video(video: &[u8], path: Option<PathBuf>) -> Result<CallToolResult, CallToolError> {
+async fn write_video(
+    video: &[u8],
+    path: Option<OutputFile>,
+) -> Result<CallToolResult, CallToolError> {
     if video.is_empty() {
         return Err(CallToolError::from_message(
             "Chrome returned an empty video (nothing was drawn while recording: was the tab hidden?)",
         ));
     }
     let temporary = path.is_none();
-    let path = match path {
-        Some(path) => path,
-        None => temporary_path().map_err(CallToolError::from_message)?,
+    let file = match path {
+        Some(file) => file,
+        None => temporary_file().map_err(CallToolError::from_message)?,
     };
-    if let Err(e) = super::save_pdf::write_output(&path, video).await {
+    let path = file.path();
+    if let Err(e) = super::save_pdf::write_output(&file, video).await {
         // No empty file of the server's own is left behind.
         if temporary {
             let _ = tokio::fs::remove_file(&path).await;
@@ -242,6 +247,15 @@ async fn write_video(video: &[u8], path: Option<PathBuf>) -> Result<CallToolResu
 
 /// A new file of the server's own (unique, readable by its user only) in
 /// the temp directory, for a video written without a path.
+fn temporary_file() -> Result<OutputFile, String> {
+    let path = temporary_path()?;
+    match (path.parent(), path.file_name()) {
+        (Some(directory), Some(name)) => Ok(OutputFile::in_directory(directory, name)),
+        _ => Err("the temp directory gave a file without a name".into()),
+    }
+}
+
+/// [`temporary_file`]'s path.
 fn temporary_path() -> Result<PathBuf, String> {
     tempfile::Builder::new()
         .prefix("browser-control-mcp-video-")
