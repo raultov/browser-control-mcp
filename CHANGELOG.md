@@ -10,7 +10,29 @@ from a copy of its code: entries describe the differences from that release.
 
 ## [Unreleased]
 
+## [0.16.0-beta.26] - 2026-11-10
+
+Public **BETA**. Fixes for three bugs a second automated test round
+(qa-loop) found in 0.15.0-beta.25. Logs: no `RUST_LOG` level or directive
+makes the WebSocket, HTTP or proxy layers log frames, payloads or proxy
+credentials (a `--secrets` value reached stderr at `trace`). Output files
+(`save_pdf`, `record_video`, `profile_page_performance`) are written from a
+handle on their upload root, so swapping a directory for a symlink during
+the call can no longer send them outside (new dependency `cap-std`).
+Chrome: `open_tab` keeps the history entries a page pushes while loading.
+Behaviour change: on Chrome, `navigate` `history: "back"` never moves to
+the blank page a tab was created with, as on Firefox.
+
 ### Fixed
+
+- `RUST_LOG=trace` (or `debug`) wrote every WebSocket frame to and from
+  the browser to stderr, `--secrets` values typed with `fill_input`
+  included (`tungstenite::protocol`), and `reqwest` logged a proxy URL
+  with its credentials at `debug`. The WebSocket (`tungstenite`,
+  `tokio_tungstenite`) and HTTP (`hyper`, `hyper_util`, `h2`) crates and
+  `reqwest` are now capped at `info`, like the CDP client and the MCP
+  transport, and a `RUST_LOG` directive that asks one of them, or one of
+  their modules (`tungstenite::protocol=trace`), for more is dropped (#114).
 
 - `save_pdf`, `record_video` and `profile_page_performance` could still
   write outside the upload roots when a directory under them was swapped
@@ -28,15 +50,6 @@ from a copy of its code: entries describe the differences from that release.
   (behaviour change: it went to `about:blank`). On Chrome,
   `history.length` still counts that blank page when the page added
   entries while loading (`pushState`, a script redirect).
-
-- `RUST_LOG=trace` (or `debug`) wrote every WebSocket frame to and from
-  the browser to stderr, `--secrets` values typed with `fill_input`
-  included (`tungstenite::protocol`), and `reqwest` logged a proxy URL
-  with its credentials at `debug`. The WebSocket (`tungstenite`,
-  `tokio_tungstenite`) and HTTP (`hyper`, `hyper_util`, `h2`) crates and
-  `reqwest` are now capped at `info`, like the CDP client and the MCP
-  transport, and a `RUST_LOG` directive that asks one of them, or one of
-  their modules (`tungstenite::protocol=trace`), for more is dropped (#114).
 
 ## [0.15.0-beta.25] - 2026-11-09
 
