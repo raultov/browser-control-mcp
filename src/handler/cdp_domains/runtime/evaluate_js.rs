@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 
 #[macros::mcp_tool(
     name = "evaluate_js",
-    description = "Evaluates JavaScript in the page and returns its value (promises awaited; top-level await works, the last statement giving the value): {value, type, subtype?, description?, preview?}. value is the JSON form; a Map, Set, typed array, Error, cycle or throwing getter gets a bounded preview (preview: true; a Map as [key, value] pairs, a Set or typed array as items, an Error as {name, message, stack}, '[Circular]', '[Thrown: message]') that description names (Map(2), TypeError: bad); functions, nodes and symbols give null, described (a function's source). Cut over 100000 characters (truncated: true). An exception fails with its message, and its 1-based line and column when they are in the expression. In a paused frame use evaluate_on_call_frame (--tool-groups debug). Chrome stops a script after 8 s; Firefox cannot (close a frozen tab with close_tab)."
+    description = "Evaluates JavaScript in the page and returns its value (promises awaited; top-level await works, the last statement giving the value): {value, type, subtype?, description?, preview?}. value is the JSON form; a Map, Set, typed array, Error, cycle or throwing getter gets a bounded preview (preview: true; a Map as [key, value] pairs, a Set or typed array as items, an Error as {name, message, stack}, '[Circular]', '[Thrown: message]') that description names (Map(2), TypeError: bad); functions, nodes and symbols give null, described (a function's source). Cut over 100000 characters (truncated: true). An exception fails with its message, and its 1-based line and column when they are in the expression. user_gesture: true lets the expression call APIs that need a user action (requestFullscreen, clipboard writes, window.open past the popup blocker); off by default, as the page then gets that power. In a paused frame use evaluate_on_call_frame (--tool-groups debug). Chrome stops a script after 8 s; Firefox cannot (close a frozen tab with close_tab)."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct EvaluateJsTool {
@@ -19,6 +19,9 @@ pub struct EvaluateJsTool {
     pub tab_id: Option<String>,
     /// A JavaScript expression or IIFE.
     pub expression: String,
+    /// Run it as if the user had just interacted, for APIs that need it
+    /// (fullscreen, clipboard, popups). Default: false.
+    pub user_gesture: Option<bool>,
 }
 
 /// The object group of `evaluate_js`'s remote objects, released after each call.
@@ -37,8 +40,13 @@ impl EvaluateJsTool {
         // Chrome cannot await a promise while the page is paused in the
         // debugger (no microtask runs): the call would wait for the timeout.
         let paused = target.is_paused().await;
+        let gesture = args.user_gesture == Some(true);
         let evaluate = |expression: &str| {
-            let params = json!({"expression": expression, "awaitPromise": !paused});
+            let mut params = json!({"expression": expression, "awaitPromise": !paused});
+            // Opt-in only: it lets the page open popups or write the clipboard.
+            if gesture {
+                params["userGesture"] = json!(true);
+            }
             evaluate_remote(
                 &target,
                 "Runtime.evaluate",
@@ -321,6 +329,44 @@ mod tests {
         assert_eq!(
             sent[1].params["expression"],
             crate::util::js::with_top_level_await(expression)
+        );
+    }
+
+    /// #121: `user_gesture: true` runs the expression as if the user had
+    /// just interacted (`userGesture`), also when it runs again as an async
+    /// function; without it Chrome is not asked to.
+    #[tokio::test]
+    async fn user_gesture_is_sent_only_when_asked() {
+        // Given a page that refuses top-level await
+        let mock = spawn_recording_mock().await;
+        mock.respond_with("Runtime.evaluate", |params| {
+            match params["expression"].as_str().unwrap_or_default().starts_with("(async () =>") {
+                true => json!({"result": {"result": {"type": "boolean", "value": true}}}),
+                false => json!({"result": {"result": {"type": "object"}, "exceptionDetails": {"text": "Uncaught",
+                    "lineNumber": 0, "columnNumber": 0, "exception": {"type": "object", "subtype": "error",
+                    "description": "SyntaxError: await is only valid in async functions and the top level bodies of modules"}}}}),
+            }
+        });
+        let handler = mock_handler(mock.http_port);
+        // When evaluate_js runs with user_gesture true, then without it
+        let expression = "await document.body.requestFullscreen()";
+        for args in [
+            json!({"expression": expression, "user_gesture": true}),
+            json!({"expression": expression}),
+        ] {
+            EvaluateJsTool::handle(call("evaluate_js", args), &handler)
+                .await
+                .unwrap();
+        }
+        // Then only the first call's evaluations asked for a user gesture
+        let gestures: Vec<Value> = mock
+            .commands_named("Runtime.evaluate")
+            .iter()
+            .map(|c| c.params["userGesture"].clone())
+            .collect();
+        assert_eq!(
+            gestures,
+            [json!(true), json!(true), Value::Null, Value::Null]
         );
     }
 

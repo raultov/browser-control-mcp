@@ -10,6 +10,17 @@ from a copy of its code: entries describe the differences from that release.
 
 ## [Unreleased]
 
+### Added
+
+- `evaluate_js` `user_gesture: true` runs the expression as if the user had
+  just interacted (Chrome `Runtime.evaluate` `userGesture`, Firefox
+  `script.evaluate` `userActivation`), so it can call the APIs browsers
+  keep for a user action: `requestFullscreen()`, clipboard writes,
+  `window.open()` past the popup blocker. Off by default; the server's own
+  evaluations never ask for it. Firefox 160 made the flag dependable: from
+  then on, an evaluation without it keeps the activation a click gave
+  (#121).
+
 ### Fixed
 
 - `--downloads-dir`: two instance labels that cleaned to the same name and

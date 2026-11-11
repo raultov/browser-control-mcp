@@ -789,7 +789,8 @@ mod e2e {
     fn runtime_steps(instance: &str) -> Vec<Step> {
         let i = json!(instance);
         let effects = "document.querySelector('#q').value + window.__clicked";
-        let mut steps = vec![
+        let mut steps = user_gesture_steps(instance);
+        steps.extend([
             (
                 "evaluate_js",
                 "evaluate_js",
@@ -814,9 +815,33 @@ mod e2e {
                 json!({"instance_id": i, "expression": effects}),
                 "typed1",
             ),
-        ];
+        ]);
         steps.extend(preview_steps(instance));
         steps
+    }
+
+    /// #121: `evaluate_js` gives the page user activation only with
+    /// `user_gesture: true` (run first: no input action came before, and
+    /// a click's activation lasts a few seconds).
+    fn user_gesture_steps(instance: &str) -> Vec<Step> {
+        let active = |gesture: Option<bool>| {
+            let expression = "navigator.userActivation.isActive";
+            json!({"instance_id": instance, "expression": expression, "user_gesture": gesture})
+        };
+        vec![
+            (
+                "#121 evaluate_js without user_gesture gives no activation",
+                "evaluate_js",
+                active(None),
+                "\"value\": false",
+            ),
+            (
+                "#121 evaluate_js with user_gesture gives activation",
+                "evaluate_js",
+                active(Some(true)),
+                "\"value\": true",
+            ),
+        ]
     }
 
     /// ISSUE-11 and ISSUE-2: a click that opens a dialog, then content that

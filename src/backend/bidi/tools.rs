@@ -309,8 +309,11 @@ async fn on_page(
 pub(crate) async fn evaluate_js(params: CallToolRequestParams, handler: &McpHandler) -> ToolResult {
     let args: EvaluateJsTool = parse_args(params)?;
     let ids = ids(&args.instance_id, &args.tab_id);
+    let gesture = args.user_gesture == Some(true);
     on_page(handler, (&ids, None), "evaluate_js", async |tab| {
-        Ok(page::evaluate_js(tab, &args.expression).await?.reply())
+        Ok(page::evaluate_js(tab, &args.expression, gesture)
+            .await?
+            .reply())
     })
     .await
 }
@@ -2580,6 +2583,53 @@ mod tests {
         );
         let released = &mock.bidi().commands_named("script.disown")[0].params;
         assert_eq!(released["handles"], json!(["h1"]));
+        ts::stop(&handler).await;
+    }
+
+    /// #121 (Firefox): `user_gesture: true` runs the expression with user
+    /// activation (`userActivation`, also when it runs again as an async
+    /// function); without it, and for the server's own reads, none is sent.
+    #[tokio::test]
+    async fn user_activation_is_sent_only_when_asked() {
+        // Given a page that refuses top-level await
+        let mock = MockFirefox::start(false).await.unwrap();
+        mock.bidi().respond_with("script.evaluate", |params| {
+            let expression = params["expression"].as_str().unwrap_or_default();
+            if expression.starts_with("(async () =>") {
+                return evaluate_success(json!({"type": "object", "handle": "h1"}));
+            }
+            let syntax = json!({"type": "error", "handle": "e1"});
+            let details = json!({"text": "SyntaxError: await is only valid in async functions and the top level bodies of modules", "lineNumber": 0, "columnNumber": 0, "exception": syntax, "stackTrace": {"callFrames": []}});
+            json!({"type": "success", "result": {"type": "exception", "exceptionDetails": details, "realm": "r1"}})
+        });
+        mock.bidi().respond_with("script.callFunction", |_| {
+            evaluate_success(ts::remote(&json!({"a": 1})))
+        });
+        let handler = ts::handler(&mock);
+        // When evaluate_js runs with user_gesture true, then without it
+        let expression = "await navigator.clipboard.writeText('x')";
+        for args in [
+            json!({"expression": expression, "user_gesture": true}),
+            json!({"expression": expression}),
+        ] {
+            evaluate_js(call("evaluate_js", args), &handler)
+                .await
+                .unwrap();
+        }
+        // Then only the first call's evaluations carried user activation
+        let sent = |method: &str| -> Vec<Value> {
+            let commands = mock.bidi().commands_named(method);
+            commands
+                .iter()
+                .map(|c| c.params["userActivation"].clone())
+                .collect()
+        };
+        assert_eq!(
+            sent("script.evaluate"),
+            [json!(true), json!(true), Value::Null, Value::Null]
+        );
+        // And the server's own reads of the result never did
+        assert!(sent("script.callFunction").iter().all(Value::is_null));
         ts::stop(&handler).await;
     }
 

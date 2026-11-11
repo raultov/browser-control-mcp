@@ -292,11 +292,16 @@ pub(crate) async fn evaluate(tab: &Tab, expression: &str) -> Result<Value, Backe
 /// `evaluate_js`: [`evaluate_once`], run again as an async function
 /// ([`crate::util::js::with_top_level_await`]) when the expression uses
 /// `await` at its top level, which `script.evaluate` refuses (Chrome does
-/// the same).
-pub(crate) async fn evaluate_js(tab: &Tab, expression: &str) -> Result<Evaluation, BackendError> {
-    let outcome = match evaluate_once(tab, expression).await {
+/// the same). With `user_gesture`, both run with user activation (#121).
+pub(crate) async fn evaluate_js(
+    tab: &Tab,
+    expression: &str,
+    user_gesture: bool,
+) -> Result<Evaluation, BackendError> {
+    let outcome = match evaluate_once(tab, expression, user_gesture).await {
         Err(BackendError::InvalidArgument(error)) if error.contains("await is only valid") => {
-            evaluate_once(tab, &crate::util::js::with_top_level_await(expression)).await
+            let wrapped = crate::util::js::with_top_level_await(expression);
+            evaluate_once(tab, &wrapped, user_gesture).await
         }
         outcome => outcome,
     };
@@ -313,15 +318,24 @@ pub(crate) async fn evaluate_js(tab: &Tab, expression: &str) -> Result<Evaluatio
 /// as an error worded as on Chrome. An object is held by reference (a
 /// handle, without its contents) and read by value only when its JSON form
 /// fits ([`evaluation::MEASURE`]): a large one would cross the connection
-/// whole.
-async fn evaluate_once(tab: &Tab, expression: &str) -> Result<Evaluation, BackendError> {
-    let params = json!({
+/// whole. With `user_gesture` the page gets user activation, as after a
+/// click (`userActivation`; Firefox 160+ no longer clears an earlier one
+/// when it is false); the server's own evaluations never ask for it.
+async fn evaluate_once(
+    tab: &Tab,
+    expression: &str,
+    user_gesture: bool,
+) -> Result<Evaluation, BackendError> {
+    let mut params = json!({
         "expression": expression,
         "target": tab.script_target(),
         "awaitPromise": true,
         "resultOwnership": "root",
         "serializationOptions": {"maxObjectDepth": 0},
     });
+    if user_gesture {
+        params["userActivation"] = json!(true);
+    }
     let method = "script.evaluate";
     let reply = unless_prompt(tab, method, tab.send_raw_command(method, params))
         .await?
