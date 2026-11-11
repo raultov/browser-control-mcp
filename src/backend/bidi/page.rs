@@ -71,9 +71,33 @@ pub(crate) async fn navigate(
     url: &str,
     local: bool,
 ) -> Result<NavigationOutcome, BackendError> {
-    let outcome = load(tab, url).await?;
-    stay_local(tab, local, &outcome.url).await?;
-    Ok(outcome)
+    let loaded = load(tab, url).await;
+    stay_local_after(tab, local, loaded).await
+}
+
+/// `navigated`, the outcome of a navigation (a URL, a history move, a
+/// reload), once [`stay_local`] checked where the tab ended, also when it
+/// failed: a page that is not local opening a prompt while loading (a
+/// redirect's target) failed it quoting the prompt, and `handle_dialog`
+/// then let the page load (#117). Then the prompt is dismissed and the tab
+/// sent back to about:blank, and the error is the `--local` one.
+pub(crate) async fn stay_local_after(
+    tab: &Tab,
+    local: bool,
+    navigated: Result<NavigationOutcome, BackendError>,
+) -> Result<NavigationOutcome, BackendError> {
+    let landed = match &navigated {
+        Ok(outcome) => outcome.url.clone(),
+        Err(_) if local => settled(tab, json!({}), "").await.url,
+        Err(_) => return navigated,
+    };
+    if navigated.is_err() && crate::handler::navigation::left_local(local, &landed) {
+        // Best effort: there may be no prompt (a navigation error).
+        let dismiss = json!({"context": tab.context_id(), "accept": false});
+        let _ = command(tab, "browsingContext.handleUserPrompt", dismiss).await;
+    }
+    stay_local(tab, local, &landed).await?;
+    navigated
 }
 
 /// With `local` (the server runs with `--local`), fails when the tab ended

@@ -195,10 +195,12 @@ async fn traverse_history(
     step: HistoryStep,
 ) -> ToolResult {
     let (session, id, tab) = target(handler, &ids(&args.instance_id, &args.tab_id)).await?;
-    let traversal = page::traverse(&tab.tab, step);
-    let outcome = unless_paused_replacing(&session, &id, "navigate", traversal).await?;
     // The entry may be one a redirect left on a remote address.
-    page::stay_local(&tab.tab, handler.flags.local, &outcome.url).await?;
+    let traversal = async {
+        let traversed = page::traverse(&tab.tab, step).await;
+        page::stay_local_after(&tab.tab, handler.flags.local, traversed).await
+    };
+    let outcome = unless_paused_replacing(&session, &id, "navigate", traversal).await?;
     let document = navigation_document(&tab, &outcome, &outcome.url).await;
     let outcome = outcome.with_status(document.and_then(|d| d.response_status));
     Ok(outcome.reply(&format!("{} {}.", step.went(), outcome.url), Some(&id)))
@@ -280,10 +282,12 @@ async fn navigation_document(
 pub(crate) async fn reload(params: CallToolRequestParams, handler: &McpHandler) -> ToolResult {
     let ids: TargetArgs = parse_args(params)?;
     let (session, id, tab) = target(handler, &ids).await?;
-    let reload = unless_auth(&tab, page::reload(&tab.tab));
-    let outcome = unless_paused_replacing(&session, &id, "reload", reload).await?;
     // The page's server may now redirect elsewhere.
-    page::stay_local(&tab.tab, handler.flags.local, &outcome.url).await?;
+    let reload = async {
+        let reloaded = unless_auth(&tab, page::reload(&tab.tab)).await;
+        page::stay_local_after(&tab.tab, handler.flags.local, reloaded).await
+    };
+    let outcome = unless_paused_replacing(&session, &id, "reload", reload).await?;
     let document = navigation_document(&tab, &outcome, &outcome.url).await;
     let outcome = outcome.with_status(document.and_then(|d| d.response_status));
     Ok(outcome.reply("Page reloaded.", Some(&id)))
@@ -1503,6 +1507,103 @@ mod tests {
         let sent = mock.bidi().commands_named("browsingContext.navigate");
         assert_eq!(sent.len(), 2);
         assert!(sent.iter().all(|c| c.params["url"] == "about:blank"));
+        ts::stop(&handler).await;
+    }
+
+    /// A --local Firefox whose navigations, history moves and reloads fail
+    /// (as a prompt the page opens while loading fails them) on a tab that
+    /// is then on `landed`; about:blank loads.
+    fn failing_on(mock: &MockFirefox, landed: &'static str) -> McpHandler {
+        let failed = || json!({"type": "error", "error": "unknown error", "message": "Error: X"});
+        let bidi = mock.bidi();
+        bidi.respond_with(
+            "browsingContext.navigate",
+            move |params| match params["url"].as_str() {
+                Some("about:blank") => json!({"navigation": "n2", "url": "about:blank"}),
+                _ => failed(),
+            },
+        );
+        bidi.respond_with("browsingContext.traverseHistory", move |_| failed());
+        bidi.respond_with("browsingContext.reload", move |_| failed());
+        bidi.respond_with("browsingContext.handleUserPrompt", |_| json!({}));
+        bidi.respond_with(
+            "browsingContext.getTree",
+            move |_| json!({"contexts": [{"context": "ctx-0", "url": landed, "children": null}]}),
+        );
+        let mut handler = ts::handler(mock);
+        handler.flags.local = true;
+        handler
+    }
+
+    /// The `navigate` (to a URL, then back) and `reload` errors on `handler`.
+    async fn navigation_errors(handler: &McpHandler) -> Vec<String> {
+        let to = json!({"url": "http://127.0.0.1:8/redirect"});
+        let results = [
+            navigate(call("navigate", to), handler).await,
+            navigate(call("navigate", json!({"history": "back"})), handler).await,
+            reload(call("reload", json!({})), handler).await,
+        ];
+        results
+            .into_iter()
+            .map(|r| r.unwrap_err().to_string())
+            .collect()
+    }
+
+    /// NAV-08 (#117, Firefox): with --local, a navigation, history move or
+    /// reload that fails (a prompt of the page) once the tab is on an
+    /// address that is not local fails as --local, not with its own error
+    /// (the prompt's text): the prompt is dismissed and the tab sent back
+    /// to about:blank, so no later tool reads the page.
+    #[tokio::test]
+    async fn local_mode_refuses_a_failed_navigation_that_ends_remote() {
+        // Given a --local Firefox whose navigations fail on a remote page
+        let mock = MockFirefox::start(false).await.unwrap();
+        let handler = failing_on(&mock, "http://127.0.0.2:8/alert.html");
+        // When navigate, history back and reload run
+        for error in navigation_errors(&handler).await {
+            // Then each fails naming --local and the remote origin
+            assert!(
+                error.contains("--local") && error.ends_with("(http://127.0.0.2:8)"),
+                "{error}"
+            );
+        }
+        // And each dismissed the prompt, then sent the tab to about:blank
+        let dismissed = mock
+            .bidi()
+            .commands_named("browsingContext.handleUserPrompt");
+        assert_eq!(dismissed.len(), 3);
+        assert_eq!(
+            dismissed[0].params,
+            json!({"context": "ctx-0", "accept": false})
+        );
+        let blank = mock.bidi().commands_named("browsingContext.navigate");
+        assert_eq!(
+            blank
+                .iter()
+                .filter(|c| c.params["url"] == "about:blank")
+                .count(),
+            3
+        );
+        ts::stop(&handler).await;
+    }
+
+    /// NAV-08 (#117, Firefox): a failure on a local page keeps its error.
+    #[tokio::test]
+    async fn local_mode_keeps_a_local_pages_failure() {
+        // Given a --local Firefox whose navigations fail on a local page
+        let mock = MockFirefox::start(false).await.unwrap();
+        let handler = failing_on(&mock, "http://127.0.0.1:8/alert.html");
+        // When navigate, history back and reload run
+        for error in navigation_errors(&handler).await {
+            // Then each fails with its own error
+            assert!(!error.contains("--local"), "{error}");
+        }
+        // And nothing was dismissed or blanked
+        assert_eq!(mock.bidi().count("browsingContext.handleUserPrompt"), 0);
+        assert_eq!(
+            mock.bidi().commands_named("browsingContext.navigate").len(),
+            1
+        );
         ts::stop(&handler).await;
     }
 

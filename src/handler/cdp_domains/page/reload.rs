@@ -45,12 +45,14 @@ impl ReloadTool {
         // loads never fires `load`: the call ends saying so, as on Firefox.
         // Listened for before the command is sent: the pause can come
         // right after its reply.
-        let (resp, loaded) = target
-            .race_interruptions("reload", reload)
-            .await
-            .map_err(|stopped| stopped.during("reload"))
-            .and_then(|reloaded| reloaded)
-            .map_err(CallToolError::from_message)?;
+        let (resp, loaded) = match target.race_interruptions("reload", reload).await {
+            Ok(reloaded) => reloaded.map_err(CallToolError::from_message)?,
+            Err(stopped) => {
+                let local = handler.flags.local;
+                let interrupted = super::navigate::interrupted(&target, local, &stopped, "reload");
+                return Err(interrupted.await);
+            }
+        };
         let browser = resp.result.unwrap_or_else(|| json!({}));
         let network = session.network_state(ids.tab_id.clone())?;
         let outcome = super::navigate::finish(&target, "", browser, loaded).await;
@@ -137,6 +139,35 @@ mod tests {
         );
         let sent = mock.commands_named("Page.navigate");
         assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].params["url"], "about:blank");
+    }
+
+    /// #117: with --local, a reload that lands on a remote page opening a
+    /// dialog while loading fails as --local, not quoting the dialog; the
+    /// dialog is dismissed and the tab sent back to about:blank.
+    #[tokio::test]
+    async fn local_mode_refuses_a_reload_that_ends_on_a_remote_dialog() {
+        // Given a --local Chrome whose reload lands on a remote page that alerts
+        let mock = spawn_recording_mock().await;
+        committed_url(mock, "http://127.0.0.2:8/alert.html");
+        mock.respond_with("Page.handleJavaScriptDialog", |_| json!({}));
+        let alert = json!({"url": "http://127.0.0.2:8/alert.html", "message": "PageText", "type": "alert", "hasBrowserHandler": false, "defaultPrompt": ""});
+        let opening = "Page.javascriptDialogOpening";
+        crate::handler::cdp_domains::tests::fire_after(mock, "Page.reload", opening, alert);
+        let mut handler = mock_handler(mock.http_port);
+        handler.flags.local = true;
+        // When reload runs
+        let error = ReloadTool::handle(call("reload", json!({})), &handler)
+            .await
+            .unwrap_err()
+            .to_string();
+        // Then it fails naming --local, not the dialog, and the tab is blank
+        assert!(
+            error.contains("--local") && !error.contains("PageText"),
+            "{error}"
+        );
+        assert_eq!(mock.commands_named("Page.handleJavaScriptDialog").len(), 1);
+        let sent = mock.commands_named("Page.navigate");
         assert_eq!(sent[0].params["url"], "about:blank");
     }
 

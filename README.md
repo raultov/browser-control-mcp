@@ -688,14 +688,15 @@ incompatible:
   `open_tab`, `reload` and `lighthouse_report` also check where the tab
   ended: on a network address that is not local (after a redirect, say)
   they fail naming its origin, and the tab goes back to `about:blank` (the
-  error says if that failed). The browser follows a redirect before the
-  server sees it, so that request was already sent. `lighthouse_report`
-  without `url` refuses a current page that is not local before loading
-  it. The raw tools and the `enable_proxy_auth` pre-warm page are checked
-  only before they start; the reloads of `profile_page_performance` and
-  `pause_on_load` are not checked. JavaScript running in the page can
-  still navigate anywhere, and the page's own requests (images, scripts,
-  `fetch`) are not restricted.
+  error says if that failed), also when that page opened a dialog while
+  loading (the dialog is dismissed first). The browser follows a redirect
+  before the server sees it, so that request was already sent.
+  `lighthouse_report` without `url` refuses a current page that is not
+  local before loading it. The raw tools and the `enable_proxy_auth`
+  pre-warm page are checked only before they start; the reloads of
+  `profile_page_performance` and `pause_on_load` are not checked.
+  JavaScript running in the page can still navigate anywhere, and the
+  page's own requests (images, scripts, `fetch`) are not restricted.
 - Firefox: after a lost connection a launched Firefox gets a new session on
   the next tool call; an attached Firefox keeps its orphan session, so
   restart that Firefox.

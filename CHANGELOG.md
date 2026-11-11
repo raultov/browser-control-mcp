@@ -37,6 +37,15 @@ from a copy of its code: entries describe the differences from that release.
   with a new blank tab (whose blank page the first navigation replaces)
   instead of navigating it to `about:blank` (#119).
 
+- `--local`: a redirect to a page that is not local and opens a dialog
+  while loading made `navigate` (Chrome, Firefox) and `open_tab` (Firefox)
+  fail quoting the dialog, and the tab stayed there: after
+  `handle_dialog`, `evaluate_js`, `snapshot` and `list_tabs` read the page.
+  `navigate` (also `history`), `open_tab` and `reload` now check where the
+  tab is when a dialog interrupts them (Firefox: when they fail): on an
+  address that is not local the dialog is dismissed, the tab goes back to
+  `about:blank`, and the call fails with the `--local` error (#117).
+
 ## [0.16.0-beta.26] - 2026-11-10
 
 Public **BETA**. Fixes for three bugs a second automated test round
