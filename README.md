@@ -743,9 +743,10 @@ incompatible:
   symlinks cannot leave them. Paths are never logged.
 - `--secrets <file>` keeps known values (test passwords, API keys) out of
   what the agent reads: every tool result and error (text, embedded text,
-  structured content) shows them as `<secret:NAME>`, also when escaped
-  inside JSON or URL-encoded as a form, `encodeURIComponent` or
-  `encodeURI` encodes them (a GET form puts a typed password in the URL),
+  structured content) shows them as `<secret:NAME>`, also when
+  URL-encoded as a form, `encodeURIComponent` or `encodeURI` encodes them
+  (a GET form puts a typed password in the URL) and when escaped inside
+  JSON strings, up to four deep (an `evaluate_js` of `JSON.stringify`),
   and `fill_input` / `fill_form` type the value of a
   `<secret:NAME>` they are given, so the agent can log in without seeing
   the password. It is a convenience, not a security boundary: the page can

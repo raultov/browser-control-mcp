@@ -21,6 +21,12 @@ from a copy of its code: entries describe the differences from that release.
   letters, digits, `-` and `_` gets a new folder name; `default` and the
   generated ids (`chrome-1`) keep theirs (#120).
 
+- `--secrets`: a value with a quote or a backslash (`Qx"y\z7731`) showed
+  in full when `evaluate_js` returned a `JSON.stringify` of it: the tool's
+  JSON reply escaped it a second time, and only the once-escaped form was
+  masked. Every masked form of a value (as is and URL-encoded) is now also
+  masked escaped inside JSON strings up to four deep (#118).
+
 ## [0.16.0-beta.26] - 2026-11-10
 
 Public **BETA**. Fixes for three bugs a second automated test round

@@ -3,11 +3,13 @@
 //! and `fill_form` type the value of a `<secret:NAME>` they are given, so a
 //! password can be typed without the agent ever seeing it.
 //!
-//! Values are masked as is, escaped inside JSON, and URL-encoded as a form,
-//! `encodeURIComponent` or `encodeURI` encodes them (a GET form puts a typed password
-//! in the URL). A convenience, not a security boundary: a page can
-//! transform a value (encode it otherwise, split it) into something no
-//! longer masked, and images (screenshots, PDFs) are not masked.
+//! Values are masked as is and URL-encoded as a form, `encodeURIComponent`
+//! or `encodeURI` encodes them (a GET form puts a typed password in the
+//! URL), each also escaped inside JSON strings, nested a few deep (a page's
+//! `JSON.stringify` in a tool's JSON reply). A convenience, not a security
+//! boundary: a page can transform a value (encode it otherwise, split it)
+//! into something no longer masked, and images (screenshots, PDFs) are not
+//! masked.
 
 use rust_mcp_sdk::schema::{
     CallToolError, CallToolRequestParams, CallToolResult, ContentBlock, EmbeddedResourceResource,
@@ -98,8 +100,9 @@ impl Secrets {
         self.entries.is_empty()
     }
 
-    /// `text` with every secret value (as is, escaped inside a JSON string,
-    /// or URL-encoded as the browser does) replaced by `<secret:NAME>`.
+    /// `text` with every secret value (as is or URL-encoded as the browser
+    /// does, each also escaped inside nested JSON strings) replaced by
+    /// `<secret:NAME>`.
     pub fn mask(&self, text: &str) -> String {
         let forms = &self.forms;
         if !forms.iter().any(|(form, _)| text.contains(form.as_str())) {
@@ -250,20 +253,27 @@ impl Secrets {
     }
 }
 
-/// Each value with its token, as is, as escaped inside a JSON string and
-/// as the browser URL-encodes it (#109): the longest first, so a value
-/// containing another is masked whole.
+/// How many JSON strings deep a value is masked: a tool's JSON reply of
+/// a page's `JSON.stringify` of `JSON.stringify` is three (#118), plus one.
+const JSON_LEVELS: usize = 4;
+
+/// Each value with its token, as is and as the browser URL-encodes it
+/// (#109), each also as escaped inside JSON strings nested up to
+/// [`JSON_LEVELS`] deep (#118): the longest first, so a value containing
+/// another is masked whole.
 fn forms_of(entries: &[(String, String)]) -> Vec<(String, String)> {
     let mut forms = Vec::new();
     for (name, value) in entries {
         let token = format!("<secret:{name}>");
-        let escaped = serde_json::to_string(value).unwrap_or_default();
-        // Only the quotes JSON adds: the value's own may start or end it.
-        let escaped = escaped.strip_prefix('"').and_then(|e| e.strip_suffix('"'));
-        let mut written = vec![value.clone(), escaped.unwrap_or(value).to_string()];
+        let mut written = vec![value.clone()];
         for encoded in url_encoded(value) {
             written.push(lowercase_hex(&encoded));
             written.push(encoded);
+        }
+        let mut level = written.clone();
+        for _ in 0..JSON_LEVELS {
+            level = level.iter().map(|form| json_escaped(form)).collect();
+            written.extend(level.iter().cloned());
         }
         written.sort();
         written.dedup();
@@ -271,6 +281,14 @@ fn forms_of(entries: &[(String, String)]) -> Vec<(String, String)> {
     }
     forms.sort_by_key(|(form, _)| std::cmp::Reverse(form.len()));
     forms
+}
+
+/// `text` as written inside a JSON string, without the quotes JSON adds
+/// (the text's own may start or end it).
+fn json_escaped(text: &str) -> String {
+    let quoted = serde_json::to_string(text).unwrap_or_default();
+    let inner = quoted.strip_prefix('"').and_then(|q| q.strip_suffix('"'));
+    inner.unwrap_or(text).to_string()
 }
 
 /// What `encodeURIComponent` escapes: all but ASCII letters, digits and
@@ -400,6 +418,33 @@ mod tests {
         let quoted = Secrets::parse("Q='\"abcd\"'").unwrap();
         let json = serde_json::to_string(&json!({"k": "\"abcd\""})).unwrap();
         assert_eq!(quoted.mask(&json), "{\"k\":\"<secret:Q>\"}");
+    }
+
+    /// #118: a value with a quote and a backslash is masked inside JSON
+    /// strings nested in JSON strings (a tool's JSON reply of a page's
+    /// `JSON.stringify`, even of `JSON.stringify`), and so are its
+    /// URL-encoded forms.
+    #[test]
+    fn values_are_masked_in_nested_json_strings() {
+        // Given a secret JSON escapes
+        let s = Secrets::parse("PW=Qx\"y\\z7731\n").unwrap();
+        let value = "Qx\"y\\z7731";
+        // When the page stringifies it once or twice and the tool replies
+        let once = serde_json::to_string(&json!({"pw": value})).unwrap();
+        let twice = serde_json::to_string(&once).unwrap();
+        for page in [once.clone(), twice] {
+            let reply = serde_json::to_string_pretty(&json!({"value": page})).unwrap();
+            // Then no form of the value is left
+            let masked = s.mask(&reply);
+            assert!(!masked.contains("z7731"), "{masked}");
+            assert!(masked.contains("<secret:PW>"), "{masked}");
+        }
+        let reply = serde_json::to_string(&json!({"value": once})).unwrap();
+        assert_eq!(s.mask(&reply), r#"{"value":"{\"pw\":\"<secret:PW>\"}"}"#);
+        // And a URL-encoded form escaped in JSON is masked too
+        let url = serde_json::to_string(&json!({"u": "?pw=Qx%22y%5Cz7731"})).unwrap();
+        let reply = serde_json::to_string(&json!({"value": url})).unwrap();
+        assert!(!s.mask(&reply).contains("z7731"));
     }
 
     /// SECRETS-05 (#109): a value is also masked as a form encodes it (a GET
