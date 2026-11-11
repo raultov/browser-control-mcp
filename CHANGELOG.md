@@ -10,6 +10,17 @@ from a copy of its code: entries describe the differences from that release.
 
 ## [Unreleased]
 
+### Fixed
+
+- `--downloads-dir`: two instance labels that cleaned to the same name and
+  shared a 32-bit hash (`!@^^&!` and `!$%*!!`) still shared one downloads
+  folder. A folder name now spells every byte it replaces: `~` and two hex
+  digits (`a/b` is `a~2fb`, `MyLabel` is `~4dy~4cabel`), and an empty
+  label or a device name Windows reserves gets a trailing `~` (`con~`,
+  `instance~`). Behaviour change: a label that is not only lowercase
+  letters, digits, `-` and `_` gets a new folder name; `default` and the
+  generated ids (`chrome-1`) keep theirs (#120).
+
 ## [0.16.0-beta.26] - 2026-11-10
 
 Public **BETA**. Fixes for three bugs a second automated test round

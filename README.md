@@ -732,9 +732,10 @@ incompatible:
   `show_values: true`; values never reach the logs.
 - Downloads are written only to the instance's downloads directory (see
   `--downloads-dir`): a suggested name keeps only its file name, an
-  instance's folder only lowercase letters, digits, `-` and `_` (plus `~`
-  and a hash of the label when that changed it, or for an empty label or
-  a device name Windows reserves, so two instances never share a folder),
+  instance's folder only lowercase letters, digits, `-`, `_` and `~` (any
+  other byte of the label is written `~` and two hex digits, `a/b` as
+  `a~2fb` and `A` as `~41`, and an empty label or a device name Windows
+  reserves gets a trailing `~`, so two instances never share a folder),
   and an existing file is never replaced.
 - `upload_file` hands the page a file's contents: it only reads files under
   the upload roots (the server's working directory and the system temp

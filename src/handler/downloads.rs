@@ -159,24 +159,33 @@ impl DownloadState {
     }
 }
 
-/// The folder of instance `id` in `--downloads-dir` `dir`: its id with
-/// only lowercase ASCII letters, digits, `-` and `_` (a label is the
-/// agent's text). When that changed the id, or the id is empty or a name
-/// Windows reserves (`con`, `nul`, `com1`...), `~` and a hash of the id
-/// follow: `~` is in no cleaned id, so two ids never share a folder (#113:
-/// `a/b` and `a_b` did), on case-insensitive file systems either.
+/// The folder of instance `id` in `--downloads-dir` `dir` (a label is the
+/// agent's text): the id when it is only lowercase ASCII letters, digits,
+/// `-` and `_`. Any other byte is written `~` and two lowercase hex digits
+/// (`a/b` is `a~2fb`, `A` is `~41`), and an empty id or a name Windows
+/// reserves (`con`, `com1`...) gets a trailing `~` (`instance~` for the
+/// empty one). The name only has lowercase characters and spells every
+/// byte it replaced, so two ids never share a folder, on case-insensitive
+/// file systems either (#113: `a/b` and `a_b` did; #120: a 32-bit hash of
+/// the replaced bytes collided).
 pub(crate) fn instance_folder(dir: &Path, id: &str) -> PathBuf {
-    let safe = |c: char| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_';
-    let name: String = id
-        .chars()
-        .map(|c| c.to_ascii_lowercase())
-        .map(|c| if safe(c) { c } else { '_' })
-        .collect();
-    if name == id && !name.is_empty() && !is_reserved_on_windows(&name) {
-        return dir.join(name);
+    let safe = |b: u8| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_';
+    let mut name = String::with_capacity(id.len());
+    for byte in id.bytes() {
+        if safe(byte) {
+            name.push(char::from(byte));
+        } else {
+            name.push_str(&format!("~{byte:02x}"));
+        }
     }
-    let name = if name.is_empty() { "instance" } else { &name };
-    dir.join(format!("{name}~{:08x}", fnv1a(id)))
+    // Only an id without escaped bytes can be empty or reserved here; a
+    // lone trailing `~` is no escape, so it cannot be another id's name.
+    if name.is_empty() {
+        name.push_str("instance~");
+    } else if is_reserved_on_windows(&name) {
+        name.push('~');
+    }
+    dir.join(name)
 }
 
 /// Whether Windows reserves `name` (a device name) in every directory.
@@ -187,14 +196,6 @@ fn is_reserved_on_windows(name: &str) -> bool {
             .is_some_and(|n| n.len() == 1 && n.bytes().all(|b| (b'1'..=b'9').contains(&b)))
     });
     DEVICES.contains(&name) || numbered
-}
-
-/// FNV-1a (32 bits) of `text`: a hash that stays the same across Rust
-/// releases, so an instance keeps its downloads folder.
-fn fnv1a(text: &str) -> u32 {
-    text.bytes().fold(0x811c_9dc5, |hash, byte| {
-        (hash ^ u32::from(byte)).wrapping_mul(0x0100_0193)
-    })
 }
 
 /// Gives the file Chrome saved as `saved` (named by its guid) the name
@@ -363,8 +364,8 @@ mod tests {
     /// ISSUE-77: an instance's folder is named after its id, which cannot
     /// leave `--downloads-dir`. #113: two ids never share a folder (`a/b`
     /// and `a_b` did), on case-insensitive file systems either (`A`, `a`),
-    /// not even with a hashed one's name; a safe lowercase id keeps its own
-    /// name, unless empty or a device name Windows reserves.
+    /// not even with an escaped one's name; a safe lowercase id keeps its
+    /// own name, unless empty or a device name Windows reserves.
     #[test]
     fn instance_folders_stay_inside_the_directory_and_apart() {
         let dir = Path::new("dl");
@@ -378,24 +379,56 @@ mod tests {
             "com",
             "com0",
             "console",
+            "instance",
         ] {
             assert_eq!(folder(id), dir.join(id), "{id}");
         }
         for (id, name) in [
-            ("../up", "___up~b3c48bfb"),
-            ("a/b\\c", "a_b_c~3eb53d0c"),
-            ("a/b", "a_b~3a8e75c1"),
-            ("A", "a~c40bf6cc"),
-            ("MyLabel", "mylabel~e3a5529b"),
-            ("", "instance~811c9dc5"),
-            ("con", "con~f08dd14b"),
-            ("NUL", "nul~4fad0f80"),
+            ("../up", "~2e~2e~2fup"),
+            ("a/b\\c", "a~2fb~5cc"),
+            ("a/b", "a~2fb"),
+            ("A", "~41"),
+            ("MyLabel", "~4dy~4cabel"),
+            ("a~2fb", "a~7e2fb"),
+            ("é", "~c3~a9"),
+            ("", "instance~"),
+            ("con", "con~"),
+            ("NUL", "~4e~55~4c"),
+            ("lpt9", "lpt9~"),
         ] {
             assert_eq!(folder(id), dir.join(name), "{id:?}");
         }
-        assert!(folder("lpt9").to_string_lossy().contains("lpt9~"));
-        // A plain id cannot take a hashed one's folder
+        // A plain id cannot take an escaped one's folder
         assert_eq!(folder("a_b-3a8e75c1"), dir.join("a_b-3a8e75c1"));
+    }
+
+    /// #120: two ids that clean alike and share an FNV-1a hash (`!@^^&!`
+    /// and `!$%*!!`) got one folder; the name now spells every byte it
+    /// replaces, so no two ids share one.
+    #[test]
+    fn ids_that_clean_alike_never_share_a_folder() {
+        // Given two labels the #113 scheme named `______~c64b3899`
+        let dir = Path::new("dl");
+        let (first, second) = ("!@^^&!", "!$%*!!");
+        // When each gets its folder
+        let (a, b) = (instance_folder(dir, first), instance_folder(dir, second));
+        // Then the folders differ, also once case-folded
+        assert_ne!(a, b);
+        let folded = |p: &Path| p.to_string_lossy().to_lowercase();
+        assert_ne!(folded(&a), folded(&b));
+        assert_eq!(a, dir.join("~21~40~5e~5e~26~21"));
+        // And distinct ids of every short shape get distinct folders
+        let alphabet = ["a", "A", "_", "-", "~", "/", "~7e", "~41", "con", ""];
+        let mut seen = std::collections::HashMap::new();
+        for x in alphabet {
+            for y in alphabet {
+                let id = format!("{x}{y}");
+                let name = folded(&instance_folder(dir, &id));
+                if let Some(other) = seen.insert(name.clone(), id.clone()) {
+                    assert_eq!(other, id, "{other:?} and {id:?} share {name}");
+                }
+            }
+        }
     }
 
     /// ISSUE-77: the downloads an action started are those begun after it
