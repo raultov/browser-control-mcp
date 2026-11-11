@@ -10,6 +10,20 @@ from a copy of its code: entries describe the differences from that release.
 
 ## [Unreleased]
 
+## [0.17.0-beta.27] - 2026-11-11
+
+Public **BETA**. `evaluate_js` takes an opt-in `user_gesture`, so an
+expression can call the APIs browsers keep for a user action (fullscreen,
+clipboard writes, popups) on Chrome and Firefox. Fixes for four bugs an
+automated test round found in 0.16.0-beta.26: with `--local`, a page that
+is not local and opens a dialog while loading is now blanked too;
+`--secrets` masks a value inside a `JSON.stringify` that the tool reply
+escapes again; history back on the tab an instance starts with stops at
+the agent's first page; and two `--downloads-dir` labels can no longer
+share a folder. Behaviour changes: a label that is not only lowercase
+letters, digits, `-` and `_` gets a new downloads folder name, and a
+Firefox the server launched replaces its start tab with a new blank tab.
+
 ### Added
 
 - `evaluate_js` `user_gesture: true` runs the expression as if the user had
