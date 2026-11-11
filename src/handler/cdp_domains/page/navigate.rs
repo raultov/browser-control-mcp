@@ -369,13 +369,24 @@ async fn traverse_and_wait(
 }
 
 /// Whether entry `index` of `history` (`Page.getNavigationHistory`) is the
-/// blank page the tab was created with: its first entry, on about:blank.
-/// It is not a page of the tab's history (#116): Firefox replaces it on the
-/// first navigation, and open_tab drops it when it can (#112), but not once
-/// the page pushed entries of its own while loading.
+/// page the tab was created with: its first entry, on about:blank or, for
+/// the tab Chrome starts with, its new-tab page (#119). It is not a page of
+/// the tab's history (#116): Firefox replaces it on the first navigation,
+/// and open_tab drops it when it can (#112), but not once the page pushed
+/// entries of its own while loading.
 pub(crate) fn is_creation_page(history: &Value, index: usize) -> bool {
-    index == 0 && history["entries"][0]["url"] == "about:blank"
+    let url = history["entries"][0]["url"].as_str().unwrap_or_default();
+    index == 0 && (url == "about:blank" || NEW_TAB_PAGES.iter().any(|p| url.starts_with(p)))
 }
+
+/// The new-tab pages Chrome opens a tab on (its first window's tab); none
+/// is a URL `navigate` loads.
+const NEW_TAB_PAGES: [&str; 4] = [
+    "chrome://new-tab-page/",
+    "chrome://newtab/",
+    "chrome://new-tab-page-third-party/",
+    "chrome-search://local-ntp/",
+];
 
 /// Whether `event` commits a new document in the top frame, or moves
 /// within the current one.
@@ -717,6 +728,52 @@ pub(crate) mod tests {
             mock.commands_named("Page.navigateToHistoryEntry")
                 .is_empty()
         );
+    }
+
+    /// NAV-10 (#119): the tab Chrome starts with begins on its new-tab page
+    /// (chrome://new-tab-page/), not about:blank: 'back' to it fails too.
+    #[tokio::test]
+    async fn history_back_never_reaches_the_new_tab_page() {
+        // Given the initial tab on the page it loaded after its new-tab page
+        let mock = spawn_recording_mock().await;
+        history_of(
+            mock,
+            1,
+            ["chrome://new-tab-page/", "http://127.0.0.1:8/one"],
+        );
+        let handler = mock_handler(mock.http_port);
+        // When it goes back
+        let back = json!({"history": "back"});
+        let error = NavigateTool::handle(call("navigate", back), &handler)
+            .await
+            .unwrap_err()
+            .to_string();
+        // Then it fails without moving
+        assert!(error.contains("no previous page"), "{error}");
+        assert!(
+            mock.commands_named("Page.navigateToHistoryEntry")
+                .is_empty()
+        );
+    }
+
+    /// NAV-10 (#119): only a first entry on a blank or new-tab page is the
+    /// tab's creation page; a page the agent loaded is not.
+    #[test]
+    fn creation_pages_are_blank_or_new_tab_first_entries() {
+        let history = |url: &str| json!({"entries": [{"url": url}, {"url": url}]});
+        for url in [
+            "about:blank",
+            "chrome://new-tab-page/",
+            "chrome://newtab/",
+            "chrome://new-tab-page-third-party/",
+            "chrome-search://local-ntp/local-ntp.html",
+        ] {
+            assert!(is_creation_page(&history(url), 0), "{url}");
+            assert!(!is_creation_page(&history(url), 1), "{url}");
+        }
+        for url in ["http://127.0.0.1:8/", "chrome://settings/", "about:blank#x"] {
+            assert!(!is_creation_page(&history(url), 0), "{url}");
+        }
     }
 
     /// ISSUE-31: at the last entry 'forward' fails without moving; a call

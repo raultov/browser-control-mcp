@@ -27,6 +27,16 @@ from a copy of its code: entries describe the differences from that release.
   masked. Every masked form of a value (as is and URL-encoded) is now also
   masked escaped inside JSON strings up to four deep (#118).
 
+- `navigate` `history: "back"` on the tab an instance starts with went
+  past the agent's first page: on Chrome to its new-tab page
+  (`chrome://new-tab-page/`), on Firefox to `about:blank`, then failed
+  with a protocol error (Firefox's `about:home`). As for `open_tab` tabs,
+  it now fails with "There is no previous page" and stays on the first
+  page. Chrome treats a first entry on its new-tab page as the tab's
+  creation page; a Firefox the server launched replaces its start tab
+  with a new blank tab (whose blank page the first navigation replaces)
+  instead of navigating it to `about:blank` (#119).
+
 ## [0.16.0-beta.26] - 2026-11-10
 
 Public **BETA**. Fixes for three bugs a second automated test round

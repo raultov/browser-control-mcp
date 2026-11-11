@@ -18,6 +18,29 @@ fn is_privileged_start_page(url: &str) -> bool {
     matches!(url, "about:home" | "about:newtab" | "about:welcome")
 }
 
+/// The tab, and its URL, that takes the place of `start`, a launched
+/// Firefox's start page on `url`: a new blank tab, once `start` is closed.
+/// Its blank page is replaced by the first navigation, as an `open_tab`
+/// tab's: navigating `start` to about:blank kept the start page and the
+/// blank page in its history, and history back reached them (#119). When
+/// Firefox opens no tab or keeps `start` open, `start` is navigated to
+/// about:blank (it stays on `url` if that fails too).
+async fn leave_start_page(browser: &Browser, start: Tab, url: &str) -> (Tab, String) {
+    let blank = "about:blank";
+    if let Ok(fresh) = browser.new_tab(blank).await {
+        if start.clone().close().await.is_ok() {
+            return (fresh, blank.to_string());
+        }
+        tracing::warn!("Firefox kept its start tab open; it goes to about:blank instead");
+        let _ = fresh.close().await;
+    }
+    let ready = bidi_browser_lite::ReadinessState::Complete;
+    match start.navigate(blank, ready).await {
+        Ok(_) => (start, blank.to_string()),
+        Err(_) => (start, url.to_string()),
+    }
+}
+
 /// How long `stop` waits for the debuggers to detach.
 const DETACH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
 
@@ -475,18 +498,15 @@ impl FirefoxSession {
             if !is_tab_id(tab.context_id()) {
                 continue;
             }
-            let mut url = urls.get(tab.context_id()).cloned().unwrap_or_default();
+            let url = urls.get(tab.context_id()).cloned().unwrap_or_default();
             // A fresh Firefox opens about:home, a privileged page where BiDi
             // refuses scripts without -remote-allow-system-access: start
-            // from about:blank instead (only in instances we launched).
-            if launched && is_privileged_start_page(&url) {
-                let blank = tab
-                    .navigate("about:blank", bidi_browser_lite::ReadinessState::Complete)
-                    .await;
-                if blank.is_ok() {
-                    url = "about:blank".to_string();
-                }
-            }
+            // from a blank tab instead (only in instances we launched).
+            let (tab, url) = if launched && is_privileged_start_page(&url) {
+                leave_start_page(browser, tab, &url).await
+            } else {
+                (tab, url)
+            };
             write(&self.tabs).adopt(tab, &url);
         }
         Ok(())
@@ -566,6 +586,7 @@ impl FirefoxSession {
 pub(crate) mod tests {
     use super::*;
     use bidi_browser_lite::test_support::{MockBidi, MockBidiBehavior};
+    use serde_json::json;
 
     /// A session attached to a mock Firefox (no RDP).
     pub(crate) fn attached(mock: &MockBidi) -> FirefoxSession {
@@ -670,6 +691,53 @@ pub(crate) mod tests {
         // And once stopped (what restart_browser does first) it is not reported
         session.stop().await.unwrap();
         assert!(!session.crashed.load(Ordering::SeqCst));
+    }
+
+    /// NAV-10 (#119): a launched Firefox's start page (about:home) gives way
+    /// to a new blank tab, whose blank page the first navigation replaces
+    /// (as for open_tab): navigating it to about:blank left about:home and
+    /// about:blank in its history, and history back reached them.
+    #[tokio::test]
+    async fn the_start_page_gives_way_to_a_new_tab() {
+        // Given Firefox showing its start page (the mock's ctx-0)
+        let mock = MockBidi::start(MockBidiBehavior::Ready).await.unwrap();
+        let session = attached(&mock);
+        let browser = session.browser().await.unwrap();
+        let start = browser.attach_tab("ctx-0").await.unwrap();
+        mock.clear_commands();
+        // When the server leaves it
+        let (tab, url) = leave_start_page(&browser, start, "about:home").await;
+        // Then a new blank tab took its place and the start tab is closed,
+        // never navigated
+        assert_eq!((tab.context_id(), url.as_str()), ("ctx-1", "about:blank"));
+        let closed = mock.commands_named("browsingContext.close");
+        assert_eq!(closed.len(), 1);
+        assert_eq!(closed[0].params["context"], "ctx-0");
+        assert_eq!(mock.count("browsingContext.navigate"), 0);
+        session.stop().await.unwrap();
+    }
+
+    /// NAV-10 (#119): when Firefox cannot open a tab, the start tab is
+    /// navigated to about:blank, as before.
+    #[tokio::test]
+    async fn the_start_page_is_left_in_place_when_no_tab_opens() {
+        // Given Firefox refusing to open a tab
+        let mock = MockBidi::start(MockBidiBehavior::Ready).await.unwrap();
+        mock.respond_with(
+            "browsingContext.create",
+            |_| json!({"type": "error", "error": "unknown error", "message": "no window"}),
+        );
+        let session = attached(&mock);
+        let browser = session.browser().await.unwrap();
+        let start = browser.attach_tab("ctx-0").await.unwrap();
+        // When the server leaves the start page
+        let (tab, url) = leave_start_page(&browser, start, "about:home").await;
+        // Then the start tab itself went to about:blank and stays open
+        assert_eq!((tab.context_id(), url.as_str()), ("ctx-0", "about:blank"));
+        let navigated = mock.commands_named("browsingContext.navigate");
+        assert_eq!(navigated[0].params["url"], "about:blank");
+        assert_eq!(mock.count("browsingContext.close"), 0);
+        session.stop().await.unwrap();
     }
 
     /// Two tabs of a mock Firefox: `ctx-1` labelled "x", `ctx-2` unlabelled.
