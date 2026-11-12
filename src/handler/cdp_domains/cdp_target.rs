@@ -100,6 +100,15 @@ impl CdpTarget {
         Some(Paused(location.map(|at| with_script_url(at, &state))))
     }
 
+    /// Where a pause of the tab is resumed: the frame of another origin its
+    /// state says paused, else the tab itself.
+    pub(crate) async fn paused_target(&self) -> Self {
+        match &self.debugger {
+            Some(state) => state.lock().await.paused_target(self),
+            None => self.clone(),
+        }
+    }
+
     /// The tab's CDP target id (`None` for the browser connection).
     #[cfg(test)]
     pub(crate) fn tab_target_id(&self) -> Option<&str> {
@@ -151,7 +160,7 @@ impl CdpTarget {
                 }
             }
         };
-        if method == "Page.handleJavaScriptDialog" {
+        if ANSWERED_WHILE_BLOCKED.contains(&method) {
             return Ok(send.await);
         }
         self.race_interruptions(method, send).await
@@ -200,6 +209,15 @@ impl CdpTarget {
         }
     }
 }
+
+/// The commands Chrome's browser process answers itself, also while a
+/// dialog or a debugger pause blocks the page, so nothing interrupts them:
+/// closing a dialog, and reading the tab's history (where it committed).
+/// A dialog that opened just after `load` interrupted the history read, and
+/// `navigate` then took the URL it was given for the one the tab ended on,
+/// so `--local` let a redirect's remote target stay (#123).
+const ANSWERED_WHILE_BLOCKED: [&str; 2] =
+    ["Page.handleJavaScriptDialog", "Page.getNavigationHistory"];
 
 /// How long a pause must last to interrupt a command: the debugger listener
 /// resumes the pauses a tab does not keep (a page's own `debugger;` while it
@@ -410,6 +428,57 @@ mod tests {
         let outcome = unless_interrupted(later, events, "Input.dispatchMouseEvent").await;
         // Then its result is kept
         assert_eq!(answered(outcome), Some(7));
+    }
+
+    /// #123: Chrome answers the tab's history while a dialog blocks the
+    /// page, so a dialog opening meanwhile does not fail the read of where
+    /// the tab committed (navigate then took the URL it was given for the
+    /// one the tab ended on, and --local let a remote page stay).
+    #[tokio::test]
+    async fn dialogs_do_not_interrupt_the_history_read() {
+        use crate::handler::cdp_domains::tests::{
+            committed_url, mock_handler, spawn_recording_mock,
+        };
+        use std::sync::atomic::{AtomicBool, Ordering};
+        // Given a tab whose page keeps opening dialogs
+        let mock = spawn_recording_mock().await;
+        committed_url(mock, "http://127.0.0.2:8/late.html");
+        let handler = mock_handler(mock.http_port);
+        let target = handler.session(None).await.unwrap();
+        let target = target.target(None).await.unwrap();
+        let _ = target.send_raw_command("Page.enable", json!({})).await;
+        let enabled = mock.commands_named("Page.enable");
+        let session = enabled.last().and_then(|c| c.session_id.clone());
+        let stop = Arc::new(AtomicBool::new(false));
+        let flooding = stop.clone();
+        let alert =
+            json!({"type": "alert", "message": "late", "url": "http://127.0.0.2:8/late.html"});
+        tokio::spawn(async move {
+            while !flooding.load(Ordering::SeqCst) {
+                mock.emit(
+                    "Page.javascriptDialogOpening",
+                    alert.clone(),
+                    session.as_deref(),
+                );
+                tokio::task::yield_now().await;
+            }
+        });
+        // When the history is read again and again
+        let mut failed = Vec::new();
+        for _ in 0..50 {
+            let read = target.send_raw_command("Page.getNavigationHistory", json!({}));
+            if let Err(error) = read.await {
+                failed.push(error.to_string());
+            }
+        }
+        stop.store(true, Ordering::SeqCst);
+        // Then every read answered
+        assert!(
+            failed.is_empty(),
+            "{} failed: {:?}",
+            failed.len(),
+            failed.first()
+        );
     }
 
     /// ISSUE-1: debugger commands are not interrupted by a pause (a step

@@ -9,7 +9,7 @@ use crate::handler::McpHandler;
 use crate::handler::cdp_domains::cdp_target::CdpTarget;
 use crate::handler::cdp_domains::log::LogState;
 use crate::handler::cdp_domains::page::emulate::Emulation;
-use crate::handler::cdp_domains::page::navigate::navigate_and_wait;
+use crate::handler::cdp_domains::page::navigate::{interrupted, load_and_wait, stay_local};
 use crate::handler::cdp_domains::tracing::profile_page_performance as profile;
 use crate::handler::cdp_domains::tracing::{TracingState, coverage};
 use crate::handler::dialogs::DialogState;
@@ -136,18 +136,32 @@ fn emulation(conditions: Conditions, throttle: bool) -> Vec<(&'static str, Value
 }
 
 /// Loads `url` and waits for `load`, ending at once on a dialog or a
-/// debugger pause.
+/// debugger pause. With `--local`, a tab that ended on an address that is
+/// not local is sent back to about:blank, also when that page stopped the
+/// load with a dialog or a pause (#122), as `navigate` does.
 async fn navigation(
     target: &CdpTarget,
     states: &States,
     url: &str,
 ) -> Result<NavigationOutcome, String> {
-    let work = navigate_and_wait(target, &states.network, url, states.local);
-    match target.race_interruptions("lighthouse_report", work).await {
-        Ok(Ok(outcome)) => Ok(outcome),
-        Ok(Err(error)) => Err(error.to_string()),
-        Err(stopped) => Err(stopped.during("lighthouse_report")),
-    }
+    let work = load_and_wait(target, &states.network, url);
+    // As text: the tool's error is not `Send` across the awaits below.
+    let raced = match target.race_interruptions("lighthouse_report", work).await {
+        Ok(loaded) => Ok(loaded.map_err(|e| e.to_string())),
+        Err(stopped) => Err(stopped),
+    };
+    let outcome = match raced {
+        Ok(loaded) => loaded?,
+        Err(stopped) => {
+            let error = interrupted(target, states.local, &stopped, "lighthouse_report").await;
+            return Err(error.to_string());
+        }
+    };
+    // Checked once the race is over, as navigate does.
+    stay_local(target, states.local, &outcome.url)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(outcome)
 }
 
 /// Runs `during` while Chrome traces the page: its output and the raw
@@ -576,6 +590,59 @@ mod tests {
             }
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
+    }
+
+    /// LH-CDP-09 (#122): with --local, a load a redirect takes to a page
+    /// that is not local, which opens a dialog while loading, fails as
+    /// --local, not quoting the dialog: it is dismissed and the tab sent
+    /// back to about:blank, as navigate does, so no later tool reads it.
+    #[tokio::test]
+    async fn local_mode_blanks_a_remote_page_that_opens_a_dialog() {
+        // Given a --local tab whose load is redirected to a remote page
+        // that alerts as it loads
+        let mock = spawn_recording_mock().await;
+        let mut handler = mock_handler(mock.http_port);
+        handler.flags.local = true;
+        let session = handler.session(None).await.unwrap();
+        session.target(None).await.unwrap();
+        mock.respond_with("Page.navigate", |params| match params["url"].as_str() {
+            Some("about:blank") => json!({"frameId": "F"}),
+            _ => json!({"frameId": "F", "loaderId": "L2"}),
+        });
+        mock.respond_with("Page.handleJavaScriptDialog", |_| json!({}));
+        // (the page's entry once its navigation, the second, was sent)
+        mock.respond_with("Page.getNavigationHistory", move |_| {
+            let loaded = mock.commands_named("Page.navigate").len() >= 2;
+            let url = if loaded {
+                "http://127.0.0.2:8/alert.html"
+            } else {
+                "about:blank"
+            };
+            json!({"currentIndex": 0, "entries": [{"id": 1, "url": url}]})
+        });
+        let dialog = json!({"type": "alert", "message": "PageText", "url": "http://127.0.0.2:8/alert.html", "defaultPrompt": ""});
+        tokio::spawn(alert_on_second_navigation(mock, dialog));
+        // When the report runs on a local URL
+        let args = json!({"url": "http://127.0.0.1:8/redirect", "categories": ["accessibility"]});
+        let error = LighthouseReportTool::handle(call("lighthouse_report", args), &handler)
+            .await
+            .unwrap_err()
+            .to_string();
+        // Then it fails naming --local and the remote origin, not the dialog
+        assert!(
+            error.contains("--local") && error.contains("(http://127.0.0.2:8)"),
+            "{error}"
+        );
+        assert!(!error.contains("PageText"), "{error}");
+        // And the dialog was dismissed, then the tab sent to about:blank
+        assert!(
+            !mock
+                .commands_named("Page.handleJavaScriptDialog")
+                .is_empty()
+        );
+        let sent = mock.commands_named("Page.navigate");
+        assert_eq!(sent.len(), 3, "{sent:?}");
+        assert_eq!(sent[2].params["url"], "about:blank");
     }
 
     /// LH-CDP-03: a dialog the load opens stops the report at once, naming

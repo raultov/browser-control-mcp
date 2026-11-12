@@ -10,6 +10,22 @@ from a copy of its code: entries describe the differences from that release.
 
 ## [Unreleased]
 
+### Fixed
+
+- `--local` on Chrome: three ways a page that is not local stayed readable
+  after a redirect to it. `lighthouse_report` failed quoting a dialog the
+  page opened while loading, without the `--local` check (#122). A page
+  that opened a dialog right after `load` made `navigate` take the URL it
+  was given for the one the tab ended on, so it reported success; a burst
+  of dialogs made sending the tab back to `about:blank` fail (#123). A
+  page that paused in the debugger while loading failed `navigate` naming
+  the pause, and `resume` let it load (#124). The tab's history is now
+  read even while a dialog blocks the page, and `navigate` (also
+  `history`), `reload` and `lighthouse_report` treat a pause like a
+  dialog: on an address that is not local, the dialog is dismissed or the
+  paused script ended, the tab goes back to `about:blank` (tried again if
+  the page blocks it anew), and the call fails with the `--local` error.
+
 ## [0.17.0-beta.27] - 2026-11-11
 
 Public **BETA**. `evaluate_js` takes an opt-in `user_gesture`, so an

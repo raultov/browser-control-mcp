@@ -171,6 +171,37 @@ mod tests {
         assert_eq!(sent[0].params["url"], "about:blank");
     }
 
+    /// #124: with --local, a reload that lands on a remote page pausing in
+    /// the debugger while loading fails as --local, not naming the pause;
+    /// the pause is ended and the tab sent back to about:blank.
+    #[tokio::test]
+    async fn local_mode_refuses_a_reload_that_pauses_on_a_remote_page() {
+        // Given a --local Chrome whose reload lands on a remote page that pauses
+        let mock = spawn_recording_mock().await;
+        committed_url(mock, "http://127.0.0.2:8/pause.html");
+        crate::handler::cdp_domains::page::navigate::tests::pause_after(mock, "Page.reload");
+        let mut handler = mock_handler(mock.http_port);
+        handler.flags.local = true;
+        // When reload runs
+        let error = ReloadTool::handle(call("reload", json!({})), &handler)
+            .await
+            .unwrap_err()
+            .to_string();
+        // Then it fails naming --local, not the pause, and the tab is blank
+        assert!(
+            error.contains("--local") && !error.contains("paused in the debugger"),
+            "{error}"
+        );
+        let resumes = mock.commands_named("Debugger.resume");
+        assert!(
+            resumes
+                .iter()
+                .any(|c| c.params["terminateOnResume"] == true)
+        );
+        let sent = mock.commands_named("Page.navigate");
+        assert_eq!(sent[0].params["url"], "about:blank");
+    }
+
     /// A pause announced right after Chrome answers `Page.reload`, before
     /// reload listens for interruptions (the order a slow machine showed),
     /// also ends the wait: reload listens before it sends the command, as

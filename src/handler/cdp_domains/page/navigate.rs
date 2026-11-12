@@ -123,10 +123,9 @@ impl NavigateTool {
         let network = session.network_state(args.tab_id.clone())?;
         let navigation = async {
             Ok::<_, CallToolError>(match destination {
-                Destination::Url(url) => (
-                    navigate_and_wait(&target, &network, url, handler.flags.local).await?,
-                    "Navigated to",
-                ),
+                Destination::Url(url) => {
+                    (load_and_wait(&target, &network, url).await?, "Navigated to")
+                }
                 Destination::History(step) => (
                     traverse_and_wait(&target, &network, step).await?,
                     step.went(),
@@ -148,7 +147,10 @@ impl NavigateTool {
                 return Err(interrupted(&target, local, &stopped, "navigate").await);
             }
         };
-        // A history entry may be one a redirect left on a remote address.
+        // A redirect may have taken the tab to a remote address, or a history
+        // entry be one a redirect left there. Checked once the race is over:
+        // a dialog the page opens while the tab is sent back to about:blank
+        // must not end the call before that is done.
         stay_local(&target, handler.flags.local, &outcome.url).await?;
         let tab_id = session.tab_id_of(args.tab_id.as_deref());
         Ok(outcome.reply(&format!("{went} {}.", outcome.url), tab_id.as_deref()))
@@ -223,7 +225,7 @@ pub(crate) async fn navigate_and_wait(
 
 /// With `local` (the server runs with `--local`), fails when the tab ended
 /// on `landed`, an address that is not local, after sending it back to
-/// about:blank ([`crate::handler::navigation::LEFT_LOCAL`]).
+/// about:blank ([`crate::handler::navigation::LEFT_LOCAL`], [`blank`]).
 pub(crate) async fn stay_local(
     target: &CdpTarget,
     local: bool,
@@ -232,13 +234,89 @@ pub(crate) async fn stay_local(
     if !crate::handler::navigation::left_local(local, landed) {
         return Ok(());
     }
-    // Best effort: the error says where the tab is meant to be. Waited for
-    // until about:blank loads: Chrome answers `Page.navigate` before that,
-    // and a tool called right after met "Not attached to an active page".
+    let blanked = blank(target).await;
+    Err(crate::handler::navigation::left_local_error(landed, blanked).into())
+}
+
+/// The error of `call` (a navigation, a reload), which `stopped` left
+/// unfinished. With `local`, a dialog a page that is not local opened while
+/// loading (a redirect's target), or a debugger pause it hit, does not keep
+/// it: the tab is sent back to about:blank, as when it loads
+/// ([`stay_local`]), and the error is the `--local` one, never the dialog's
+/// text or the pause, so no later tool reads the page (#117:
+/// `handle_dialog` let it finish loading; #124: `resume` did).
+pub(crate) async fn interrupted(
+    target: &CdpTarget,
+    local: bool,
+    stopped: &Interruption,
+    call: &str,
+) -> CallToolError {
+    let blocked = matches!(stopped, Interruption::Dialog(_) | Interruption::Paused(_));
+    if local
+        && blocked
+        && let Some(landed) = committed_url(target).await
+        && let Err(error) = stay_local(target, local, &landed).await
+    {
+        return error;
+    }
+    CallToolError::from_message(stopped.during(call))
+}
+
+/// How long [`blank`] waits for about:blank to load (it loads nothing).
+const BLANK_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// How many times [`blank`] tries: a page can open another dialog, or
+/// pause again, between the closing of one and the navigation.
+const BLANK_TRIES: usize = 3;
+
+/// Sends the tab of `target` to about:blank; whether it got there. Each
+/// try first closes what blocks the page ([`unblock`]): an open dialog
+/// made the navigation fail, and a pause would hold it. A dialog or a pause
+/// the page starts during a try (a burst of alerts, a second `debugger;`)
+/// ends that try, and the next one closes it (#123: one failed blanking
+/// left the remote page readable).
+async fn blank(target: &CdpTarget) -> bool {
+    for _ in 0..BLANK_TRIES {
+        unblock(target).await;
+        if let Ok(Some(blanked)) = target
+            .race_interruptions("navigate", load_blank(target))
+            .await
+        {
+            return blanked;
+        }
+    }
+    false
+}
+
+/// Closes what may block the page of `target`, whose content no tool may
+/// read: dismisses an open dialog, and resumes a pause, ending the script
+/// that paused (`terminateOnResume`), on the tab or the frame it is in.
+/// Both are sent whatever the tab's state says (its listeners may not have
+/// seen the dialog or the pause yet); Chrome refuses the ones with nothing
+/// to close, which is fine.
+async fn unblock(target: &CdpTarget) {
+    let dismiss = json!({"accept": false});
+    let _ = target
+        .send_raw_command("Page.handleJavaScriptDialog", dismiss)
+        .await;
+    let resume = json!({"terminateOnResume": true});
+    let paused = target.paused_target().await;
+    let _ = paused.send_raw_command("Debugger.resume", resume).await;
+}
+
+/// Navigates `target` to about:blank and waits (at most [`BLANK_WAIT`])
+/// for it to load: Chrome answers `Page.navigate` before that, and a tool
+/// called right after met "Not attached to an active page". Whether Chrome
+/// took the navigation; `None` when a dialog or a pause of the page
+/// interrupted the command.
+async fn load_blank(target: &CdpTarget) -> Option<bool> {
     let mut page_events = target.on_domain("Page");
     let blank = json!({"url": "about:blank"});
-    let reply = target.send_raw_command("Page.navigate", blank).await;
-    let result = reply.ok().and_then(|reply| reply.result);
+    let result = match target.send_raw_command("Page.navigate", blank).await {
+        Ok(reply) => reply.result,
+        Err(error) if crate::handler::dialogs::interrupted(&error) => return None,
+        Err(_) => return Some(false),
+    };
     // Chrome reports a failed navigation as `errorText` in a success.
     let blanked = result
         .as_ref()
@@ -247,47 +325,15 @@ pub(crate) async fn stay_local(
         let loaded = wait_for_load_of(&mut page_events, loader);
         let _ = tokio::time::timeout(BLANK_WAIT, loaded).await;
     }
-    Err(crate::handler::navigation::left_local_error(landed, blanked).into())
+    Some(blanked)
 }
-
-/// The error of `call` (a navigation, a reload), which `stopped` left
-/// unfinished. With `local`, a dialog a page that is not local opened while
-/// loading (a redirect's target) is dismissed and the tab sent back to
-/// about:blank, as when it loads ([`stay_local`]): the error is then the
-/// `--local` one, never the dialog's text, and no later tool reads the page
-/// (#117: `handle_dialog` let it finish loading).
-pub(crate) async fn interrupted(
-    target: &CdpTarget,
-    local: bool,
-    stopped: &Interruption,
-    call: &str,
-) -> CallToolError {
-    if local
-        && matches!(stopped, Interruption::Dialog(_))
-        && let Some(landed) = committed_url(target).await
-        && crate::handler::navigation::left_local(local, &landed)
-    {
-        // Best effort: Chrome closes a dialog when its page navigates away.
-        let dismiss = json!({"accept": false});
-        let _ = target
-            .send_raw_command("Page.handleJavaScriptDialog", dismiss)
-            .await;
-        if let Err(error) = stay_local(target, local, &landed).await {
-            return error;
-        }
-    }
-    CallToolError::from_message(stopped.during(call))
-}
-
-/// How long [`stay_local`] waits for about:blank to load (it loads nothing).
-const BLANK_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Navigates `target` and waits (at most [`LOAD_TIMEOUT`]) for the new
 /// document to fire `load`. Chrome answers `Page.navigate` as soon as the
 /// navigation starts and reports a network error only as `errorText` inside
 /// a successful reply: that becomes a tool error here ([`check_error`]).
 /// `network` is the tab's request log, where the document's HTTP status is.
-async fn load_and_wait(
+pub(crate) async fn load_and_wait(
     target: &CdpTarget,
     network: &Mutex<NetworkState>,
     url: &str,
@@ -1045,6 +1091,144 @@ pub(crate) mod tests {
                 .is_empty()
         );
         assert_eq!(mock.commands_named("Page.navigate").len(), 1);
+    }
+
+    /// A --local Chrome whose navigation commits `landed`, where the page
+    /// pauses in the debugger while loading (a pause it keeps); about:blank
+    /// answers without a loader.
+    fn pause_while_loading(
+        mock: &'static cdp_browser_lite::test_support::mock_devtools::MockDevTools,
+        landed: &'static str,
+    ) -> McpHandler {
+        mock.respond_with("Page.navigate", |params| match params["url"].as_str() {
+            Some("about:blank") => json!({"frameId": "F1"}),
+            _ => json!({"frameId": "F1", "loaderId": "L1"}),
+        });
+        committed_url(mock, landed);
+        pause_after(mock, "Page.navigate");
+        let mut handler = mock_handler(mock.http_port);
+        handler.flags.local = true;
+        handler
+    }
+
+    /// The `Debugger.resume` commands that end the paused script.
+    fn terminating_resumes(
+        mock: &cdp_browser_lite::test_support::mock_devtools::MockDevTools,
+    ) -> usize {
+        let resumes = mock.commands_named("Debugger.resume");
+        let ending = resumes
+            .iter()
+            .filter(|c| c.params["terminateOnResume"] == true);
+        ending.count()
+    }
+
+    /// NAV-07 (#124): with --local, a redirect to a page that is not local
+    /// and pauses in the debugger while loading fails as --local, not
+    /// naming the pause: the pause is resumed, ending its script, and the
+    /// tab sent back to about:blank, so `resume` does not let it load.
+    #[tokio::test]
+    async fn local_mode_refuses_a_remote_page_that_pauses() {
+        // Given a --local Chrome redirected to a remote page that pauses
+        let mock = spawn_recording_mock().await;
+        let handler = pause_while_loading(mock, "http://127.0.0.2:8/pause.html");
+        // When navigate runs
+        let args = json!({"url": "http://127.0.0.1:8/redirect"});
+        let error = NavigateTool::handle(call("navigate", args), &handler)
+            .await
+            .unwrap_err()
+            .to_string();
+        // Then it fails naming --local and the remote origin, not the pause
+        assert!(
+            error.contains("--local") && error.ends_with("(http://127.0.0.2:8)"),
+            "{error}"
+        );
+        assert!(!error.contains("paused in the debugger"), "{error}");
+        assert!(error.contains("sent back to about:blank"), "{error}");
+        // And the pause was ended before the tab was sent to about:blank
+        assert_eq!(terminating_resumes(mock), 1);
+        let sent = mock.commands_named("Page.navigate");
+        assert_eq!(sent.len(), 2);
+        assert_eq!(sent[1].params["url"], "about:blank");
+        let all = mock.commands();
+        let ended = all
+            .iter()
+            .position(|c| c.method == "Debugger.resume" && c.params["terminateOnResume"] == true);
+        let blanked = all
+            .iter()
+            .position(|c| c.method == "Page.navigate" && c.params["url"] == "about:blank");
+        assert!(ended.unwrap() < blanked.unwrap());
+    }
+
+    /// NAV-07 (#124): a local page's pause still fails navigate naming it,
+    /// and stays for the agent to inspect.
+    #[tokio::test]
+    async fn local_mode_keeps_a_local_pages_pause() {
+        // Given a --local Chrome on a local page that pauses while loading
+        let mock = spawn_recording_mock().await;
+        let handler = pause_while_loading(mock, "http://127.0.0.1:8/pause.html");
+        // When navigate runs
+        let args = json!({"url": "http://127.0.0.1:8/pause.html"});
+        let error = NavigateTool::handle(call("navigate", args), &handler)
+            .await
+            .unwrap_err()
+            .to_string();
+        // Then it fails naming the pause, which nothing ended
+        assert!(error.contains("paused in the debugger"), "{error}");
+        assert_eq!(terminating_resumes(mock), 0);
+        assert_eq!(mock.commands_named("Page.navigate").len(), 1);
+    }
+
+    /// NAV-07 (#123): with --local, a remote page that opens another dialog
+    /// while the tab is sent back to about:blank (a burst of alerts) does
+    /// not keep it there: the dialog is dismissed and the blanking tried
+    /// again (one try said it failed, and the page stayed readable).
+    #[tokio::test]
+    async fn local_mode_blanks_again_after_a_dialog_interrupts_it() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        // Given a --local Chrome redirected to a remote page, which alerts
+        // while about:blank loads the first time
+        let mock = spawn_recording_mock().await;
+        let blanks = AtomicUsize::new(0);
+        mock.respond_with("Page.navigate", move |params| {
+            if params["url"] != "about:blank" {
+                return json!({"frameId": "F1", "loaderId": "L1"});
+            }
+            if blanks.fetch_add(1, Ordering::SeqCst) > 0 {
+                return json!({"frameId": "F1"});
+            }
+            let sent = mock.commands_named("Page.navigate");
+            let session = sent.last().and_then(|c| c.session_id.clone());
+            let alert = json!({"type": "alert", "message": "PageText", "url": "http://127.0.0.2:8/burst.html"});
+            mock.emit("Page.javascriptDialogOpening", alert, session.as_deref());
+            json!({"frameId": "F1", "loaderId": "L-blank"})
+        });
+        mock.respond_with("Page.handleJavaScriptDialog", |_| json!({}));
+        committed_url(mock, "http://127.0.0.2:8/burst.html");
+        fire_events_after(mock, "Page.navigate", vec![committed("L1"), load_event()]);
+        let mut handler = mock_handler(mock.http_port);
+        handler.flags.local = true;
+        // When navigate runs
+        let started = std::time::Instant::now();
+        let args = json!({"url": "http://127.0.0.1:8/redirect"});
+        let error = NavigateTool::handle(call("navigate", args), &handler)
+            .await
+            .unwrap_err()
+            .to_string();
+        // Then it fails as --local, the tab sent back to about:blank
+        assert!(
+            error.contains("--local") && error.contains("sent back to about:blank"),
+            "{error}"
+        );
+        assert!(!error.contains("PageText"), "{error}");
+        // On the second try, after the new dialog was dismissed, at once
+        let sent = mock.commands_named("Page.navigate");
+        let blank: Vec<_> = sent
+            .iter()
+            .filter(|c| c.params["url"] == "about:blank")
+            .collect();
+        assert_eq!(blank.len(), 2);
+        assert_eq!(mock.commands_named("Page.handleJavaScriptDialog").len(), 2);
+        assert!(started.elapsed() < BLANK_WAIT, "{:?}", started.elapsed());
     }
 
     /// ISSUE-94: only the `load` of the document the navigation commits
