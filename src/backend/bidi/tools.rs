@@ -2,7 +2,7 @@
 //! arguments as the Chrome tool (one schema per tool) and answers in the same
 //! shape where the protocols allow it.
 
-use super::debugger::{race_pause, unless_paused, unless_paused_replacing};
+use super::debugger::{Replacing, race_pause, unless_paused, unless_paused_replacing};
 use super::page;
 use super::session::FirefoxSession;
 use crate::backend::BackendError;
@@ -172,8 +172,14 @@ pub(crate) async fn navigate(params: CallToolRequestParams, handler: &McpHandler
     };
     check_local(handler, &url)?;
     let (session, id, tab) = target(handler, &ids(&args.instance_id, &args.tab_id)).await?;
-    let navigation = unless_auth(&tab, page::navigate(&tab.tab, &url, handler.flags.local));
-    let outcome = unless_paused_replacing(&session, &id, "navigate", navigation).await?;
+    let local = handler.flags.local;
+    let navigation = unless_auth(&tab, page::navigate(&tab.tab, &url, local));
+    let on = Replacing {
+        id: &id,
+        tab: &tab.tab,
+        local,
+    };
+    let outcome = unless_paused_replacing(&session, on, "navigate", navigation).await?;
     let document = navigation_document(&tab, &outcome, &url).await;
     let attachment = document.as_ref().is_some_and(NetworkRequest::is_attachment);
     if attachment || became_download(&tab, &outcome, &url).await {
@@ -196,11 +202,17 @@ async fn traverse_history(
 ) -> ToolResult {
     let (session, id, tab) = target(handler, &ids(&args.instance_id, &args.tab_id)).await?;
     // The entry may be one a redirect left on a remote address.
+    let local = handler.flags.local;
     let traversal = async {
         let traversed = page::traverse(&tab.tab, step).await;
-        page::stay_local_after(&tab.tab, handler.flags.local, traversed).await
+        page::stay_local_after(&tab.tab, local, traversed).await
     };
-    let outcome = unless_paused_replacing(&session, &id, "navigate", traversal).await?;
+    let on = Replacing {
+        id: &id,
+        tab: &tab.tab,
+        local,
+    };
+    let outcome = unless_paused_replacing(&session, on, "navigate", traversal).await?;
     let document = navigation_document(&tab, &outcome, &outcome.url).await;
     let outcome = outcome.with_status(document.and_then(|d| d.response_status));
     Ok(outcome.reply(&format!("{} {}.", step.went(), outcome.url), Some(&id)))
@@ -283,11 +295,17 @@ pub(crate) async fn reload(params: CallToolRequestParams, handler: &McpHandler) 
     let ids: TargetArgs = parse_args(params)?;
     let (session, id, tab) = target(handler, &ids).await?;
     // The page's server may now redirect elsewhere.
+    let local = handler.flags.local;
     let reload = async {
         let reloaded = unless_auth(&tab, page::reload(&tab.tab)).await;
-        page::stay_local_after(&tab.tab, handler.flags.local, reloaded).await
+        page::stay_local_after(&tab.tab, local, reloaded).await
     };
-    let outcome = unless_paused_replacing(&session, &id, "reload", reload).await?;
+    let on = Replacing {
+        id: &id,
+        tab: &tab.tab,
+        local,
+    };
+    let outcome = unless_paused_replacing(&session, on, "reload", reload).await?;
     let document = navigation_document(&tab, &outcome, &outcome.url).await;
     let outcome = outcome.with_status(document.and_then(|d| d.response_status));
     Ok(outcome.reply("Page reloaded.", Some(&id)))

@@ -26,6 +26,14 @@ from a copy of its code: entries describe the differences from that release.
   paused script ended, the tab goes back to `about:blank` (tried again if
   the page blocks it anew), and the call fails with the `--local` error.
 
+- `--local` on Firefox: the same pause as #124 (a redirect's remote target
+  stopping in the debugger while loading, with a breakpoint set or
+  `pause_on_exceptions` on) failed `navigate` naming the pause, and
+  `resume` let the page load. `navigate` (also `history`) and `reload` now
+  resume the pause and send the tab back to `about:blank` (tried again if
+  the page pauses anew), and fail with the `--local` error. A local page's
+  pause still stops the call for the agent to inspect.
+
 - `--downloads-dir`: a long or non-ASCII instance label (`'A' * 90`,
   `'数' * 30`) needed a folder name over the 255 bytes file systems take;
   the folder could not be created, and the browser saved the instance's

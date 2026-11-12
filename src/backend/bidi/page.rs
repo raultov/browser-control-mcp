@@ -88,7 +88,7 @@ pub(crate) async fn stay_local_after(
 ) -> Result<NavigationOutcome, BackendError> {
     let landed = match &navigated {
         Ok(outcome) => outcome.url.clone(),
-        Err(_) if local => settled(tab, json!({}), "").await.url,
+        Err(_) if local => landed(tab).await,
         Err(_) => return navigated,
     };
     if navigated.is_err() && crate::handler::navigation::left_local(local, &landed) {
@@ -108,11 +108,23 @@ pub(crate) async fn stay_local(tab: &Tab, local: bool, landed: &str) -> Result<(
     if !crate::handler::navigation::left_local(local, landed) {
         return Ok(());
     }
-    let blank = tab.navigate("about:blank", ReadinessState::Complete).await;
+    let blanked = blank(tab).await;
     Err(crate::handler::navigation::left_local_error(
-        landed,
-        blank.is_ok(),
+        landed, blanked,
     ))
+}
+
+/// Sends `tab` to about:blank and waits for it; whether it got there.
+pub(crate) async fn blank(tab: &Tab) -> bool {
+    tab.navigate("about:blank", ReadinessState::Complete)
+        .await
+        .is_ok()
+}
+
+/// The URL `tab` shows now (where a navigation that did not finish left
+/// it), from the browsing context tree: no script runs in the page.
+pub(crate) async fn landed(tab: &Tab) -> String {
+    settled(tab, json!({}), "").await.url
 }
 
 /// [`navigate`] without the `--local` check.

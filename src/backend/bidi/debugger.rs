@@ -22,6 +22,7 @@ use crate::handler::cdp_domains::debugger::set_breakpoint::SetBreakpointTool;
 use crate::handler::cdp_domains::event_pump::ListenerHandles;
 use crate::handler::debugging::{self, BreakpointIds, BreakpointSet, PauseLocation, Paused, Step};
 use crate::handler::interruption::Interruption;
+use crate::handler::navigation::NavigationOutcome;
 use crate::handler::{McpHandler, TargetArgs, parse_args};
 use bidi_browser_lite::bidi_lite::error::codes;
 use bidi_browser_lite::bidi_lite::rdp::debugger::{
@@ -505,25 +506,42 @@ pub(crate) async fn unless_paused<T, E: From<BackendError>>(
         .unwrap_or_else(|paused| Err(BackendError::InvalidArgument(paused.during(call)).into()))
 }
 
-/// [`unless_paused`] for a call that replaces the tab's document (a
-/// navigation, a history step, a reload). A pause kept from before it was
+/// The tab whose document a navigation, a history step or a reload
+/// replaces ([`unless_paused_replacing`]).
+#[derive(Clone, Copy)]
+pub(crate) struct Replacing<'a> {
+    /// The tab's MCP id (`tab-1`), which its debugger is kept under.
+    pub(crate) id: &'a str,
+    pub(crate) tab: &'a bidi_browser_lite::Tab,
+    /// The server runs with `--local`: a page that is not local must not
+    /// stay on the tab, paused or not.
+    pub(crate) local: bool,
+}
+
+/// [`unless_paused`] for a `call` that replaces the document of tab `on`:
+/// a navigation, a history step, a reload. A pause kept from before it was
 /// in the replaced document: once the call succeeds it is forgotten, as
 /// the thread's resumed state can come after the reply and input tools
 /// would refuse to run meanwhile (ISSUE-83). A pause of the new document
-/// is another one (its own `seq`) and is kept.
-pub(crate) async fn unless_paused_replacing<T, E: From<BackendError>>(
+/// is another one (its own `seq`) and is kept, unless the server runs with
+/// `--local` and that page is not local (a redirect's target): see
+/// [`paused_while_loading`].
+pub(crate) async fn unless_paused_replacing(
     session: &FirefoxSession,
-    id: &str,
+    on: Replacing<'_>,
     call: &str,
-    operation: impl std::future::Future<Output = Result<T, E>>,
-) -> Result<T, E> {
-    let found = session.debuggers.lock().await.get(id).cloned();
+    operation: impl std::future::Future<Output = Result<NavigationOutcome, BackendError>>,
+) -> Result<NavigationOutcome, BackendError> {
+    let found = session.debuggers.lock().await.get(on.id).cloned();
     let slot = match found {
         Some(shared) => Some(shared.lock().await.pause.clone()),
         None => None,
     };
     let before = slot.as_deref().and_then(read_pause);
-    let outcome = unless_paused(session, id, call, operation).await?;
+    let outcome = match race_pause(session, on.id, operation).await {
+        Ok(outcome) => outcome?,
+        Err(paused) => return Err(paused_while_loading(session, on, &paused, call).await),
+    };
     if let (Some(slot), Some(before)) = (slot, before) {
         let mut kept = slot
             .lock()
@@ -533,6 +551,59 @@ pub(crate) async fn unless_paused_replacing<T, E: From<BackendError>>(
         }
     }
     Ok(outcome)
+}
+
+/// The error of `call`, a navigation of tab `on` that the page's pause
+/// (`paused`) left unfinished: the pause, for the agent to inspect. With
+/// `--local`, a page that is not local (a redirect's target) does not
+/// stay: its thread is resumed and the tab sent back to about:blank, and
+/// the error is the `--local` one, never the pause (#124: `resume` let the
+/// page load and every tool read it), as on Chrome.
+async fn paused_while_loading(
+    session: &FirefoxSession,
+    on: Replacing<'_>,
+    paused: &Interruption,
+    call: &str,
+) -> BackendError {
+    if on.local {
+        let landed = super::page::landed(on.tab).await;
+        if crate::handler::navigation::left_local(on.local, &landed) {
+            let blanked = blank_unpaused(session, on).await;
+            return crate::handler::navigation::left_local_error(&landed, blanked);
+        }
+    }
+    BackendError::InvalidArgument(paused.during(call))
+}
+
+/// How many times [`blank_unpaused`] tries: the page can pause again (a
+/// second `debugger;`) once resumed, before about:blank replaces it.
+const BLANK_TRIES: usize = 3;
+
+/// Sends tab `on`, whose page paused, to about:blank: each try first
+/// resumes the pause (the page would hold the navigation), and a pause
+/// during the navigation ends that try. Whether it got there.
+async fn blank_unpaused(session: &FirefoxSession, on: Replacing<'_>) -> bool {
+    for _ in 0..BLANK_TRIES {
+        resume_pause(session, on.id).await;
+        if let Ok(blanked) = race_pause(session, on.id, super::page::blank(on.tab)).await {
+            return blanked;
+        }
+    }
+    false
+}
+
+/// Resumes the pause of tab `id`, in the thread it is in (the tab's when
+/// none is known yet: the state task may not have seen it). Best effort:
+/// Firefox refuses with `wrongState` when nothing is paused.
+async fn resume_pause(session: &FirefoxSession, id: &str) {
+    let found = session.debuggers.lock().await.get(id).cloned();
+    if let Some(shared) = found {
+        let entry = shared.lock().await;
+        let pause = current_pause(&entry);
+        let _ = paused_thread(&entry.debugger, pause.as_ref())
+            .resume()
+            .await;
+    }
 }
 
 /// Runs `operation` on tab `id` unless the tab's debugger pauses first:
@@ -1152,6 +1223,7 @@ mod tests {
     }
 
     use super::super::test_support::{self as ts, WAIT};
+    use bidi_browser_lite::test_support::MockFirefox;
 
     const SCRIPT: &str = "https://example.com/test.html";
 
@@ -1816,6 +1888,112 @@ mod tests {
             "{error}"
         );
         ts::stop(&handler).await;
+    }
+
+    /// A Firefox with a breakpoint on its tab, which shows `landed`, and
+    /// whose navigations to about:blank load.
+    async fn tab_showing(landed: &'static str) -> (MockFirefox, McpHandler) {
+        let mock = ts::firefox_with_debugger().await;
+        let bidi = mock.bidi();
+        bidi.respond_with(
+            "browsingContext.getTree",
+            move |_| json!({"contexts": [{"context": "ctx-0", "url": landed, "children": null}]}),
+        );
+        bidi.respond_with(
+            "browsingContext.navigate",
+            |_| json!({"navigation": "n2", "url": "about:blank"}),
+        );
+        let handler = ts::handler(&mock);
+        set_breakpoint(breakpoint(0, None), &handler).await.unwrap();
+        (mock, handler)
+    }
+
+    /// A navigation (`local`: of a --local server) that the page's pause
+    /// interrupts: it never answers, and the page pauses 100 ms in.
+    async fn navigation_paused(
+        mock: &MockFirefox,
+        handler: &McpHandler,
+        local: bool,
+    ) -> Result<NavigationOutcome, BackendError> {
+        let rdp = mock.rdp().unwrap();
+        let session = handler.firefox(None).await.unwrap();
+        let (id, tab) = session.tab(None).await.unwrap();
+        let blocked = std::future::pending::<Result<NavigationOutcome, BackendError>>();
+        let on = Replacing {
+            id: &id,
+            tab: &tab.tab,
+            local,
+        };
+        let call = unless_paused_replacing(&session, on, "navigate", blocked);
+        let pause = async {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            rdp.pause("debuggerStatement", None);
+            std::future::pending::<()>().await
+        };
+        tokio::select! {
+            outcome = tokio::time::timeout(WAIT, call) => outcome.expect("waited past the pause"),
+            () = pause => unreachable!(),
+        }
+    }
+
+    /// The `resume` requests the RDP mock received.
+    fn resumes(mock: &MockFirefox) -> usize {
+        let requests = mock.rdp().unwrap().requests();
+        requests
+            .iter()
+            .filter(|r| r.request_type == "resume")
+            .count()
+    }
+
+    /// #124 (Firefox): with --local, a navigation that the page's pause
+    /// interrupts on an address that is not local (a redirect's target)
+    /// fails as --local, not naming the pause: the pause is resumed and the
+    /// tab sent back to about:blank, so `resume` does not let it load.
+    #[tokio::test]
+    async fn local_mode_resumes_and_blanks_a_remote_page_that_pauses() {
+        // Given a --local tab on a remote page, which pauses while loading
+        let (mock, handler) = tab_showing("http://127.0.0.2:8/pause.html").await;
+        // When the navigation runs
+        let error = navigation_paused(&mock, &handler, true)
+            .await
+            .unwrap_err()
+            .to_string();
+        // Then it fails naming --local and the remote origin, not the pause
+        assert!(
+            error.contains("--local") && error.ends_with("(http://127.0.0.2:8)"),
+            "{error}"
+        );
+        assert!(error.contains("sent back to about:blank"), "{error}");
+        // And the pause was resumed, then the tab sent to about:blank
+        assert_eq!(resumes(&mock), 1);
+        let sent = mock.bidi().commands_named("browsingContext.navigate");
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].params["url"], "about:blank");
+        ts::stop(&handler).await;
+    }
+
+    /// #124 (Firefox): a local page's pause still fails the navigation
+    /// naming it, and stays for the agent to inspect; without --local any
+    /// page's does.
+    #[tokio::test]
+    async fn a_local_pages_pause_stays() {
+        for (landed, local) in [
+            ("http://127.0.0.1:8/pause.html", true),
+            ("http://127.0.0.2:8/pause.html", false),
+        ] {
+            // Given a tab on that page, which pauses while loading
+            let (mock, handler) = tab_showing(landed).await;
+            // When the navigation runs
+            let error = navigation_paused(&mock, &handler, local)
+                .await
+                .unwrap_err()
+                .to_string();
+            // Then it fails naming the pause, which nothing resumed
+            assert!(error.contains("paused in the debugger"), "{error}");
+            assert_eq!(resumes(&mock), 0);
+            assert_eq!(mock.bidi().count("browsingContext.navigate"), 0);
+            ts::stop(&handler).await;
+        }
     }
 
     /// ISSUE-17: the tab's current pause is known with its location, so

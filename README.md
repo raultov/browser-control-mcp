@@ -689,9 +689,10 @@ incompatible:
   ended: on a network address that is not local (after a redirect, say)
   they fail naming its origin, and the tab goes back to `about:blank` (the
   error says if that failed), also when that page opened a dialog while
-  loading or right after (the dialog is dismissed first) or, on Chrome,
-  paused in the debugger (the paused script is ended). The browser follows
-  a redirect before the server sees it, so that request was already sent.
+  loading or right after (the dialog is dismissed first) or paused in the
+  debugger (the pause is resumed first; Chrome also ends the paused
+  script). The browser follows a redirect before the server sees it, so
+  that request was already sent.
   `lighthouse_report` without `url` refuses a current page that is not
   local before loading it. The raw tools and the `enable_proxy_auth`
   pre-warm page are checked only before they start; the reloads of
