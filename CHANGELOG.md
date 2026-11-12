@@ -10,6 +10,19 @@ from a copy of its code: entries describe the differences from that release.
 
 ## [Unreleased]
 
+## [0.18.0-beta.28] - 2026-11-12
+
+Public **BETA**. Fixes for four bugs an automated test round found in
+0.17.0-beta.27, and the Firefox side of one of them. With `--local`, a
+redirect's remote target no longer stays readable when it stops the load:
+a dialog right after `load` or in a burst, a debugger pause (Chrome and
+Firefox), or a dialog during `lighthouse_report` now sends the tab back to
+`about:blank` with the `--local` error. With `--downloads-dir`, downloads
+never fall back to the browser's own folder. Behaviour change:
+`open_instance` refuses a label whose downloads folder name would be over
+255 bytes (85 characters outside `a-z0-9-_`) when `--downloads-dir` is
+given.
+
 ### Fixed
 
 - `--local` on Chrome: three ways a page that is not local stayed readable
