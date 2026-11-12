@@ -169,6 +169,29 @@ impl DownloadState {
 /// file systems either (#113: `a/b` and `a_b` did; #120: a 32-bit hash of
 /// the replaced bytes collided).
 pub(crate) fn instance_folder(dir: &Path, id: &str) -> PathBuf {
+    dir.join(folder_name(id))
+}
+
+/// Longest folder name file systems take: 255 bytes on Linux and macOS,
+/// 255 UTF-16 units on Windows; a [`folder_name`] is ASCII, so both.
+pub(crate) const MAX_FOLDER_NAME: usize = 255;
+
+/// Why instance `id` cannot have a folder in `--downloads-dir`: its name
+/// ([`instance_folder`]) would be longer than [`MAX_FOLDER_NAME`]. The
+/// folder could not be created, and the browser then saved the instance's
+/// downloads in its own default folder (#125). Not shortened: two ids must
+/// never share a folder (#113, #120), and only the full name ensures it.
+pub(crate) fn folder_too_long(id: &str) -> Option<String> {
+    let length = folder_name(id).len();
+    (length > MAX_FOLDER_NAME).then(|| {
+        format!(
+            "The label is too long for --downloads-dir: its downloads folder name would be {length} bytes, over the {MAX_FOLDER_NAME} file systems allow (every character other than a-z, 0-9, '-' and '_' is written as '~' and two hex digits per UTF-8 byte: 'A' takes 3 bytes). Use a shorter label."
+        )
+    })
+}
+
+/// The name of instance `id`'s folder (see [`instance_folder`]).
+fn folder_name(id: &str) -> String {
     let safe = |b: u8| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_';
     let mut name = String::with_capacity(id.len());
     for byte in id.bytes() {
@@ -185,7 +208,7 @@ pub(crate) fn instance_folder(dir: &Path, id: &str) -> PathBuf {
     } else if is_reserved_on_windows(&name) {
         name.push('~');
     }
-    dir.join(name)
+    name
 }
 
 /// Whether Windows reserves `name` (a device name) in every directory.
@@ -428,6 +451,31 @@ mod tests {
                     assert_eq!(other, id, "{other:?} and {id:?} share {name}");
                 }
             }
+        }
+    }
+
+    /// #125: a label whose folder name would pass the 255 bytes file
+    /// systems take is said too long, naming the length ('A' is `~41`, 3
+    /// bytes; '数' 3 UTF-8 bytes, 9); one that fits, up to 255, is not.
+    #[test]
+    fn folder_names_past_255_bytes_are_too_long() {
+        // Given labels around the limit
+        let fits = ["a".repeat(255), "A".repeat(85), "数".repeat(28)];
+        let too_long = [
+            ("A".repeat(86), 258),
+            ("A".repeat(90), 270),
+            ("数".repeat(30), 270),
+        ];
+        // Then only the longer ones are refused, naming their length
+        for id in fits {
+            assert_eq!(folder_too_long(&id), None, "{id}");
+        }
+        for (id, length) in too_long {
+            let why = folder_too_long(&id).unwrap();
+            assert!(
+                why.contains(&format!("would be {length} bytes, over the 255")),
+                "{why}"
+            );
         }
     }
 

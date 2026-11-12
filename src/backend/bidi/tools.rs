@@ -1144,6 +1144,7 @@ pub(crate) async fn open_instance(
         .registry
         .can_add(&desc)
         .map_err(CallToolError::from_message)?;
+    handler.check_downloads_folder(&id)?;
     let session = Arc::new(FirefoxSession::new(spec));
     session.browser().await?;
     let (host, port, profile_dir) = session.address().await.unwrap_or_default();
@@ -1269,6 +1270,47 @@ mod tests {
             *sent,
             json!({"context": "ctx-0", "orientation": "portrait", "background": false,
                 "scale": 1.0, "pageRanges": ["1"]})
+        );
+        ts::stop(&handler).await;
+    }
+
+    /// #125 (Firefox): with --downloads-dir, a label whose folder name would
+    /// pass the 255 bytes file systems take is refused before launching.
+    #[tokio::test]
+    async fn firefox_refuses_a_label_too_long_for_a_downloads_folder() {
+        // Given a server with --downloads-dir
+        let mock = MockFirefox::start(false).await.unwrap();
+        let mut handler = ts::handler(&mock);
+        handler.downloads_dir = Some(std::path::PathBuf::from("dl"));
+        // When a Firefox instance gets a label of 30 '数' (270 bytes)
+        let args = json!({"browser": "firefox", "label": "数".repeat(30)});
+        let error = open_instance(call("open_instance", args), &handler)
+            .await
+            .unwrap_err()
+            .to_string();
+        // Then it is refused naming the length, and no session started
+        assert!(error.contains("270 bytes"), "{error}");
+        assert_eq!(mock.bidi().count("session.new"), 0);
+    }
+
+    /// #125 (Firefox): a downloads directory that cannot be created denies
+    /// every download, so none lands in Firefox's default folder (outside
+    /// the directory the operator chose).
+    #[tokio::test]
+    async fn firefox_denies_downloads_without_a_directory() {
+        // Given --downloads-dir under a file, where no folder can be made
+        let mock = MockFirefox::start(false).await.unwrap();
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let mut handler = ts::handler(&mock);
+        handler.downloads_dir = Some(file.path().to_path_buf());
+        // When the instance starts
+        let session = handler.firefox(None).await.unwrap();
+        session.browser().await.unwrap();
+        // Then Firefox is told to deny downloads
+        let set = mock.bidi().commands_named("browser.setDownloadBehavior");
+        assert_eq!(
+            set[0].params,
+            json!({"downloadBehavior": {"type": "denied"}})
         );
         ts::stop(&handler).await;
     }

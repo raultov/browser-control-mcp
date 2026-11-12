@@ -738,7 +738,11 @@ incompatible:
   other byte of the label is written `~` and two hex digits, `a/b` as
   `a~2fb` and `A` as `~41`, and an empty label or a device name Windows
   reserves gets a trailing `~`, so two instances never share a folder),
-  and an existing file is never replaced.
+  and an existing file is never replaced. `open_instance` refuses a label
+  whose folder name would be longer than the 255 bytes file systems take
+  (85 characters outside `a-z0-9-_`), and a downloads directory that
+  cannot be created denies every download: the browser never saves to its
+  own default folder instead.
 - `upload_file` hands the page a file's contents: it only reads files under
   the upload roots (the server's working directory and the system temp
   directory, or the `--upload-root` directories), resolved so `..` and

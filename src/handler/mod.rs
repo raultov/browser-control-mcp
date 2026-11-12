@@ -1494,6 +1494,21 @@ impl McpHandler {
         Some(downloads::instance_folder(dir, id))
     }
 
+    /// Refuses a new instance `id` (a label `open_instance` got) when
+    /// `--downloads-dir` is given and its folder there would have a name
+    /// file systems do not take ([`downloads::folder_too_long`]); checked
+    /// before anything launches.
+    pub(crate) fn check_downloads_folder(
+        &self,
+        id: &str,
+    ) -> std::result::Result<(), CallToolError> {
+        match self.downloads_dir {
+            Some(_) => downloads::folder_too_long(id)
+                .map_or(Ok(()), |why| Err(CallToolError::from_message(why))),
+            None => Ok(()),
+        }
+    }
+
     /// The Firefox instance `id` (`None` = the default instance, created on
     /// first use when `--browser firefox`).
     pub(crate) async fn firefox(

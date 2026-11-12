@@ -26,6 +26,15 @@ from a copy of its code: entries describe the differences from that release.
   paused script ended, the tab goes back to `about:blank` (tried again if
   the page blocks it anew), and the call fails with the `--local` error.
 
+- `--downloads-dir`: a long or non-ASCII instance label (`'A' * 90`,
+  `'数' * 30`) needed a folder name over the 255 bytes file systems take;
+  the folder could not be created, and the browser saved the instance's
+  downloads to `~/Downloads` without saying so. `open_instance` now
+  refuses such a label, naming the length; and a downloads directory that
+  cannot be created denies every download (Chrome
+  `Browser.setDownloadBehavior` `deny`, Firefox `denied`) instead of
+  leaving the browser's default folder in place (#125).
+
 ## [0.17.0-beta.27] - 2026-11-11
 
 Public **BETA**. `evaluate_js` takes an opt-in `user_gesture`, so an

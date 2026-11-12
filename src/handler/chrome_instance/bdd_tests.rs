@@ -89,6 +89,44 @@ mod tests {
         assert!(err_str.contains("already exists") || err_str.contains("already in use"));
     }
 
+    /// #125: with --downloads-dir, a label whose folder name would pass the
+    /// 255 bytes file systems take is refused before launching (the folder
+    /// could not be created, and Chrome saved downloads in ~/Downloads).
+    #[tokio::test]
+    async fn given_downloads_dir_when_label_is_too_long_then_error_and_no_spawn() {
+        // Given a server with --downloads-dir
+        let mut handler = McpHandler::new_test();
+        handler.downloads_dir = Some(std::path::PathBuf::from("dl"));
+        // When an instance gets a label of 90 'A' (270 bytes as a folder)
+        let label = "A".repeat(90);
+        let params: CallToolRequestParams = serde_json::from_value(json!({
+            "name": "open_instance",
+            "arguments": {"label": label}
+        }))
+        .unwrap();
+        let error = OpenInstanceTool::handle(params, &handler)
+            .await
+            .unwrap_err()
+            .to_string();
+        // Then it is refused naming the length, and nothing was added
+        assert!(error.contains("270 bytes"), "{error}");
+        assert!(
+            handler
+                .registry
+                .list_descriptors()
+                .iter()
+                .all(|d| d.id != label)
+        );
+        // And without --downloads-dir the same label is fine
+        handler.downloads_dir = None;
+        let params: CallToolRequestParams = serde_json::from_value(json!({
+            "name": "open_instance",
+            "arguments": {"label": label}
+        }))
+        .unwrap();
+        OpenInstanceTool::handle(params, &handler).await.unwrap();
+    }
+
     #[tokio::test]
     async fn given_two_instances_when_closing_one_then_it_is_removed_and_stopped() {
         let handler = McpHandler::new_test();

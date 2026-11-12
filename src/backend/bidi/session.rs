@@ -441,18 +441,19 @@ impl FirefoxSession {
 
     /// Has Firefox save downloads in the instance's directory (#77). Best
     /// effort: without it Firefox saves them where its profile says, and
-    /// they are still reported.
+    /// they are still reported. A directory that could not be created
+    /// denies every download instead, which never lands in Firefox's
+    /// default folder, outside the directory the operator chose (#125).
     async fn save_downloads(&self, browser: &Browser, client: &bidi_browser_lite::BidiClient) {
         let profile = browser.profile_dir().await;
-        let dir = match self.downloads.lock().await.prepare(profile.as_deref()) {
-            Ok(dir) => dir,
+        let behavior = match self.downloads.lock().await.prepare(profile.as_deref()) {
+            Ok(dir) => serde_json::json!({"type": "allowed", "destinationFolder": dir}),
             Err(e) => {
-                tracing::warn!(error = %e.kind(), "could not create the downloads directory");
-                return;
+                tracing::warn!(error = %e.kind(), "could not create the downloads directory: downloads are denied");
+                serde_json::json!({"type": "denied"})
             }
         };
-        let behavior =
-            serde_json::json!({"downloadBehavior": {"type": "allowed", "destinationFolder": dir}});
+        let behavior = serde_json::json!({ "downloadBehavior": behavior });
         if client
             .send_raw_command("browser.setDownloadBehavior", behavior)
             .await

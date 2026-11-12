@@ -17,7 +17,10 @@ use tokio_stream::StreamExt;
 
 /// Sets up the downloads of the browser `browser` connects to, whose
 /// profile is `profile`, and starts recording them; `None` when Chrome
-/// refused (the downloads then go where Chrome puts them, unreported).
+/// refused (the downloads then go where Chrome puts them, unreported), or
+/// when the directory could not be created: then Chrome is told to deny
+/// every download, which never lands in its default folder, outside the
+/// directory the operator chose (#125).
 pub(crate) async fn start_download_listener(
     browser: &BrowserClient,
     state: Arc<Mutex<DownloadState>>,
@@ -27,7 +30,12 @@ pub(crate) async fn start_download_listener(
     let dir = match state.lock().await.prepare(profile) {
         Ok(dir) => dir,
         Err(e) => {
-            tracing::warn!(error = %e.kind(), "could not create the downloads directory");
+            tracing::warn!(error = %e.kind(), "could not create the downloads directory: downloads are denied");
+            let deny = json!({"behavior": "deny"});
+            let _ = browser
+                .client()
+                .send_raw_command("Browser.setDownloadBehavior", deny)
+                .await;
             return None;
         }
     };
@@ -207,6 +215,30 @@ mod tests {
             std::fs::read_to_string(dir.join("data.csv")).unwrap(),
             "a,b\n"
         );
+    }
+
+    /// #125 (Chrome): a downloads directory that cannot be created denies
+    /// every download, so none lands in Chrome's default folder (outside
+    /// the directory the operator chose).
+    #[tokio::test]
+    async fn an_uncreatable_directory_denies_downloads() {
+        // Given a downloads root under a file, where no folder can be made
+        let mock = spawn_recording_mock().await;
+        let address = format!("127.0.0.1:{}", mock.http_port);
+        let browser = BrowserClient::connect(&address, std::time::Duration::from_secs(2))
+            .await
+            .unwrap();
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let root = Some(file.path().join("instance"));
+        let state = Arc::new(Mutex::new(DownloadState::with_root(root)));
+        let tabs = Arc::new(RwLock::new(TabRegistry::new(16)));
+        // When the listener starts
+        let listener = start_download_listener(&browser, state, tabs, None).await;
+        // Then Chrome is told to deny downloads, and nothing records them
+        assert!(listener.is_none());
+        let set = mock.commands_named("Browser.setDownloadBehavior");
+        assert_eq!(set.len(), 1);
+        assert_eq!(set[0].params, json!({"behavior": "deny"}));
     }
 
     /// ISSUE-77 (Chrome): a canceled download says so.

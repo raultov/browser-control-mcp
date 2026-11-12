@@ -84,6 +84,7 @@ impl OpenInstanceTool {
             .registry
             .can_add(&planned)
             .map_err(CallToolError::from_message)?;
+        handler.check_downloads_folder(&instance_id)?;
         let child_params = args.launch_params(handler);
         let seed_report = super::cookie_seed::prepare_seed_report(
             args.copy_cookies == Some(true),
