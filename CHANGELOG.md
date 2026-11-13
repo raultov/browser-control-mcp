@@ -10,6 +10,15 @@ from a copy of its code: entries describe the differences from that release.
 
 ## [Unreleased]
 
+## [0.18.1-beta.29] - 2026-11-13
+
+Public **BETA**. Fixes for three bugs an automated test round found in
+0.18.0-beta.28: `--secrets` now masks non-ASCII values returned as JSON
+`\uXXXX` escapes (#126), `--downloads-dir` denies downloads into a
+read-only instance folder instead of letting Firefox remove and recreate
+it (#128), and `list_tabs` on a fresh Chrome instance connects to the
+browser and lists its start tab as Firefox does (#127).
+
 ### Fixed
 
 - `--secrets`: a value with characters outside ASCII is now masked when a
