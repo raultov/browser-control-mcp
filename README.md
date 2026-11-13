@@ -742,8 +742,9 @@ incompatible:
   and an existing file is never replaced. `open_instance` refuses a label
   whose folder name would be longer than the 255 bytes file systems take
   (85 characters outside `a-z0-9-_`), and a downloads directory that
-  cannot be created denies every download: the browser never saves to its
-  own default folder instead.
+  cannot be created or written (a read-only folder) denies every download:
+  the browser never saves to its own default folder instead, and the
+  folder is left as it is.
 - `upload_file` hands the page a file's contents: it only reads files under
   the upload roots (the server's working directory and the system temp
   directory, or the `--upload-root` directories), resolved so `..` and

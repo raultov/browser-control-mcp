@@ -102,7 +102,11 @@ impl DownloadState {
 
     /// Picks and creates the directory of a browser that started, whose
     /// profile is `profile` (none for an attached browser or the user's
-    /// profile); an absolute path, as browsers want.
+    /// profile); an absolute path, as browsers want. One that exists but
+    /// cannot be written fails as one that cannot be created does (a new
+    /// file is made in it and removed), so the browser is told to deny
+    /// downloads: Firefox removed a read-only folder, made it anew and
+    /// saved into it (#128).
     pub(crate) fn prepare(&mut self, profile: Option<&Path>) -> std::io::Result<PathBuf> {
         if let Some(dir) = &self.dir {
             return Ok(dir.clone());
@@ -116,6 +120,7 @@ impl DownloadState {
                 .keep(),
         };
         std::fs::create_dir_all(&dir)?;
+        drop(tempfile::tempfile_in(&dir)?);
         let dir = std::path::absolute(&dir)?;
         self.dir = Some(dir.clone());
         Ok(dir)
@@ -382,6 +387,37 @@ mod tests {
         profiled.begin(Download::begun("g1", "http://a/f", "f", None));
         profiled.reset();
         assert_eq!((profiled.dir(), profiled.begun()), (None, 0));
+    }
+
+    /// #128: a directory that exists but cannot be written is refused (the
+    /// browser is then told to deny downloads) and left as it is: Firefox
+    /// removed a read-only one, made it anew and saved into it. A writable
+    /// one is taken, with nothing left in it.
+    #[cfg(unix)]
+    #[test]
+    fn a_read_only_directory_is_refused_and_left_in_place() {
+        use std::os::unix::fs::PermissionsExt;
+        // Given the instance's folder of --downloads-dir, read-only
+        let base = tempfile::tempdir().unwrap();
+        let folder = base.path().join("default");
+        std::fs::create_dir(&folder).unwrap();
+        let mode = |mode| std::fs::Permissions::from_mode(mode);
+        std::fs::set_permissions(&folder, mode(0o555)).unwrap();
+        if std::fs::File::create(folder.join("root")).is_ok() {
+            return; // root writes anywhere: nothing to refuse
+        }
+        // When the directory is prepared
+        let mut state = DownloadState::with_root(Some(folder.clone()));
+        let refused = state.prepare(None).unwrap_err();
+        // Then it is refused, and still there as it was
+        assert_eq!(refused.kind(), std::io::ErrorKind::PermissionDenied);
+        assert_eq!(state.dir(), None);
+        let found = std::fs::metadata(&folder).unwrap().permissions().mode();
+        assert_eq!(found & 0o777, 0o555);
+        // And once writable it is taken, with nothing left in it
+        std::fs::set_permissions(&folder, mode(0o755)).unwrap();
+        assert_eq!(state.prepare(None).unwrap(), folder);
+        assert_eq!(std::fs::read_dir(&folder).unwrap().count(), 0);
     }
 
     /// ISSUE-77: an instance's folder is named after its id, which cannot

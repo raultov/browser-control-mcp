@@ -17,6 +17,11 @@ from a copy of its code: entries describe the differences from that release.
   `json.dumps`: `\u017d` for `Ž`, a surrogate pair above U+FFFF), with
   lower- or uppercase hex digits, also inside a tool's JSON reply (the
   backslashes doubled) (#126).
+- `--downloads-dir`: an instance folder that exists but cannot be written
+  (read-only) now denies every download, as one that cannot be created
+  does, and is left as it is. Firefox canceled the first download,
+  removed the folder, made it anew and completed the next downloads into
+  it (#128).
 
 ## [0.18.0-beta.28] - 2026-11-12
 

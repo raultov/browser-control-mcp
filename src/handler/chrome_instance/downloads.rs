@@ -18,9 +18,9 @@ use tokio_stream::StreamExt;
 /// Sets up the downloads of the browser `browser` connects to, whose
 /// profile is `profile`, and starts recording them; `None` when Chrome
 /// refused (the downloads then go where Chrome puts them, unreported), or
-/// when the directory could not be created: then Chrome is told to deny
-/// every download, which never lands in its default folder, outside the
-/// directory the operator chose (#125).
+/// when the directory could not be created or written: then Chrome is told
+/// to deny every download, which never lands in its default folder,
+/// outside the directory the operator chose (#125, #128).
 pub(crate) async fn start_download_listener(
     browser: &BrowserClient,
     state: Arc<Mutex<DownloadState>>,
@@ -30,7 +30,7 @@ pub(crate) async fn start_download_listener(
     let dir = match state.lock().await.prepare(profile) {
         Ok(dir) => dir,
         Err(e) => {
-            tracing::warn!(error = %e.kind(), "could not create the downloads directory: downloads are denied");
+            tracing::warn!(error = %e.kind(), "could not create or write the downloads directory: downloads are denied");
             let deny = json!({"behavior": "deny"});
             let _ = browser
                 .client()
