@@ -22,6 +22,11 @@ from a copy of its code: entries describe the differences from that release.
   does, and is left as it is. Firefox canceled the first download,
   removed the folder, made it anew and completed the next downloads into
   it (#128).
+- Chrome: `list_tabs` on an instance no tool has used yet (before any
+  navigation, or right after `open_instance`) now lists its start tab, as
+  Firefox does, instead of no tab. Like any other tool it now launches or
+  connects to the instance's browser, so it also relaunches a browser
+  that `stop_browser` stopped (#127).
 
 ## [0.18.0-beta.28] - 2026-11-12
 

@@ -115,6 +115,9 @@ pub struct MockChromeManager {
     crashed: bool,
     attached: bool,
     seed_report: Option<SeedReport>,
+    /// Where `browser_client` connects, when a test serves the browser-level
+    /// endpoint too (a `MockDevTools`); none refuses it.
+    browser_addr: Option<String>,
 }
 
 impl MockChromeManager {
@@ -127,7 +130,17 @@ impl MockChromeManager {
             crashed: false,
             attached: false,
             seed_report: None,
+            browser_addr: None,
         }
+    }
+
+    /// Makes `browser_client` connect to the mock DevTools server on the
+    /// manager's port, for tests of what runs over the browser-level
+    /// connection (target discovery, tab management).
+    #[cfg(test)]
+    pub fn with_browser_client(mut self) -> Self {
+        self.browser_addr = Some(format!("127.0.0.1:{}", self.port));
+        self
     }
 
     #[cfg(test)]
@@ -175,9 +188,14 @@ impl ChromeManager for MockChromeManager {
     async fn browser_client(
         &self,
     ) -> crate::handler::chrome_instance::ManagerResult<BrowserClient> {
-        Err(crate::handler::chrome_instance::manager_error!(
-            "MockChromeManager does not support browser_client; tab management requires a real Chrome instance"
-        ))
+        let Some(addr) = &self.browser_addr else {
+            return Err(crate::handler::chrome_instance::manager_error!(
+                "MockChromeManager does not support browser_client; tab management requires a real Chrome instance"
+            ));
+        };
+        BrowserClient::connect(addr, std::time::Duration::from_secs(10))
+            .await
+            .map_err(Into::into)
     }
 
     fn get_port(&self) -> u16 {
