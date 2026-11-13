@@ -10,6 +10,14 @@ from a copy of its code: entries describe the differences from that release.
 
 ## [Unreleased]
 
+### Fixed
+
+- `--secrets`: a value with characters outside ASCII is now masked when a
+  page returns it from a JSON encoder that writes ASCII only (Python's
+  `json.dumps`: `\u017d` for `Ž`, a surrogate pair above U+FFFF), with
+  lower- or uppercase hex digits, also inside a tool's JSON reply (the
+  backslashes doubled) (#126).
+
 ## [0.18.0-beta.28] - 2026-11-12
 
 Public **BETA**. Fixes for four bugs an automated test round found in

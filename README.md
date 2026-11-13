@@ -754,6 +754,8 @@ incompatible:
   URL-encoded as a form, `encodeURIComponent` or `encodeURI` encodes them
   (a GET form puts a typed password in the URL) and when escaped inside
   JSON strings, up to four deep (an `evaluate_js` of `JSON.stringify`),
+  with characters outside ASCII kept or written as `\uXXXX` (lower- or
+  uppercase hex, as Python's `json.dumps` does),
   and `fill_input` / `fill_form` type the value of a
   `<secret:NAME>` they are given, so the agent can log in without seeing
   the password. It is a convenience, not a security boundary: the page can

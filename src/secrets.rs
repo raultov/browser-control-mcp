@@ -6,7 +6,8 @@
 //! Values are masked as is and URL-encoded as a form, `encodeURIComponent`
 //! or `encodeURI` encodes them (a GET form puts a typed password in the
 //! URL), each also escaped inside JSON strings, nested a few deep (a page's
-//! `JSON.stringify` in a tool's JSON reply). A convenience, not a security
+//! `JSON.stringify` in a tool's JSON reply), with the characters outside
+//! ASCII kept or as `\uXXXX` escapes. A convenience, not a security
 //! boundary: a page can transform a value (encode it otherwise, split it)
 //! into something no longer masked, and images (screenshots, PDFs) are not
 //! masked.
@@ -101,8 +102,8 @@ impl Secrets {
     }
 
     /// `text` with every secret value (as is or URL-encoded as the browser
-    /// does, each also escaped inside nested JSON strings) replaced by
-    /// `<secret:NAME>`.
+    /// does, each also escaped inside nested JSON strings, its characters
+    /// outside ASCII kept or as `\uXXXX`) replaced by `<secret:NAME>`.
     pub fn mask(&self, text: &str) -> String {
         let forms = &self.forms;
         if !forms.iter().any(|(form, _)| text.contains(form.as_str())) {
@@ -259,8 +260,9 @@ const JSON_LEVELS: usize = 4;
 
 /// Each value with its token, as is and as the browser URL-encodes it
 /// (#109), each also as escaped inside JSON strings nested up to
-/// [`JSON_LEVELS`] deep (#118): the longest first, so a value containing
-/// another is masked whole.
+/// [`JSON_LEVELS`] deep (#118), by an encoder that keeps the characters
+/// outside ASCII or one that escapes them (#126): the longest first, so a
+/// value containing another is masked whole.
 fn forms_of(entries: &[(String, String)]) -> Vec<(String, String)> {
     let mut forms = Vec::new();
     for (name, value) in entries {
@@ -272,7 +274,7 @@ fn forms_of(entries: &[(String, String)]) -> Vec<(String, String)> {
         }
         let mut level = written.clone();
         for _ in 0..JSON_LEVELS {
-            level = level.iter().map(|form| json_escaped(form)).collect();
+            level = level.iter().flat_map(|form| json_forms(form)).collect();
             written.extend(level.iter().cloned());
         }
         written.sort();
@@ -289,6 +291,45 @@ fn json_escaped(text: &str) -> String {
     let quoted = serde_json::to_string(text).unwrap_or_default();
     let inner = quoted.strip_prefix('"').and_then(|q| q.strip_suffix('"'));
     inner.unwrap_or(text).to_string()
+}
+
+/// `text` as JSON encoders write it inside a string: with its characters
+/// outside ASCII kept (`JSON.stringify`, serde) and, when it has any, with
+/// them escaped (#126: Python's `json.dumps` writes ASCII only), the hex
+/// digits in lowercase or in uppercase.
+fn json_forms(text: &str) -> Vec<String> {
+    let escaped = json_escaped(text);
+    if escaped.is_ascii() {
+        return vec![escaped];
+    }
+    vec![
+        unicode_escaped(&escaped, false),
+        unicode_escaped(&escaped, true),
+        escaped,
+    ]
+}
+
+/// `text` with each character outside ASCII as the `\uXXXX` escapes of its
+/// UTF-16 units: one, or a surrogate pair above U+FFFF.
+fn unicode_escaped(text: &str, uppercase: bool) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut units = [0; 2];
+    for c in text.chars() {
+        if c.is_ascii() {
+            out.push(c);
+            continue;
+        }
+        for unit in c.encode_utf16(&mut units) {
+            let hex = if uppercase {
+                format!("{unit:04X}")
+            } else {
+                format!("{unit:04x}")
+            };
+            out.push_str("\\u");
+            out.push_str(&hex);
+        }
+    }
+    out
 }
 
 /// What `encodeURIComponent` escapes: all but ASCII letters, digits and
@@ -466,6 +507,34 @@ mod tests {
         assert_eq!(s.mask(&json), "{\"url\":\"?pass=<secret:PW>\"}");
         // And a value with nothing to encode is masked as before
         assert_eq!(secrets().mask("pw=hunter22"), "pw=<secret:PASS>");
+    }
+
+    /// #126: a value with characters outside ASCII is masked as a JSON
+    /// encoder that writes ASCII only escapes it (`\uXXXX` per UTF-16 unit,
+    /// with lower- or uppercase hex digits; Python's `json.dumps`), also
+    /// inside a tool's JSON reply, where the backslashes are doubled.
+    #[test]
+    fn non_ascii_values_are_masked_as_json_unicode_escapes() {
+        // Given secrets with characters outside ASCII, one above U+FFFF
+        let s = Secrets::parse("QA_TOKEN=Žluťoučký7731\nASTRAL=key😀\"7731\n").unwrap();
+        // When a page echoes one as an ASCII-only JSON encoder writes it
+        let body = r#"{"p": "\u017dlu\u0165ou\u010dk\u00fd7731"}"#;
+        // Then it is masked, as text and inside the tool's JSON reply
+        assert_eq!(s.mask(body), r#"{"p": "<secret:QA_TOKEN>"}"#);
+        let reply = serde_json::to_string(&json!({"value": body})).unwrap();
+        assert!(reply.contains(r"\\u017dlu"), "{reply}");
+        assert_eq!(
+            s.mask(&reply),
+            r#"{"value":"{\"p\": \"<secret:QA_TOKEN>\"}"}"#
+        );
+        // And with uppercase hex digits, and as a surrogate pair
+        let upper = r"\u017Dlu\u0165ou\u010Dk\u00FD7731";
+        assert_eq!(s.mask(upper), "<secret:QA_TOKEN>");
+        assert_eq!(s.mask(r#"key\ud83d\ude00\"7731"#), "<secret:ASTRAL>");
+        assert_eq!(s.mask(r#"key\uD83D\uDE00\"7731"#), "<secret:ASTRAL>");
+        // And the value as is still is, with what JSON escapes of it
+        assert_eq!(s.mask("Žluťoučký7731"), "<secret:QA_TOKEN>");
+        assert_eq!(s.mask(r#"key😀\"7731"#), "<secret:ASTRAL>");
     }
 
     /// SECRETS-03: a tool's text, embedded text, structured content and
