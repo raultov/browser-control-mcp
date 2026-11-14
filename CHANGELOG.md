@@ -10,6 +10,12 @@ from a copy of its code: entries describe the differences from that release.
 
 ## [Unreleased]
 
+### Fixed
+
+- Chrome: several tool calls sent at once as the first calls of a server
+  all succeed; one of them failed with "Failed to register default
+  session: Instance id 'default' already exists" (#132).
+
 ## [0.18.1-beta.29] - 2026-11-13
 
 Public **BETA**. Fixes for three bugs an automated test round found in

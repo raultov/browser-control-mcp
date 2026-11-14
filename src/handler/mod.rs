@@ -1604,15 +1604,16 @@ impl McpHandler {
                 self.base_params.configured_port(),
                 default_features,
             );
-            self.registry
+            // Two first calls may race (#132): the loser takes the winner's session.
+            match self
+                .registry
                 .add_session(desc, self.default_session.clone())
-                .map_err(|e| {
-                    CallToolError::from_message(format!(
-                        "Failed to register default session: {}",
-                        e
-                    ))
-                })?;
-            Ok(self.default_session.clone())
+            {
+                Ok(()) => Ok(self.default_session.clone()),
+                Err(e) => self.registry.get_session(&id).ok_or_else(|| {
+                    CallToolError::from_message(format!("Failed to register default session: {e}"))
+                }),
+            }
         } else {
             let available: Vec<_> = self
                 .registry
@@ -1816,6 +1817,27 @@ pub(crate) fn listed_tool_names(handler: &McpHandler) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    /// #132: concurrent first calls on the default instance all get its
+    /// session: the one that loses the race to register it uses the
+    /// session the winner registered.
+    #[tokio::test]
+    async fn concurrent_first_calls_share_the_default_session() {
+        // Given a fresh handler whose first calls wait at the same point
+        let handler = McpHandler::new_test();
+        let held = handler.default_session.chrome_manager.lock().await;
+        let calls = async { tokio::join!(handler.session(None), handler.session(None)) };
+        let release = async {
+            tokio::task::yield_now().await;
+            drop(held);
+        };
+        // When both register the default session at once
+        let ((first, second), ()) = tokio::join!(calls, release);
+        // Then both succeed, with the same session
+        let (first, second) = (first.unwrap(), second.unwrap());
+        assert!(Arc::ptr_eq(&first, &second));
+        assert!(Arc::ptr_eq(&first, &handler.default_session));
+    }
+
     /// SEC-18: Observation buffers are bounded.
     #[test]
     fn observation_buffers_are_bounded() {
