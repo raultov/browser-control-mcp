@@ -45,6 +45,12 @@ from a copy of its code: entries describe the differences from that release.
   limit reached (N, the default instance included)"). Instances opened
   first filled the cap, and every later call on the default instance
   failed with "Instance limit reached" (#134).
+- Chrome: `get_network_logs` after the first `navigate` of a fresh
+  instance lists every request of the page (document, scripts, fetches),
+  as Firefox does. The tab was navigated while its domains were still
+  being enabled, so its first requests often went unrecorded; starting
+  on `about:blank` (#131) made it rarer, and the navigation now enables
+  the tab's Network domain first (#133).
 
 ## [0.18.1-beta.29] - 2026-11-13
 

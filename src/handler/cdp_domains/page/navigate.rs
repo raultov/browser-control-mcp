@@ -328,6 +328,21 @@ async fn load_blank(target: &CdpTarget) -> Option<bool> {
     Some(blanked)
 }
 
+/// `Page.navigate` to `url`, the tab's Network domain enabled first: a
+/// fresh tab is registered, and so navigated, while its domains are still
+/// being enabled (#133: the first page's requests went unseen). Chrome
+/// answers a session's commands in order: once this (idempotent)
+/// `Network.enable` replies, the page's requests are recorded.
+async fn send_navigation(
+    target: &CdpTarget,
+    url: &str,
+) -> cdp_browser_lite::CdpResult<cdp_browser_lite::WsResponse> {
+    let _ = target.send_raw_command("Network.enable", json!({})).await;
+    target
+        .send_raw_command("Page.navigate", json!({"url": url}))
+        .await
+}
+
 /// Navigates `target` and waits (at most [`LOAD_TIMEOUT`]) for the new
 /// document to fire `load`. Chrome answers `Page.navigate` as soon as the
 /// navigation starts and reports a network error only as `errorText` inside
@@ -341,10 +356,7 @@ pub(crate) async fn load_and_wait(
     // Subscribed first: `load` can fire before the reply is read.
     let mut page_events = target.on_domain("Page");
     let deadline = tokio::time::Instant::now() + LOAD_TIMEOUT;
-    let reply = match target
-        .send_raw_command("Page.navigate", json!({"url": url}))
-        .await
-    {
+    let reply = match send_navigation(target, url).await {
         Ok(reply) => reply,
         // Chrome answers once the response headers arrive: a slow server
         // outlasts the command timeout while the navigation goes on.
@@ -914,6 +926,38 @@ pub(crate) mod tests {
         assert_eq!(body["browser"]["loaderId"], "L1");
         assert!(body.get("tab_id").is_some());
         assert!(body.get("notes").is_none(), "load fired: {body}");
+    }
+
+    /// #133: the tab's Network domain is enabled on the navigation's own
+    /// session right before it: a fresh tab is registered (and navigated)
+    /// while its domains are still being enabled, and the first page's
+    /// requests went unrecorded.
+    #[tokio::test]
+    async fn network_is_enabled_right_before_the_navigation() {
+        // Given a Chrome that loads the page
+        let mock = spawn_recording_mock().await;
+        mock.respond_with(
+            "Page.navigate",
+            |_| json!({"frameId": "F1", "loaderId": "L1"}),
+        );
+        committed_url(mock, "http://127.0.0.1:8/");
+        fire_events_after(mock, "Page.navigate", vec![committed("L1"), load_event()]);
+        let handler = mock_handler(mock.http_port);
+        // When navigate runs
+        let args = json!({"url": "http://127.0.0.1:8/"});
+        NavigateTool::handle(call("navigate", args), &handler)
+            .await
+            .unwrap();
+        // Then the navigation's session had Network enabled just before it
+        let commands = mock.commands();
+        let navigation = commands.iter().position(|c| c.method == "Page.navigate");
+        let navigation = navigation.unwrap();
+        let session = &commands[navigation].session_id;
+        let before = commands[..navigation]
+            .iter()
+            .rev()
+            .find(|c| &c.session_id == session);
+        assert_eq!(before.map(|c| c.method.as_str()), Some("Network.enable"));
     }
 
     /// NAV-05 (#105): with --local, a navigation that a redirect takes to an

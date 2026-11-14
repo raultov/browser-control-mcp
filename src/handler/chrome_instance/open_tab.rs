@@ -64,12 +64,11 @@ async fn create_tab(
 
 /// Navigates a registered blank tab to `url`, through the registered
 /// session: the target-discovery listener may have registered this page
-/// first, with its own session, and still be enabling its domains. Chrome
-/// answers a session's commands in order, so once this (idempotent)
-/// `Network.enable` replies, the page's first requests will be recorded.
-/// Waits for `load` like `navigate`; a network error (or, with `local`, a
-/// redirect to an address that is not local) fails, naming the tab that
-/// stays open.
+/// first, with its own session, and still be enabling its domains (the
+/// navigation enables Network on it first, so the page's first requests
+/// are recorded). Waits for `load` like `navigate`; a network error (or,
+/// with `local`, a redirect to an address that is not local) fails, naming
+/// the tab that stays open.
 async fn open_url(
     session: &crate::handler::BrowserSession,
     tab_id: &str,
@@ -77,9 +76,6 @@ async fn open_url(
     local: bool,
 ) -> Result<String, CallToolError> {
     let registered = session.target(Some(tab_id.to_string())).await?;
-    let _ = registered
-        .send_raw_command("Network.enable", serde_json::json!({}))
-        .await;
     let network = session.network_state(Some(tab_id.to_string()))?;
     let outcome = crate::handler::cdp_domains::page::navigate::navigate_and_wait(
         &registered,
