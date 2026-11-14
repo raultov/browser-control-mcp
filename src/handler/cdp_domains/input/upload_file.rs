@@ -191,6 +191,11 @@ mod tests {
         format!("{}/Cargo.toml", env!("CARGO_MANIFEST_DIR"))
     }
 
+    /// `path` as the browser gets it: resolved (#136; on Windows, with `\`).
+    fn resolved(path: &str) -> String {
+        browser_path(&std::fs::canonicalize(path).unwrap())
+    }
+
     fn tool(paths: &[&str]) -> UploadFileTool {
         serde_json::from_value(json!({"selector": "#up", "paths": paths})).unwrap()
     }
@@ -202,7 +207,7 @@ mod tests {
         let file = manifest();
         assert_eq!(
             tool(&[&file]).checked_paths(&[]).unwrap(),
-            vec![file.clone()]
+            vec![resolved(&file)]
         );
         let error = |paths: &[&str], roots: &[PathBuf]| {
             tool(paths).checked_paths(roots).unwrap_err().to_string()
@@ -283,7 +288,8 @@ mod tests {
             "{text}"
         );
         let set = &mock.commands_named("DOM.setFileInputFiles")[0].params;
-        assert_eq!(set, &json!({"files": [manifest()], "objectId": "o1"}));
+        let files = [resolved(&manifest())];
+        assert_eq!(set, &json!({"files": files, "objectId": "o1"}));
         assert_eq!(mock.commands_named("Runtime.releaseObject").len(), 1);
     }
 }
