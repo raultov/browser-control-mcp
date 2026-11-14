@@ -10,6 +10,19 @@ from a copy of its code: entries describe the differences from that release.
 
 ## [Unreleased]
 
+## [0.19.0-beta.30] - 2026-11-14
+
+Public **BETA**. Fixes for eight bugs two automated test rounds found in
+0.18.1-beta.29. Two change behaviour: `--max-instances` now counts the
+default instance's slot before its first use (#134), and `upload_file`
+hands the browser the resolved path, so a file given through a symlink
+reaches the page under its target's name (#136). Also: `--secrets` masks
+`\/` and `\u00XX` JSON escapes of ASCII (#129), `evaluate_js` runs
+top-level `await` written with parentheses (#135), and Chrome starts on
+`about:blank` (#131), records the first navigation's requests (#133),
+lists no tab once the last one closed (#130) and survives concurrent
+first calls (#132).
+
 ### Fixed
 
 - Chrome: several tool calls sent at once as the first calls of a server
