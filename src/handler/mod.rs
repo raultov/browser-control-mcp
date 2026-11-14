@@ -1226,7 +1226,10 @@ impl BrowserSession {
     /// `evaluate_js` result, page or script): the tabs registered over it
     /// would answer `Connection lost` forever. A dead connection is
     /// forgotten with its tabs, and the session reconnects and waits for the
-    /// pages to register again (with new tab ids).
+    /// pages to register again (with new tab ids). Closing the last tab also
+    /// closes its connection: with no page left there is nothing to connect
+    /// to, so the call goes on unconnected (#130: `list_tabs` lists no tab,
+    /// `open_tab` creates one, the others say no tab is open).
     async fn reconnect_if_dropped(&self) -> std::result::Result<(), CallToolError> {
         let tab_client = {
             let registry = crate::util::sync::read(&self.tabs);
@@ -1246,8 +1249,12 @@ impl BrowserSession {
         if !matches!(probe, Err(cdp_browser_lite::CdpError::Disconnected)) {
             return Ok(());
         }
-        tracing::warn!("DevTools connection dropped; reconnecting");
         self.reset_connection_state().await;
+        if self.page_count().await == Some(0) {
+            tracing::debug!("DevTools connection closed with the last page");
+            return Ok(());
+        }
+        tracing::warn!("DevTools connection dropped; reconnecting");
         drop(self.get_or_connect().await?);
         if self
             .first_tab_pending

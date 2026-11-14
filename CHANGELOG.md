@@ -15,6 +15,9 @@ from a copy of its code: entries describe the differences from that release.
 - Chrome: several tool calls sent at once as the first calls of a server
   all succeed; one of them failed with "Failed to register default
   session: Instance id 'default' already exists" (#132).
+- Chrome: `list_tabs` once the last tab was closed lists no tab, as
+  Firefox does, instead of failing with "No tab is open in this
+  instance" (#130).
 
 ## [0.18.1-beta.29] - 2026-11-13
 

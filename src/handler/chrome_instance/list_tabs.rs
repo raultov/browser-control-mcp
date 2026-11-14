@@ -171,6 +171,42 @@ mod tests {
         assert!(handler.default_session.client.lock().await.is_none());
     }
 
+    /// #130: once the last tab was closed (its connection with it), a
+    /// Chrome lists no tab, without an error, as Firefox does.
+    #[tokio::test]
+    async fn a_browser_whose_last_tab_closed_lists_no_tab() {
+        use cdp_browser_lite::test_support::mock_devtools::MockWsBehavior;
+        // Given a browser with no page left, whose session connection closed
+        let mock = spawn_recording_mock().await;
+        let downloads = tempfile::tempdir().unwrap();
+        let handler = fresh_instance(mock, json!([]), downloads.path());
+        let closed = MockDevTools::start(MockWsBehavior::CloseAfterOneCommand).await;
+        let address = format!("127.0.0.1:{}", closed.http_port);
+        let timeout = std::time::Duration::from_secs(2);
+        let browser = cdp_browser_lite::BrowserClient::connect(&address, timeout)
+            .await
+            .unwrap();
+        let page = browser.attach("T-closed").await.unwrap();
+        let client = page.client().clone();
+        for _ in 0..100 {
+            let probe = client
+                .send_raw_command("Browser.getVersion", json!({}))
+                .await;
+            if matches!(probe, Err(cdp_browser_lite::CdpError::Disconnected)) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        *handler.default_session.client.lock().await = Some(client);
+        // When its tabs are listed
+        let reply = listed(&handler).await;
+        // Then none is, and the dead connection is forgotten, not replaced
+        // (with no page, Chrome has nothing to connect to)
+        assert_eq!(reply["tabs"], json!([]));
+        assert_eq!(reply["active_tab_id"], json!(null));
+        assert!(handler.default_session.client.lock().await.is_none());
+    }
+
     /// FIX-09: list_tabs shows the current URL.
     #[test]
     fn list_tabs_shows_current_url() {
