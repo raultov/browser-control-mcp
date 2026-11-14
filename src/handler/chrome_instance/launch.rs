@@ -49,6 +49,9 @@ impl ChromeFeature {
 /// usual debugging port.
 pub(crate) const DEFAULT_PORT: u16 = 9222;
 
+/// The page a launched Chrome's first tab opens, as on Firefox.
+const START_PAGE: &str = "about:blank";
+
 #[derive(Debug, Clone)]
 pub(crate) struct LaunchParams {
     host: String,
@@ -203,6 +206,12 @@ impl LaunchParams {
         // answers the proxy's 407 instead).
         if let Some(proxy) = &self.proxy {
             builder = builder.proxy(crate::util::url::without_userinfo(proxy));
+        }
+        // The URL the first tab opens, after every switch: without it, the
+        // privileged New Tab page (#131). The user's own profile keeps the
+        // startup pages the user chose.
+        if !self.browser.user_profile {
+            builder = builder.arg(START_PAGE);
         }
         // A seeded profile only works if Chrome can decrypt the imported
         // cookies, which requires access to the desktop secret store. When the
@@ -396,6 +405,22 @@ mod tests {
         params.browser.window_size = crate::cli::WindowSize::parse("1280x800").unwrap();
         let config = params.to_config(&params.plan());
         assert!(format!("{config:?}").contains("window_size: Some((1280, 800))"));
+    }
+
+    /// #131: a launched Chrome starts on about:blank, as Firefox does, not on
+    /// its New Tab page; the user's own profile keeps its startup pages.
+    #[test]
+    fn chrome_starts_on_a_blank_page() {
+        // Given the launch of a Chrome of the server's own
+        let params = default_params();
+        // When its configuration is built
+        let config = format!("{:?}", params.to_config(&params.plan()));
+        // Then about:blank is the last argument: the URL its tab opens
+        assert!(config.contains(", \"about:blank\"]"), "{config}");
+        // But the user's own profile opens what the user chose
+        let user = LaunchParams::new("127.0.0.1".into(), 9222, flags(false, false, true));
+        let config = format!("{:?}", user.to_config(&user.plan()));
+        assert!(!config.contains("about:blank"), "{config}");
     }
 
     /// AUD-LC-08: proxy credentials never reach Chrome's command line

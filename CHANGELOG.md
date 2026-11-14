@@ -18,6 +18,11 @@ from a copy of its code: entries describe the differences from that release.
 - Chrome: `list_tabs` once the last tab was closed lists no tab, as
   Firefox does, instead of failing with "No tab is open in this
   instance" (#130).
+- Chrome: a Chrome the server launches (fresh, relaunched after
+  `stop_browser` or `restart_browser`) starts on `about:blank`, as
+  Firefox does, instead of its `chrome://newtab/` page. A Chrome started
+  with the user's own profile (`--user-profile`) still opens the user's
+  startup pages (#131).
 
 ## [0.18.1-beta.29] - 2026-11-13
 
