@@ -132,8 +132,17 @@ impl Registry {
         desc: &InstanceDescriptor,
     ) -> Result<(), String> {
         let max = self.max_instances.load(std::sync::atomic::Ordering::SeqCst);
-        if state.sessions.len() + state.firefox.len() >= max {
-            return Err(format!("Instance limit reached ({max})"));
+        // The default instance always exists: its slot is held until its
+        // first use registers it (#134: other instances filled the cap and
+        // left it unusable).
+        let default = "default";
+        let default_pending = !desc.is_default
+            && !state.sessions.contains_key(default)
+            && !state.firefox.contains_key(default);
+        if state.sessions.len() + state.firefox.len() + usize::from(default_pending) >= max {
+            return Err(format!(
+                "Instance limit reached ({max}, the default instance included)"
+            ));
         }
         // The default instance's descriptor exists before its session: only
         // the default instance itself may take that id.
@@ -284,14 +293,35 @@ mod tests {
     /// BKD-09: The instance cap is checked before launching.
     #[test]
     fn instance_cap_checked_before_launch() {
-        // Given a registry full at one instance
-        let registry = Registry::new(1);
+        // Given a registry full at one instance besides the default's slot
+        let registry = Registry::new(2);
         let session = McpHandler::new_test().default_session.clone();
         registry.add_session(descriptor("a"), session).unwrap();
         // When another instance is planned
         let planned = registry.can_add(&descriptor("b"));
         // Then it is refused before anything is launched
         assert!(planned.is_err_and(|e| e.contains("limit")));
+    }
+
+    /// #134: the default instance always exists, so its slot is held before
+    /// its first use registers it: other instances cannot fill the cap and
+    /// leave it unusable.
+    #[test]
+    fn the_default_instance_keeps_its_slot() {
+        // Given a cap of two and an unused default instance
+        let registry = Registry::new(2);
+        let session = McpHandler::new_test().default_session.clone();
+        // When other instances are opened
+        registry
+            .add_session(descriptor("a"), session.clone())
+            .unwrap();
+        let refused = registry.add_session(descriptor("b"), session.clone());
+        // Then only one fits, the other is refused naming the default's slot
+        assert!(refused.is_err_and(|e| e.contains("limit reached") && e.contains("default")));
+        // And the default instance still registers on its first use
+        let default = InstanceDescriptor::default_instance(0, vec![]);
+        assert!(registry.add_session(default, session.clone()).is_ok());
+        assert!(registry.can_add(&descriptor("c")).is_err());
     }
 
     /// REV-04: no other instance can take the id of the default instance

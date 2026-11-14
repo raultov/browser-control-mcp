@@ -496,7 +496,7 @@ To debug JavaScript, add `--tool-groups debug` (see [Tool groups](#tool-groups))
 | `--window-size <W>x<H>` | `1920x1080` | window of launched Chrome (`--window-size`) | window of launched Firefox (`--width`/`--height`) |
 | `--host <HOST>` | `127.0.0.1` | debugging host | debugging host |
 | `--port <PORT>` | none (launch) | without it the default instance launches a Chrome of its own on a free port (`list_instances` shows it); with it, it attaches to the Chrome already running on that port, or launches one there (a remote `--host`, or `--user-profile`, attach on 9222 when no port is given) | ignored (use `--firefox-port`) |
-| `--max-instances <N>` | `8` | instance cap | shared with Chrome |
+| `--max-instances <N>` | `8` | instance cap, the default instance included (its slot is held before its first use) | shared with Chrome |
 | `--enable-automation` | off | shows the automation infobar | ignored; `list_instances` shows a warning |
 | `--user-profile` | off | your default profile (no `--user-data-dir`) | only with `--firefox-port` (attach to your running Firefox) |
 | `--allow-cookie-import` | off | exposes `copy_cookies` | capability error |

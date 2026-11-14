@@ -40,6 +40,11 @@ from a copy of its code: entries describe the differences from that release.
   `SyntaxError` or `ReferenceError`. An expression using `await` outside
   every function now runs as an async function at once, instead of
   after the browser refused it (#135).
+- `--max-instances` holds the default instance's slot before its first
+  use: `open_instance` is refused once only that slot is left ("Instance
+  limit reached (N, the default instance included)"). Instances opened
+  first filled the cap, and every later call on the default instance
+  failed with "Instance limit reached" (#134).
 
 ## [0.18.1-beta.29] - 2026-11-13
 

@@ -32,7 +32,7 @@ pub struct Args {
     #[arg(long, value_parser = clap::value_parser!(u16).range(1..))]
     pub port: Option<u16>,
 
-    /// Maximum number of concurrent Chrome instances (default: 8)
+    /// Maximum number of concurrent instances, the default one included (default: 8)
     #[arg(long, default_value_t = 8)]
     pub max_instances: usize,
 
