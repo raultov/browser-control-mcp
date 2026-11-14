@@ -28,6 +28,11 @@ from a copy of its code: entries describe the differences from that release.
   `&`, `<`, `>` (Go's `encoding/json`), also `'` and `=` (Gson), as
   `\u00XX` escapes, with lower- or uppercase hex (PHP's `JSON_HEX_*`
   flags), also inside a tool's JSON reply (#129).
+- `upload_file` hands the browser the resolved path it checked against
+  the upload roots, not the path given: the browser opens a file only
+  when the page reads it, and a symlink repointed in between made it read
+  a file outside the roots. A file given through a symlink now reaches
+  the page under the name of the file it points to (#136).
 
 ## [0.18.1-beta.29] - 2026-11-13
 

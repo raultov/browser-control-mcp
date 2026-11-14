@@ -30,6 +30,9 @@ impl UploadFileTool {
     /// The paths to hand the browser, once each was checked: absolute, an
     /// existing file, under one of `roots` (default: the working and temp
     /// directories) once resolved, so `..` and symlinks cannot leave them.
+    /// The browser gets the resolved paths (#136): it opens a file only
+    /// when the page reads it, and a symlink repointed in the meantime
+    /// would lead it out of the roots.
     pub(crate) fn checked_paths(&self, roots: &[PathBuf]) -> Result<Vec<String>, CallToolError> {
         let fail = |message: String| Err(CallToolError::from_message(message));
         if !(1..=MAX_FILES).contains(&self.paths.len()) {
@@ -39,6 +42,7 @@ impl UploadFileTool {
             ));
         }
         let roots = allowed_roots(roots);
+        let mut checked = Vec::with_capacity(self.paths.len());
         for path in &self.paths {
             if !Path::new(path).is_absolute() {
                 return fail(format!("'{path}' is not an absolute path"));
@@ -56,8 +60,9 @@ impl UploadFileTool {
                     shown.join(", ")
                 ));
             }
+            checked.push(browser_path(&resolved));
         }
-        Ok(self.paths.clone())
+        Ok(checked)
     }
 
     /// Whether the input can take the files (shared by every browser).
@@ -135,6 +140,17 @@ pub(crate) fn allowed_roots(roots: &[PathBuf]) -> Vec<PathBuf> {
         .collect()
 }
 
+/// A resolved path as the browser takes it: on Windows, `canonicalize`
+/// writes `\\?\C:\…` (or `\\?\UNC\server\…`), a form that is not a
+/// usual file path; it is given as `C:\…` (or `\\server\…`).
+fn browser_path(resolved: &Path) -> String {
+    let text = resolved.to_string_lossy();
+    if let Some(unc) = text.strip_prefix(r"\\?\UNC\") {
+        return format!(r"\\{unc}");
+    }
+    text.strip_prefix(r"\\?\").unwrap_or(&text).to_string()
+}
+
 /// `DOM.setFileInputFiles` on the element `selector` names (by its remote
 /// object, released afterwards).
 async fn set_files(
@@ -199,6 +215,31 @@ mod tests {
         let escaping = format!("{}/src/../Cargo.toml", env!("CARGO_MANIFEST_DIR"));
         assert!(error(&[&escaping], &[src]).contains("is outside the upload roots"));
         assert!(error(&[], &[]).contains("1 to 20 paths, got 0"));
+    }
+
+    /// #136: the browser gets the path that was checked, resolved: it opens
+    /// the file only when the page reads it, and a symlink repointed in the
+    /// meantime could make it read a file outside the upload roots.
+    #[test]
+    fn the_browser_gets_the_resolved_path() {
+        // Given a file under an upload root, named through `..`
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("sub")).unwrap();
+        std::fs::write(root.path().join("ok.txt"), "inside").unwrap();
+        let named = root.path().join("sub").join("..").join("ok.txt");
+        let named = named.to_string_lossy().to_string();
+        // When it is checked
+        let roots = [root.path().to_path_buf()];
+        let checked = tool(&[&named]).checked_paths(&roots).unwrap();
+        // Then the path handed over is the resolved one
+        let resolved = std::fs::canonicalize(root.path().join("ok.txt")).unwrap();
+        assert_eq!(checked, vec![browser_path(&resolved)]);
+        assert!(!checked[0].contains(".."), "{checked:?}");
+        // And it carries no Windows verbatim prefix the browser may refuse
+        assert_eq!(browser_path(Path::new(r"\\?\C:\up\a.txt")), r"C:\up\a.txt");
+        let unc = browser_path(Path::new(r"\\?\UNC\server\share\a.txt"));
+        assert_eq!(unc, r"\\server\share\a.txt");
+        assert_eq!(browser_path(Path::new("/up/a.txt")), "/up/a.txt");
     }
 
     /// ISSUE-6: the input must be an enabled file input, 'multiple' for

@@ -748,7 +748,9 @@ incompatible:
 - `upload_file` hands the page a file's contents: it only reads files under
   the upload roots (the server's working directory and the system temp
   directory, or the `--upload-root` directories), resolved so `..` and
-  symlinks cannot leave them. Paths are never logged.
+  symlinks cannot leave them. The browser gets the resolved path, so a
+  symlink repointed after the check cannot lead it out (the page sees the
+  name of the file a symlink points to). Paths are never logged.
 - `--secrets <file>` keeps known values (test passwords, API keys) out of
   what the agent reads: every tool result and error (text, embedded text,
   structured content) shows them as `<secret:NAME>`, also when
