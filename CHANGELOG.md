@@ -23,6 +23,11 @@ from a copy of its code: entries describe the differences from that release.
   Firefox does, instead of its `chrome://newtab/` page. A Chrome started
   with the user's own profile (`--user-profile`) still opens the user's
   startup pages (#131).
+- `--secrets`: a value is now masked when a page returns it from a JSON
+  encoder that writes `/` as `\/` (PHP's `json_encode` by default) or
+  `&`, `<`, `>` (Go's `encoding/json`), also `'` and `=` (Gson), as
+  `\u00XX` escapes, with lower- or uppercase hex (PHP's `JSON_HEX_*`
+  flags), also inside a tool's JSON reply (#129).
 
 ## [0.18.1-beta.29] - 2026-11-13
 

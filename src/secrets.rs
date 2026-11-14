@@ -7,7 +7,8 @@
 //! or `encodeURI` encodes them (a GET form puts a typed password in the
 //! URL), each also escaped inside JSON strings, nested a few deep (a page's
 //! `JSON.stringify` in a tool's JSON reply), with the characters outside
-//! ASCII kept or as `\uXXXX` escapes. A convenience, not a security
+//! ASCII kept or as `\uXXXX` escapes, and in the page's own JSON also `/`
+//! as `\/` and `&<>'=` as `\u00XX`. A convenience, not a security
 //! boundary: a page can transform a value (encode it otherwise, split it)
 //! into something no longer masked, and images (screenshots, PDFs) are not
 //! masked.
@@ -273,8 +274,14 @@ fn forms_of(entries: &[(String, String)]) -> Vec<(String, String)> {
             written.push(encoded);
         }
         let mut level = written.clone();
-        for _ in 0..JSON_LEVELS {
-            level = level.iter().flat_map(|form| json_forms(form)).collect();
+        for depth in 0..JSON_LEVELS {
+            // The page's own encoder writes the innermost string; the levels
+            // around it are `JSON.stringify` or a tool's (serde) reply.
+            let page = depth == 0;
+            level = level
+                .iter()
+                .flat_map(|form| json_forms(form, page))
+                .collect();
             written.extend(level.iter().cloned());
         }
         written.sort();
@@ -293,29 +300,51 @@ fn json_escaped(text: &str) -> String {
     inner.unwrap_or(text).to_string()
 }
 
+/// The ASCII characters JSON encoders write as `\u00XX` escapes, and in
+/// which case: Go's `encoding/json` (`&<>`), Gson (`&<>'=`), and PHP's
+/// `JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS` (uppercase hex) (#129).
+const HEX_ESCAPED: [(&str, bool); 3] = [("&<>", false), ("&<>'=", false), ("&<>'", true)];
+
 /// `text` as JSON encoders write it inside a string: with its characters
 /// outside ASCII kept (`JSON.stringify`, serde) and, when it has any, with
 /// them escaped (#126: Python's `json.dumps` writes ASCII only), the hex
-/// digits in lowercase or in uppercase.
-fn json_forms(text: &str) -> Vec<String> {
+/// digits in lowercase or in uppercase. With `other_encoders`, also as
+/// the encoders that escape `/` as `\/` (PHP) or ASCII characters in
+/// [`HEX_ESCAPED`] write it (#129).
+fn json_forms(text: &str, other_encoders: bool) -> Vec<String> {
     let escaped = json_escaped(text);
-    if escaped.is_ascii() {
-        return vec![escaped];
+    let mut ascii_escapes = vec![escaped.clone()];
+    if other_encoders {
+        for (set, uppercase) in HEX_ESCAPED {
+            ascii_escapes.push(hex_escaped(&escaped, |c| set.contains(c), uppercase));
+        }
+        // `/` is never part of an escape serde writes.
+        let slashed: Vec<String> = ascii_escapes
+            .iter()
+            .map(|form| form.replace('/', "\\/"))
+            .collect();
+        ascii_escapes.extend(slashed);
     }
-    vec![
-        unicode_escaped(&escaped, false),
-        unicode_escaped(&escaped, true),
-        escaped,
-    ]
+    let mut forms = Vec::new();
+    for form in ascii_escapes {
+        if !form.is_ascii() {
+            forms.push(hex_escaped(&form, |c| !c.is_ascii(), false));
+            forms.push(hex_escaped(&form, |c| !c.is_ascii(), true));
+        }
+        forms.push(form);
+    }
+    forms.sort();
+    forms.dedup();
+    forms
 }
 
-/// `text` with each character outside ASCII as the `\uXXXX` escapes of its
-/// UTF-16 units: one, or a surrogate pair above U+FFFF.
-fn unicode_escaped(text: &str, uppercase: bool) -> String {
+/// `text` with each character `escaped` selects as the `\uXXXX` escapes of
+/// its UTF-16 units: one, or a surrogate pair above U+FFFF.
+fn hex_escaped(text: &str, escaped: impl Fn(char) -> bool, uppercase: bool) -> String {
     let mut out = String::with_capacity(text.len());
     let mut units = [0; 2];
     for c in text.chars() {
-        if c.is_ascii() {
+        if !escaped(c) {
             out.push(c);
             continue;
         }
@@ -535,6 +564,31 @@ mod tests {
         // And the value as is still is, with what JSON escapes of it
         assert_eq!(s.mask("Žluťoučký7731"), "<secret:QA_TOKEN>");
         assert_eq!(s.mask(r#"key😀\"7731"#), "<secret:ASTRAL>");
+    }
+
+    /// #129: an ASCII value is masked as JSON encoders other than serde and
+    /// `JSON.stringify` write it: `/` as `\/` (PHP), and `&<>` (Go), also
+    /// `'=` (Gson), as `\u00XX` escapes, lower- or uppercase (PHP's
+    /// `JSON_HEX_*`), also inside a tool's JSON reply.
+    #[test]
+    fn ascii_values_are_masked_as_other_json_encoders_escape_them() {
+        // Given a secret with characters other encoders escape
+        let s = Secrets::parse("QA_KEY=ab/cd&ef7731\nTAG=<a href='x=1'>7731\n").unwrap();
+        // When a page returns it as PHP and as Go write it
+        let body = r#"{"php":"ab\/cd&ef7731","go":"ab/cd\u0026ef7731"}"#;
+        // Then both are masked, as text and inside the tool's JSON reply
+        let masked = r#"{"php":"<secret:QA_KEY>","go":"<secret:QA_KEY>"}"#;
+        assert_eq!(s.mask(body), masked);
+        let reply = serde_json::to_string(&json!({"value": body})).unwrap();
+        assert!(!s.mask(&reply).contains("ef7731"), "{}", s.mask(&reply));
+        // And with both escapes at once, or as Gson and PHP's flags write them
+        assert_eq!(s.mask(r"ab\/cd\u0026ef7731"), "<secret:QA_KEY>");
+        let gson = r"\u003ca href\u003d\u0027x\u003d1\u0027\u003e7731";
+        let php = r"\u003Ca href=\u0027x=1\u0027\u003E7731";
+        let go = r"\u003ca href='x=1'\u003e7731";
+        for form in [gson, php, go] {
+            assert_eq!(s.mask(form), "<secret:TAG>", "{form}");
+        }
     }
 
     /// SECRETS-03: a tool's text, embedded text, structured content and
