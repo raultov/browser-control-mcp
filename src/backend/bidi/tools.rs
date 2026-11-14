@@ -2647,7 +2647,7 @@ mod tests {
     }
 
     /// #121 (Firefox): `user_gesture: true` runs the expression with user
-    /// activation (`userActivation`, also when it runs again as an async
+    /// activation (`userActivation`, also when it runs as an async
     /// function); without it, and for the server's own reads, none is sent.
     #[tokio::test]
     async fn user_activation_is_sent_only_when_asked() {
@@ -2684,10 +2684,7 @@ mod tests {
                 .map(|c| c.params["userActivation"].clone())
                 .collect()
         };
-        assert_eq!(
-            sent("script.evaluate"),
-            [json!(true), json!(true), Value::Null, Value::Null]
-        );
+        assert_eq!(sent("script.evaluate"), [json!(true), Value::Null]);
         // And the server's own reads of the result never did
         assert!(sent("script.callFunction").iter().all(Value::is_null));
         ts::stop(&handler).await;

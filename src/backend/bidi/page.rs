@@ -301,18 +301,24 @@ pub(crate) async fn evaluate(tab: &Tab, expression: &str) -> Result<Value, Backe
     outcome(&reply)
 }
 
-/// `evaluate_js`: [`evaluate_once`], run again as an async function
+/// `evaluate_js`: [`evaluate_once`], as an async function
 /// ([`crate::util::js::with_top_level_await`]) when the expression uses
-/// `await` at its top level, which `script.evaluate` refuses (Chrome does
-/// the same). With `user_gesture`, both run with user activation (#121).
+/// `await` at its top level, which `script.evaluate` refuses or reads as a
+/// call (#135; Chrome does the same), and run again so when the scan
+/// missed it and Firefox says so. With `user_gesture`, both run with user
+/// activation (#121).
 pub(crate) async fn evaluate_js(
     tab: &Tab,
     expression: &str,
     user_gesture: bool,
 ) -> Result<Evaluation, BackendError> {
-    let outcome = match evaluate_once(tab, expression, user_gesture).await {
-        Err(BackendError::InvalidArgument(error)) if error.contains("await is only valid") => {
-            let wrapped = crate::util::js::with_top_level_await(expression);
+    let wrapped = crate::util::js::with_top_level_await(expression);
+    let at_once = crate::util::js::has_top_level_await(expression);
+    let first = if at_once { &wrapped } else { expression };
+    let outcome = match evaluate_once(tab, first, user_gesture).await {
+        Err(BackendError::InvalidArgument(error))
+            if !at_once && error.contains("await is only valid") =>
+        {
             evaluate_once(tab, &wrapped, user_gesture).await
         }
         outcome => outcome,

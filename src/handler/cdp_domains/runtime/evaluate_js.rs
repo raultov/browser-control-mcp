@@ -54,12 +54,16 @@ impl EvaluateJsTool {
                 evaluation::cdp_exception,
             )
         };
-        // `await` at the top level is refused by a script: it runs again as
-        // an async function, as on Firefox (not `replMode`, whose `const`s
-        // outlive the call).
-        let evaluated = match evaluate(&args.expression).await {
-            Err(error) if !paused && error.contains("await is only valid") => {
-                evaluate(&crate::util::js::with_top_level_await(&args.expression)).await
+        // `await` at the top level is refused by a script, or read as a
+        // call (#135): it runs as an async function, as on Firefox (not
+        // `replMode`, whose `const`s outlive the call); one the scan missed
+        // runs again so on the browser's error.
+        let wrapped = crate::util::js::with_top_level_await(&args.expression);
+        let at_once = !paused && crate::util::js::has_top_level_await(&args.expression);
+        let first = if at_once { &wrapped } else { &args.expression };
+        let evaluated = match evaluate(first).await {
+            Err(error) if !paused && !at_once && error.contains("await is only valid") => {
+                evaluate(&wrapped).await
             }
             outcome => outcome,
         };
@@ -298,8 +302,9 @@ mod tests {
         call, mock_handler, reply_text, spawn_recording_mock,
     };
 
-    /// ISSUE-43: an expression awaiting at its top level, which a script
-    /// refuses, runs again as an async function (as on Firefox).
+    /// ISSUE-43, #135: an expression awaiting at its top level, which a
+    /// script refuses or reads as a call, runs as an async function (as on
+    /// Firefox); one the scan misses runs again so on the browser's error.
     #[tokio::test]
     async fn top_level_await_runs_as_an_async_function() {
         // Given a page that refuses top-level await
@@ -313,27 +318,37 @@ mod tests {
             }
         });
         let handler = mock_handler(mock.http_port);
-        // When evaluate_js runs an expression with await
-        let expression = "const r = await fetch('/a'); r.json()";
-        let reply = EvaluateJsTool::handle(
-            call("evaluate_js", json!({"expression": expression})),
-            &handler,
-        )
-        .await
-        .unwrap();
-        // Then it ran again wrapped, and answers the value
-        let body: Value = serde_json::from_str(&reply_text(&reply)).unwrap();
-        assert_eq!(body["value"], 7);
-        let sent = mock.commands_named("Runtime.evaluate");
-        assert_eq!(sent.len(), 2);
-        assert_eq!(
-            sent[1].params["expression"],
-            crate::util::js::with_top_level_await(expression)
-        );
+        let evaluate = |expression: &str| {
+            let args = json!({"expression": expression});
+            EvaluateJsTool::handle(call("evaluate_js", args), &handler)
+        };
+        let expressions = |from: usize| -> Vec<Value> {
+            let sent = mock.commands_named("Runtime.evaluate");
+            sent[from..]
+                .iter()
+                .map(|c| c.params["expression"].clone())
+                .collect()
+        };
+        let wrapped = |e: &str| json!(crate::util::js::with_top_level_await(e));
+        // When evaluate_js runs expressions with await, one read as a call
+        for expression in ["const r = await fetch('/a'); r.json()", "(await p).length"] {
+            let sent = mock.commands_named("Runtime.evaluate").len();
+            let reply = evaluate(expression).await.unwrap();
+            // Then each runs wrapped at once, and answers the value
+            let body: Value = serde_json::from_str(&reply_text(&reply)).unwrap();
+            assert_eq!(body["value"], 7);
+            assert_eq!(expressions(sent), [wrapped(expression)]);
+        }
+        // And one the scan misses (a regular expression with brackets) runs
+        // as is first, then wrapped on the browser's error
+        let missed = "/(){/.test(s) && await f()";
+        let sent = mock.commands_named("Runtime.evaluate").len();
+        evaluate(missed).await.unwrap();
+        assert_eq!(expressions(sent), [json!(missed), wrapped(missed)]);
     }
 
     /// #121: `user_gesture: true` runs the expression as if the user had
-    /// just interacted (`userGesture`), also when it runs again as an async
+    /// just interacted (`userGesture`), also when it runs as an async
     /// function; without it Chrome is not asked to.
     #[tokio::test]
     async fn user_gesture_is_sent_only_when_asked() {
@@ -364,10 +379,7 @@ mod tests {
             .iter()
             .map(|c| c.params["userGesture"].clone())
             .collect();
-        assert_eq!(
-            gestures,
-            [json!(true), json!(true), Value::Null, Value::Null]
-        );
+        assert_eq!(gestures, [json!(true), Value::Null]);
     }
 
     /// EVL-02: an object is evaluated by reference, read by value, and the

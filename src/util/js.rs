@@ -792,6 +792,178 @@ pub fn with_top_level_await(expression: &str) -> String {
     format!("(async () => {{ {head}return ({last}\n); }})()")
 }
 
+/// What a bracket of the code [`has_top_level_await`] scans opened.
+#[derive(Clone, Copy)]
+enum Scope {
+    /// `(`: after `if`, `for`, `while`, `switch`, `catch` or `with`
+    /// (`control`), a `{` after its `)` is a block, else a function body.
+    Paren { control: bool },
+    /// `[`, or a `{` that is a block, an object or a class body.
+    Block,
+    /// A function's `{ ... }`.
+    Body,
+    /// An arrow function's body without braces, up to its `,`, `;`, line
+    /// end or enclosing bracket.
+    ArrowBody,
+}
+
+/// The token before the current one, as [`has_top_level_await`] needs it.
+#[derive(Clone, Copy, PartialEq)]
+enum Last {
+    Other,
+    Dot,
+    Arrow,
+    /// A keyword whose `(` holds a condition, not parameters.
+    Control,
+    /// A `)`; `control` as in [`Scope::Paren`].
+    Closed {
+        control: bool,
+    },
+}
+
+/// Keywords followed by a condition in parentheses and a block.
+const CONTROL: &[&str] = &["if", "for", "while", "switch", "catch", "with"];
+
+/// Whether `code` uses `await` outside every function, which only runs as
+/// an async function: a script refuses it, or reads `await (x)` as a call
+/// to a function named await (#135). A lexical scan: strings, comments,
+/// properties (`o.await`), object keys (`{await: 1}`) and function bodies
+/// (with braces or an arrow's without) are skipped; a regular expression
+/// literal is not recognised, so the fallback on the browser's error stays.
+pub fn has_top_level_await(code: &str) -> bool {
+    let mut scan = AwaitScan {
+        scopes: Vec::new(),
+        last: Last::Other,
+    };
+    let mut at = 0;
+    while at < code.len() {
+        match scan.token(code, at) {
+            Some(end) => at = end + 1,
+            None => return true,
+        }
+    }
+    false
+}
+
+/// The state of [`has_top_level_await`]'s scan.
+struct AwaitScan {
+    /// The brackets open at this point, innermost last.
+    scopes: Vec<Scope>,
+    last: Last,
+}
+
+impl AwaitScan {
+    /// Reads the token starting at `at`: where it ends (its last byte), or
+    /// `None` when it is an `await` outside every function.
+    fn token(&mut self, code: &str, at: usize) -> Option<usize> {
+        let byte = code.as_bytes()[at];
+        if self.last == Last::Arrow && !byte.is_ascii_whitespace() && byte != b'{' {
+            self.scopes.push(Scope::ArrowBody);
+            self.last = Last::Other;
+        }
+        if let Some(end) = literal_end(code, at) {
+            // A comment keeps the token before it.
+            if byte != b'/' {
+                self.last = Last::Other;
+            }
+            return Some(end);
+        }
+        match byte {
+            b'(' | b'[' | b'{' => self.open(byte),
+            b')' | b']' | b'}' => self.close(),
+            b'=' if code.as_bytes().get(at + 1) == Some(&b'>') => {
+                self.last = Last::Arrow;
+                return Some(at + 1);
+            }
+            b';' | b',' => {
+                self.end_arrow_bodies();
+                self.last = Last::Other;
+            }
+            b'\n' if !continues(&code[at + 1..]) => self.end_arrow_bodies(),
+            b'.' => self.last = Last::Dot,
+            _ if is_word_byte(byte) => return self.word(code, at),
+            _ if byte.is_ascii_whitespace() => {}
+            _ => self.last = Last::Other,
+        }
+        Some(at)
+    }
+
+    fn open(&mut self, byte: u8) {
+        let scope = match byte {
+            b'(' => Scope::Paren {
+                control: self.last == Last::Control,
+            },
+            b'{' if matches!(self.last, Last::Arrow | Last::Closed { control: false }) => {
+                Scope::Body
+            }
+            _ => Scope::Block,
+        };
+        self.scopes.push(scope);
+        self.last = Last::Other;
+    }
+
+    fn close(&mut self) {
+        self.end_arrow_bodies();
+        self.last = match self.scopes.pop() {
+            Some(Scope::Paren { control }) => Last::Closed { control },
+            _ => Last::Other,
+        };
+    }
+
+    /// The word starting at `at`, as [`Self::token`] reads it.
+    fn word(&mut self, code: &str, at: usize) -> Option<usize> {
+        let bytes = code.as_bytes();
+        let end = bytes[at..]
+            .iter()
+            .position(|b| !is_word_byte(*b))
+            .map_or(bytes.len(), |n| at + n);
+        let word = &code[at..end];
+        let key = code[end..].trim_start().starts_with(':');
+        let in_function = self
+            .scopes
+            .iter()
+            .any(|s| matches!(s, Scope::Body | Scope::ArrowBody));
+        if word == "await" && self.last != Last::Dot && !key && !in_function {
+            return None;
+        }
+        self.last = if CONTROL.contains(&word) {
+            Last::Control
+        } else {
+            Last::Other
+        };
+        Some(end - 1)
+    }
+
+    /// Ends the arrow function bodies without braces open at this point.
+    fn end_arrow_bodies(&mut self) {
+        while matches!(self.scopes.last(), Some(Scope::ArrowBody)) {
+            self.scopes.pop();
+        }
+    }
+}
+
+/// Whether `byte` can be part of an identifier (any byte of a character
+/// outside ASCII counts).
+fn is_word_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'$' || !byte.is_ascii()
+}
+
+/// Where the string or comment starting at `at` ends (its last byte; a line
+/// comment's, before its line break), if one starts there.
+fn literal_end(code: &str, at: usize) -> Option<usize> {
+    let bytes = code.as_bytes();
+    match (bytes[at], bytes.get(at + 1)) {
+        (quote @ (b'\'' | b'"' | b'`'), _) => Some(string_end(bytes, at, quote)),
+        (b'/', Some(b'/')) => Some(code[at..].find('\n').map_or(bytes.len(), |n| at + n) - 1),
+        (b'/', Some(b'*')) => Some(
+            code[at + 2..]
+                .find("*/")
+                .map_or(bytes.len(), |n| at + n + 3),
+        ),
+        _ => None,
+    }
+}
+
 /// Where the last statement of `code` starts: after its last `;` or line
 /// break outside strings, brackets and comments, a line break only when the
 /// next line does not continue the statement (`.then(...)`, an operator).
@@ -799,16 +971,11 @@ fn last_statement_start(code: &str) -> usize {
     let bytes = code.as_bytes();
     let (mut depth, mut start, mut at) = (0_i32, 0, 0);
     while at < bytes.len() {
+        if let Some(end) = literal_end(code, at) {
+            at = end + 1;
+            continue;
+        }
         match bytes[at] {
-            quote @ (b'\'' | b'"' | b'`') => at = string_end(bytes, at, quote),
-            b'/' if bytes.get(at + 1) == Some(&b'/') => {
-                at = code[at..].find('\n').map_or(bytes.len(), |n| at + n) - 1;
-            }
-            b'/' if bytes.get(at + 1) == Some(&b'*') => {
-                at = code[at + 2..]
-                    .find("*/")
-                    .map_or(bytes.len(), |n| at + n + 3);
-            }
             b'(' | b'[' | b'{' => depth += 1,
             b')' | b']' | b'}' => depth -= 1,
             b';' if depth == 0 => start = at + 1,
@@ -868,6 +1035,47 @@ mod tests {
             wrapped("await 1; const z = `a;${1}`;"),
             "(async () => { await 1; const z = `a;${1}`\n})()"
         );
+    }
+
+    /// #135: `await` used outside every function is found, however it is
+    /// written (`await (x)` parses as a call to a function named await, so
+    /// the browser's error does not say "await is only valid"); one inside
+    /// a function, a string, a comment, a property or an object key is not,
+    /// so an expression defining helpers for later calls runs unwrapped.
+    #[test]
+    fn top_level_await_is_detected() {
+        for code in [
+            "await (await Promise.resolve('a'))",
+            "(await Promise.resolve('abc')).length",
+            "await (1+2)",
+            "const r = await p; r",
+            "x = 1;\nawait (y)",
+            "if (ok) { await f() }",
+            "for await (const x of xs) {}",
+            "[await a, await b]",
+            "ok ? await a : b",
+            "const f = async () => 1; await f()",
+            "const f = x => x\nawait f(1)",
+            "f(a => a, await b)",
+        ] {
+            assert!(has_top_level_await(code), "{code}");
+        }
+        for code in [
+            "document.title",
+            "(async () => { await f() })()",
+            "async function load(u) { return (await fetch(u)).json() }",
+            "const get = async u => await fetch(u);\nget",
+            "[1].map(async x => await g(x))",
+            "class A { async m() { await this.x } }",
+            "({ async m() { await x } })",
+            "'await (1)'; `await ${x}`",
+            "// await (1)\n/* await (2) */ 3",
+            "o.await(1); ({await: 1})",
+            "awaited(1); x.awaitAll",
+            "function f() { var await = 1; return await }",
+        ] {
+            assert!(!has_top_level_await(code), "{code}");
+        }
     }
 
     use super::*;

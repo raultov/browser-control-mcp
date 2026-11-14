@@ -33,6 +33,13 @@ from a copy of its code: entries describe the differences from that release.
   when the page reads it, and a symlink repointed in between made it read
   a file outside the roots. A file given through a symlink now reaches
   the page under the name of the file it points to (#136).
+- `evaluate_js`: top-level `await` followed by `(` or inside parentheses
+  (`(await fetch(u)).json()`, `await (await fetch(u)).text()`,
+  `await (1+2)`) now works on both browsers, as in a console; the page
+  read it as a call to a function named `await` and failed with a
+  `SyntaxError` or `ReferenceError`. An expression using `await` outside
+  every function now runs as an async function at once, instead of
+  after the browser refused it (#135).
 
 ## [0.18.1-beta.29] - 2026-11-13
 
