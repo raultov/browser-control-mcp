@@ -10,6 +10,19 @@ from a copy of its code: entries describe the differences from that release.
 
 ## [Unreleased]
 
+## [0.20.0-beta.31] - 2026-11-15
+
+Public **BETA**. Fixes for eleven bugs an automated test round found in
+0.19.0-beta.30. One changes behaviour on Chrome: every new page is
+auto-attached paused until the server releases it, so a popup's network
+log lists its document and first scripts (#141). Also: `evaluate_js`
+reads top-level `await` with one linear scan that knows template
+substitutions, regular expressions and trailing comments (#138, #139,
+#140, #142, #146, #147), `--secrets` masks HTML-escaped values and masks
+in one pass (#137, #145), `get_network_logs` redacts vendor API key
+headers (#144), and Firefox `cookies` match paths by whole segments
+(#143).
+
 ### Fixed
 
 - `evaluate_js` with top-level `await` returns the last expression's value
