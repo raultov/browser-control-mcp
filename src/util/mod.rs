@@ -9,6 +9,7 @@ pub(crate) mod log_capture;
 pub mod outline;
 pub mod sync;
 pub mod text;
+pub mod top_level_await;
 pub mod url;
 
 /// The crates capped at `info` whatever `RUST_LOG` asks for, because they

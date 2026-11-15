@@ -7,6 +7,7 @@ pub mod integration_tests;
 pub mod launch;
 pub mod list_tabs;
 pub mod open_tab;
+pub(crate) mod page_attach;
 pub mod restart_chrome;
 pub(crate) mod seeded_relaunch;
 pub mod stop_chrome;

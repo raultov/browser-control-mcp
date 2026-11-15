@@ -5,7 +5,8 @@
 //!
 //! Values are masked as is and URL-encoded as a form, `encodeURIComponent`
 //! or `encodeURI` encodes them (a GET form puts a typed password in the
-//! URL), each also escaped inside JSON strings, nested a few deep (a page's
+//! URL), each also as serialized HTML escapes it (`&amp;`, `&lt;`,
+//! `&quot;`...), each also escaped inside JSON strings, nested a few deep (a page's
 //! `JSON.stringify` in a tool's JSON reply), with the characters outside
 //! ASCII kept or as `\uXXXX` escapes, and in the page's own JSON also `/`
 //! as `\/` and `&<>'=` as `\u00XX`. A convenience, not a security
@@ -33,9 +34,34 @@ const TYPING_TOOLS: &[&str] = &["fill_input", "fill_form"];
 pub struct Secrets {
     /// `(name, value)`, in the file's order.
     entries: Vec<(String, String)>,
-    /// Every written form of the values with its token, the longest first
-    /// (see [`forms_of`]): built once, since `mask` runs on every result.
-    forms: Vec<(String, String)>,
+    /// Every written form of the values (see [`forms_of`]) in one
+    /// automaton, with the token of each form: built once, since `mask`
+    /// runs on every result and scans it in one pass (#145).
+    masker: Option<Masker>,
+}
+
+/// The forms of the secrets and the token replacing each.
+#[derive(Clone)]
+struct Masker {
+    /// Finds the leftmost form, the longest of those starting there, so a
+    /// value containing another is masked whole.
+    forms: aho_corasick::AhoCorasick,
+    /// The token of each form, by the form's index.
+    tokens: Vec<String>,
+}
+
+impl Masker {
+    fn new(forms: Vec<(String, String)>) -> Result<Option<Self>, String> {
+        if forms.is_empty() {
+            return Ok(None);
+        }
+        let (forms, tokens): (Vec<String>, Vec<String>) = forms.into_iter().unzip();
+        let forms = aho_corasick::AhoCorasick::builder()
+            .match_kind(aho_corasick::MatchKind::LeftmostLongest)
+            .build(forms)
+            .map_err(|e| format!("the secrets have too many forms to mask: {e}"))?;
+        Ok(Some(Self { forms, tokens }))
+    }
 }
 
 impl std::fmt::Debug for Secrets {
@@ -93,8 +119,8 @@ impl Secrets {
             }
             entries.push((name.to_string(), value));
         }
-        let forms = forms_of(&entries);
-        Ok(Self { entries, forms })
+        let masker = Masker::new(forms_of(&entries))?;
+        Ok(Self { entries, masker })
     }
 
     /// Whether no secret is configured.
@@ -106,25 +132,19 @@ impl Secrets {
     /// does, each also escaped inside nested JSON strings, its characters
     /// outside ASCII kept or as `\uXXXX`) replaced by `<secret:NAME>`.
     pub fn mask(&self, text: &str) -> String {
-        let forms = &self.forms;
-        if !forms.iter().any(|(form, _)| text.contains(form.as_str())) {
+        let Some(masker) = &self.masker else {
             return text.to_string();
-        }
+        };
         // One pass over the original text, so a token already put in is
         // never matched again.
         let mut out = String::with_capacity(text.len());
-        let mut rest = text;
-        'scan: while let Some(c) = rest.chars().next() {
-            for (form, token) in forms {
-                if let Some(after) = rest.strip_prefix(form.as_str()) {
-                    out.push_str(token);
-                    rest = after;
-                    continue 'scan;
-                }
-            }
-            out.push(c);
-            rest = &rest[c.len_utf8()..];
+        let mut copied = 0;
+        for found in masker.forms.find_iter(text) {
+            out.push_str(&text[copied..found.start()]);
+            out.push_str(&masker.tokens[found.pattern().as_usize()]);
+            copied = found.end();
         }
+        out.push_str(&text[copied..]);
         out
     }
 
@@ -260,10 +280,10 @@ impl Secrets {
 const JSON_LEVELS: usize = 4;
 
 /// Each value with its token, as is and as the browser URL-encodes it
-/// (#109), each also as escaped inside JSON strings nested up to
-/// [`JSON_LEVELS`] deep (#118), by an encoder that keeps the characters
-/// outside ASCII or one that escapes them (#126): the longest first, so a
-/// value containing another is masked whole.
+/// (#109), each also as serialized HTML escapes it (#137), and each of
+/// those as escaped inside JSON strings nested up to [`JSON_LEVELS`] deep
+/// (#118), by an encoder that keeps the characters outside ASCII or one
+/// that escapes them (#126).
 fn forms_of(entries: &[(String, String)]) -> Vec<(String, String)> {
     let mut forms = Vec::new();
     for (name, value) in entries {
@@ -273,6 +293,13 @@ fn forms_of(entries: &[(String, String)]) -> Vec<(String, String)> {
             written.push(lowercase_hex(&encoded));
             written.push(encoded);
         }
+        let html: Vec<String> = written
+            .iter()
+            .flat_map(|form| HTML_ESCAPES.map(|escapes| html_escaped(form, escapes)))
+            .collect();
+        written.extend(html);
+        written.sort();
+        written.dedup();
         let mut level = written.clone();
         for depth in 0..JSON_LEVELS {
             // The page's own encoder writes the innermost string; the levels
@@ -288,8 +315,65 @@ fn forms_of(entries: &[(String, String)]) -> Vec<(String, String)> {
         written.dedup();
         forms.extend(written.into_iter().map(|form| (form, token.clone())));
     }
-    forms.sort_by_key(|(form, _)| std::cmp::Reverse(form.len()));
     forms
+}
+
+/// The characters HTML escapes in a text node, as the DOM serializes it
+/// (`innerHTML`, `outerHTML`).
+const HTML_TEXT: &[(char, &str)] = &[
+    ('&', "&amp;"),
+    ('<', "&lt;"),
+    ('>', "&gt;"),
+    ('\u{a0}', "&nbsp;"),
+];
+
+/// How a value is written in HTML: in a text node, in an attribute value
+/// as the DOM serializes it (before and since `<>` are escaped there too),
+/// and as server-side escapers write it (`htmlspecialchars` with
+/// `ENT_QUOTES`, Python's `html.escape`, lodash's `_.escape`).
+const HTML_ESCAPES: [&[(char, &str)]; 6] = [
+    HTML_TEXT,
+    &[('&', "&amp;"), ('"', "&quot;"), ('\u{a0}', "&nbsp;")],
+    &[
+        ('&', "&amp;"),
+        ('<', "&lt;"),
+        ('>', "&gt;"),
+        ('"', "&quot;"),
+        ('\u{a0}', "&nbsp;"),
+    ],
+    &[
+        ('&', "&amp;"),
+        ('<', "&lt;"),
+        ('>', "&gt;"),
+        ('"', "&quot;"),
+        ('\'', "&#039;"),
+    ],
+    &[
+        ('&', "&amp;"),
+        ('<', "&lt;"),
+        ('>', "&gt;"),
+        ('"', "&quot;"),
+        ('\'', "&#x27;"),
+    ],
+    &[
+        ('&', "&amp;"),
+        ('<', "&lt;"),
+        ('>', "&gt;"),
+        ('"', "&quot;"),
+        ('\'', "&#39;"),
+    ],
+];
+
+/// `text` with each character of `escapes` replaced by its entity.
+fn html_escaped(text: &str, escapes: &[(char, &str)]) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        match escapes.iter().find(|(escaped, _)| *escaped == c) {
+            Some((_, entity)) => out.push_str(entity),
+            None => out.push(c),
+        }
+    }
+    out
 }
 
 /// `text` as written inside a JSON string, without the quotes JSON adds
@@ -589,6 +673,53 @@ mod tests {
         for form in [gson, php, go] {
             assert_eq!(s.mask(form), "<secret:TAG>", "{form}");
         }
+    }
+
+    /// #137: a value with `&`, `<`, `>` or quotes is masked as serialized
+    /// HTML escapes it (`innerHTML`, `inspect_dom`), in a text node or an
+    /// attribute, and as server-side escapers write its quotes, also inside
+    /// a tool's JSON reply.
+    #[test]
+    fn values_are_masked_as_html_escapes_them() {
+        // Given a secret with characters HTML escapes
+        let s = Secrets::parse("QA_H='ab&c<d>e\"f\'8841'\n").unwrap();
+        // When a page serializes it in a text node, an attribute, or an
+        // escaper writes its quotes
+        for html in [
+            "<p id=\"s\">ab&amp;c&lt;d&gt;e\"f'8841</p>",
+            "<input value=\"ab&amp;c<d>e&quot;f'8841\">",
+            "<input value=\"ab&amp;c&lt;d&gt;e&quot;f'8841\">",
+            "ab&amp;c&lt;d&gt;e&quot;f&#039;8841",
+            "ab&amp;c&lt;d&gt;e&quot;f&#x27;8841",
+            "ab&amp;c&lt;d&gt;e&quot;f&#39;8841",
+        ] {
+            // Then no form of the value is left, as text or in JSON
+            let reply = serde_json::to_string(&json!({"value": html})).unwrap();
+            for text in [html, reply.as_str()] {
+                let masked = s.mask(text);
+                assert!(!masked.contains("8841"), "{masked}");
+                assert!(masked.contains("<secret:QA_H>"), "{masked}");
+            }
+        }
+    }
+
+    /// #145: a reply of 100 KB is masked in one pass whatever the number of
+    /// secrets and of their forms: 100 symbol-heavy secrets take well
+    /// under a second, not minutes.
+    #[test]
+    fn many_secrets_are_masked_in_one_pass() {
+        // Given 100 secrets with many encoded forms each
+        let file: String = (0..100)
+            .map(|i| format!("S{i:03}='Pw{i:03}/\u{e4}&<>\"x= y'\n"))
+            .collect();
+        let s = Secrets::parse(&file).unwrap();
+        // When a 99 KB reply holding one of them is masked
+        let reply = format!("{}Pw050/\u{e4}&<>\"x= y", "x".repeat(99_000));
+        let started = std::time::Instant::now();
+        let masked = s.mask(&reply);
+        // Then it is masked, fast
+        assert!(masked.ends_with("x<secret:S050>"), "{}", &masked[99_000..]);
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
     }
 
     /// SECRETS-03: a tool's text, embedded text, structured content and

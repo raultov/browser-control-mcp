@@ -45,6 +45,15 @@ fn on_request(st: &mut NetworkState, request_id: &str, params: &serde_json::Valu
     let Some(req) = params.get("request") else {
         return;
     };
+    // The same event from a second session (a popup's, #141): not a hop.
+    let sent_at = params.get("timestamp").and_then(serde_json::Value::as_f64);
+    if sent_at.is_some()
+        && st
+            .find_request_mut(request_id)
+            .is_some_and(|known| known.sent_at == sent_at)
+    {
+        return;
+    }
     // A redirect: the hop's response comes with the next request only.
     if let Some(hop) = params.get("redirectResponse")
         && let Some(previous) = st.find_request_mut(request_id)
@@ -58,6 +67,7 @@ fn on_request(st: &mut NetworkState, request_id: &str, params: &serde_json::Valu
             method: str_field(req, "method").unwrap_or("").to_string(),
             request_headers: req.get("headers").cloned(),
             request_post_data: str_field(req, "postData").map(str::to_string),
+            sent_at,
             ..Default::default()
         },
     );
@@ -147,9 +157,14 @@ pub(crate) fn start_frame_network_listener(
     crate::handler::cdp_domains::event_pump::spawn_state_listener(target, "Network", state, process)
 }
 
-/// [`process_network_event`] for an event of the frame whose session is
-/// `session`, then notes that session on the request.
-async fn process_frame_event(event: WsResponse, state: Arc<Mutex<NetworkState>>, session: String) {
+/// [`process_network_event`] for an event of the frame (or the popup's
+/// auto-attached session, see `page_attach`) whose session is `session`,
+/// then notes that session on the request.
+pub(crate) async fn process_frame_event(
+    event: WsResponse,
+    state: Arc<Mutex<NetworkState>>,
+    session: String,
+) {
     process_network_event(&event, &state).await;
     let id = event
         .params
@@ -349,6 +364,30 @@ mod tests {
             st.find_request_mut("r1").unwrap().error.as_deref(),
             Some("net::ERR_BLOCKED_BY_CLIENT (blocked: inspector)")
         );
+    }
+
+    /// #141: the same `requestWillBeSent` received from two sessions (a
+    /// popup's auto-attached one and its tab's) is one request, not a
+    /// redirect; a real hop (a later timestamp) still is.
+    #[tokio::test]
+    async fn the_same_request_from_two_sessions_is_not_a_hop() {
+        // Given a request sent, seen twice, then redirected
+        let state = Arc::new(Mutex::new(NetworkState::default()));
+        let sent = json!({"requestId": "R1", "timestamp": 10.5,
+            "request": {"url": "http://a/old", "method": "GET"}});
+        let hop = json!({"requestId": "R1", "timestamp": 10.7,
+            "request": {"url": "http://a/new", "method": "GET"},
+            "redirectResponse": {"status": 302, "headers": {"location": "/new"}}});
+        // When each event arrives twice
+        for params in [&sent, &sent, &hop, &hop] {
+            let event = make_event("Network.requestWillBeSent", params.clone());
+            process_network_event(&event, &state).await;
+        }
+        // Then R1 has one hop, to its final URL
+        let mut st = state.lock().await;
+        let request = st.find_request_mut("R1").unwrap();
+        assert_eq!(request.url, "http://a/new");
+        assert_eq!(request.redirects.len(), 1);
     }
 
     /// FIX-05: A redirect keeps one entry per request id with the redirect chain.

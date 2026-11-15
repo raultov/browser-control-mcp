@@ -339,9 +339,10 @@ mod tests {
             assert_eq!(body["value"], 7);
             assert_eq!(expressions(sent), [wrapped(expression)]);
         }
-        // And one the scan misses (a regular expression with brackets) runs
-        // as is first, then wrapped on the browser's error
-        let missed = "/(){/.test(s) && await f()";
+        // And one the scan misses (a regular expression after a `)`, read as
+        // a division, hiding the await in a string) runs as is first, then
+        // wrapped on the browser's error
+        let missed = "if (s) /'/.test(s); await f()";
         let sent = mock.commands_named("Runtime.evaluate").len();
         evaluate(missed).await.unwrap();
         assert_eq!(expressions(sent), [json!(missed), wrapped(missed)]);

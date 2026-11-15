@@ -54,6 +54,8 @@ struct_excessive_bools = "warn"
 fn_params_excessive_bools = "warn"
 
 [dependencies]
+# Secret masking scans each reply once for every form of every secret (#145).
+aho-corasick = "1.1.5"
 async-trait = "0.1.92"
 # Mocked bodies (Fetch.fulfillRequest) and PDFs (Page.printToPDF) travel in base64.
 base64 = "0.23.1"

@@ -161,8 +161,9 @@ impl Cookie {
         } else {
             host == own
         };
-        let path_ok = parsed.path().starts_with(&self.path);
-        host_ok && path_ok && (!self.secure || parsed.scheme() == "https")
+        host_ok
+            && path_matches(parsed.path(), &self.path)
+            && (!self.secure || parsed.scheme() == "https")
     }
 
     fn to_json(&self, show_value: bool) -> Value {
@@ -364,6 +365,14 @@ pub(crate) fn deleted_reply(deleted: &[Cookie]) -> CallToolResult {
     CallToolResult::text_content(vec![text.into()])
 }
 
+/// RFC 6265 §5.1.4 path-match: a cookie with path `/app` goes to `/app`
+/// and `/app/page`, not to `/application` (#143).
+fn path_matches(request: &str, cookie: &str) -> bool {
+    request
+        .strip_prefix(cookie)
+        .is_some_and(|rest| rest.is_empty() || cookie.ends_with('/') || rest.starts_with('/'))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -414,6 +423,19 @@ mod tests {
         assert!(cookie("a", ".example.com", "/", false).of_domain("example.com"));
         assert!(cookie("a", "app.example.com", "/", false).of_domain("example.com"));
         assert!(!cookie("a", "notexample.com", "/", false).of_domain("example.com"));
+    }
+
+    /// #143: a cookie's path matches whole path segments (RFC 6265
+    /// path-match): `/app` goes to `/app` and `/app/page`, not to
+    /// `/application`.
+    #[test]
+    fn cookie_paths_match_whole_segments() {
+        let url = "https://app.example.com/account/settings";
+        assert!(!cookie("a", ".example.com", "/acc", false).sent_to(url));
+        assert!(cookie("a", ".example.com", "/account/", false).sent_to(url));
+        assert!(cookie("a", ".example.com", "/account/settings", false).sent_to(url));
+        let app = |page: &str| cookie("a", "h", "/app", false).sent_to(&format!("http://h{page}"));
+        assert!(app("/app") && app("/app/page") && !app("/application/page"));
     }
 
     /// ISSUE-8: values stay hidden unless asked for; the filters select.

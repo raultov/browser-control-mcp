@@ -10,6 +10,32 @@ from a copy of its code: entries describe the differences from that release.
 
 ## [Unreleased]
 
+### Fixed
+
+- `evaluate_js` with top-level `await` returns the last expression's value
+  when it starts like a keyword (`done`, `document.title`, `format`), and
+  returns nothing, without error, for a last declaration written without a
+  space (`const{a}=...`, `let[b]=...`, `var<TAB>v`) (#138, #147).
+- `evaluate_js` runs `await` inside a template literal's `${...}`, top-level
+  `await` after a regular expression literal containing a quote, and code
+  ending with a comment after its last `;` (#139, #146, #142).
+- `evaluate_js` scans its expression in linear time: 200 KB of line breaks
+  took about 80 s before the browser was even asked (#140).
+- `--secrets`: a value with `&`, `<`, `>` or quotes is masked as HTML
+  escapes it, so `inspect_dom` and `innerHTML` no longer show it (#137).
+- `--secrets`: replies are masked in one pass over every form of every
+  secret; a 99 KB reply with 100 symbol-heavy secrets took about 150 s
+  (#145).
+- `get_network_logs` redacts vendor API key headers (`X-Auth-Key`,
+  `Ocp-Apim-Subscription-Key`, any header with the word `key` or `auth`,
+  or containing `credential`) and treats `_` as `-` (`X-API_KEY`) (#144).
+- Firefox: `cookies` get and delete match a cookie's path by whole
+  segments (RFC 6265): a cookie of `/app` is no longer listed or deleted
+  on `/application` (#143).
+- Chrome: a popup's network log (a `target=_blank` link, `window.open`)
+  lists its document and first scripts. New pages are auto-attached
+  paused; a popup is released once its requests are recorded (#141).
+
 ## [0.19.0-beta.30] - 2026-11-14
 
 Public **BETA**. Fixes for eight bugs two automated test rounds found in

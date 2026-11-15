@@ -72,6 +72,13 @@ pub(crate) fn start_tab_lifecycle_listener(
     crate::util::sync::write(&tabs).start_listing();
 
     tokio::spawn(async move {
+        // #141: popups are paused until their first requests can be
+        // recorded; owned by this task, so aborted with it.
+        let mut _pages = cdp_domains::event_pump::ListenerHandles::default();
+        _pages.push(super::page_attach::start_page_watcher(
+            bc.client().clone(),
+            tabs_clone.clone(),
+        ));
         // ISSUE-97: the pages open before discovery are not opened by any
         // action; those open once it is on are each announced (Chrome's
         // replay) or closed on `target_events`, and actions wait for that.

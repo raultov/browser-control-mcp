@@ -156,6 +156,11 @@ pub struct NetworkRequest {
     /// request: its body is only known there.
     #[serde(skip)]
     pub session: Option<String>,
+    /// On Chrome, the `timestamp` of the request's last
+    /// `requestWillBeSent`: the same event received again from a second
+    /// session (a popup's, #141) is not a redirect hop.
+    #[serde(skip)]
+    pub sent_at: Option<f64>,
 }
 
 /// One hop of a redirect chain: the URL redirected from, with the status

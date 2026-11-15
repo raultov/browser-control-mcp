@@ -98,6 +98,12 @@ impl ListenerHandles {
         self.0.iter().any(|task| !task.is_finished())
     }
 
+    /// Forgets the tasks that finished, so a long-lived owner of
+    /// short-lived tasks does not grow.
+    pub(crate) fn retain_running(&mut self) {
+        self.0.retain(|task| !task.is_finished());
+    }
+
     /// Whether no task is owned.
     pub(crate) fn is_empty(&self) -> bool {
         self.0.is_empty()
