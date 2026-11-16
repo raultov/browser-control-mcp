@@ -10,6 +10,17 @@ from a copy of its code: entries describe the differences from that release.
 
 ## [Unreleased]
 
+### Added
+
+- `profile_page_performance` and `lighthouse_report` insights list the 5
+  longest animation frames of the profile window (`long_frames`) with
+  their script, render and style/layout time, Chrome 157's style, layout
+  and forced style split when the browser reports it (a missing part is
+  left out, never 0), and each long script's
+  `forced_style_and_layout_ms`. A frame of 50 ms or more at least half
+  spent on style and layout is a finding when the trace has no forced
+  reflows to name. Firefox: `null`, with a note (#152).
+
 ### Fixed
 
 - `--secrets`: a value inside a page's JSON held in an HTML attribute

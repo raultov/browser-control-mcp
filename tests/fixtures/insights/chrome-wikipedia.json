@@ -34,6 +34,7 @@
     "url": null
   },
   "lcp_supported": true,
+  "long_frames": [],
   "long_scripts": [],
   "render_blocking": [
     {

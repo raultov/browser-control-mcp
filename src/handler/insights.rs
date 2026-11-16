@@ -6,9 +6,12 @@
 
 use serde_json::{Value, json};
 
-/// The snippet: `{document, lcp, inp, cls, render_blocking, long_scripts,
-/// slowest_resources, dom_size, images, third_parties, lcp_supported,
-/// inp_supported}`, at most 5 entries per list.
+/// The snippet: `{document, lcp, inp, cls, render_blocking, long_frames,
+/// long_scripts, slowest_resources, dom_size, images, third_parties,
+/// lcp_supported, inp_supported}`, at most 5 entries per list. A long
+/// frame's parts are only those the browser reports (Chrome 157 adds
+/// `styleDuration` and `forcedStyleDuration`): a missing one is left out,
+/// never 0 (#152).
 pub(crate) const SNIPPET: &str = r#"(() => {
     const types = (window.PerformanceObserver && PerformanceObserver.supportedEntryTypes) || [];
     const take = type => {
@@ -77,9 +80,25 @@ pub(crate) const SNIPPET: &str = r#"(() => {
             .map(r => ({ url: url(r.name), type: r.initiatorType, duration_ms: ms(r.duration), end_ms: ms(r.responseEnd) })), 'duration_ms')
         : null;
     const frames = take('long-animation-frame');
+    const longFrames = frames && top(frames.map(f => {
+        const end = f.startTime + f.duration;
+        const styleAndLayout = f.styleAndLayoutStart > 0 ? end - f.styleAndLayoutStart : null;
+        const frame = { at_ms: ms(f.startTime), duration_ms: ms(f.duration),
+            script_ms: ms(Array.from(f.scripts || []).reduce((sum, s) => sum + s.duration, 0)) };
+        if ('blockingDuration' in f) frame.blocking_ms = ms(f.blockingDuration);
+        if (f.renderStart > 0) frame.render_ms = ms(end - f.renderStart);
+        if (styleAndLayout != null) frame.style_and_layout_ms = ms(styleAndLayout);
+        if ('styleDuration' in f) {
+            frame.style_ms = ms(f.styleDuration);
+            if (styleAndLayout != null) frame.layout_ms = ms(Math.max(0, styleAndLayout - f.styleDuration));
+        }
+        if ('forcedStyleDuration' in f) frame.forced_style_ms = ms(f.forcedStyleDuration);
+        return frame;
+    }), 'duration_ms');
     const scripts = frames && top(frames.flatMap(f => Array.from(f.scripts || [])).map(s => ({
         url: url(s.sourceURL), function: s.sourceFunctionName || null, invoker: s.invoker || null,
-        duration_ms: ms(s.duration), at_ms: ms(s.startTime) })), 'duration_ms');
+        duration_ms: ms(s.duration), at_ms: ms(s.startTime),
+        ...('forcedStyleAndLayoutDuration' in s ? { forced_style_and_layout_ms: ms(s.forcedStyleAndLayoutDuration) } : {}) })), 'duration_ms');
     const slowest = top(resources.map(r => ({ url: url(r.name), type: r.initiatorType,
         duration_ms: ms(r.duration), transfer_size: r.transferSize })), 'duration_ms');
     const domSize = (() => {
@@ -122,7 +141,7 @@ pub(crate) const SNIPPET: &str = r#"(() => {
         byOrigin.set(origin, entry);
     }
     const thirdParties = top(Array.from(byOrigin.values()), 'total_duration_ms');
-    return { document: document_, lcp, inp, cls, render_blocking: blocking, long_scripts: scripts, slowest_resources: slowest,
+    return { document: document_, lcp, inp, cls, render_blocking: blocking, long_frames: longFrames, long_scripts: scripts, slowest_resources: slowest,
         dom_size: domSize, images, third_parties: thirdParties,
         lcp_supported: types.includes('largest-contentful-paint'), inp_supported: types.includes('event') };
 })()"#;
@@ -167,17 +186,19 @@ const UNUSED_CODE_BYTES: u64 = 50_000;
 /// Most forced-reflow time (ms) before it is a finding.
 const FORCED_REFLOW_MS: f64 = 30.0;
 
+/// Appends `text` to the list `list` (`findings`, `notes`) of `object`.
+fn push(object: &mut serde_json::Map<String, Value>, list: &str, text: String) {
+    let entries = object.entry(list).or_insert_with(|| json!([]));
+    if let Some(entries) = entries.as_array_mut() {
+        entries.push(json!(text));
+    }
+}
+
 /// Adds the section `key` to `insights` with its findings, or `null` and a
 /// note saying why it is missing.
 fn add_section(insights: &mut Value, key: &str, section: Result<(Value, Vec<String>), String>) {
     let Some(object) = insights.as_object_mut() else {
         return;
-    };
-    let push = |object: &mut serde_json::Map<String, Value>, list: &str, text: String| {
-        let entries = object.entry(list).or_insert_with(|| json!([]));
-        if let Some(entries) = entries.as_array_mut() {
-            entries.push(json!(text));
-        }
     };
     match section {
         Ok((value, findings)) => {
@@ -206,12 +227,49 @@ pub(crate) fn add_unused_code(insights: &mut Value, unused: Result<Value, String
 
 /// Adds `forced_reflows` to `insights` (from Chrome's trace) with a finding
 /// when they took long, or `null` and a note saying why it is missing.
+/// Without forced reflows to name, a long frame mostly spent on style and
+/// layout is a finding instead (#152): with them, it would repeat theirs.
 pub(crate) fn add_forced_reflows(insights: &mut Value, reflows: Result<Value, String>) {
+    let traced = reflows
+        .as_ref()
+        .is_ok_and(|reflows| reflows["count"].as_u64().is_some_and(|n| n > 0));
+    let style = if traced {
+        None
+    } else {
+        style_frame_finding(&insights["long_frames"])
+    };
     let section = reflows.map(|reflows| {
         let findings = forced_reflow_finding(&reflows).into_iter().collect();
         (reflows, findings)
     });
     add_section(insights, "forced_reflows", section);
+    if let (Some(finding), Some(object)) = (style, insights.as_object_mut()) {
+        push(object, "findings", finding);
+    }
+}
+
+/// Shortest long frame (ms) a style and layout finding names.
+const STYLE_FRAME_MS: f64 = 50.0;
+
+/// The longest frame of at least [`STYLE_FRAME_MS`] that spent half its
+/// time or more on style and layout: style plus forced style where the
+/// browser tells them apart, else style and layout together.
+fn style_frame_finding(frames: &Value) -> Option<String> {
+    frames.as_array()?.iter().find_map(|frame| {
+        let duration = frame["duration_ms"].as_f64()?;
+        let style = match frame["style_ms"].as_f64() {
+            Some(style) => style + frame["forced_style_ms"].as_f64().unwrap_or(0.0),
+            None => frame["style_and_layout_ms"].as_f64()?,
+        };
+        (duration >= STYLE_FRAME_MS && style * 2.0 >= duration).then(|| {
+            format!(
+                "a {} ms frame at {} ms spent {} ms on style and layout",
+                shown(&frame["duration_ms"]),
+                shown(&frame["at_ms"]),
+                (style * 10.0).round() / 10.0
+            )
+        })
+    })
 }
 
 /// Forced reflows over [`FORCED_REFLOW_MS`], with the call site that
@@ -283,6 +341,7 @@ fn missing_notes(found: &Value, lcp_supported: bool, inp_unsupported: bool) -> V
         ("lcp", lcp),
         ("cls", "this browser does not report layout shifts"),
         ("render_blocking", "this browser does not say which requests block rendering (renderBlockingStatus)"),
+        ("long_frames", "this browser does not report long animation frames, which split a long frame into script, style, layout and render"),
         ("long_scripts", "this browser does not report long animation frames, which name the scripts of long tasks"),
     ]
     .into_iter()
@@ -543,10 +602,11 @@ mod tests {
             .iter()
             .map(|n| n.as_str().unwrap())
             .collect();
-        assert_eq!(notes.len(), 3, "{notes:?}");
+        assert_eq!(notes.len(), 4, "{notes:?}");
         assert!(notes[0].starts_with("cls is null"), "{notes:?}");
         assert!(notes[1].starts_with("render_blocking is null"), "{notes:?}");
-        assert!(notes[2].starts_with("long_scripts is null"), "{notes:?}");
+        assert!(notes[2].starts_with("long_frames is null"), "{notes:?}");
+        assert!(notes[3].starts_with("long_scripts is null"), "{notes:?}");
     }
 
     /// ISSUE-22: findings from the web.dev thresholds.
@@ -571,7 +631,7 @@ mod tests {
             ])
         );
         let quiet = json!({"document": null, "lcp": null, "cls": {"score": 0, "culprits": []},
-            "render_blocking": [], "long_scripts": [], "slowest_resources": [], "lcp_supported": true});
+            "render_blocking": [], "long_frames": [], "long_scripts": [], "slowest_resources": [], "lcp_supported": true});
         let insights = annotate(quiet);
         assert!(insights.get("findings").is_none(), "{insights}");
         assert_eq!(
@@ -630,6 +690,84 @@ mod tests {
                 "DOM has 1820 nodes (max depth 35, widest element ul#feed with 90 children)",
                 "1 image(s) are oversized or lack width/height attributes (first: img#banner)"
             ])
+        );
+    }
+
+    /// #152: the snippet reports the longest frames with the parts the
+    /// browser gives, leaving a missing one out, never 0.
+    #[test]
+    fn long_frames_leave_missing_parts_out() {
+        // Given the snippet
+        for part in [
+            "long_frames: longFrames",
+            "if ('styleDuration' in f)",
+            "if ('forcedStyleDuration' in f) frame.forced_style_ms",
+            "if (f.renderStart > 0) frame.render_ms",
+            "if ('blockingDuration' in f) frame.blocking_ms",
+            "'forcedStyleAndLayoutDuration' in s ? { forced_style_and_layout_ms",
+        ] {
+            // Then each optional part is added only when reported
+            assert!(SNIPPET.contains(part), "{part}");
+        }
+        // And a frame without Chrome 157's parts is judged on style and
+        // layout together
+        let older =
+            json!([{"at_ms": 900, "duration_ms": 80, "script_ms": 20, "style_and_layout_ms": 45}]);
+        assert_eq!(
+            style_frame_finding(&older).as_deref(),
+            Some("a 80 ms frame at 900 ms spent 45 ms on style and layout")
+        );
+    }
+
+    /// #152: a frame of 50 ms or more whose style and forced style take
+    /// half of it or more is a finding; below either threshold it is not.
+    #[test]
+    fn style_heavy_frames_are_a_finding_at_the_threshold() {
+        let frames = |duration: f64, style: f64| {
+            json!({"long_frames": [{"at_ms": 1200, "duration_ms": duration, "script_ms": 10,
+                "style_and_layout_ms": duration - 5.0, "style_ms": style - 5.0, "layout_ms": 5,
+                "forced_style_ms": 5}]})
+        };
+        // Given a 50 ms frame with 25 ms of style and forced style
+        let mut insights = frames(50.0, 25.0);
+        // When the insights get no forced reflows (Firefox)
+        add_forced_reflows(&mut insights, Err("no trace".into()));
+        // Then the frame is a finding
+        assert_eq!(
+            insights["findings"],
+            json!(["a 50.0 ms frame at 1200 ms spent 25 ms on style and layout"])
+        );
+        // And not below 50 ms, nor below half the frame
+        for (duration, style) in [(49.0, 30.0), (60.0, 29.0)] {
+            let mut quiet = frames(duration, style);
+            add_forced_reflows(&mut quiet, Err("no trace".into()));
+            assert!(quiet.get("findings").is_none(), "{quiet}");
+        }
+        // And without long frames (Firefox) there is none
+        let mut none = json!({"long_frames": null});
+        add_forced_reflows(&mut none, Err("no trace".into()));
+        assert!(none.get("findings").is_none(), "{none}");
+    }
+
+    /// #152: with forced reflows from the trace the style-heavy frame is
+    /// not a finding (it would repeat theirs); with none it is.
+    #[test]
+    fn style_heavy_frames_defer_to_forced_reflows() {
+        let frame = json!({"long_frames": [{"at_ms": 300, "duration_ms": 120, "script_ms": 30,
+            "style_and_layout_ms": 90}]});
+        // Given forced reflows found in the trace
+        let mut traced = frame.clone();
+        let reflows = json!({"count": 3, "total_ms": 12.0, "top_call_sites": []});
+        add_forced_reflows(&mut traced, Ok(reflows));
+        // Then the frame is no finding
+        assert!(traced.get("findings").is_none(), "{traced}");
+        // And with an empty forced reflow list it is
+        let mut empty = frame;
+        let reflows = json!({"count": 0, "total_ms": 0.0, "top_call_sites": []});
+        add_forced_reflows(&mut empty, Ok(reflows));
+        assert_eq!(
+            empty["findings"],
+            json!(["a 120 ms frame at 300 ms spent 90 ms on style and layout"])
         );
     }
 }

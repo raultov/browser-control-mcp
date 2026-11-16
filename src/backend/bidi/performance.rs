@@ -303,6 +303,14 @@ mod tests {
         // ISSUE-54 / ISSUE-56: and no coverage or forced reflows, saying why
         assert_eq!(body["insights"]["unused_code"], Value::Null);
         assert_eq!(body["insights"]["forced_reflows"], Value::Null);
+        // #152: and no long frames, saying why
+        assert_eq!(body["insights"]["long_frames"], Value::Null);
+        assert!(
+            notes
+                .iter()
+                .any(|n| n.as_str().unwrap().starts_with("long_frames is null")),
+            "{body}"
+        );
         assert!(notes.contains(&json!(format!("unused_code is null: {NO_COVERAGE}"))));
         assert!(notes.contains(&json!(format!("forced_reflows is null: {NO_TRACE}"))));
         // And without insights the snippet is not run
