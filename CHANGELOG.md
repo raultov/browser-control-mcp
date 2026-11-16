@@ -10,6 +10,19 @@ from a copy of its code: entries describe the differences from that release.
 
 ## [Unreleased]
 
+## [0.20.1-beta.32] - 2026-11-16
+
+Public **BETA**. Fixes for four bugs an automated test round found in
+0.20.0-beta.31 — two of them leak credentials or page data to the agent:
+`--secrets` missed a value inside JSON held in an HTML attribute (#148),
+and `get_network_logs` showed proxied authorization headers (#149). Also:
+one 32 KB secret value no longer takes 3 GB of memory at start-up (#150),
+and top-level `await` runs a `try`/`if` whose `catch`, `finally` or `else`
+starts its own line (#151). Two additions read the upstream Chrome 157
+release notes: the insights break a long animation frame down into script,
+style, layout and render (#152), and `get_network_logs` reports a
+WebSocket connection that closed or failed (#153).
+
 ### Added
 
 - `profile_page_performance` and `lighthouse_report` insights list the 5
