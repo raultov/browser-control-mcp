@@ -20,6 +20,12 @@ from a copy of its code: entries describe the differences from that release.
   `forced_style_and_layout_ms`. A frame of 50 ms or more at least half
   spent on style and layout is a finding when the trace has no forced
   reflows to name. Firefox: `null`, with a note (#152).
+- `get_network_logs` reports WebSocket connections that closed (`id closed
+  <url>`, with the close code and reason on Firefox) or had a frame error
+  (`id failed <url>: <error>`, Chrome), after their frames, and
+  `include_details` lists them under `websocket_closes` with `closed_at`.
+  A socket that closed (for example when Chrome 157 puts the page in the
+  back/forward cache) no longer looks open (#153).
 
 ### Fixed
 

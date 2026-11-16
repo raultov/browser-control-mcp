@@ -235,12 +235,12 @@ async fn sleep_until(until: Option<tokio::time::Instant>) {
     }
 }
 
-/// Whether `event` is a WebSocket frame.
+/// Whether `event` is a WebSocket data frame (not a frame error, #153).
 fn is_frame(event: &WsResponse) -> bool {
-    event
-        .method
-        .as_deref()
-        .is_some_and(|m| m.starts_with("Network.webSocketFrame"))
+    matches!(
+        event.method.as_deref(),
+        Some("Network.webSocketFrameSent" | "Network.webSocketFrameReceived")
+    )
 }
 
 /// Lets the page of the auto-attached `session` run.
@@ -448,5 +448,17 @@ mod tests {
         assert_eq!(waiting_page(&event(explicit, None)), None);
         let fresh = waiting_page(&event(attached("S2", "T2", None), None));
         assert_eq!(fresh.map(|w| w.opened), Some(false));
+    }
+
+    /// #153: only data frames are dropped while the popup's session hands
+    /// over; a frame error (and a close) still gets through.
+    #[test]
+    fn frame_errors_are_not_frames() {
+        use crate::handler::cdp_domains::tests::make_event;
+        let is = |method: &str| is_frame(&make_event(method, serde_json::json!({})));
+        assert!(is("Network.webSocketFrameSent"));
+        assert!(is("Network.webSocketFrameReceived"));
+        assert!(!is("Network.webSocketFrameError"));
+        assert!(!is("Network.webSocketClosed"));
     }
 }

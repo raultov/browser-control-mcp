@@ -9,6 +9,7 @@
 
 use crate::handler::NetworkState;
 use crate::handler::WebSocketFrame;
+use crate::handler::WsClose;
 use crate::handler::cdp_domains::event_pump::ListenerHandles;
 use crate::handler::cdp_domains::log::{Channel, ConsoleMessage, LogState};
 use bidi_browser_lite::Debugger;
@@ -99,9 +100,25 @@ pub(crate) fn on_websocket(network: &mut NetworkState, resource: &Value) {
                 },
                 None => String::new(),
             };
-            let url = network.ws_connections.get(&id).cloned().unwrap_or_default();
+            let url = network.ws_url(&id);
             let frame = WebSocketFrame::new(url, payload, kind == "frameSent");
             network.push_ws_frame(id, frame);
+        }
+        // #153: `code`, `reason` and `wasClean` (Firefox 157), each optional.
+        Some("webSocketClosed") => {
+            let field = |key: &str| resource.get(key);
+            let close = WsClose {
+                at: crate::handler::now_ms(),
+                code: field("code")
+                    .and_then(Value::as_u64)
+                    .and_then(|code| u16::try_from(code).ok()),
+                reason: field("reason")
+                    .and_then(Value::as_str)
+                    .filter(|reason| !reason.is_empty())
+                    .map(str::to_string),
+                was_clean: field("wasClean").and_then(Value::as_bool),
+            };
+            network.close_ws_connection(&id, close);
         }
         _ => {}
     }
@@ -224,10 +241,7 @@ mod tests {
             on_websocket(&mut network, &resource);
         }
         // Then the connection and its four data frames (not the close) are kept
-        assert_eq!(
-            network.ws_connections.get("38").unwrap(),
-            "ws://127.0.0.1:8808/"
-        );
+        assert_eq!(network.ws_url("38"), "ws://127.0.0.1:8808/");
         let frames = network.ws_frames.get("38").unwrap();
         let summary: Vec<(bool, &str)> = frames
             .iter()
@@ -243,6 +257,50 @@ mod tests {
             ]
         );
         assert!(frames.iter().all(|f| f.url == "ws://127.0.0.1:8808/"));
+    }
+
+    /// #153: the `webSocketClosed` resource closes its connection with
+    /// the code, reason and clean flag Firefox gives; a later duplicate
+    /// keeps the first close, and missing fields stay unset.
+    #[test]
+    fn websocket_closes_are_recorded() {
+        // Given the echo session, which ends with a normal closure
+        let mut network = NetworkState::default();
+        let started = crate::handler::now_ms();
+        for resource in resources(fixtures::RDP_RESOURCES_WEBSOCKET) {
+            on_websocket(&mut network, &resource);
+        }
+        // Then the connection is closed with its code and reason
+        let closed = network.ws_connections.get("38").unwrap().clone();
+        assert!(
+            closed.closed_at.is_some_and(|at| at >= started),
+            "{closed:?}"
+        );
+        assert_eq!(
+            (
+                closed.close_code,
+                closed.close_reason.as_deref(),
+                closed.was_clean
+            ),
+            (Some(1000), Some("Normal closure"), Some(true))
+        );
+        // And a second close changes nothing
+        let again = json!({"httpChannelId": 38, "wsMessageType": "webSocketClosed", "code": 1006});
+        on_websocket(&mut network, &again);
+        assert_eq!(network.ws_connections.get("38").unwrap(), &closed);
+        // And a close without fields only says it closed
+        let opened = json!({"httpChannelId": 39, "wsMessageType": "webSocketOpened", "effectiveURI": "ws://a/"});
+        on_websocket(&mut network, &opened);
+        on_websocket(
+            &mut network,
+            &json!({"httpChannelId": 39, "wsMessageType": "webSocketClosed"}),
+        );
+        let bare = network.ws_connections.get("39").unwrap();
+        assert!(bare.closed_at.is_some());
+        assert_eq!(
+            (bare.close_code, bare.close_reason.as_ref(), bare.was_clean),
+            (None, None, None)
+        );
     }
 
     /// FWS-01: a long payload (a long string grip) keeps its first part

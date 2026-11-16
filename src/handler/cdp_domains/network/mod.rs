@@ -35,6 +35,18 @@ pub(crate) async fn process_network_event(event: &WsResponse, state: &Arc<Mutex<
             let url = str_field(params, "url").unwrap_or("").to_string();
             st.insert_ws_connection(request_id.to_string(), url);
         }
+        // #153: a socket that closed or failed looked open.
+        "Network.webSocketClosed" => {
+            let close = crate::handler::WsClose {
+                at: crate::handler::now_ms(),
+                ..Default::default()
+            };
+            st.close_ws_connection(request_id, close);
+        }
+        "Network.webSocketFrameError" => {
+            let error = str_field(params, "errorMessage").unwrap_or("frame error");
+            st.fail_ws_connection(request_id, error);
+        }
         "Network.webSocketFrameSent" => on_ws_frame(&mut st, request_id, params, true),
         "Network.webSocketFrameReceived" => on_ws_frame(&mut st, request_id, params, false),
         _ => {}
@@ -124,11 +136,7 @@ fn on_ws_frame(st: &mut NetworkState, request_id: &str, params: &serde_json::Val
         return;
     };
     let payload_data = str_field(response, "payloadData").unwrap_or("").to_string();
-    let url = st
-        .ws_connections
-        .get(request_id)
-        .cloned()
-        .unwrap_or_default();
+    let url = st.ws_url(request_id);
     st.push_ws_frame(
         request_id.to_string(),
         WebSocketFrame::new(url, payload_data, is_sent),
@@ -282,13 +290,51 @@ mod tests {
         process_network_event(&event_received, &state).await;
 
         let st = state.lock().await;
-        assert_eq!(st.ws_connections.get("ws-1").unwrap(), "wss://socket.com");
+        assert_eq!(st.ws_url("ws-1"), "wss://socket.com");
         let frames = st.ws_frames.get("ws-1").unwrap();
         assert_eq!(frames.len(), 2);
         assert!(frames[0].is_sent);
         assert_eq!(frames[0].payload_data, "ping");
         assert!(!frames[1].is_sent);
         assert_eq!(frames[1].payload_data, "pong");
+    }
+
+    /// #153: `webSocketClosed` closes the connection, once (the popup's
+    /// session and the tab's both deliver it); `webSocketFrameError`
+    /// records why a frame failed.
+    #[tokio::test]
+    async fn websocket_closes_and_errors_are_recorded() {
+        // Given two connections
+        let state = Arc::new(Mutex::new(NetworkState::default()));
+        for (id, url) in [("ws-1", "wss://a/feed"), ("ws-2", "wss://b/chat")] {
+            let created = json!({"requestId": id, "url": url});
+            process_network_event(&make_event("Network.webSocketCreated", created), &state).await;
+        }
+        // When the first closes, twice, and the second has a frame error
+        let closed = json!({"requestId": "ws-1", "timestamp": 12.5});
+        process_network_event(
+            &make_event("Network.webSocketClosed", closed.clone()),
+            &state,
+        )
+        .await;
+        let first = state.lock().await.ws_connections["ws-1"].closed_at;
+        process_network_event(&make_event("Network.webSocketClosed", closed), &state).await;
+        let error =
+            json!({"requestId": "ws-2", "timestamp": 13.0, "errorMessage": "Invalid frame header"});
+        process_network_event(&make_event("Network.webSocketFrameError", error), &state).await;
+        // Then the first keeps its first close time, and the second its error
+        let st = state.lock().await;
+        assert!(first.is_some());
+        assert_eq!(st.ws_connections["ws-1"].closed_at, first);
+        assert_eq!(st.ws_connections["ws-1"].close_code, None);
+        let failed = &st.ws_connections["ws-2"];
+        assert_eq!(failed.error.as_deref(), Some("Invalid frame header"));
+        assert_eq!(failed.closed_at, None);
+        // And a duplicate webSocketCreated does not reopen a closed one
+        drop(st);
+        let created = json!({"requestId": "ws-1", "url": "wss://a/feed"});
+        process_network_event(&make_event("Network.webSocketCreated", created), &state).await;
+        assert_eq!(state.lock().await.ws_connections["ws-1"].closed_at, first);
     }
 
     /// AUD-OB-17: the headers Chrome only reports in the ExtraInfo events

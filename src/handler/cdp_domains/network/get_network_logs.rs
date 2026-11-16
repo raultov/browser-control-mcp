@@ -1,5 +1,5 @@
 use crate::handler::cdp_domains::cdp_target::CdpTarget;
-use crate::handler::{McpHandler, NetworkRequest, WebSocketFrame};
+use crate::handler::{McpHandler, NetworkRequest, WebSocketFrame, WsConnection};
 use rust_mcp_sdk::{
     macros,
     schema::{CallToolError, CallToolRequestParams, CallToolResult},
@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 #[macros::mcp_tool(
     name = "get_network_logs",
-    description = "Lists the tab's HTTP requests (id, method, URL, status, type; the last 3 navigations, oldest first) and WebSocket frames, with filters. request_id or include_details gives headers and bodies (cut at 64000 characters; a body over 2 MB is omitted, with its size). A redirect chain is one request, found by any hop's URL; its details list each hop's status and Location. Credential headers and request bodies are redacted unless include_sensitive_headers."
+    description = "Lists the tab's HTTP requests (id, method, URL, status, type; the last 3 navigations, oldest first) and WebSocket frames and closes, with filters. request_id or include_details gives headers and bodies (cut at 64000 characters; a body over 2 MB is omitted, with its size). A redirect chain is one request, found by any hop's URL; its details list each hop's status and Location. Credential headers and request bodies are redacted unless include_sensitive_headers."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct GetNetworkLogsTool {
@@ -56,6 +56,7 @@ pub struct GetNetworkLogsTool {
 
 type Requests = HashMap<String, NetworkRequest>;
 type Frames = HashMap<String, VecDeque<WebSocketFrame>>;
+type Closes = HashMap<String, WsConnection>;
 
 /// The note of the call that opened the connection: Chrome replays console
 /// messages to a new connection, but not network traffic.
@@ -113,12 +114,20 @@ impl Filters {
             && (self.ws_content.is_empty()
                 || frame.payload_data.to_lowercase().contains(&self.ws_content))
     }
+
+    /// Whether a connection's close is listed: it has no payload, so not
+    /// when a payload is searched.
+    fn close_matches(&self, connection: &WsConnection) -> bool {
+        self.ws_content.is_empty() && self.url_matches(&connection.url)
+    }
 }
 
 /// A filtered copy of a tab's network buffers.
 pub(crate) struct NetworkSnapshot {
     pub(crate) requests: Requests,
     pub(crate) frames: Frames,
+    /// The WebSocket connections that closed or failed (#153).
+    pub(crate) closes: Closes,
     /// Ids of the current navigation's requests.
     pub(crate) current_ids: HashSet<String>,
     /// Ids of `requests`, oldest first.
@@ -162,7 +171,8 @@ impl GetNetworkLogsTool {
 
     /// Copies the tab's buffers and applies the type, URL, direction and
     /// content filters; with `clear`, removes from the buffers exactly what
-    /// is returned (connections keep their URL). Shared by every browser.
+    /// is returned (live connections keep their URL; a closed one returned
+    /// with no frame left is forgotten). Shared by every browser.
     pub(crate) async fn collect(
         &self,
         network_state: &std::sync::Arc<tokio::sync::Mutex<crate::handler::NetworkState>>,
@@ -178,6 +188,12 @@ impl GetNetworkLogsTool {
         let mut snapshot = NetworkSnapshot {
             requests,
             frames: st.ws_frames.clone().into_iter().collect(),
+            closes: st
+                .ws_connections
+                .iter()
+                .filter(|(_, connection)| connection.ended())
+                .map(|(id, connection)| (id.clone(), connection.clone()))
+                .collect(),
             current_ids: st.current_ids(),
             order: st.ordered_ids(current_only),
         };
@@ -187,6 +203,12 @@ impl GetNetworkLogsTool {
             for id in snapshot.frames.keys() {
                 if let Some(frames) = st.ws_frames.get_mut(id) {
                     frames.retain(|f| !filters.frame_matches(f));
+                }
+            }
+            for id in snapshot.closes.keys() {
+                if st.ws_frames.get(id).is_none_or(VecDeque::is_empty) {
+                    st.ws_frames.remove(id);
+                    st.ws_connections.remove(id);
                 }
             }
         }
@@ -213,8 +235,10 @@ impl Filters {
                 frames.retain(|f| filters.frame_matches(f));
                 !frames.is_empty()
             });
+            snapshot.closes.retain(|_, c| filters.close_matches(c));
         } else {
             snapshot.frames.clear();
+            snapshot.closes.clear();
         }
     }
 }
@@ -248,6 +272,10 @@ impl GetNetworkLogsTool {
         if filters.want_ws {
             let frames = serde_json::to_value(&snapshot.frames).unwrap_or_default();
             output.insert("websocket_frames".into(), frames);
+            if !snapshot.closes.is_empty() {
+                let closes = serde_json::to_value(&snapshot.closes).unwrap_or_default();
+                output.insert("websocket_closes".into(), closes);
+            }
         }
         if !notes.is_empty() {
             output.insert("notes".into(), json!(notes));
@@ -294,17 +322,28 @@ fn summary(filters: &Filters, snapshot: &NetworkSnapshot, notes: &[String]) -> S
         lines.extend(rows);
     }
     let count: usize = snapshot.frames.values().map(VecDeque::len).sum();
-    // No frames: said only when frames were asked for alone.
-    if filters.want_ws && (count > 0 || !filters.want_rest) {
-        lines.push(format!("{count} WebSocket frame(s), by connection:"));
-        let mut connections: Vec<&String> = snapshot.frames.keys().collect();
+    let ended = snapshot.closes.len();
+    // No frames nor closes: said only when frames were asked for alone.
+    if filters.want_ws && (count > 0 || ended > 0 || !filters.want_rest) {
+        let closed = if ended > 0 {
+            format!(" and {ended} closed or failed connection(s)")
+        } else {
+            String::new()
+        };
+        lines.push(format!(
+            "{count} WebSocket frame(s){closed}, by connection:"
+        ));
+        let mut connections: Vec<&String> = snapshot
+            .frames
+            .keys()
+            .chain(snapshot.closes.keys())
+            .collect();
         connections.sort();
+        connections.dedup();
         for id in connections {
-            lines.extend(
-                snapshot.frames[id]
-                    .iter()
-                    .map(|frame| frame_line(id, frame)),
-            );
+            let frames = snapshot.frames.get(id).into_iter().flatten();
+            lines.extend(frames.map(|frame| frame_line(id, frame)));
+            lines.extend(snapshot.closes.get(id).map(|c| close_line(id, c)));
         }
     }
     lines.extend(notes.iter().map(|note| format!("Note: {note}")));
@@ -359,6 +398,35 @@ fn frame_line(id: &str, frame: &WebSocketFrame) -> String {
         "{id} {direction} {} ({} bytes): {payload}",
         frame.url, frame.payload_len
     )
+}
+
+/// How a WebSocket connection ended: `id closed|failed url[: why]`, the
+/// frame error, else the close code and reason (#153).
+fn close_line(id: &str, connection: &WsConnection) -> String {
+    let status = if connection.closed_at.is_some() {
+        "closed"
+    } else {
+        "failed"
+    };
+    let why = match (&connection.error, connection.close_code) {
+        (Some(error), _) => format!(": {}", one_line(error, PAYLOAD_PREVIEW_CHARS)),
+        (None, Some(code)) => {
+            let reason = connection
+                .close_reason
+                .as_deref()
+                .map(|r| format!(" {}", one_line(r, PAYLOAD_PREVIEW_CHARS)))
+                .unwrap_or_default();
+            let unclean = if connection.was_clean == Some(false) {
+                " (not clean)"
+            } else {
+                ""
+            };
+            format!(": code {code}{reason}{unclean}")
+        }
+        (None, None) => String::new(),
+    };
+    let url = one_line(&connection.url, URL_MAX_CHARS);
+    format!("{id} {status} {url}{why}")
 }
 
 /// The request `id` with its headers and body, or an error when the tab
@@ -650,6 +718,7 @@ mod tests {
         let snapshot = NetworkSnapshot {
             requests: HashMap::from([("r1".to_string(), answered(json!({}), body))]),
             frames: HashMap::new(),
+            closes: HashMap::new(),
             current_ids: HashSet::new(),
             order: vec!["r1".to_string()],
         };
@@ -784,6 +853,87 @@ mod tests {
         );
     }
 
+    /// ws-1 with two frames, then closed; ws-2 failed without frames.
+    async fn setup_closed_connections(handler: &McpHandler) {
+        setup_mock_data(handler).await;
+        let mut st = handler.default_session.network_state.lock().await;
+        st.insert_ws_connection("ws-1".into(), "wss://socket.com/feed".into());
+        let close = crate::handler::WsClose {
+            at: 1_700_000_000_000.0,
+            code: Some(1001),
+            reason: Some("going away".into()),
+            was_clean: Some(true),
+        };
+        st.close_ws_connection("ws-1", close);
+        st.insert_ws_connection("ws-2".into(), "wss://chat.io/".into());
+        st.fail_ws_connection("ws-2", "Invalid frame header");
+    }
+
+    /// #153: a closed or failed WebSocket connection is a line after its
+    /// frames (also without frames), with the close code and reason or the
+    /// error; include_details lists it under `websocket_closes`.
+    #[tokio::test]
+    async fn websocket_closes_are_listed() {
+        // Given a closed connection and a failed one
+        let handler = McpHandler::new_test_with_port(spawn_mock_chrome_server().await);
+        setup_closed_connections(&handler).await;
+        let read = |args: serde_json::Value| {
+            let params = crate::handler::cdp_domains::tests::call("get_network_logs", args);
+            GetNetworkLogsTool::handle(params, &handler)
+        };
+        // When the frames are listed
+        let reply = read(json!({"type_filter": "websocket"})).await.unwrap();
+        // Then each connection's close follows its frames
+        let text = reply.content[0].as_text().unwrap().to_string();
+        let lines: Vec<&str> = text.lines().take(5).collect();
+        assert_eq!(
+            lines,
+            [
+                "2 WebSocket frame(s) and 2 closed or failed connection(s), by connection:",
+                "ws-1 sent wss://socket.com/feed (12 bytes): hello server",
+                "ws-1 received wss://socket.com/feed (14 bytes): welcome client",
+                "ws-1 closed wss://socket.com/feed: code 1001 going away",
+                "ws-2 failed wss://chat.io/: Invalid frame header",
+            ]
+        );
+        // And the details say when and why
+        let args = json!({"type_filter": "websocket", "include_details": true});
+        let reply = read(args).await.unwrap();
+        let json: serde_json::Value =
+            serde_json::from_str(reply.content[0].as_text().unwrap()).unwrap();
+        assert_eq!(
+            json["websocket_closes"],
+            json!({
+                "ws-1": {"url": "wss://socket.com/feed", "closed_at": 1_700_000_000_000.0,
+                    "close_code": 1001, "close_reason": "going away", "was_clean": true},
+                "ws-2": {"url": "wss://chat.io/", "error": "Invalid frame header"}
+            })
+        );
+    }
+
+    /// #153: a payload search leaves the closes out; `clear` forgets a
+    /// closed connection with no frame left.
+    #[tokio::test]
+    async fn websocket_closes_follow_the_filters_and_clear() {
+        // Given a closed connection and a failed one
+        let handler = McpHandler::new_test_with_port(spawn_mock_chrome_server().await);
+        setup_closed_connections(&handler).await;
+        let read = |args: serde_json::Value| {
+            let params = crate::handler::cdp_domains::tests::call("get_network_logs", args);
+            GetNetworkLogsTool::handle(params, &handler)
+        };
+        // When a payload is searched, Then no close is listed
+        let args = json!({"ws_content_filter": "welcome", "type_filter": "websocket"});
+        let reply = read(args).await.unwrap();
+        assert!(!reply.content[0].as_text().unwrap().contains("closed"));
+        // And clear forgets the ended connections with no frame left
+        let args = json!({"type_filter": "websocket", "clear": true});
+        read(args).await.unwrap();
+        let st = handler.default_session.network_state.lock().await;
+        assert!(st.ws_connections.is_empty(), "{:?}", st.ws_connections);
+        assert!(st.ws_frames.is_empty());
+    }
+
     /// ISSUE-18: a failed or unanswered request says so; a long URL is cut.
     #[test]
     fn summary_lines_show_failures() {
@@ -866,6 +1016,7 @@ mod tests {
         let snapshot = NetworkSnapshot {
             requests: HashMap::from([("r1".to_string(), big)]),
             frames: HashMap::new(),
+            closes: HashMap::new(),
             current_ids: HashSet::from(["r1".to_string()]),
             order: vec!["r1".to_string()],
         };
@@ -1138,10 +1289,7 @@ mod tests {
         read(json!({"type_filter": "websocket", "clear": true, "include_details": true})).await;
         let mut st = handler.default_session.network_state.lock().await;
         assert!(st.ws_frames.get_mut("ws-1").is_none_or(|f| f.is_empty()));
-        assert_eq!(
-            st.ws_connections.get("ws-1").map(String::as_str),
-            Some("wss://socket.com/feed")
-        );
+        assert_eq!(st.ws_url("ws-1"), "wss://socket.com/feed");
     }
 
     /// SEC-19: Sensitive headers are redacted by default.

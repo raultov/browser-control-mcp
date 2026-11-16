@@ -200,6 +200,52 @@ impl WebSocketFrame {
     }
 }
 
+/// A WebSocket connection: its URL and, once the browser reports it, how
+/// it ended (#153: a socket that closed looked open forever). Chrome gives
+/// no close code or reason; Firefox gives no frame errors.
+#[derive(Clone, Debug, Default, PartialEq, ::serde::Serialize)]
+pub struct WsConnection {
+    pub url: String,
+    /// When the server saw the close (Unix time, ms): the browsers' own
+    /// timestamps are monotonic clocks an agent cannot compare.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub closed_at: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub close_code: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub close_reason: Option<String>,
+    /// Whether the closing handshake completed (Firefox).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub was_clean: Option<bool>,
+    /// Why a frame failed (Chrome's `webSocketFrameError`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+impl WsConnection {
+    /// Whether the connection closed or failed.
+    pub(crate) fn ended(&self) -> bool {
+        self.closed_at.is_some() || self.error.is_some()
+    }
+}
+
+/// How a WebSocket closed, as the browser reports it (all optional).
+#[derive(Clone, Debug, Default)]
+pub(crate) struct WsClose {
+    /// When the server saw it (Unix time, ms; see [`now_ms`]).
+    pub at: f64,
+    pub code: Option<u16>,
+    pub reason: Option<String>,
+    pub was_clean: Option<bool>,
+}
+
+/// The current Unix time in milliseconds (0 if the clock is before 1970).
+pub(crate) fn now_ms() -> f64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0.0, |since| since.as_secs_f64() * 1000.0)
+}
+
 pub(crate) const MAX_REQUESTS_PER_NAVIGATION: usize = 1000;
 pub(crate) const MAX_NAVIGATIONS_RETAINED: usize = 3;
 pub(crate) const MAX_WS_FRAMES_PER_CONNECTION: usize = 500;
@@ -233,7 +279,7 @@ pub(crate) struct NavigationBucket {
 
 pub(crate) struct NetworkState {
     pub navigations: std::collections::VecDeque<NavigationBucket>,
-    pub ws_connections: crate::util::bounded::BoundedMap<String, String, MAX_WS_CONNECTIONS>,
+    pub ws_connections: crate::util::bounded::BoundedMap<String, WsConnection, MAX_WS_CONNECTIONS>,
     pub ws_frames: crate::util::bounded::BoundedMap<
         String,
         std::collections::VecDeque<WebSocketFrame>,
@@ -484,10 +530,49 @@ impl NetworkState {
     }
 
     /// Remembers a WebSocket connection; the oldest one beyond the cap is
-    /// forgotten together with its frames.
+    /// forgotten together with its frames. A connection already known (the
+    /// same event from a popup's session and its tab's) is kept as it is.
     pub(crate) fn insert_ws_connection(&mut self, id: String, url: String) {
-        if let Some(evicted) = self.ws_connections.insert(id, url) {
+        if self.ws_connections.contains_key(&id) {
+            return;
+        }
+        let connection = WsConnection {
+            url,
+            ..Default::default()
+        };
+        if let Some(evicted) = self.ws_connections.insert(id, connection) {
             self.ws_frames.remove(&evicted);
+        }
+    }
+
+    /// The URL of the WebSocket connection `id` (empty when unknown).
+    pub(crate) fn ws_url(&self, id: &str) -> String {
+        self.ws_connections
+            .get(id)
+            .map(|c| c.url.clone())
+            .unwrap_or_default()
+    }
+
+    /// Records that the WebSocket connection `id` closed. The first close
+    /// counts: a second session may deliver the same event later.
+    pub(crate) fn close_ws_connection(&mut self, id: &str, close: WsClose) {
+        let Some(connection) = self.ws_connections.get_mut(id) else {
+            return;
+        };
+        if connection.closed_at.is_some() {
+            return;
+        }
+        connection.closed_at = Some(close.at);
+        connection.close_code = close.code;
+        connection.close_reason = close.reason;
+        connection.was_clean = close.was_clean;
+    }
+
+    /// Records why a frame of the WebSocket connection `id` failed (the
+    /// first error counts).
+    pub(crate) fn fail_ws_connection(&mut self, id: &str, error: &str) {
+        if let Some(connection) = self.ws_connections.get_mut(id) {
+            connection.error.get_or_insert_with(|| error.to_string());
         }
     }
 
