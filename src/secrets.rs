@@ -9,7 +9,9 @@
 //! `&quot;`...), each also escaped inside JSON strings, nested a few deep (a page's
 //! `JSON.stringify` in a tool's JSON reply), with the characters outside
 //! ASCII kept or as `\uXXXX` escapes, and in the page's own JSON also `/`
-//! as `\/` and `&<>'=` as `\u00XX`. A convenience, not a security
+//! as `\/` and `&<>'=` as `\u00XX`, that JSON also HTML-escaped (an
+//! attribute holding it). Very long values keep only their likeliest
+//! forms (a bound on memory). A convenience, not a security
 //! boundary: a page can transform a value (encode it otherwise, split it)
 //! into something no longer masked, and images (screenshots, PDFs) are not
 //! masked.
@@ -56,8 +58,11 @@ impl Masker {
             return Ok(None);
         }
         let (forms, tokens): (Vec<String>, Vec<String>) = forms.into_iter().unzip();
+        // Never a DFA: its 256 transitions a state take gigabytes for the
+        // long forms of a long value (#150).
         let forms = aho_corasick::AhoCorasick::builder()
             .match_kind(aho_corasick::MatchKind::LeftmostLongest)
+            .kind(Some(aho_corasick::AhoCorasickKind::ContiguousNFA))
             .build(forms)
             .map_err(|e| format!("the secrets have too many forms to mask: {e}"))?;
         Ok(Some(Self { forms, tokens }))
@@ -119,7 +124,14 @@ impl Secrets {
             }
             entries.push((name.to_string(), value));
         }
-        let masker = Masker::new(forms_of(&entries))?;
+        let forms = forms_of(&entries);
+        if !forms.partial.is_empty() {
+            tracing::warn!(
+                secrets = ?forms.partial,
+                "secret values too long to mask in all their encoded forms; the rarer forms are not masked"
+            );
+        }
+        let masker = Masker::new(forms.patterns)?;
         Ok(Self { entries, masker })
     }
 
@@ -279,43 +291,196 @@ impl Secrets {
 /// a page's `JSON.stringify` of `JSON.stringify` is three (#118), plus one.
 const JSON_LEVELS: usize = 4;
 
+/// Largest total size, in bytes, of the forms of all the secrets (#150).
+/// Each form is a pattern of the automaton, whose memory grows with their
+/// size, and a long symbol-heavy value has thousands of forms as long as
+/// it or longer: a 32 KB one took over 3 GB. The likeliest forms come
+/// first (see [`Step`]); those past the limit are left out, with a warning
+/// naming their secrets. Ordinary secrets stay far below it (tens of KB
+/// each); at the limit the automaton takes under 200 MB.
+const MAX_FORM_BYTES: usize = 4 << 20;
+
+/// The forms of the secrets, each with its token, and the names of the
+/// secrets some of whose forms did not fit in [`MAX_FORM_BYTES`].
+struct Forms {
+    patterns: Vec<(String, String)>,
+    partial: Vec<String>,
+}
+
 /// Each value with its token, as is and as the browser URL-encodes it
 /// (#109), each also as serialized HTML escapes it (#137), and each of
 /// those as escaped inside JSON strings nested up to [`JSON_LEVELS`] deep
 /// (#118), by an encoder that keeps the characters outside ASCII or one
-/// that escapes them (#126).
-fn forms_of(entries: &[(String, String)]) -> Vec<(String, String)> {
-    let mut forms = Vec::new();
-    for (name, value) in entries {
-        let token = format!("<secret:{name}>");
-        let mut written = vec![value.clone()];
-        for encoded in url_encoded(value) {
-            written.push(lowercase_hex(&encoded));
-            written.push(encoded);
-        }
-        let html: Vec<String> = written
-            .iter()
-            .flat_map(|form| HTML_ESCAPES.map(|escapes| html_escaped(form, escapes)))
-            .collect();
-        written.extend(html);
-        written.sort();
-        written.dedup();
-        let mut level = written.clone();
-        for depth in 0..JSON_LEVELS {
-            // The page's own encoder writes the innermost string; the levels
-            // around it are `JSON.stringify` or a tool's (serde) reply.
-            let page = depth == 0;
-            level = level
-                .iter()
-                .flat_map(|form| json_forms(form, page))
-                .collect();
-            written.extend(level.iter().cloned());
-        }
-        written.sort();
-        written.dedup();
-        forms.extend(written.into_iter().map(|form| (form, token.clone())));
+/// that escapes them (#126); the page's own JSON also as serialized HTML
+/// escapes it, as in an attribute holding a JSON config (#148). At most
+/// [`MAX_FORM_BYTES`] of them, the likeliest first (#150).
+fn forms_of(entries: &[(String, String)]) -> Forms {
+    let mut set = FormSet::default();
+    for (secret, (_, value)) in entries.iter().enumerate() {
+        let form = Form {
+            text: value.clone(),
+            secret,
+            depth: 0,
+            url: false,
+            html: false,
+        };
+        set.offer(form, 0);
     }
-    forms
+    while let Some(std::cmp::Reverse(step)) = set.steps.pop() {
+        set.apply(&step);
+    }
+    let partial = set.partial.iter().map(|&i| entries[i].0.clone());
+    Forms {
+        partial: partial.collect(),
+        patterns: set
+            .forms
+            .into_iter()
+            .map(|form| (form.text, format!("<secret:{}>", entries[form.secret].0)))
+            .collect(),
+    }
+}
+
+/// A written form of a secret's value.
+struct Form {
+    text: String,
+    /// The secret, by its index in the file.
+    secret: usize,
+    /// How many JSON strings the value is inside.
+    depth: usize,
+    /// Whether it is URL-encoded (a value is, only as it is).
+    url: bool,
+    /// Whether it is HTML-escaped (once at most).
+    html: bool,
+}
+
+/// Encodings to apply to an accepted form, ordered by how likely the forms
+/// they make are: fewer unusual encodings first, then shallower JSON, then
+/// the secrets in file order.
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+struct Step {
+    /// URL, HTML and other-encoder JSON escapes in the forms it makes.
+    unusual: usize,
+    depth: usize,
+    /// The order the steps were made in.
+    seq: usize,
+    /// The form to encode, by index.
+    form: usize,
+    kind: Encoding,
+}
+
+/// What a [`Step`] does to its form.
+#[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
+enum Encoding {
+    /// One JSON string more, as `JSON.stringify` and serde write it.
+    Json,
+    /// One JSON string more, as the other encoders write it.
+    OtherJson,
+    /// As the browser URL-encodes it.
+    Url,
+    /// As HTML escapes it.
+    Html,
+}
+
+/// The forms accepted so far and the steps still to apply.
+#[derive(Default)]
+struct FormSet {
+    forms: Vec<Form>,
+    seen: std::collections::HashSet<String>,
+    bytes: usize,
+    steps: std::collections::BinaryHeap<std::cmp::Reverse<Step>>,
+    /// How many steps were made.
+    made: usize,
+    /// The secrets with a form left out, by index, in order.
+    partial: std::collections::BTreeSet<usize>,
+}
+
+impl FormSet {
+    /// Accepts a form unless it is known or does not fit, and plans the
+    /// encodings of it.
+    fn offer(&mut self, form: Form, unusual: usize) {
+        if self.seen.contains(&form.text) {
+            return;
+        }
+        if self.bytes + form.text.len() > MAX_FORM_BYTES {
+            self.partial.insert(form.secret);
+            return;
+        }
+        self.bytes += form.text.len();
+        self.seen.insert(form.text.clone());
+        let mut kinds = Vec::new();
+        if form.depth < JSON_LEVELS {
+            kinds.push((Encoding::Json, unusual));
+            kinds.push((Encoding::OtherJson, unusual + 1));
+        }
+        if form.depth == 0 && !form.url && !form.html {
+            kinds.push((Encoding::Url, unusual + 1));
+        }
+        // The value itself, or the page's JSON of it (#148).
+        if form.depth <= 1 && !form.html {
+            kinds.push((Encoding::Html, unusual + 1));
+        }
+        let index = self.forms.len();
+        let depth = form.depth;
+        self.forms.push(form);
+        for (kind, unusual) in kinds {
+            let seq = self.made;
+            self.made += 1;
+            self.steps.push(std::cmp::Reverse(Step {
+                unusual,
+                depth,
+                seq,
+                form: index,
+                kind,
+            }));
+        }
+    }
+
+    /// Offers the forms `step` makes.
+    fn apply(&mut self, step: &Step) {
+        let parent = &self.forms[step.form];
+        let (secret, depth, url, html) = (parent.secret, parent.depth, parent.url, parent.html);
+        // No encoding shortens a form: one that cannot fit is not made.
+        if self.bytes + parent.text.len() > MAX_FORM_BYTES {
+            self.partial.insert(secret);
+            return;
+        }
+        let text = parent.text.clone();
+        let form = |text, depth, url, html| Form {
+            text,
+            secret,
+            depth,
+            url,
+            html,
+        };
+        match step.kind {
+            Encoding::Json => {
+                self.offer(
+                    form(json_escaped(&text), depth + 1, url, html),
+                    step.unusual,
+                );
+            }
+            Encoding::OtherJson => {
+                // The page's own encoder writes the innermost string; the
+                // levels around it are `JSON.stringify` or a tool's (serde) reply.
+                for json in json_forms(&text, depth == 0).into_iter().skip(1) {
+                    self.offer(form(json, depth + 1, url, html), step.unusual);
+                }
+            }
+            Encoding::Url => {
+                for encoded in url_encoded(&text) {
+                    let lowercase = lowercase_hex(&encoded);
+                    self.offer(form(encoded, depth, true, html), step.unusual);
+                    self.offer(form(lowercase, depth, true, html), step.unusual);
+                }
+            }
+            Encoding::Html => {
+                for escapes in HTML_ESCAPES {
+                    let escaped = html_escaped(&text, escapes);
+                    self.offer(form(escaped, depth, url, true), step.unusual);
+                }
+            }
+        }
+    }
 }
 
 /// The characters HTML escapes in a text node, as the DOM serializes it
@@ -394,7 +559,7 @@ const HEX_ESCAPED: [(&str, bool); 3] = [("&<>", false), ("&<>'=", false), ("&<>'
 /// them escaped (#126: Python's `json.dumps` writes ASCII only), the hex
 /// digits in lowercase or in uppercase. With `other_encoders`, also as
 /// the encoders that escape `/` as `\/` (PHP) or ASCII characters in
-/// [`HEX_ESCAPED`] write it (#129).
+/// [`HEX_ESCAPED`] write it (#129). The first is `JSON.stringify`'s.
 fn json_forms(text: &str, other_encoders: bool) -> Vec<String> {
     let escaped = json_escaped(text);
     let mut ascii_escapes = vec![escaped.clone()];
@@ -411,14 +576,11 @@ fn json_forms(text: &str, other_encoders: bool) -> Vec<String> {
     }
     let mut forms = Vec::new();
     for form in ascii_escapes {
-        if !form.is_ascii() {
-            forms.push(hex_escaped(&form, |c| !c.is_ascii(), false));
-            forms.push(hex_escaped(&form, |c| !c.is_ascii(), true));
-        }
+        let hex = |uppercase| hex_escaped(&form, |c| !c.is_ascii(), uppercase);
+        let escaped = (!form.is_ascii()).then(|| [hex(false), hex(true)]);
         forms.push(form);
+        forms.extend(escaped.into_iter().flatten());
     }
-    forms.sort();
-    forms.dedup();
     forms
 }
 
@@ -701,6 +863,63 @@ mod tests {
                 assert!(masked.contains("<secret:QA_H>"), "{masked}");
             }
         }
+    }
+
+    /// #148: a value inside a page's JSON held in an HTML attribute is
+    /// masked as the DOM serializes it (`outerHTML`, `inspect_dom`): JSON
+    /// escapes first, then HTML ones, also inside a tool's JSON reply.
+    #[test]
+    fn values_in_json_in_html_attributes_are_masked() {
+        // Given a secret with a quote and an ampersand
+        let s = Secrets::parse("QA_J='Qa\"Pw&rd7731'\n").unwrap();
+        // When a page serializes an attribute holding JSON with it
+        let html =
+            r#"<div id="c" data-config="{&quot;token&quot;:&quot;Qa\&quot;Pw&amp;rd7731&quot;}">"#;
+        let reply = serde_json::to_string(&json!({"value": html})).unwrap();
+        // Then it is masked, as text and in the tool's JSON reply
+        let masked = s.mask(html);
+        assert_eq!(
+            masked,
+            r#"<div id="c" data-config="{&quot;token&quot;:&quot;<secret:QA_J>&quot;}">"#
+        );
+        assert!(!s.mask(&reply).contains("7731"), "{}", s.mask(&reply));
+        // And as PHP's `htmlspecialchars(json_encode(...))` writes it
+        assert_eq!(s.mask(r"Qa\&quot;Pw\u0026rd7731"), "<secret:QA_J>");
+    }
+
+    /// #150: a 32 KB symbol-heavy value is parsed fast with its forms
+    /// within [`MAX_FORM_BYTES`]; it is still masked as is and in a tool's
+    /// JSON reply, its secret is reported as partly masked, and a short
+    /// secret next to it keeps all its forms.
+    #[test]
+    fn long_values_keep_the_forms_within_a_bound() {
+        // Given a 32 000-character value of characters every encoding changes
+        let long: String = "\"&<>/\u{e9}\\".repeat(4600).chars().take(32_000).collect();
+        let value = format!("{long}END7319");
+        let entries = vec![
+            ("BIG".to_string(), value.clone()),
+            ("PW".to_string(), "p@ss w&rd9~".to_string()),
+        ];
+        // When its forms are made
+        let started = std::time::Instant::now();
+        let forms = forms_of(&entries);
+        // Then they fit in the bound, in a few seconds at most
+        let bytes: usize = forms.patterns.iter().map(|(f, _)| f.len()).sum();
+        assert!(bytes <= MAX_FORM_BYTES, "{bytes}");
+        assert!(started.elapsed() < std::time::Duration::from_secs(10));
+        assert_eq!(forms.partial, ["BIG"]);
+        // And the likeliest forms are masked
+        let masker = Masker::new(forms.patterns).unwrap();
+        let s = Secrets { entries, masker };
+        assert_eq!(s.mask(&format!("<{value}>")), "<<secret:BIG>>");
+        let reply = serde_json::to_string(&json!({"value": value})).unwrap();
+        assert_eq!(s.mask(&reply), r#"{"value":"<secret:BIG>"}"#);
+        let twice = serde_json::to_string(&json!({"value": reply})).unwrap();
+        assert!(!s.mask(&twice).contains("END7319"));
+        // And the short secret keeps its rare forms
+        assert_eq!(s.mask(r"p%40ss+w%26rd9%7e"), "<secret:PW>");
+        let html_json = r"p@ss w\u0026rd9~";
+        assert_eq!(s.mask(html_json), "<secret:PW>");
     }
 
     /// #145: a reply of 100 KB is masked in one pass whatever the number of

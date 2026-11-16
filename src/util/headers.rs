@@ -27,7 +27,19 @@ const SENSITIVE_PARTS: &[&str] = &[
 /// Whole words of a header name (between `-`) that name a credential:
 /// vendor key headers such as `X-Auth-Key` (Cloudflare) or
 /// `Ocp-Apim-Subscription-Key` (Azure) (#144).
-const SENSITIVE_WORDS: &[&str] = &["key", "auth"];
+const SENSITIVE_WORDS: &[&str] = &["key"];
+
+/// Starts of the words that name authorization or authentication.
+const AUTH_PREFIXES: &[&str] = &["authoriz", "authentic", "authn", "authz"];
+
+/// Whether a word of a header name names credentials: `auth` and the
+/// authorization and authentication words (`X-Authorization`,
+/// `X-Forwarded-Authorization`, `Authentication`, `X-Authn`; #149), but
+/// not the challenge `Authenticate` (`WWW-Authenticate`), which holds no
+/// secret.
+fn is_auth_word(word: &str) -> bool {
+    word == "auth" || (word != "authenticate" && AUTH_PREFIXES.iter().any(|p| word.starts_with(p)))
+}
 
 /// Whether a header's value must be hidden by default. `_` counts as `-`
 /// (`X-API_KEY`).
@@ -35,7 +47,9 @@ pub fn is_sensitive(name: &str) -> bool {
     let name = name.to_ascii_lowercase().replace('_', "-");
     SENSITIVE.contains(&name.as_str())
         || SENSITIVE_PARTS.iter().any(|part| name.contains(part))
-        || name.split('-').any(|word| SENSITIVE_WORDS.contains(&word))
+        || name
+            .split('-')
+            .any(|word| SENSITIVE_WORDS.contains(&word) || is_auth_word(word))
 }
 
 /// Replaces the value of every sensitive header in a `{name: value}` object
@@ -69,6 +83,26 @@ mod tests {
             assert!(is_sensitive(name), "{name}");
         }
         for name in ["WWW-Authenticate", "Content-Type", "X-Keyboard", "Accept"] {
+            assert!(!is_sensitive(name), "{name}");
+        }
+    }
+
+    /// #149: headers whose words start with `auth` carry credentials
+    /// (proxied and non-standard authorization headers); the
+    /// `Authenticate` challenges do not.
+    #[test]
+    fn authorization_variants_are_sensitive() {
+        for name in [
+            "X-Authorization",
+            "X-Forwarded-Authorization",
+            "Authentication",
+            "X-Authn",
+            "X-Authz-Token",
+            "X_AUTHORIZATION",
+        ] {
+            assert!(is_sensitive(name), "{name}");
+        }
+        for name in ["WWW-Authenticate", "Proxy-Authenticate", "X-Author-Name"] {
             assert!(!is_sensitive(name), "{name}");
         }
     }

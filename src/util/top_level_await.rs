@@ -54,7 +54,17 @@ impl Token {
             '}',
         ])
     }
+
+    /// Whether this token, first on its line, continues the statement of
+    /// the line before: as [`Self::continues`], or the `catch`, `finally`
+    /// or `else` of a `try` or `if` whose block closed on that line (#151).
+    fn continues_statement(&self, code: &str) -> bool {
+        self.continues(code) || CONTINUING.contains(&self.text(code))
+    }
 }
+
+/// Keywords that go on with the statement before them.
+const CONTINUING: &[&str] = &["catch", "finally", "else"];
 
 /// Keywords after which a `/` starts a regular expression, not a division.
 const BEFORE_OPERAND: &[&str] = &[
@@ -310,7 +320,7 @@ fn last_statement(code: &str, tokens: &[Token]) -> usize {
     let (mut depth, mut start) = (0_i32, 0);
     for (i, token) in tokens.iter().enumerate() {
         let after_semicolon = i > 0 && tokens[i - 1].is(code, ";");
-        let new_line = token.line_before && !token.continues(code);
+        let new_line = token.line_before && !token.continues_statement(code);
         if depth == 0 && i > 0 && (after_semicolon || new_line) {
             start = i;
         }
@@ -534,6 +544,26 @@ mod tests {
             // Then it runs as is in the async function
             assert_eq!(wrapped, format!("(async () => {{ {code}\n}})()"));
         }
+    }
+
+    /// #151: a `catch`, `finally` or `else` on its own line after the `}`
+    /// of its block goes on with the `try` or `if`, which runs as is.
+    #[test]
+    fn keywords_on_their_own_line_continue_the_statement() {
+        for code in [
+            "try {\n  await Promise.reject(new Error('boom'))\n}\ncatch (e) {\n  window.qaCaught = e.message\n}",
+            "try {\n  await Promise.resolve(1)\n}\nfinally {\n  window.qaFin = 'fin-ok'\n}",
+            "if (await Promise.resolve(false)) {\n  window.qaBr = 'then'\n}\nelse {\n  window.qaBr = 'else-ok'\n}",
+            "do {\n  await x\n}\nwhile (false)",
+        ] {
+            // When the code is wrapped
+            let wrapped = with_top_level_await(code);
+            // Then it runs as is in the async function
+            assert_eq!(wrapped, format!("(async () => {{ {code}\n}})()"));
+        }
+        // And a word starting with one of them is returned
+        let wrapped = with_top_level_await("await x\nelsewhere");
+        assert!(wrapped.ends_with("return (elsewhere\n); })()"), "{wrapped}");
     }
 
     /// #142: comments after the last `;` are not the last statement: the

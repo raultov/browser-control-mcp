@@ -10,6 +10,23 @@ from a copy of its code: entries describe the differences from that release.
 
 ## [Unreleased]
 
+### Fixed
+
+- `--secrets`: a value inside a page's JSON held in an HTML attribute
+  (`data-config='{"token":"..."}'`) is masked in `outerHTML` and
+  `inspect_dom`, which write it JSON- then HTML-escaped (#148).
+- `get_network_logs` redacts `X-Authorization`,
+  `X-Forwarded-Authorization`, `Authentication` and the other headers with
+  a word starting with `authoriz`, `authentic`, `authn` or `authz`;
+  `WWW-Authenticate` stays readable (#149).
+- `--secrets`: one 32 KB symbol-heavy value took over 3 GB of memory at
+  start-up. The encoded forms of all the secrets are capped at 4 MB, the
+  likeliest first, and never built into a DFA: start-up stays under 200 MB
+  and a warning names the secrets missing rarer forms (#150).
+- `evaluate_js` with top-level `await` runs a `try`/`if` whose `catch`,
+  `finally` or `else` starts its own line after the `}`; it was cut there
+  and failed with a `SyntaxError` (#151).
+
 ## [0.20.0-beta.31] - 2026-11-15
 
 Public **BETA**. Fixes for eleven bugs an automated test round found in

@@ -762,7 +762,8 @@ incompatible:
   JSON, with `/` written as `\/` (PHP) and `&`, `<`, `>`, `'`, `=` as
   `\u00XX` escapes (Go, Gson, PHP's `JSON_HEX_*` flags), and as HTML
   escapes them (`&amp;`, `&lt;`, `&gt;`, `&quot;`, `&#39;`, `&nbsp;`: an
-  `inspect_dom` or an `innerHTML`),
+  `inspect_dom` or an `innerHTML`), also inside the page's JSON (an
+  attribute holding a JSON config),
   and `fill_input` / `fill_form` type the value of a
   `<secret:NAME>` they are given, so the agent can log in without seeing
   the password. It is a convenience, not a security boundary: the page can
@@ -770,7 +771,10 @@ incompatible:
   (screenshots, PDFs) are not masked, and the server stops at start-up if
   the file has a malformed line, a value shorter than 4 characters or a
   name defined twice (the error names the line, never a value). Values
-  never reach the logs.
+  never reach the logs. The encoded forms of all the secrets are capped at
+  4 MB, the likeliest first: a very long value (a certificate bundle) is
+  masked as is and in plain JSON, but may miss the rarer forms, and the
+  server warns which secrets these are.
 - `save_pdf` writes only `.pdf` files, under the same upload roots and
   resolved the same way; it overwrites an existing `.pdf` there. The same
   holds for the `.mp4` of `record_video` and the `save_path` of
@@ -788,7 +792,10 @@ incompatible:
 - Credential headers (`Authorization`, `Cookie`, `Set-Cookie`, any
   header whose name contains `token`, `secret`, `api-key`, `password`,
   `session`, `csrf` or `credential`, or has the word `key` or `auth`, such
-  as `X-Auth-Key` or `Ocp-Apim-Subscription-Key`; `_` counts as `-`) and
+  as `X-Auth-Key` or `Ocp-Apim-Subscription-Key`, or a word starting with
+  `authoriz`, `authentic`, `authn` or `authz`, such as `X-Authorization`,
+  `X-Forwarded-Authorization` or `Authentication`, but not the
+  `WWW-Authenticate` challenge; `_` counts as `-`) and
   request bodies are redacted in
   `get_network_logs` unless `include_sensitive_headers: true`. URLs and
   response bodies are returned as they are.
