@@ -401,21 +401,22 @@ fn frame_line(id: &str, frame: &WebSocketFrame) -> String {
 }
 
 /// How a WebSocket connection ended: `id closed|failed url[: why]`, the
-/// frame error, else the close code and reason (#153).
+/// frame error, else the close code and reason, or the reason alone (a
+/// navigation's, #154) (#153).
 fn close_line(id: &str, connection: &WsConnection) -> String {
     let status = if connection.closed_at.is_some() {
         "closed"
     } else {
         "failed"
     };
+    let reason = connection
+        .close_reason
+        .as_deref()
+        .map(|r| one_line(r, PAYLOAD_PREVIEW_CHARS));
     let why = match (&connection.error, connection.close_code) {
         (Some(error), _) => format!(": {}", one_line(error, PAYLOAD_PREVIEW_CHARS)),
         (None, Some(code)) => {
-            let reason = connection
-                .close_reason
-                .as_deref()
-                .map(|r| format!(" {}", one_line(r, PAYLOAD_PREVIEW_CHARS)))
-                .unwrap_or_default();
+            let reason = reason.map(|r| format!(" {r}")).unwrap_or_default();
             let unclean = if connection.was_clean == Some(false) {
                 " (not clean)"
             } else {
@@ -423,7 +424,7 @@ fn close_line(id: &str, connection: &WsConnection) -> String {
             };
             format!(": code {code}{reason}{unclean}")
         }
-        (None, None) => String::new(),
+        (None, None) => reason.map(|r| format!(": {r}")).unwrap_or_default(),
     };
     let url = one_line(&connection.url, URL_MAX_CHARS);
     format!("{id} {status} {url}{why}")
@@ -909,6 +910,27 @@ mod tests {
                 "ws-2": {"url": "wss://chat.io/", "error": "Invalid frame header"}
             })
         );
+    }
+
+    /// #154: a close without a code (Chrome's, or a navigation's) gives
+    /// its reason when there is one.
+    #[test]
+    fn a_close_without_a_code_gives_its_reason() {
+        let navigated = WsConnection {
+            url: "ws://a/feed".into(),
+            closed_at: Some(1.0),
+            close_reason: Some("the page navigated away".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            close_line("ws-1", &navigated),
+            "ws-1 closed ws://a/feed: the page navigated away"
+        );
+        let bare = WsConnection {
+            close_reason: None,
+            ..navigated
+        };
+        assert_eq!(close_line("ws-1", &bare), "ws-1 closed ws://a/feed");
     }
 
     /// #153: a payload search leaves the closes out; `clear` forgets a

@@ -10,6 +10,35 @@ from a copy of its code: entries describe the differences from that release.
 
 ## [Unreleased]
 
+### Fixed
+
+- `get_network_logs` on Chrome lists a WebSocket connection the page left
+  open when it navigated away as `closed <url>: the page navigated away`:
+  Chrome reports no close for it, so it looked open forever. The new
+  page's sockets, opened after the navigation, stay open (#154).
+- `evaluate_js` with top-level `await` runs a last statement continued on
+  the next line after a trailing operator, `?`, `:` or a keyword such as
+  `typeof` (`await f() +\n  2`, `x =\n  await f()`, a multi-line ternary);
+  it was cut there and failed with a `SyntaxError` (#155).
+- `evaluate_js` with top-level `await` returns a value written right after
+  the `}` of a block statement (`for (...) {await 0}'done'`,
+  `if (a) {await 0}'x'`, `{await 0}'blk'`) instead of `undefined`; an
+  `else` after a `;` (`if (await a) b; else c`) no longer fails with a
+  `SyntaxError` (#156).
+- `evaluate_js` scans an expression for top-level `await` in linear time:
+  a line of regular expressions that never close (`(/[` repeated) took
+  13 s for 120 KB, and words deep inside brackets were quadratic too
+  (#157).
+- `get_network_logs` on Firefox lists a WebSocket that failed before it
+  opened (`<id> closed <url>: code 1006 (not clean)`): Firefox closes it
+  with the channel id 0 and no URL, so it was missing; its URL comes from
+  its handshake in the log. Frames Firefox reports before their socket
+  opened now carry its URL (#158).
+- `profile_page_performance` insights list only the long animation frames
+  (and their scripts) that ended after the profile started; frames from
+  the page's load showed up seconds later. With `action: "reload"` the
+  window still starts with the load (#159).
+
 ## [0.20.1-beta.32] - 2026-11-16
 
 Public **BETA**. Fixes for four bugs an automated test round found in

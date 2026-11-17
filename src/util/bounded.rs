@@ -67,6 +67,11 @@ impl<K: Eq + Hash + Clone, V, const CAP: usize> BoundedMap<K, V, CAP> {
         self.map.clear();
         self.order.clear();
     }
+
+    /// The keys in insertion order, oldest first.
+    pub fn keys_oldest_first(&self) -> impl DoubleEndedIterator<Item = &K> {
+        self.order.iter()
+    }
 }
 
 impl<K, V, const CAP: usize> IntoIterator for BoundedMap<K, V, CAP> {

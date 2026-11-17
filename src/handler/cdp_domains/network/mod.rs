@@ -143,12 +143,33 @@ fn on_ws_frame(st: &mut NetworkState, request_id: &str, params: &serde_json::Val
     );
 }
 
+/// Why a WebSocket connection is closed when its document goes away.
+pub(crate) const NAVIGATED_AWAY: &str = "the page navigated away";
+
+/// [`process_network_event`] for an event of the tab's whole stream: a
+/// main-frame navigation also closes the WebSocket connections the page
+/// it replaced left open, as Chrome reports no close for them (#154).
+async fn process_tab_event(event: &WsResponse, state: &Arc<Mutex<NetworkState>>) {
+    let (Some(method), Some(params)) = (event.method.as_deref(), &event.params) else {
+        return;
+    };
+    if crate::handler::cdp_domains::log::main_frame_commit(method, params).is_some() {
+        state.lock().await.close_open_ws_connections(NAVIGATED_AWAY);
+    } else if method.starts_with("Network.") {
+        process_network_event(event, state).await;
+    }
+}
+
+/// Feeds the tab's network state. One ordered stream of every domain
+/// (filtered in [`process_tab_event`]): a navigation must close the old
+/// page's sockets before the new page's open, which separate per-domain
+/// tasks would not guarantee.
 pub(crate) fn start_network_listener(
     target: &crate::handler::cdp_domains::cdp_target::CdpTarget,
     state: Arc<Mutex<NetworkState>>,
 ) -> tokio::task::JoinHandle<()> {
-    let process = |event, state| async move { process_network_event(&event, &state).await };
-    crate::handler::cdp_domains::event_pump::spawn_state_listener(target, "Network", state, process)
+    let process = |event, state| async move { process_tab_event(&event, &state).await };
+    crate::handler::cdp_domains::event_pump::spawn_state_listener(target, "", state, process)
 }
 
 /// [`start_network_listener`] for a frame of another origin on Chrome,
@@ -335,6 +356,44 @@ mod tests {
         let created = json!({"requestId": "ws-1", "url": "wss://a/feed"});
         process_network_event(&make_event("Network.webSocketCreated", created), &state).await;
         assert_eq!(state.lock().await.ws_connections["ws-1"].closed_at, first);
+    }
+
+    /// #154: a main-frame navigation closes the WebSocket connections of
+    /// the document it replaced (Chrome reports no close for them); a
+    /// frame's navigation does not, nor are the next document's sockets,
+    /// created after it, closed.
+    #[tokio::test]
+    async fn main_frame_navigations_close_open_websockets() {
+        // Given an open connection and a closed one
+        let state = Arc::new(Mutex::new(NetworkState::default()));
+        let event = |method: &str, params: serde_json::Value| make_event(method, params);
+        for id in ["ws-1", "ws-2"] {
+            let created = json!({"requestId": id, "url": format!("ws://a/{id}")});
+            process_tab_event(&event("Network.webSocketCreated", created), &state).await;
+        }
+        let closed = json!({"requestId": "ws-2", "timestamp": 1.0});
+        process_tab_event(&event("Network.webSocketClosed", closed), &state).await;
+        let before = state.lock().await.ws_connections["ws-2"].clone();
+        // When a frame navigates, then the main frame, then a new socket opens
+        let frame = json!({"frame": {"id": "F2", "parentId": "F1", "url": "http://a/f"}});
+        process_tab_event(&event("Page.frameNavigated", frame), &state).await;
+        assert!(
+            state.lock().await.ws_connections["ws-1"]
+                .closed_at
+                .is_none()
+        );
+        let main = json!({"frame": {"id": "F1", "url": "http://a/next"}, "type": "Navigation"});
+        process_tab_event(&event("Page.frameNavigated", main), &state).await;
+        let created = json!({"requestId": "ws-3", "url": "ws://a/ws-3"});
+        process_tab_event(&event("Network.webSocketCreated", created), &state).await;
+        // Then the old document's open socket is closed, saying why
+        let st = state.lock().await;
+        let gone = &st.ws_connections["ws-1"];
+        assert!(gone.closed_at.is_some());
+        assert_eq!(gone.close_reason.as_deref(), Some(NAVIGATED_AWAY));
+        // And the one that had closed keeps its close, the new one is open
+        assert_eq!(st.ws_connections["ws-2"], before);
+        assert!(!st.ws_connections["ws-3"].ended());
     }
 
     /// AUD-OB-17: the headers Chrome only reports in the ExtraInfo events

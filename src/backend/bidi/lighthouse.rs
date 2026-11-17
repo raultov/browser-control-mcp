@@ -107,7 +107,7 @@ async fn examine(
         let vitals = page::run_snippet(&tab.tab, crate::util::js::PAGE_VITALS).await?;
         findings.metrics = Some(metrics_of(&vitals));
         let mut annotated =
-            insights::annotate(page::run_snippet(&tab.tab, insights::SNIPPET).await?);
+            insights::annotate(page::run_snippet(&tab.tab, &insights::snippet(None)).await?);
         insights::add_unused_code(&mut annotated, Err(super::performance::NO_COVERAGE.into()));
         insights::add_forced_reflows(&mut annotated, Err(super::performance::NO_TRACE.into()));
         findings.insights = Some(annotated);

@@ -230,7 +230,7 @@ pub(crate) fn canonical_level(level: &str) -> String {
 
 /// The URL of a new top-level document (`Page.frameNavigated` of the main
 /// frame, which Chrome sends at commit, before the page's scripts run).
-fn main_frame_commit<'a>(method: &str, params: &'a Value) -> Option<&'a str> {
+pub(crate) fn main_frame_commit<'a>(method: &str, params: &'a Value) -> Option<&'a str> {
     let frame = params
         .get("frame")
         .filter(|_| method == "Page.frameNavigated")?;

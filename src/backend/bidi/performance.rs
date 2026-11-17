@@ -71,6 +71,7 @@ pub(crate) async fn profile(params: CallToolRequestParams, handler: &McpHandler)
     let session = handler.firefox(args.instance_id.as_deref()).await?;
     let (_, tab) = session.tab(args.tab_id.as_deref()).await?;
     let duration = args.duration_ms.unwrap_or(3000).clamp(500, 15000);
+    let since = window_start(&tab.tab, &args).await;
     // Firefox rejects `ignoreCache` on browsingContext.reload: bypass the
     // cache with network.setCacheBehavior, restored on every exit path.
     let bypass = args.disable_cache.unwrap_or(false);
@@ -92,7 +93,7 @@ pub(crate) async fn profile(params: CallToolRequestParams, handler: &McpHandler)
     let vitals = page::run_snippet(&tab.tab, crate::util::js::PAGE_VITALS).await?;
     let mut summary = summary(&vitals, duration);
     if args.insights.unwrap_or(false) {
-        let found = page::run_snippet(&tab.tab, insights::SNIPPET).await?;
+        let found = page::run_snippet(&tab.tab, &insights::snippet(since)).await?;
         let mut annotated = insights::annotate(found);
         insights::add_unused_code(&mut annotated, Err(NO_COVERAGE.into()));
         insights::add_forced_reflows(&mut annotated, Err(NO_TRACE.into()));
@@ -103,6 +104,20 @@ pub(crate) async fn profile(params: CallToolRequestParams, handler: &McpHandler)
             .unwrap_or_default()
             .into(),
     ]))
+}
+
+/// The page's [`insights::CLOCK`] as profiling starts, when `args` need it
+/// (see [`ProfilePagePerformanceTool::needs_start_clock`]) and the page
+/// answers.
+async fn window_start(
+    tab: &bidi_browser_lite::Tab,
+    args: &ProfilePagePerformanceTool,
+) -> Option<f64> {
+    if !args.needs_start_clock() {
+        return None;
+    }
+    let clock = page::run_snippet(tab, insights::CLOCK).await;
+    clock.ok()?.as_f64()
 }
 
 /// The profile reply from the page's vitals: Chrome's keys, `null` where
@@ -281,6 +296,8 @@ mod tests {
                     "../../../tests/fixtures/insights/firefox-wikipedia.json"
                 ))
                 .unwrap()
+            } else if expression == insights::CLOCK {
+                json!(1000.5)
             } else {
                 json!({"dom_content_loaded_ms": 120.5, "lcp_supported": true})
             };
@@ -320,8 +337,21 @@ mod tests {
             .unwrap();
         let body: Value = serde_json::from_str(&ts::text(&reply)).unwrap();
         assert!(body.get("insights").is_none(), "{body}");
-        assert_eq!(mock.bidi().commands_named("script.evaluate").len(), 3);
+        assert_clock_read_for_insights_only(&mock);
         ts::stop(&handler).await;
+    }
+
+    /// #159: the page's clock (1000.5) was read first, for the profile
+    /// with insights only, and handed to the insights.
+    fn assert_clock_read_for_insights_only(mock: &MockFirefox) {
+        let sent = mock.bidi().commands_named("script.evaluate");
+        let expressions: Vec<&str> = sent
+            .iter()
+            .map(|c| c.params["expression"].as_str().unwrap())
+            .collect();
+        assert_eq!(expressions.len(), 4);
+        assert_eq!(expressions[0], insights::CLOCK);
+        assert!(expressions[2].ends_with("})(1000.5)"), "{}", expressions[2]);
     }
 
     /// FPF-02 / FPF-03: profile with reload answers Chrome's keys, `null`

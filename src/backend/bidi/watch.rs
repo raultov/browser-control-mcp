@@ -86,6 +86,9 @@ pub(crate) fn on_websocket(network: &mut NetworkState, resource: &Value) {
             network.insert_ws_connection(id, url);
         }
         Some(kind @ ("frameSent" | "frameReceived")) => {
+            // Firefox may report frames before the socket opened, or only
+            // the close frame of one that fails before it opens (#158).
+            network.insert_ws_connection(id.clone(), String::new());
             let data = &resource["data"];
             if !matches!(data.get("opCode").and_then(Value::as_u64), Some(1 | 2)) {
                 return;
@@ -118,10 +121,91 @@ pub(crate) fn on_websocket(network: &mut NetworkState, resource: &Value) {
                     .map(str::to_string),
                 was_clean: field("wasClean").and_then(Value::as_bool),
             };
-            network.close_ws_connection(&id, close);
+            if let Some(id) = closed_connection(network, id) {
+                network.close_ws_connection(&id, close);
+            }
         }
         _ => {}
     }
+}
+
+/// The connection a `webSocketClosed` for `id` closes. Firefox gives the
+/// id 0 to a socket that failed before it opened, which it reports only by
+/// the close frame it sent, if any (#158): that is the newest connection
+/// without a URL, or else one made for the newest WebSocket handshake of
+/// the log that no connection claims, under its request id. A connection
+/// without a URL gets that handshake's.
+fn closed_connection(network: &mut NetworkState, id: String) -> Option<String> {
+    if id != NEVER_OPENED {
+        return Some(id);
+    }
+    let handshake = unclaimed_handshake(network);
+    let id = match (newest_without_url(network), &handshake) {
+        (Some(unopened), _) => unopened,
+        (None, Some((request, _))) => request.clone(),
+        (None, None) => return None,
+    };
+    let url = handshake.map(|(_, url)| url).unwrap_or_default();
+    network.insert_ws_connection(id.clone(), url);
+    Some(id)
+}
+
+/// The `httpChannelId` Firefox gives the close of a socket that never
+/// opened.
+const NEVER_OPENED: &str = "0";
+
+/// The newest connection still open whose URL is not known: one Firefox
+/// reported by its frames only.
+fn newest_without_url(network: &NetworkState) -> Option<String> {
+    let connections = &network.ws_connections;
+    connections
+        .keys_oldest_first()
+        .rev()
+        .find(|id| {
+            connections
+                .get(*id)
+                .is_some_and(|c| c.url.is_empty() && c.closed_at.is_none())
+        })
+        .cloned()
+}
+
+/// The newest WebSocket handshake (an `http(s)` request answered `101`)
+/// of the log that no connection claims, as `(request id, ws(s) URL)`:
+/// each connection claims the oldest handshake to its URL.
+fn unclaimed_handshake(network: &NetworkState) -> Option<(String, String)> {
+    let mut claims: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    for connection in network.ws_connections.values() {
+        *claims.entry(connection.url.as_str()).or_default() += 1;
+    }
+    let mut unclaimed = None;
+    for bucket in network.navigations.iter().rev() {
+        for id in &bucket.order {
+            let Some(request) = bucket.requests.get(id) else {
+                continue;
+            };
+            let Some(url) = websocket_url(request) else {
+                continue;
+            };
+            match claims.get_mut(url.as_str()) {
+                Some(count) if *count > 0 => *count -= 1,
+                _ => unclaimed = Some((id.clone(), url)),
+            }
+        }
+    }
+    unclaimed
+}
+
+/// The `ws(s)` URL of `request` when it is a WebSocket handshake: Firefox
+/// logs it as `http(s)`, answered `101`.
+fn websocket_url(request: &crate::handler::NetworkRequest) -> Option<String> {
+    if request.response_status != Some(101) {
+        return None;
+    }
+    let url = &request.url;
+    let rest = url
+        .strip_prefix("http")
+        .filter(|r| r.starts_with("s://") || r.starts_with("://"))?;
+    Some(format!("ws{rest}"))
 }
 
 /// An `error-message`, `css-message` or `platform-message` resource as a
@@ -301,6 +385,72 @@ mod tests {
             (bare.close_code, bare.close_reason.as_ref(), bare.was_clean),
             (None, None, None)
         );
+    }
+
+    /// A log with a WebSocket handshake (`101`) per `(request id, path)`.
+    fn handshakes(paths: &[(&str, &str)]) -> NetworkState {
+        let mut network = NetworkState::default();
+        for (id, path) in paths {
+            let request = crate::handler::NetworkRequest {
+                url: format!("http://127.0.0.1:8808{path}"),
+                method: "GET".into(),
+                response_status: Some(101),
+                ..Default::default()
+            };
+            network.insert_request((*id).into(), request);
+        }
+        network
+    }
+
+    /// #158: Firefox reports a socket that fails before it opens only by
+    /// the close frame it sent and a close whose `httpChannelId` is 0: it
+    /// is closed under the frame's id, with the URL of the handshake no
+    /// other connection has. Frames reported before their connection
+    /// opened (Firefox 159 does) get its URL.
+    #[test]
+    fn sockets_failing_before_they_open_are_closed() {
+        // Given two handshakes, /live's and /bad's
+        let mut network = handshakes(&[("r1", "/live"), ("r2", "/bad")]);
+        // When /live receives a frame before it opens, and /bad fails
+        for resource in [
+            json!({"httpChannelId": 43, "wsMessageType": "frameReceived", "data": {"opCode": 1, "payload": "hi"}}),
+            json!({"httpChannelId": 43, "wsMessageType": "webSocketOpened", "effectiveURI": "ws://127.0.0.1:8808/live"}),
+            json!({"httpChannelId": 44, "wsMessageType": "frameSent", "data": {"opCode": 8, "payload": "\u{3}\u{ea}"}}),
+            json!({"httpChannelId": 0, "wsMessageType": "webSocketClosed", "code": 1006, "reason": "", "wasClean": false}),
+        ] {
+            on_websocket(&mut network, &resource);
+        }
+        // Then the early frame has its connection's URL, which stays open
+        assert_eq!(network.ws_frames["43"][0].url, "ws://127.0.0.1:8808/live");
+        assert!(network.ws_connections["43"].closed_at.is_none());
+        // And /bad is closed under its frame's id, with its handshake's URL
+        let bad = &network.ws_connections["44"];
+        assert!(bad.closed_at.is_some());
+        assert_eq!(
+            (bad.url.as_str(), bad.close_code, bad.was_clean),
+            ("ws://127.0.0.1:8808/bad", Some(1006), Some(false))
+        );
+        assert!(!network.ws_connections.contains_key("0"));
+    }
+
+    /// #158: a socket that failed before it opened without sending a
+    /// frame is closed under its handshake's request id; with no handshake
+    /// left to claim, nothing is made up.
+    #[test]
+    fn frameless_failures_take_their_handshake() {
+        // Given /live, open, and two handshakes for /live and /gone
+        let mut network = handshakes(&[("r1", "/live"), ("r2", "/gone")]);
+        network.insert_ws_connection("43".into(), "ws://127.0.0.1:8808/live".into());
+        let failed = json!({"httpChannelId": 0, "wsMessageType": "webSocketClosed", "code": 1006});
+        // When a socket closes before it opened
+        on_websocket(&mut network, &failed);
+        // Then /gone is closed under its request id
+        let gone = &network.ws_connections["r2"];
+        assert_eq!(gone.url, "ws://127.0.0.1:8808/gone");
+        assert!(gone.closed_at.is_some());
+        // And another such close, with no handshake left, records nothing
+        on_websocket(&mut network, &failed);
+        assert_eq!(network.ws_connections.len(), 2);
     }
 
     /// FWS-01: a long payload (a long string grip) keeps its first part

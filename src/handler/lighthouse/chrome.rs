@@ -270,7 +270,7 @@ async fn performance(
     found.metrics = Some(metrics.unwrap_or_default());
     let reflows = profile::forced_reflows(&events);
     drop(events);
-    let page = crate::handler::snippet_value(target, insights::SNIPPET).await;
+    let page = crate::handler::snippet_value(target, &insights::snippet(None)).await;
     if let Ok(page) = page {
         let mut annotated = insights::annotate(page);
         insights::add_unused_code(&mut annotated, unused);

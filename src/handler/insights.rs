@@ -11,8 +11,8 @@ use serde_json::{Value, json};
 /// lcp_supported, inp_supported}`, at most 5 entries per list. A long
 /// frame's parts are only those the browser reports (Chrome 157 adds
 /// `styleDuration` and `forcedStyleDuration`): a missing one is left out,
-/// never 0 (#152).
-pub(crate) const SNIPPET: &str = r#"(() => {
+/// never 0 (#152). A function of `since`, see [`snippet`].
+const SNIPPET: &str = r#"((since) => {
     const types = (window.PerformanceObserver && PerformanceObserver.supportedEntryTypes) || [];
     const take = type => {
         if (!types.includes(type)) return null;
@@ -79,7 +79,10 @@ pub(crate) const SNIPPET: &str = r#"(() => {
         ? top(resources.filter(r => r.renderBlockingStatus === 'blocking')
             .map(r => ({ url: url(r.name), type: r.initiatorType, duration_ms: ms(r.duration), end_ms: ms(r.responseEnd) })), 'duration_ms')
         : null;
-    const frames = take('long-animation-frame');
+    // The browser keeps the frames since the page loaded: those that ended
+    // before the profile started are not its (#159).
+    const from = since == null ? -Infinity : since - performance.timeOrigin;
+    const frames = take('long-animation-frame')?.filter(f => f.startTime + f.duration >= from) ?? null;
     const longFrames = frames && top(frames.map(f => {
         const end = f.startTime + f.duration;
         const styleAndLayout = f.styleAndLayoutStart > 0 ? end - f.styleAndLayoutStart : null;
@@ -144,7 +147,20 @@ pub(crate) const SNIPPET: &str = r#"(() => {
     return { document: document_, lcp, inp, cls, render_blocking: blocking, long_frames: longFrames, long_scripts: scripts, slowest_resources: slowest,
         dom_size: domSize, images, third_parties: thirdParties,
         lcp_supported: types.includes('largest-contentful-paint'), inp_supported: types.includes('event') };
-})()"#;
+})"#;
+
+/// The page's clock (Unix time, ms) when a profile starts: [`snippet`]
+/// keeps the long frames that ended after it (#159).
+pub(crate) const CLOCK: &str = "performance.timeOrigin + performance.now()";
+
+/// The insights snippet for a window that started at `since` (the page's
+/// [`CLOCK`] then): long frames, and their scripts, that ended before it
+/// are left out. `None` keeps every frame since the page loaded, for a
+/// window that starts with a load (a reload, `lighthouse_report`). A page
+/// that navigated since keeps all of its own.
+pub(crate) fn snippet(since: Option<f64>) -> String {
+    format!("{SNIPPET}({})", json!(since))
+}
 
 /// The page's insights with notes for what the browser does not report,
 /// and the findings they show.

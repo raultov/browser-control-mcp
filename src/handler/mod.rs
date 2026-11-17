@@ -212,6 +212,8 @@ pub struct WsConnection {
     pub closed_at: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub close_code: Option<u16>,
+    /// The close frame's reason, or why the connection was taken for
+    /// closed when the browser reports no close (#154).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub close_reason: Option<String>,
     /// Whether the closing handshake completed (Firefox).
@@ -531,9 +533,18 @@ impl NetworkState {
 
     /// Remembers a WebSocket connection; the oldest one beyond the cap is
     /// forgotten together with its frames. A connection already known (the
-    /// same event from a popup's session and its tab's) is kept as it is.
+    /// same event from a popup's session and its tab's) is kept as it is,
+    /// but gets `url` if it had none: Firefox may report a socket's frames
+    /// before it opened, and then its frames get `url` too (#158).
     pub(crate) fn insert_ws_connection(&mut self, id: String, url: String) {
-        if self.ws_connections.contains_key(&id) {
+        if let Some(known) = self.ws_connections.get_mut(&id) {
+            if known.url.is_empty() && !url.is_empty() {
+                let frames = self.ws_frames.get_mut(&id).into_iter().flatten();
+                for frame in frames.filter(|f| f.url.is_empty()) {
+                    frame.url.clone_from(&url);
+                }
+                known.url = url;
+            }
             return;
         }
         let connection = WsConnection {
@@ -566,6 +577,17 @@ impl NetworkState {
         connection.close_code = close.code;
         connection.close_reason = close.reason;
         connection.was_clean = close.was_clean;
+    }
+
+    /// Closes every WebSocket connection still open, for `reason`: the
+    /// page that opened them is gone (#154).
+    pub(crate) fn close_open_ws_connections(&mut self, reason: &str) {
+        let at = now_ms();
+        let open = self.ws_connections.values_mut();
+        for connection in open.filter(|c| c.closed_at.is_none()) {
+            connection.closed_at = Some(at);
+            connection.close_reason = Some(reason.to_string());
+        }
     }
 
     /// Records why a frame of the WebSocket connection `id` failed (the

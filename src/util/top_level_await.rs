@@ -9,7 +9,7 @@
 //! strings, template literals (with their `${...}` substitutions read as
 //! code) and regular expression literals are recognised. Every step is
 //! linear in the code's length, so a large pasted expression cannot stall
-//! the call (#140).
+//! the call (#140, #157).
 
 /// What a [`Token`] is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -55,12 +55,36 @@ impl Token {
         ])
     }
 
-    /// Whether this token, first on its line, continues the statement of
-    /// the line before: as [`Self::continues`], or the `catch`, `finally`
-    /// or `else` of a `try` or `if` whose block closed on that line (#151).
-    fn continues_statement(&self, code: &str) -> bool {
-        self.continues(code) || CONTINUING.contains(&self.text(code))
+    /// Whether this token is one of the [`CONTINUING`] keywords, which
+    /// never start a statement: the `catch`, `finally` or `else` of a
+    /// `try` or `if` whose block closed before it, on its line or the one
+    /// before (#151).
+    fn is_continuing(&self, code: &str) -> bool {
+        CONTINUING.contains(&self.text(code))
     }
+
+    /// Whether this token, last on its line, leaves the statement waiting
+    /// for an operand on the next line: an operator (`+`, `=`, `?`, `:`,
+    /// `=>`, not `++`, `--` or `;`) or a keyword taking an operand
+    /// (`typeof`, `in`, `await`), not `return`, `throw` or `yield`, which
+    /// a line break ends (#155).
+    fn awaits_operand(&self, code: &str) -> bool {
+        let text = self.text(code);
+        match self.kind {
+            Kind::Punct => !matches!(text, "++" | "--" | ";"),
+            Kind::Word => {
+                BEFORE_OPERAND.contains(&text) && !matches!(text, "return" | "throw" | "yield")
+            }
+            _ => false,
+        }
+    }
+}
+
+/// Whether a line break before `token` (after `previous`) ends the
+/// statement: the next line does not go on with it (`.then(...)`, an
+/// operator) and the line before does not wait for an operand (#155).
+fn line_ends_statement(code: &str, previous: Option<&Token>, token: &Token) -> bool {
+    token.line_before && !token.continues(code) && !previous.is_some_and(|p| p.awaits_operand(code))
 }
 
 /// Keywords that go on with the statement before them.
@@ -92,6 +116,7 @@ fn lex(code: &str) -> Vec<Token> {
         braces: Vec::new(),
         tokens: Vec::new(),
         line_before: false,
+        unclosed: 0,
     };
     let mut at = 0;
     while at < code.len() {
@@ -110,6 +135,9 @@ struct Lexer<'a> {
     tokens: Vec<Token>,
     /// Whether a line break was skipped since the last token.
     line_before: bool,
+    /// Where the scan of the last regular expression that did not close
+    /// stopped (see [`Self::regex`]).
+    unclosed: usize,
 }
 
 impl Lexer<'_> {
@@ -131,11 +159,29 @@ impl Lexer<'_> {
         }
         if byte == b'/'
             && self.operand_expected()
-            && let Some(end) = regex_end(self.bytes, at)
+            && let Some(end) = self.regex(at)
         {
             return self.push(Kind::Literal, at, end);
         }
         self.other(byte, at)
+    }
+
+    /// Where the regular expression opening at `at` ends ([`regex_end`]).
+    /// One that does not close on its line is invalid code, or a division
+    /// the lexer took for one: every `/` before where its scan stopped is
+    /// then a division, not scanned again, so a line of `(/[` is read once
+    /// rather than once per `/` (#157).
+    fn regex(&mut self, at: usize) -> Option<usize> {
+        if at < self.unclosed {
+            return None;
+        }
+        match regex_end(self.bytes, at) {
+            Ok(end) => Some(end),
+            Err(stopped) => {
+                self.unclosed = stopped;
+                None
+            }
+        }
     }
 
     /// Words, brackets and punctuation.
@@ -251,22 +297,22 @@ fn string_end(bytes: &[u8], open: usize, quote: u8) -> usize {
 }
 
 /// Where the regular expression literal opening at `open` ends, past its
-/// flags; `None` when no unescaped `/` outside a character class closes it
-/// on its line (then the `/` is a division).
-fn regex_end(bytes: &[u8], open: usize) -> Option<usize> {
+/// flags; `Err` with where the scan stopped when no unescaped `/` outside
+/// a character class closes it on its line (then the `/` is a division).
+fn regex_end(bytes: &[u8], open: usize) -> Result<usize, usize> {
     let (mut at, mut class) = (open + 1, false);
     while at < bytes.len() {
         match bytes[at] {
             b'\\' => at += 1,
-            b'\n' | b'\r' => return None,
+            b'\n' | b'\r' => return Err(at),
             b'[' => class = true,
             b']' => class = false,
-            b'/' if !class => return Some(run_end(bytes, at + 1, is_word_byte)),
+            b'/' if !class => return Ok(run_end(bytes, at + 1, is_word_byte)),
             _ => {}
         }
         at += 1;
     }
-    None
+    Err(bytes.len())
 }
 
 /// Whether `byte` can be part of an identifier (any byte of a character
@@ -314,23 +360,108 @@ pub fn with_top_level_await(expression: &str) -> String {
 }
 
 /// The index of the token starting the last statement of `tokens`: after
-/// their last `;` outside brackets, or line break when the next line does
-/// not continue the statement.
+/// their last `;` outside brackets, after the `}` of a block statement
+/// (#156), or after a line break neither line goes on over (#155).
 fn last_statement(code: &str, tokens: &[Token]) -> usize {
-    let (mut depth, mut start) = (0_i32, 0);
-    for (i, token) in tokens.iter().enumerate() {
-        let after_semicolon = i > 0 && tokens[i - 1].is(code, ";");
-        let new_line = token.line_before && !token.continues_statement(code);
-        if depth == 0 && i > 0 && (after_semicolon || new_line) {
-            start = i;
+    let mut scan = StatementScan::default();
+    for i in 0..tokens.len() {
+        scan.read(code, tokens, i);
+    }
+    scan.start
+}
+
+/// What the token before closed at depth 0, as [`StatementScan`] needs it.
+#[derive(Clone, Copy, Default, PartialEq)]
+enum Closed {
+    #[default]
+    Other,
+    /// The `)` of a control statement's head (`if (...)`).
+    Head,
+    /// The `}` of a block statement.
+    Block,
+}
+
+/// The state of [`last_statement`]'s scan.
+#[derive(Default)]
+struct StatementScan {
+    /// How many brackets are open.
+    depth: i32,
+    /// Where the current statement starts.
+    start: usize,
+    /// Whether the `(` open at depth 0 holds a control statement's head.
+    head: bool,
+    /// Whether the `{` open at depth 0 opens a block statement, not an
+    /// object or a function body.
+    block: bool,
+    closed: Closed,
+}
+
+/// Keywords after which a `{` opens a block statement.
+const BEFORE_BLOCK: &[&str] = &["else", "try", "catch", "finally", "do"];
+
+impl StatementScan {
+    /// Reads the token at `i` of `tokens`.
+    fn read(&mut self, code: &str, tokens: &[Token], i: usize) {
+        let token = &tokens[i];
+        let previous = i.checked_sub(1).and_then(|p| tokens.get(p));
+        let closed = std::mem::take(&mut self.closed);
+        if self.depth == 0
+            && let Some(previous) = previous
+            && starts_statement(code, (previous, token), closed)
+        {
+            self.start = i;
         }
         match token.kind {
-            Kind::Open(_) => depth += 1,
-            Kind::Close => depth -= 1,
+            Kind::Open(byte) => {
+                if self.depth == 0 {
+                    self.head = byte == b'(' && opens_head(code, tokens, i);
+                    let after = previous.is_some_and(|p| BEFORE_BLOCK.contains(&p.text(code)));
+                    self.block =
+                        byte == b'{' && (i == self.start || closed == Closed::Head || after);
+                }
+                self.depth += 1;
+            }
+            Kind::Close => {
+                self.depth -= 1;
+                if self.depth == 0 {
+                    self.closed = match token.text(code) {
+                        ")" if self.head => Closed::Head,
+                        "}" if self.block => Closed::Block,
+                        _ => Closed::Other,
+                    };
+                }
+            }
             _ => {}
         }
     }
-    start
+}
+
+/// Whether `token`, after `previous` outside brackets, starts a statement:
+/// after a `;`, after the `}` of a block statement (`if (a) {...} 'x'`,
+/// #156), or after a line break neither line goes on over. `catch`,
+/// `finally` and `else` never start one.
+fn starts_statement(code: &str, (previous, token): (&Token, &Token), closed: Closed) -> bool {
+    if token.is_continuing(code) {
+        return false;
+    }
+    previous.is(code, ";")
+        || closed == Closed::Block
+        || line_ends_statement(code, Some(previous), token)
+}
+
+/// Whether the `(` at `i` opens a control statement's head: `if (`,
+/// `while (`, `for await (`...
+fn opens_head(code: &str, tokens: &[Token], i: usize) -> bool {
+    let word = |back: usize| {
+        i.checked_sub(back)
+            .and_then(|j| tokens.get(j))
+            .map(|t| t.text(code))
+    };
+    match word(1) {
+        Some("await") => word(2) == Some("for"),
+        Some(word) => CONTROL.contains(&word),
+        None => false,
+    }
 }
 
 /// What a bracket of the code [`has_top_level_await`] scans opened.
@@ -378,34 +509,37 @@ pub fn has_top_level_await(code: &str) -> bool {
     let tokens = lex(code);
     let mut scan = AwaitScan {
         scopes: Vec::new(),
+        functions: 0,
         last: Last::Other,
     };
-    tokens
-        .iter()
-        .enumerate()
-        .any(|(i, token)| scan.is_top_level_await(code, token, tokens.get(i + 1)))
+    (0..tokens.len()).any(|i| scan.is_top_level_await(code, &tokens, i))
 }
 
 /// The state of [`has_top_level_await`]'s scan.
 struct AwaitScan {
     /// The brackets open at this point, innermost last.
     scopes: Vec<Scope>,
+    /// How many of [`Self::scopes`] are function bodies: counted, so a
+    /// word deep in brackets does not look through all of them (#157).
+    functions: usize,
     last: Last,
 }
 
 impl AwaitScan {
-    /// Reads `token` (`next` follows it): whether it is an `await` outside
-    /// every function.
-    fn is_top_level_await(&mut self, code: &str, token: &Token, next: Option<&Token>) -> bool {
-        if token.line_before && !token.continues(code) {
+    /// Reads the token at `i` of `tokens`: whether it is an `await`
+    /// outside every function.
+    fn is_top_level_await(&mut self, code: &str, tokens: &[Token], i: usize) -> bool {
+        let token = &tokens[i];
+        let previous = i.checked_sub(1).and_then(|p| tokens.get(p));
+        if line_ends_statement(code, previous, token) {
             self.end_arrow_bodies();
         }
         if self.last == Last::Arrow && token.kind != Kind::Open(b'{') {
-            self.scopes.push(Scope::ArrowBody);
+            self.push(Scope::ArrowBody);
             self.last = Last::Other;
         }
         match token.kind {
-            Kind::Word => return self.word(code, token, next),
+            Kind::Word => return self.word(code, token, tokens.get(i + 1)),
             Kind::Open(byte) => self.open(byte),
             Kind::Close => self.close(),
             Kind::Literal => self.last = Last::Other,
@@ -436,26 +570,38 @@ impl AwaitScan {
             }
             _ => Scope::Block,
         };
-        self.scopes.push(scope);
+        self.push(scope);
         self.last = Last::Other;
     }
 
     fn close(&mut self) {
         self.end_arrow_bodies();
-        self.last = match self.scopes.pop() {
+        self.last = match self.pop() {
             Some(Scope::Paren { control }) => Last::Closed { control },
             _ => Last::Other,
         };
+    }
+
+    /// Opens `scope`, counting function bodies.
+    fn push(&mut self, scope: Scope) {
+        self.functions += usize::from(scope.is_function());
+        self.scopes.push(scope);
+    }
+
+    /// Closes the innermost scope, counting function bodies.
+    fn pop(&mut self) -> Option<Scope> {
+        let scope = self.scopes.pop()?;
+        self.functions = self
+            .functions
+            .saturating_sub(usize::from(scope.is_function()));
+        Some(scope)
     }
 
     /// The word `token`, as [`Self::is_top_level_await`] reads it.
     fn word(&mut self, code: &str, token: &Token, next: Option<&Token>) -> bool {
         let word = token.text(code);
         let key = next.is_some_and(|n| n.text(code).starts_with(':'));
-        let in_function = self
-            .scopes
-            .iter()
-            .any(|s| matches!(s, Scope::Body | Scope::ArrowBody));
+        let in_function = self.functions > 0;
         if word == "await" && self.last != Last::Dot && !key && !in_function {
             return true;
         }
@@ -470,8 +616,15 @@ impl AwaitScan {
     /// Ends the arrow function bodies without braces open at this point.
     fn end_arrow_bodies(&mut self) {
         while matches!(self.scopes.last(), Some(Scope::ArrowBody)) {
-            self.scopes.pop();
+            self.pop();
         }
+    }
+}
+
+impl Scope {
+    /// Whether this scope is a function's body.
+    fn is_function(self) -> bool {
+        matches!(self, Self::Body | Self::ArrowBody)
     }
 }
 
@@ -564,6 +717,102 @@ mod tests {
         // And a word starting with one of them is returned
         let wrapped = with_top_level_await("await x\nelsewhere");
         assert!(wrapped.ends_with("return (elsewhere\n); })()"), "{wrapped}");
+    }
+
+    /// #155: a line ending with an operator, `?`, `:` or a keyword waiting
+    /// for its operand goes on on the next line: the statement is not cut
+    /// there. A line ending with `x++` or `return` still ends it.
+    #[test]
+    fn trailing_operators_continue_on_the_next_line() {
+        for (code, last) in [
+            (
+                "await Promise.resolve(40) +\n  2",
+                "await Promise.resolve(40) +\n  2",
+            ),
+            (
+                "window.qaV =\n  await Promise.resolve('v')",
+                "window.qaV =\n  await Promise.resolve('v')",
+            ),
+            (
+                "const f = await Promise.resolve(3)\nf ===\n  3 ?\n  'yes' :\n  'no'",
+                "f ===\n  3 ?\n  'yes' :\n  'no'",
+            ),
+            ("const t = await x\ntypeof\n  t", "typeof\n  t"),
+            (
+                "const n = await x\nn.map(v =>\n  v + 1)",
+                "n.map(v =>\n  v + 1)",
+            ),
+            ("let y = await x\ny++\ny", "y"),
+        ] {
+            // When the code is wrapped
+            let wrapped = with_top_level_await(code);
+            // Then the whole last statement is returned
+            assert!(
+                wrapped.ends_with(&format!("return ({last}\n); }})()")),
+                "{wrapped}"
+            );
+        }
+        // And an arrow function's body goes on after an operator too
+        assert!(!has_top_level_await("const g = async x => x +\n  await x"));
+    }
+
+    /// #156: a value after the `}` of a block statement on the same line
+    /// is the last statement, returned; the `}` of an object or a function
+    /// is not the end of a statement, and `else`, `catch` and `finally`
+    /// never start one.
+    #[test]
+    fn values_after_a_block_are_returned() {
+        for (code, last) in [
+            ("for(let i=0;i<2;i++){await 0}'done'", "'done'"),
+            ("if(1){await 0}'x'", "'x'"),
+            ("{await 0}'blk'", "'blk'"),
+            ("for await (const x of xs){f(x)}'end'", "'end'"),
+            ("try{await x}catch(e){}finally{}'t'", "'t'"),
+            ("try{await x}catch{}`c`", "`c`"),
+            ("if(a){await x}else{y}'e'", "'e'"),
+            ("while(await f()){}[1, 2]", "[1, 2]"),
+            ("switch(await x){case 1: y}'s'", "'s'"),
+        ] {
+            // When the code is wrapped
+            let wrapped = with_top_level_await(code);
+            // Then the value after the block is returned
+            assert!(
+                wrapped.ends_with(&format!("return ({last}\n); }})()")),
+                "{wrapped}"
+            );
+        }
+        for code in [
+            "await x; if (a) y = function(){}(1)",
+            "if (await a) b; else c",
+            "await x; o = {a: 1}['a']",
+        ] {
+            // When the code is wrapped
+            let wrapped = with_top_level_await(code);
+            // Then no statement starts inside it
+            assert!(
+                !wrapped.contains("return (function")
+                    && !wrapped.contains("return (else")
+                    && !wrapped.contains("return (['a']"),
+                "{wrapped}"
+            );
+        }
+    }
+
+    /// #157: a long line of regular expressions that never close (`(/[`
+    /// over and over) and deep brackets are scanned in linear time.
+    #[test]
+    fn unclosed_regexes_and_deep_brackets_are_scanned_in_linear_time() {
+        // Given 120 KB of `(/[` and 100 000 words inside 100 000 brackets
+        let regexes = format!("await 0;\n{}", "(/[".repeat(40_000));
+        let deep = format!("{}{}", "[".repeat(100_000), "a ".repeat(100_000));
+        let started = std::time::Instant::now();
+        // When both are scanned and wrapped
+        assert!(has_top_level_await(&regexes));
+        assert!(!has_top_level_await(&deep));
+        with_top_level_await(&regexes);
+        with_top_level_await(&deep);
+        // Then it is fast
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
     }
 
     /// #142: comments after the last `;` are not the last statement: the

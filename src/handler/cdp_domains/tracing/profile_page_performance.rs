@@ -102,6 +102,7 @@ impl ProfilePagePerformanceTool {
         let tracing_state = session.tracing_state(args.tab_id.clone())?;
         let duration = args.duration_ms.unwrap_or(3000).clamp(500, 15000);
         let with_insights = args.insights.unwrap_or(false);
+        let since = window_start(&target, &args).await;
         // Coverage spans the reload; it is stopped whatever the trace does.
         let recording = match with_insights && args.reloads() {
             true => Some(coverage::start(&target).await),
@@ -118,6 +119,7 @@ impl ProfilePagePerformanceTool {
         let extras = with_insights.then(|| TraceInsights {
             unused,
             reflows: forced_reflows(&trace_events(&raw_json_data)),
+            since,
         });
         let saved = match &trace_file {
             Some(path) => Some(
@@ -150,6 +152,12 @@ impl ProfilePagePerformanceTool {
         self.action == Some(ProfileAction::Reload)
     }
 
+    /// Whether the insights need the page's clock when profiling starts:
+    /// a reload's window starts with its load, another's then (#159).
+    pub(crate) fn needs_start_clock(&self) -> bool {
+        self.insights.unwrap_or(false) && !self.reloads()
+    }
+
     fn analyze_trace(raw_json: &str, duration_ms: u64) -> PerformanceSummary {
         let mut summary = PerformanceSummary {
             profile_duration_ms: duration_ms,
@@ -180,6 +188,17 @@ impl ProfilePagePerformanceTool {
         summary.top_long_tasks = long_tasks;
         summary
     }
+}
+
+/// The page's [`insights::CLOCK`] as profiling starts, when `args` need it
+/// (see [`ProfilePagePerformanceTool::needs_start_clock`]) and the page
+/// answers.
+async fn window_start(target: &Target, args: &ProfilePagePerformanceTool) -> Option<f64> {
+    if !args.needs_start_clock() {
+        return None;
+    }
+    let clock = crate::handler::snippet_value(target, insights::CLOCK).await;
+    clock.ok()?.as_f64()
 }
 
 /// Traces the page for `duration` ms (reloading and bypassing the cache as
@@ -305,6 +324,9 @@ struct TraceInsights {
     unused: Result<serde_json::Value, String>,
     /// The trace's forced reflows.
     reflows: serde_json::Value,
+    /// The page's clock when the window started, if it did not start
+    /// with a load (see [`insights::snippet`]).
+    since: Option<f64>,
 }
 
 /// The reply: the summary, with the page's insights, the reload's unused
@@ -326,7 +348,8 @@ async fn reply(
         result_json["saved_trace"] = saved;
     }
     if let Some(extras) = extras {
-        let found = crate::handler::snippet_value(target, insights::SNIPPET).await?;
+        let page = insights::snippet(extras.since);
+        let found = crate::handler::snippet_value(target, &page).await?;
         let mut annotated = insights::annotate(found);
         insights::add_unused_code(&mut annotated, extras.unused);
         insights::add_forced_reflows(&mut annotated, Ok(extras.reflows));
@@ -672,6 +695,64 @@ mod tests {
         assert_eq!(unpacked, raw);
         assert_eq!(saved["path"], packed.display().to_string());
         assert!(saved["bytes"].as_u64().unwrap() > 0);
+    }
+
+    /// The `Runtime.evaluate` expressions and `Tracing.start` commands the
+    /// mock received, in order (`Tracing.start` as an empty expression).
+    fn evaluations(
+        mock: &cdp_browser_lite::test_support::mock_devtools::MockDevTools,
+    ) -> Vec<String> {
+        mock.commands()
+            .iter()
+            .filter(|c| matches!(c.method.as_str(), "Runtime.evaluate" | "Tracing.start"))
+            .map(|c| c.params["expression"].as_str().unwrap_or_default().into())
+            .collect()
+    }
+
+    /// #159: without a reload, the page's clock is read before tracing and
+    /// the insights keep the long frames that ended after it; a reload
+    /// keeps every frame of the load and reads no clock.
+    #[tokio::test]
+    async fn insights_keep_the_long_frames_of_the_profile_window() {
+        use crate::handler::cdp_domains::tests::{
+            call, fire_after, mock_handler, spawn_recording_mock,
+        };
+        // Given a page whose clock reads 1000.5 and whose trace is empty
+        let mock = spawn_recording_mock().await;
+        mock.respond_with("Runtime.evaluate", |params| {
+            match params["expression"] == insights::CLOCK {
+                true => json!({"result": {"result": {"type": "number", "value": 1000.5}}}),
+                false => json!({"result": {"result": {"type": "object", "value": {}}}}),
+            }
+        });
+        mock.respond_with("IO.read", |_| json!({"data": "[]", "eof": true}));
+        let handler = mock_handler(mock.http_port);
+        // When it profiles with insights, without then with a reload
+        for action in ["none", "reload"] {
+            fire_after(
+                mock,
+                "Tracing.end",
+                "Tracing.tracingComplete",
+                json!({"stream": "s"}),
+            );
+            let args = json!({"duration_ms": 500, "insights": true, "action": action});
+            let params = call("profile_page_performance", args);
+            ProfilePagePerformanceTool::handle(params, &handler)
+                .await
+                .unwrap();
+        }
+        // Then the clock was read once, before the first trace started
+        let sent = evaluations(mock);
+        let clock = sent.iter().position(|e| e == insights::CLOCK).unwrap();
+        assert_eq!(sent[clock + 1], "", "{sent:?}");
+        assert_eq!(sent.iter().filter(|e| *e == insights::CLOCK).count(), 1);
+        // And the insights read the frames since it, then since the load
+        let read: Vec<&String> = sent
+            .iter()
+            .filter(|e| e.contains("long-animation-frame"))
+            .collect();
+        assert!(read[0].ends_with("})(1000.5)"), "{}", read[0]);
+        assert!(read[1].ends_with("})(null)"), "{}", read[1]);
     }
 
     /// FIX-06: profile_page_performance always restores state.
