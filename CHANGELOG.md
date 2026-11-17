@@ -10,6 +10,17 @@ from a copy of its code: entries describe the differences from that release.
 
 ## [Unreleased]
 
+## [0.21.0-beta.33] - 2026-11-17
+
+Public **BETA**. Fixes for six bugs an automated test round found in
+0.20.1-beta.32. `get_network_logs` now reports the WebSocket closes the
+browsers leave out: Chrome's for a page that navigated away (#154), and
+Firefox's for a socket that failed before it opened (#158). `evaluate_js`
+with top-level `await` returns the right value for statements continued
+after a trailing operator (#155) or written after a block (#156), and its
+scan is linear again (#157). `profile_page_performance` insights no
+longer blame the profile for long frames from the page's load (#159).
+
 ### Fixed
 
 - `get_network_logs` on Chrome lists a WebSocket connection the page left
