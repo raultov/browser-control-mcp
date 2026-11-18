@@ -26,8 +26,9 @@ const SENSITIVE_PARTS: &[&str] = &[
 
 /// Whole words of a header name (between `-`) that name a credential:
 /// vendor key headers such as `X-Auth-Key` (Cloudflare) or
-/// `Ocp-Apim-Subscription-Key` (Azure) (#144).
-const SENSITIVE_WORDS: &[&str] = &["key"];
+/// `Ocp-Apim-Subscription-Key` (Azure) (#144), and the `DPoP` proof of
+/// possession (RFC 9449), a signed JWT sent along an access token (#161).
+const SENSITIVE_WORDS: &[&str] = &["key", "dpop"];
 
 /// Starts of the words that name authorization or authentication.
 const AUTH_PREFIXES: &[&str] = &["authoriz", "authentic", "authn", "authz"];
@@ -105,5 +106,15 @@ mod tests {
         for name in ["WWW-Authenticate", "Proxy-Authenticate", "X-Author-Name"] {
             assert!(!is_sensitive(name), "{name}");
         }
+    }
+
+    /// #161: the `DPoP` proof (RFC 9449) is a credential like
+    /// `Authorization`, under any case and in vendor variants.
+    #[test]
+    fn dpop_proof_is_sensitive() {
+        for name in ["DPoP", "dpop", "X-DPoP-Proof", "DPOP_NONCE"] {
+            assert!(is_sensitive(name), "{name}");
+        }
+        assert!(!is_sensitive("X-Dpopular"));
     }
 }
