@@ -9,8 +9,8 @@
 //! `&quot;`...), each also escaped inside JSON strings, nested a few deep (a page's
 //! `JSON.stringify` in a tool's JSON reply), with the characters outside
 //! ASCII kept or as `\uXXXX` escapes, and in the page's own JSON also `/`
-//! as `\/` and `&<>'=` as `\u00XX`, that JSON also HTML-escaped (an
-//! attribute holding it). Very long values keep only their likeliest
+//! as `\/` and `&<>'=` as `\u00XX`, that JSON (also stringified twice)
+//! also HTML-escaped (an attribute holding it). Very long values keep only their likeliest
 //! forms (a bound on memory). A convenience, not a security
 //! boundary: a page can transform a value (encode it otherwise, split it)
 //! into something no longer masked, and images (screenshots, PDFs) are not
@@ -291,6 +291,10 @@ impl Secrets {
 /// a page's `JSON.stringify` of `JSON.stringify` is three (#118), plus one.
 const JSON_LEVELS: usize = 4;
 
+/// How many JSON strings deep a value held in an HTML attribute is
+/// masked: a page's `JSON.stringify` (#148) of `JSON.stringify` (#160).
+const HTML_JSON_LEVELS: usize = 2;
+
 /// Largest total size, in bytes, of the forms of all the secrets (#150).
 /// Each form is a pattern of the automaton, whose memory grows with their
 /// size, and a long symbol-heavy value has thousands of forms as long as
@@ -312,7 +316,8 @@ struct Forms {
 /// those as escaped inside JSON strings nested up to [`JSON_LEVELS`] deep
 /// (#118), by an encoder that keeps the characters outside ASCII or one
 /// that escapes them (#126); the page's own JSON also as serialized HTML
-/// escapes it, as in an attribute holding a JSON config (#148). At most
+/// escapes it, as in an attribute holding a JSON config (#148), also
+/// stringified twice (#160). At most
 /// [`MAX_FORM_BYTES`] of them, the likeliest first (#150).
 fn forms_of(entries: &[(String, String)]) -> Forms {
     let mut set = FormSet::default();
@@ -415,8 +420,9 @@ impl FormSet {
         if form.depth == 0 && !form.url && !form.html {
             kinds.push((Encoding::Url, unusual + 1));
         }
-        // The value itself, or the page's JSON of it (#148).
-        if form.depth <= 1 && !form.html {
+        // The value itself, or the page's JSON of it (#148), also
+        // stringified twice (#160).
+        if form.depth <= HTML_JSON_LEVELS && !form.html {
             kinds.push((Encoding::Html, unusual + 1));
         }
         let index = self.forms.len();
@@ -885,6 +891,28 @@ mod tests {
         assert!(!s.mask(&reply).contains("7731"), "{}", s.mask(&reply));
         // And as PHP's `htmlspecialchars(json_encode(...))` writes it
         assert_eq!(s.mask(r"Qa\&quot;Pw\u0026rd7731"), "<secret:QA_J>");
+    }
+
+    /// #160: a value in a page's `JSON.stringify(JSON.stringify(...))` held
+    /// in an HTML attribute is masked as the DOM serializes it, also inside
+    /// a tool's JSON reply.
+    #[test]
+    fn values_in_twice_stringified_json_in_html_attributes_are_masked() {
+        // Given a secret with a quote, angle brackets and an ampersand
+        let s = Secrets::parse("QA_TOKEN='qaZ7\"Xk2W<Vw9P>&mN4'\n").unwrap();
+        // When a page serializes an attribute holding twice-stringified JSON with it
+        let html = r#"<div id="cfg" data-twice="&quot;{\&quot;t\&quot;:\&quot;qaZ7\\\&quot;Xk2W&lt;Vw9P&gt;&amp;mN4\&quot;}&quot;"></div>"#;
+        let reply = serde_json::to_string(&json!({"value": html})).unwrap();
+        // Then it is masked, as text and in the tool's JSON reply
+        let masked = s.mask(html);
+        assert_eq!(
+            masked,
+            r#"<div id="cfg" data-twice="&quot;{\&quot;t\&quot;:\&quot;<secret:QA_TOKEN>\&quot;}&quot;"></div>"#
+        );
+        let masked = s.mask(&reply);
+        for part in ["Xk2W", "Vw9P", "mN4"] {
+            assert!(!masked.contains(part), "{masked}");
+        }
     }
 
     /// #150: a 32 KB symbol-heavy value is parsed fast with its forms
