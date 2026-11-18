@@ -67,13 +67,16 @@ impl Token {
     /// for an operand on the next line: an operator (`+`, `=`, `?`, `:`,
     /// `=>`, not `++`, `--` or `;`) or a keyword taking an operand
     /// (`typeof`, `in`, `await`), not `return`, `throw` or `yield`, which
-    /// a line break ends (#155).
+    /// a line break ends (#155), nor `of`, more often a variable's name
+    /// than the end of a line in a `for (... of` head, which is inside
+    /// brackets anyway (#162).
     fn awaits_operand(&self, code: &str) -> bool {
         let text = self.text(code);
         match self.kind {
             Kind::Punct => !matches!(text, "++" | "--" | ";"),
             Kind::Word => {
-                BEFORE_OPERAND.contains(&text) && !matches!(text, "return" | "throw" | "yield")
+                BEFORE_OPERAND.contains(&text)
+                    && !matches!(text, "return" | "throw" | "yield" | "of")
             }
             _ => false,
         }
@@ -345,10 +348,14 @@ pub fn with_top_level_await(expression: &str) -> String {
         return format!("(async () => {{ {expression}\n}})()");
     };
     let code = &expression[..end];
-    let first = tokens[last_statement(expression, tokens)];
+    let index = last_statement(expression, tokens);
+    let first = tokens[index];
     let declares = match first.kind {
         Kind::Open(b'{') => true,
-        Kind::Word => DECLARING.contains(&first.text(expression)),
+        Kind::Word => {
+            DECLARING.contains(&first.text(expression))
+                || is_async_function(expression, tokens, index)
+        }
         _ => false,
     };
     if declares {
@@ -359,9 +366,23 @@ pub fn with_top_level_await(expression: &str) -> String {
     format!("(async () => {{ {head}return ({last}\n); }})()")
 }
 
+/// Whether the tokens at `i` are `async function`, on one line (a line
+/// break after `async` makes it a variable's name).
+fn is_async_function(code: &str, tokens: &[Token], i: usize) -> bool {
+    let next = tokens.get(i + 1);
+    tokens[i].is(code, "async") && next.is_some_and(|n| n.is(code, "function") && !n.line_before)
+}
+
+/// Whether the statement starting at the token `i` declares a function
+/// or a class, whose body's `}` ends it (#162).
+fn starts_declaration(code: &str, tokens: &[Token], i: usize) -> bool {
+    matches!(tokens[i].text(code), "function" | "class") || is_async_function(code, tokens, i)
+}
+
 /// The index of the token starting the last statement of `tokens`: after
 /// their last `;` outside brackets, after the `}` of a block statement
-/// (#156), or after a line break neither line goes on over (#155).
+/// (#156) or of a function or class declaration (#162), or after a line
+/// break neither line goes on over (#155).
 fn last_statement(code: &str, tokens: &[Token]) -> usize {
     let mut scan = StatementScan::default();
     for i in 0..tokens.len() {
@@ -377,7 +398,7 @@ enum Closed {
     Other,
     /// The `)` of a control statement's head (`if (...)`).
     Head,
-    /// The `}` of a block statement.
+    /// The `}` of a block statement or of a declaration's body.
     Block,
 }
 
@@ -390,9 +411,13 @@ struct StatementScan {
     start: usize,
     /// Whether the `(` open at depth 0 holds a control statement's head.
     head: bool,
-    /// Whether the `{` open at depth 0 opens a block statement, not an
-    /// object or a function body.
+    /// Whether the `{` open at depth 0 opens a block statement or the body
+    /// of a function or class declaration, not an object or a function
+    /// expression's body.
     block: bool,
+    /// Whether the current statement declares a function or a class whose
+    /// body has not opened yet.
+    declaring: bool,
     closed: Closed,
 }
 
@@ -411,13 +436,17 @@ impl StatementScan {
         {
             self.start = i;
         }
+        if i == self.start {
+            self.declaring = starts_declaration(code, tokens, i);
+        }
         match token.kind {
             Kind::Open(byte) => {
                 if self.depth == 0 {
                     self.head = byte == b'(' && opens_head(code, tokens, i);
                     let after = previous.is_some_and(|p| BEFORE_BLOCK.contains(&p.text(code)));
-                    self.block =
-                        byte == b'{' && (i == self.start || closed == Closed::Head || after);
+                    let body = byte == b'{' && std::mem::take(&mut self.declaring);
+                    self.block = byte == b'{'
+                        && (i == self.start || closed == Closed::Head || after || body);
                 }
                 self.depth += 1;
             }
@@ -793,6 +822,60 @@ mod tests {
                 !wrapped.contains("return (function")
                     && !wrapped.contains("return (else")
                     && !wrapped.contains("return (['a']"),
+                "{wrapped}"
+            );
+        }
+    }
+
+    /// #162: a value after the `}` of a function or class declaration on
+    /// the same line is the last statement, returned; an `async function`
+    /// declaration is a declaration; a line ending with an identifier named
+    /// `of` ends its statement.
+    #[test]
+    fn values_after_a_declaration_are_returned() {
+        for (code, last) in [
+            ("await 0; function f(){ return 7 } f()", "f()"),
+            (
+                "await 0; class A { v() { return 8 } } new A().v()",
+                "new A().v()",
+            ),
+            ("async function g(){ return 9 } await g()", "await g()"),
+            ("await 0; function* h(){ yield 1 } [...h()]", "[...h()]"),
+            ("await 0; class B extends (class {}) {} new B()", "new B()"),
+            ("await 0; function h(){ return 7 }\nh()", "h()"),
+            (
+                "const of = await Promise.resolve(3)\nconst y = of\ny * 2",
+                "y * 2",
+            ),
+        ] {
+            // When the code is wrapped
+            let wrapped = with_top_level_await(code);
+            // Then the value after the declaration is returned
+            assert!(
+                wrapped.ends_with(&format!("return ({last}\n); }})()")),
+                "{wrapped}"
+            );
+        }
+        for code in [
+            "await 0; async function g(){ return 9 }",
+            "await 0; async function g(){ return 9 };",
+            "await 0; class C { m() {} }",
+        ] {
+            // When the last statement is a declaration
+            let wrapped = with_top_level_await(code);
+            // Then it runs as is in the async function
+            assert!(!wrapped.contains("return ("), "{wrapped}");
+        }
+        for code in [
+            "await 0; x = function(){ return 1 }()",
+            "await 0; x = class { v() {} }\n.name",
+            "await 0; const k = async function(){ return 1 }",
+        ] {
+            // When a function or class is an expression
+            let wrapped = with_top_level_await(code);
+            // Then no statement starts after its body
+            assert!(
+                !wrapped.contains("return (()") && !wrapped.contains("return (.name"),
                 "{wrapped}"
             );
         }
