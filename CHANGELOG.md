@@ -8,7 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 `browser-control-mcp` is the successor of `chrome-debug-mcp` 1.5.6 and starts
 from a copy of its code: entries describe the differences from that release.
 
-## [Unreleased]
+## [0.22.0-beta.34] - 2026-11-18
+
+Public **BETA**. Two features and five fixes from an automated test
+round. `snapshot` now lists `<video>` and `<audio>` with their playback
+state (#166), and on Chrome a field of a frame of another origin that
+does not take the focus is handed it from the page, as Chrome 158's
+`focus-without-user-activation` policy requires (#165). The fixes: a
+secret in a page's twice-stringified JSON inside an HTML attribute is
+masked again (#160), the `DPoP` proof header is redacted (#161),
+top-level `await` returns the value written after a declaration (#162),
+and Firefox lists the WebSocket frames of a frame's socket and the
+sockets whose handshake the server refused (#163, #164).
 
 ### Added
 
