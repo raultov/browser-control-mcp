@@ -10,6 +10,48 @@ from a copy of its code: entries describe the differences from that release.
 
 ## [Unreleased]
 
+### Added
+
+- `snapshot` and `find_in_snapshot` list `<video>` and `<audio>` elements
+  with a ref and their playback state: `[playing]`, `[paused]` or
+  `[ended]`, `[muted]`, `[seeking]`, `[controls]`, `[buffering]`,
+  `[stalled]` (Chrome 158's `:buffering` and `:stalled` where supported),
+  and `[time=12.3/60.0]` while paused or ended. They are named by their
+  label, else by their file name (without its query; none for `data:` and
+  `blob:` sources). A decorative video (autoplay, muted, loop, no controls,
+  no label) is left out (#166).
+- `fill_input`, `fill_form` and `press_key` on Chrome: when a field of a
+  frame of another origin does not take the focus, its `<iframe>` is
+  focused from the page (a parent may hand a frame the focus when its
+  embedder denies it `focus-without-user-activation`, Chrome 158+) and the
+  focus is tried once more, without a click. A focus the frame's
+  Permissions-Policy still refuses fails with `the frame's
+  Permissions-Policy denies focus-without-user-activation; click_element
+  the field first` instead of "hidden or inert" (#165).
+
+### Fixed
+
+- `--secrets` masks a value in a page's
+  `JSON.stringify(JSON.stringify(...))` held in an HTML attribute, as
+  `outerHTML` and `inspect_dom` print it (#160).
+- `get_network_logs` redacts the `DPoP` proof header (RFC 9449), and any
+  header with the word `dpop`, unless `include_sensitive_headers: true`
+  (#161).
+- `evaluate_js` with top-level `await` returns a value written after a
+  function or class declaration on the same line (`await 0; function f()
+  { return 7 } f()`), runs an `async function` declaration before an
+  `await` (`async function g() {...} await g()` failed with a
+  `SyntaxError`), and a line ending with a variable named `of` ends its
+  statement (#162).
+- `get_network_logs` on Firefox lists the WebSocket frames of a frame's
+  socket, same-origin frames included (each is a target of its own), and
+  closes them with `the frame was removed or navigated away` when the
+  frame goes, Firefox reporting no close for them (#163).
+- `get_network_logs` on Firefox lists a WebSocket whose handshake the
+  server refused, as `closed ws://…: the handshake was refused: HTTP 403
+  Forbidden` (or `the handshake failed: <error>` without an answer); it
+  was missing (#164).
+
 ## [0.21.0-beta.33] - 2026-11-17
 
 Public **BETA**. Fixes for six bugs an automated test round found in
