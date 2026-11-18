@@ -352,6 +352,17 @@ impl FrameRoute {
         self.reached.store(true, Ordering::Relaxed);
     }
 
+    /// Focuses each `<iframe>` from the page down to the frame, in its
+    /// parent's script (with the same-origin frames around it): what a
+    /// parent may do for a child frame whose Permissions-Policy refuses a
+    /// script focus (#165). Best effort: a gone `<iframe>` leaves the focus
+    /// where it was, and the tool's check tells.
+    pub(crate) async fn focus_owners(&self) {
+        for (scope, owner) in &self.levels {
+            let _ = scope.value(&crate::util::js::focus(owner)).await;
+        }
+    }
+
     /// Where the frame's content starts in the page's viewport: the sum of
     /// each `<iframe>`'s content origin in its own document.
     async fn offset(&self) -> CdpResult<(f64, f64)> {
@@ -703,6 +714,140 @@ mod tests {
             (pressed["x"].clone(), pressed["y"].clone()),
             (json!(105.0), json!(206.0))
         );
+    }
+
+    /// What a recorded command of the focus delegation tests did: the
+    /// frame's preparation or focus snippet (`frame`), the focus of the
+    /// `<iframe>` in the page (`owner`), or something else (`None`).
+    fn delegation_step(
+        command: &cdp_browser_lite::test_support::mock_devtools::RecordedCommand,
+    ) -> Option<&'static str> {
+        let script = command.params["functionDeclaration"]
+            .as_str()
+            .or_else(|| command.params["expression"].as_str())
+            .unwrap_or_default();
+        let focusing = script.contains("const focusBlocked");
+        match command.method.as_str() {
+            "Runtime.callFunctionOn" if focusing => Some("frame"),
+            "Runtime.evaluate" if focusing && script.contains("\"e2\"") => Some("owner"),
+            _ => None,
+        }
+    }
+
+    /// A Chrome page whose in-process frame `FRAME1` (iframe `e2`) answers
+    /// its focusing snippet `first`, then `then`; the page focuses `e2`, and
+    /// a fill's check finds the text typed.
+    async fn page_with_a_focus_refusing_frame(
+        first: Value,
+        then: Value,
+    ) -> &'static cdp_browser_lite::test_support::mock_devtools::MockDevTools {
+        let mock = page_with_a_frame().await;
+        mock.respond_with("Runtime.evaluate", |params| {
+            let expression = params["expression"].as_str().unwrap_or_default();
+            let value = if params.get("returnByValue").is_none() {
+                json!({"type": "object", "objectId": "IFRAME"})
+            } else if expression.contains("const focusBlocked") {
+                json!({"type": "object", "value": {"status": "focused"}})
+            } else {
+                json!({"type": "object", "value": {"status": "ok", "x": 100, "y": 200}})
+            };
+            json!({"result": {"result": value}})
+        });
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        mock.respond_with("Runtime.callFunctionOn", move |params| {
+            let script = params["functionDeclaration"].as_str().unwrap_or_default();
+            let value = if script.contains("const focusBlocked") {
+                let n = calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                if n == 0 { first.clone() } else { then.clone() }
+            } else if script.contains("status: 'done'") {
+                json!({"status": "done", "matches": true, "empty": false, "rejected": false, "append": false})
+            } else {
+                json!(1)
+            };
+            json!({"result": {"result": {"type": "object", "value": value}}})
+        });
+        mock
+    }
+
+    /// #165 (Chrome 158+): when the focus does not land in a frame of
+    /// another origin (its policy may refuse a script focus, and its
+    /// script has no `frameElement` to focus), its `<iframe>` is focused in
+    /// the page, as a parent may hand a child the focus, and the snippet
+    /// runs once more; no click is sent.
+    #[tokio::test]
+    async fn a_refused_focus_is_handed_down_from_the_parent() {
+        let unfocused = json!({"status": "not_editable", "reason": "it cannot take focus (hidden or inert)", "unfocused": true});
+        let ready = json!({"status": "ready", "prefix": "", "keys": [], "multiline": false});
+        for (tool, first, then) in [
+            ("fill_input", unfocused, ready),
+            (
+                "press_key",
+                json!({"status": "unfocusable"}),
+                json!({"status": "focused"}),
+            ),
+        ] {
+            // Given a frame whose first focus fails
+            let mock = page_with_a_focus_refusing_frame(first, then).await;
+            let handler = with_frame_one(mock).await;
+            // When the tool acts on an element of it
+            let arguments = match tool {
+                "fill_input" => json!({"selector": "f1e5", "text": "ok"}),
+                _ => json!({"selector": "f1e5", "key": "Enter"}),
+            };
+            let call = crate::handler::cdp_domains::tests::call(tool, arguments);
+            let reply = match tool {
+                "fill_input" => {
+                    super::super::input::fill_input::FillInputTool::handle(call, &handler).await
+                }
+                _ => super::super::input::press_key::PressKeyTool::handle(call, &handler).await,
+            };
+            // Then it succeeded after the page focused the frame's iframe
+            assert!(reply.is_ok(), "{tool}: {:?}", reply.err());
+            let steps: Vec<&str> = mock.commands().iter().filter_map(delegation_step).collect();
+            assert_eq!(steps, ["frame", "owner", "frame"], "{tool}");
+            // And no click was sent
+            assert!(
+                mock.commands_named("Input.dispatchMouseEvent").is_empty(),
+                "{tool}"
+            );
+        }
+    }
+
+    /// #165: a focus the frame's Permissions-Policy still refuses after
+    /// the delegation fails naming the policy and `click_element`; a
+    /// hidden element keeps its message.
+    #[tokio::test]
+    async fn a_focus_the_policy_refuses_names_it() {
+        let blocked = json!({"status": "focus_blocked"});
+        for tool in ["fill_input", "press_key"] {
+            // Given a frame whose policy refuses every script focus
+            let mock = page_with_a_focus_refusing_frame(blocked.clone(), blocked.clone()).await;
+            let handler = with_frame_one(mock).await;
+            // When the tool acts on an element of it
+            let arguments = match tool {
+                "fill_input" => json!({"selector": "f1e5", "text": "ok"}),
+                _ => json!({"selector": "f1e5", "key": "Enter"}),
+            };
+            let call = crate::handler::cdp_domains::tests::call(tool, arguments);
+            let reply = match tool {
+                "fill_input" => {
+                    super::super::input::fill_input::FillInputTool::handle(call, &handler).await
+                }
+                _ => super::super::input::press_key::PressKeyTool::handle(call, &handler).await,
+            };
+            // Then it fails naming the policy, after one delegation
+            let error = reply.err().unwrap().to_string();
+            assert!(
+                error.contains("Permissions-Policy denies focus-without-user-activation; click_element the field first"),
+                "{tool}: {error}"
+            );
+            let steps: Vec<&str> = mock.commands().iter().filter_map(delegation_step).collect();
+            assert_eq!(steps, ["frame", "owner", "frame"], "{tool}");
+            assert!(
+                mock.commands_named("Input.dispatchKeyEvent").is_empty(),
+                "{tool}"
+            );
+        }
     }
 
     /// ISSUE-27: mouse coordinates move by the frame's offset; others stay.

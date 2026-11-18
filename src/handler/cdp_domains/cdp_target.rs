@@ -77,6 +77,20 @@ impl CdpTarget {
         self
     }
 
+    /// Focuses each `<iframe>` from the page down to the frame of another
+    /// origin the target acts in, in its parent, as a parent may hand the
+    /// focus to a frame (#165). `false` when the target acts in no such
+    /// frame: nothing was done.
+    pub(crate) async fn focus_frame_owners(&self) -> bool {
+        match &self.frame {
+            Some(route) => {
+                route.focus_owners().await;
+                true
+            }
+            None => false,
+        }
+    }
+
     /// The tab's session (`None` for the browser connection).
     pub(crate) fn page_tab(&self) -> Option<&Tab> {
         match &self.connection {

@@ -50,10 +50,7 @@ impl PressKeyTool {
         let selector = args.selector.as_deref();
         if let Some(selector) = selector {
             let focus = crate::util::js::focus(selector);
-            focused(
-                &crate::handler::snippet_value(&target, &focus).await?,
-                selector,
-            )?;
+            focused(&super::focusing_snippet(&target, &focus).await?, selector)?;
         }
         let pressing = press(&target, &key, &held);
         let interrupted = super::keys::holding(&target, &held, pressing).await?;
@@ -96,6 +93,10 @@ pub(crate) fn focused(value: &Value, selector: &str) -> Result<(), CallToolError
         Some("focused") => Ok(()),
         Some("unfocusable") => Err(CallToolError::from_message(format!(
             "Element '{selector}' cannot take the focus; no key was pressed."
+        ))),
+        Some("focus_blocked") => Err(CallToolError::from_message(format!(
+            "Element '{selector}' cannot take the focus: {}; no key was pressed.",
+            super::FOCUS_BLOCKED
         ))),
         _ => Err(CallToolError::from_message(format!(
             "Element not found for selector: {selector}{}",

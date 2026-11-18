@@ -391,17 +391,31 @@ pub fn web_storage(action: &str, kind: &str, key: Option<&str>, value: Option<&s
     )
 }
 
+/// Declares `focusBlocked(doc)`: whether the Permissions-Policy of `doc`
+/// denies `focus-without-user-activation`, so a script focus without a
+/// user's gesture is refused (Chrome 158+, #165). `document.featurePolicy`
+/// is Chrome's only, and an older Chrome, which does not know the feature,
+/// answers `allowsFeature` false: the name must be in `features()`.
+const FOCUS_BLOCKED: &str = "const focusBlocked = doc => { const p = doc.featurePolicy; return !!p && \
+    p.features().includes('focus-without-user-activation') && p.allowsFeature('focus-without-user-activation') === false; };";
+
 /// Focuses the element `selector` names (`press_key`): `{status}`
-/// `missing`, `focused` (it, or an element inside it, has the focus) or
-/// `unfocusable`. Each iframe it is in is focused first, in its parent:
-/// Firefox sends keys to the top document's focused element, which a
-/// script focus inside a frame may leave on the top `<body>` (TinyMCE).
+/// `missing`, `focused` (it, or an element inside it, has the focus),
+/// `focus_blocked` (its frame's Permissions-Policy refuses a script focus,
+/// a Chrome 158+ Permissions-Policy) or `unfocusable`. Each iframe it is in is focused
+/// first, in its parent: Firefox sends keys to the top document's focused
+/// element, which a script focus inside a frame may leave on the top
+/// `<body>` (TinyMCE), and a parent may hand the focus to a frame whose
+/// policy refuses it.
 pub fn focus(selector: &str) -> String {
     status_of(
         selector,
-        "{ let w = el.ownerDocument.defaultView; while (w.frameElement) { w.frameElement.focus(); w = w.frameElement.ownerDocument.defaultView; } } \
-         el.focus(); const active = el.getRootNode().activeElement; \
-         return { status: active && (active === el || el.contains(active)) ? 'focused' : 'unfocusable' };",
+        &format!(
+            "{FOCUS_BLOCKED} \
+             {{ let w = el.ownerDocument.defaultView; while (w.frameElement) {{ w.frameElement.focus(); w = w.frameElement.ownerDocument.defaultView; }} }} \
+             el.focus(); const active = el.getRootNode().activeElement; \
+             return {{ status: active && (active === el || el.contains(active)) ? 'focused' : focusBlocked(el.ownerDocument) ? 'focus_blocked' : 'unfocusable' }};"
+        ),
     )
 }
 
@@ -458,12 +472,19 @@ pub enum FillMode {
 /// `text` as its value (typing would go into its segments, or nothing),
 /// `set` (with `matches`, and the `value` it holds when it changed it) or
 /// `rejected` (with the `format` it expects). Returns `{status}`: `missing`,
-/// `not_editable` (with `reason`), `no_option` (with `missing` and
+/// `not_editable` (with `reason`, and `unfocused` when the focus did not
+/// land), `focus_blocked` (the frame's Permissions-Policy refuses a script
+/// focus, a Chrome 158+ Permissions-Policy), `no_option` (with `missing` and
 /// `options`), `selected` (with `count` on a multiple select)
 /// or `ready`. Checking focus matters: typing goes to whatever element has
 /// it, so an element that cannot take it would send the text elsewhere.
 pub fn prepare_fill(selector: &str, text: &str, mode: FillMode) -> String {
-    fill_snippet(selector, text, mode, PREPARE_FILL)
+    fill_snippet(
+        selector,
+        text,
+        mode,
+        &format!("{FOCUS_BLOCKED} {PREPARE_FILL}"),
+    )
 }
 
 /// `body` run on the element `selector` names, with `text`, `append` (the
@@ -544,7 +565,8 @@ const PREPARE_FILL: &str = "const W = el.ownerDocument.defaultView; \
     { let w = el.ownerDocument.defaultView; while (w.frameElement) { w.frameElement.focus(); w = w.frameElement.ownerDocument.defaultView; } } \
     el.focus(); \
     const active = el.getRootNode().activeElement; \
-    if (active !== el && !(el.isContentEditable && active && active.contains(el))) return { status: 'not_editable', reason: 'it cannot take focus (hidden or inert)' }; \
+    if (active !== el && !(el.isContentEditable && active && active.contains(el))) return focusBlocked(el.ownerDocument) ? { status: 'focus_blocked' } \
+        : { status: 'not_editable', reason: 'it cannot take focus (hidden or inert)', unfocused: true }; \
     const mac = /Mac|iPhone|iPad/.test(W.navigator.platform), mod = mac ? 'Meta' : 'Control'; \
     const clear = !append && text === '' ? [{ key: 'Backspace', modifiers: [] }] : []; \
     const keys = append ? [{ key: mac ? 'ArrowDown' : 'End', modifiers: [mod] }] : [{ key: 'a', modifiers: [mod] }].concat(clear); \
@@ -1140,6 +1162,34 @@ mod tests {
                 "{expression}"
             );
         }
+    }
+
+    /// #165: when the focus does not land, the focus and fill snippets tell
+    /// a frame whose Permissions-Policy denies
+    /// `focus-without-user-activation` (Chrome 158+) from a hidden or inert
+    /// element, guarded by `features()` (older Chrome does not know the
+    /// name, and its `allowsFeature` answers false); a failed focus of a
+    /// fill is marked, so the tool can hand the frame the focus.
+    #[test]
+    fn blocked_focus_is_told_from_an_unfocusable_element() {
+        let guard = "p.features().includes('focus-without-user-activation') && p.allowsFeature('focus-without-user-activation') === false";
+        for expression in [focus("#q"), prepare_fill("#q", "x", FillMode::Replace)] {
+            assert!(expression.contains(guard), "{expression}");
+            assert!(
+                expression.contains("const p = doc.featurePolicy; return !!p && "),
+                "{expression}"
+            );
+            assert!(expression.contains("'focus_blocked'"), "{expression}");
+        }
+        assert!(
+            focus("#q")
+                .contains(": focusBlocked(el.ownerDocument) ? 'focus_blocked' : 'unfocusable'")
+        );
+        let fill = prepare_fill("#q", "x", FillMode::Replace);
+        assert!(
+            fill.contains("{ status: 'not_editable', reason: 'it cannot take focus (hidden or inert)', unfocused: true }"),
+            "{fill}"
+        );
     }
 
     /// ISSUE-81: an editable element whose lines are blocks (Enter makes a

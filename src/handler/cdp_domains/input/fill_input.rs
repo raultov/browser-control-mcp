@@ -72,6 +72,10 @@ pub(crate) fn fill_start(value: &Value, selector: &str) -> Result<FillStart, Cal
             "Element '{selector}' is not editable ({}); nothing was typed.",
             value["reason"].as_str().unwrap_or("unknown reason")
         ))),
+        Some("focus_blocked") => Err(CallToolError::from_message(format!(
+            "Element '{selector}' cannot take the focus: {}; nothing was typed.",
+            super::FOCUS_BLOCKED
+        ))),
         Some("no_option") => {
             let options: Vec<&str> = value["options"]
                 .as_array()
@@ -238,7 +242,7 @@ pub(crate) async fn fill(
     mode: FillMode,
 ) -> Result<CallToolResult, CallToolError> {
     let prepare = crate::util::js::prepare_fill(selector, text, mode);
-    let prepared = crate::handler::snippet_value(target, &prepare).await?;
+    let prepared = super::focusing_snippet(target, &prepare).await?;
     let (click, prefix, keys, multiline) = match fill_start(&prepared, selector)? {
         FillStart::Type {
             click,
