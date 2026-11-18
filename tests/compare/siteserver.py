@@ -8,6 +8,7 @@ another origin, for frames and requests across origins.
 import base64
 import json
 import os
+import struct
 import threading
 import time
 import urllib.parse
@@ -23,6 +24,15 @@ PDF = (b"%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n"
        b"4 0 obj<</Length 41>>stream\nBT /F1 24 Tf 40 70 Td (PDF page) Tj ET\nendstream endobj\n"
        b"5 0 obj<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>endobj\n"
        b"trailer<</Root 1 0 R>>\n%%EOF\n")
+
+
+def silence(ms):
+    """A silent mono 8 kHz 8-bit WAV `ms` long, made at run time (no
+    binary in the repository) for the media page."""
+    samples = 8 * ms
+    header = struct.pack("<4sI4s4sIHHIIHH4sI", b"RIFF", 36 + samples, b"WAVE", b"fmt ", 16,
+                         1, 1, 8000, 8000, 1, 8, b"data", samples)
+    return header + b"\x80" * samples
 
 
 class Handler(SimpleHTTPRequestHandler):
@@ -93,6 +103,8 @@ class Handler(SimpleHTTPRequestHandler):
             return self.send_body(200, body, headers=[("Content-Security-Policy", "script-src 'none'")])
         if path == "/api/echo":
             return self.send_body(200, json.dumps({"method": "GET", "query": query}), "application/json")
+        if path == "/silence.wav":
+            return self.send_body(200, silence(int(query.get("ms", "1000"))), "audio/wav")
         if path == "/":
             return self.redirect(302, "/basic.html")
         return super().do_GET()

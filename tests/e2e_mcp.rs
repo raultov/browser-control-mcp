@@ -93,6 +93,12 @@ mod e2e {
     <iframe id="xo" width="400" height="160"></iframe>
     <script>document.getElementById('xo').src = 'http://localhost:' + location.port + '/xo-inner.html';</script>
     </body></html>"#;
+    /// #165: a frame of another origin whose embedder denies it
+    /// `focus-without-user-activation` (Chrome 158+).
+    const FOCUS_POLICY_TOP: &str = r#"<!doctype html><html><body><p>focus policy host</p>
+    <iframe id="fp" width="400" height="160" allow="focus-without-user-activation 'none'"></iframe>
+    <script>document.getElementById('fp').src = 'http://localhost:' + location.port + '/xo-inner.html';</script>
+    </body></html>"#;
     const XO_INNER: &str = r#"<!doctype html><html><body>
     <button id="ib" onclick="document.getElementById('out').textContent = 'xo clicked'">inner button</button>
     <input id="iq" aria-label="inner field"><span id="out"></span>
@@ -156,7 +162,7 @@ mod e2e {
     ];
 
     /// The pages served as they are (by path prefix): content type, body.
-    const PAGES: [(&str, &str, &str); 10] = [
+    const PAGES: [(&str, &str, &str); 11] = [
         ("/data.csv", "text/csv", "a,b\n1,2\n"),
         (
             "/self-close.html",
@@ -174,6 +180,7 @@ mod e2e {
             "<!doctype html><title>close90</title><button id=\"close90\" onclick=\"window.close()\">close</button>",
         ),
         ("/xo-top.html", "text/html", XO_TOP),
+        ("/focus-policy.html", "text/html", FOCUS_POLICY_TOP),
         ("/xo-inner.html", "text/html", XO_INNER),
     ];
 
@@ -1647,6 +1654,77 @@ mod e2e {
         ]
     }
 
+    /// #166: one second of a silent WAV made in the page (no binary in the
+    /// repository) as the source of an `<audio>`, a `<video>` and a
+    /// decorative video under `#m166`; answers once their metadata loaded.
+    const MEDIA_166: &str = "const bcm166n = 8000, bcm166b = new ArrayBuffer(44 + bcm166n), bcm166d = new DataView(bcm166b); \
+            [[0, 0x52494646], [8, 0x57415645], [12, 0x666d7420], [36, 0x64617461]].forEach(([at, v]) => bcm166d.setUint32(at, v)); \
+            [[4, 36 + bcm166n], [16, 16], [24, 8000], [28, 8000], [40, bcm166n]].forEach(([at, v]) => bcm166d.setUint32(at, v, true)); \
+            [[20, 1], [22, 1], [32, 1], [34, 8]].forEach(([at, v]) => bcm166d.setUint16(at, v, true)); \
+            for (let k = 44; k < 44 + bcm166n; k++) bcm166d.setUint8(k, 128); \
+            const bcm166url = URL.createObjectURL(new Blob([bcm166b], {type: 'audio/wav'})); \
+            const bcm166m = document.createElement('div'); bcm166m.id = 'm166'; \
+            bcm166m.innerHTML = '<audio controls aria-label=\\'M166 track\\'></audio><video controls width=\\'160\\' height=\\'90\\' aria-label=\\'M166 clip\\'></video><video autoplay muted loop width=\\'160\\' height=\\'90\\'></video>'; \
+            document.body.append(bcm166m); const bcm166media = [...bcm166m.querySelectorAll('audio, video')]; \
+            bcm166media.forEach(e => { e.src = bcm166url; }); \
+            Promise.all(bcm166media.map(e => e.readyState >= 1 ? 1 : new Promise(ok => { e.onloadedmetadata = () => ok(1); })))";
+
+    /// #166: snapshot lists `<audio>` and `<video>` with their playback
+    /// state (paused with the time, then playing), named by their label,
+    /// and leaves a decorative video out. The media is a silent WAV made
+    /// in the page (no binary in the repository).
+    fn media_steps(instance: &str) -> Vec<Step> {
+        let i = json!(instance);
+        let run = |expression: &str| json!({"instance_id": i, "expression": expression});
+        let snapshot = json!({"instance_id": i, "selector": "#m166"});
+        vec![
+            (
+                "#166 add audio and video",
+                "evaluate_js",
+                run(MEDIA_166),
+                "",
+            ),
+            (
+                "#166 an audio element shows its state and time",
+                "snapshot",
+                snapshot.clone(),
+                "audio \"M166 track\" [paused] [controls] [time=0.0/1.0]",
+            ),
+            (
+                "#166 a video element shows its state and time",
+                "snapshot",
+                snapshot.clone(),
+                "video \"M166 clip\" [paused] [controls] [time=0.0/1.0]",
+            ),
+            (
+                "#166 play the muted video",
+                "evaluate_js",
+                run(
+                    "const v = document.querySelector('#m166 video'); v.muted = true; v.loop = true; v.play().then(() => 'played')",
+                ),
+                "played",
+            ),
+            (
+                "#166 a playing video says so, without its time",
+                "snapshot",
+                snapshot.clone(),
+                "video \"M166 clip\" [playing] [muted] [controls] [ref=",
+            ),
+            (
+                "#166 a decorative video is left out",
+                "find_in_snapshot",
+                json!({"instance_id": i, "text": "video ["}),
+                "No line of the snapshot",
+            ),
+            (
+                "#166 remove the media",
+                "evaluate_js",
+                run("document.getElementById('m166').remove(); 1"),
+                "",
+            ),
+        ]
+    }
+
     /// ISSUE-38: date, time, range and colour inputs get their value; a
     /// range snaps it (noted), a malformed date is refused and keeps the
     /// value it had.
@@ -2914,6 +2992,7 @@ mod e2e {
         [
             aria_value_steps(instance),
             widget_state_steps(instance),
+            media_steps(instance),
             select_option_steps(instance),
             invalid_field_steps(instance),
             drag_ref_steps(instance),
@@ -4111,6 +4190,48 @@ mod e2e {
     async fn e2e_firefox() {
         smoke("firefox").await;
         sigterm_then_relaunch("firefox").await;
+    }
+
+    /// #165: on Chrome 158+, `fill_input` and `press_key` act in a frame
+    /// of another origin whose embedder denies it
+    /// `focus-without-user-activation`: its `<iframe>` is handed the focus
+    /// from the page. An older Chrome does not know the policy: the steps
+    /// pass there without the delegation.
+    #[tokio::test]
+    #[ignore = "requires a real Chrome installation (158 or later to meet the policy)"]
+    async fn e2e_chrome_focus_policy() {
+        let base = serve().await;
+        let mut mcp = Mcp::start(&[]).await;
+        let i = json!("default");
+        mcp.steps(vec![
+            (
+                "#165 open a frame denied focus without activation",
+                "navigate",
+                json!({"instance_id": i, "url": format!("{base}/focus-policy.html")}),
+                "Navigated to",
+            ),
+            (
+                "#165 the frame is read",
+                "snapshot",
+                json!({"instance_id": i}),
+                "textbox \"inner field\" [ref=f1e2]",
+            ),
+            (
+                "#165 fill a field of the frame",
+                "fill_input",
+                json!({"instance_id": i, "selector": "f1e2", "text": "fp-typed"}),
+                "Successfully filled",
+            ),
+            (
+                "#165 press a key in the frame",
+                "press_key",
+                json!({"instance_id": i, "selector": "f1e2", "key": "!"}),
+                "Pressed !",
+            ),
+        ])
+        .await;
+        let failures = mcp.finish().await;
+        assert!(failures.is_empty(), "failed steps {failures:?}");
     }
 
     #[tokio::test]
