@@ -13,7 +13,9 @@
 //! content only when that content is plain text, folded into the name, so
 //! no text is printed twice. A `clickable` (a handler or a pointer cursor,
 //! no role) that holds interactive elements lists them instead of being a
-//! leaf named from its whole text.
+//! leaf named from its whole text. `<video>` and `<audio>` are leaves with
+//! their playback state, but a decorative video (autoplay, muted, loop, no
+//! controls, no label) is left out (#166).
 
 use super::js::{RESOLVE, string_literal};
 
@@ -168,7 +170,7 @@ const OUTLINE: &str = r#"const outline = (root, maxDepth, maxChars, maxOptions) 
         H3: 'heading', H4: 'heading', H5: 'heading', H6: 'heading', NAV: 'navigation', MAIN: 'main',
         FORM: 'form', DIALOG: 'dialog', PROGRESS: 'progressbar', METER: 'meter', UL: 'list', OL: 'list', LI: 'listitem', TABLE: 'table', TR: 'row',
         TD: 'cell', TH: 'columnheader', OPTION: 'option', IFRAME: 'iframe', FRAME: 'iframe',
-        HEADER: 'banner', FOOTER: 'contentinfo', ASIDE: 'complementary' };
+        HEADER: 'banner', FOOTER: 'contentinfo', ASIDE: 'complementary', VIDEO: 'video', AUDIO: 'audio' };
     const firstRole = el => (el.getAttribute('role') || '').trim().split(/\s+/)[0];
     const layoutTables = new Map();
     const layoutTable = table => {
@@ -185,6 +187,26 @@ const OUTLINE: &str = r#"const outline = (root, maxDepth, maxChars, maxOptions) 
     const gridOf = el => { const table = el.closest('table'), role = table ? firstRole(table) : ''; return role === 'grid' || role === 'treegrid'; };
     const LIVE = { alert: 'assertive', status: 'polite', log: 'polite' };
     const live = el => { const politeness = el.getAttribute('aria-live'); return politeness && politeness !== 'off' ? politeness : LIVE[firstRole(el)] || ''; };
+    const MEDIA = new Set(['VIDEO', 'AUDIO']);
+    const decorative = el => el.autoplay && el.muted && el.loop && !el.controls
+        && !el.hasAttribute('aria-label') && !el.hasAttribute('aria-labelledby') && !el.hasAttribute('title');
+    const mediaName = el => {
+        const src = el.currentSrc || el.getAttribute('src') || '';
+        if (!src || /^(data|blob):/i.test(src)) return '';
+        const path = src.split(/[?#]/)[0], file = path.slice(path.lastIndexOf('/') + 1);
+        try { return clean(decodeURIComponent(file)); } catch (e) { return clean(file); }
+    };
+    const seconds = t => (Math.round(t * 10) / 10).toFixed(1);
+    const mediaStates = el => {
+        const out = [el.ended ? '[ended]' : el.paused ? '[paused]' : '[playing]'];
+        const flag = (on, state) => { if (on) out.push('[' + state + ']'); };
+        flag(el.muted, 'muted'); flag(el.seeking, 'seeking'); flag(el.controls, 'controls');
+        const stalled = !el.paused && matches(el, ':stalled');
+        flag(!el.paused && !stalled && (el.readyState < 3 || matches(el, ':buffering')), 'buffering');
+        flag(stalled, 'stalled');
+        if (el.paused || el.ended) out.push('[time=' + seconds(el.currentTime) + (isFinite(el.duration) ? '/' + seconds(el.duration) : '') + ']');
+        return out;
+    };
     const roleOf = el => {
         const explicit = firstRole(el);
         if (explicit === 'presentation' || explicit === 'none') return null;
@@ -195,6 +217,7 @@ const OUTLINE: &str = r#"const outline = (root, maxDepth, maxChars, maxOptions) 
         if (tag === 'INPUT') return el.type === 'hidden' ? null : INPUTS[el.type] || 'textbox';
         if (tag === 'SELECT') return el.multiple || el.size > 1 ? 'listbox' : 'combobox';
         if (tag === 'IMG') return el.getAttribute('alt') === '' ? null : 'img';
+        if (tag === 'VIDEO' && decorative(el)) return null;
         if (tag === 'TD' && gridOf(el)) return 'gridcell';
         if (TAGS[tag]) return TAGS[tag];
         if (el.isContentEditable && !(el.parentElement && el.parentElement.isContentEditable)) return 'textbox';
@@ -204,7 +227,7 @@ const OUTLINE: &str = r#"const outline = (root, maxDepth, maxChars, maxOptions) 
     };
     const LEAF = new Set(['button', 'link', 'heading', 'textbox', 'searchbox', 'combobox', 'checkbox', 'radio',
         'img', 'slider', 'spinbutton', 'option', 'switch', 'tab', 'menuitem', 'menuitemcheckbox', 'menuitemradio', 'clickable',
-        'progressbar', 'meter']);
+        'progressbar', 'meter', 'video', 'audio']);
     const NAMED_BY_TEXT = new Set(['cell', 'columnheader', 'rowheader', 'gridcell']);
     const foldText = (at, depth, role) => {
         const own = lines.slice(at + 1), marker = '  '.repeat(depth + 1) + '- text: ';
@@ -250,6 +273,7 @@ const OUTLINE: &str = r#"const outline = (root, maxDepth, maxChars, maxOptions) 
         const expanded = summary ? (el.parentElement.open ? 'true' : 'false') : el.getAttribute('aria-expanded');
         if (expanded) out.push('[expanded=' + expanded + ']');
         flag(role === 'dialog' && el.matches(':modal'), 'modal');
+        if (MEDIA.has(el.tagName)) out.push(...mediaStates(el));
         if (role === 'heading') out.push('[level=' + (el.getAttribute('aria-level') || (/^H[1-6]$/.test(el.tagName) ? el.tagName[1] : '2')) + ']');
         if (role === 'link') out.push('[href=' + cut(el.getAttribute('href') || '', 120) + ']');
         const field = el.tagName === 'INPUT' || el.tagName === 'TEXTAREA';
@@ -318,7 +342,8 @@ const OUTLINE: &str = r#"const outline = (root, maxDepth, maxChars, maxOptions) 
         }
         flush();
         const holder = role === 'clickable' && !!el.querySelector(INTERACTIVE);
-        const name = nameOf(el, holder ? 'group' : role), value = valueOf(el, role, name), at = lines.length;
+        const name = nameOf(el, holder ? 'group' : role) || (MEDIA.has(el.tagName) ? mediaName(el) : '');
+        const value = valueOf(el, role, name), at = lines.length;
         const parts = [role];
         if (name) parts.push(JSON.stringify(cut(name, 100)));
         parts.push(...details(el, role, name), '[ref=' + refOf(el) + ']');
@@ -660,6 +685,40 @@ mod tests {
             "{OUTLINE}"
         );
         assert!(OUTLINE.contains("if (child.nodeType === 3) { if (!outsideModal(child)) addText(child.data, depth); }"), "{OUTLINE}");
+    }
+
+    /// #166: `<video>` and `<audio>` are leaves with a ref and their
+    /// playback state (playing, paused or ended, muted, seeking, controls,
+    /// buffering, stalled), the time only while paused or ended (a playing
+    /// one changes on every snapshot), a duration only when finite; a
+    /// decorative video (autoplay, muted, loop, no controls, no label) is
+    /// left out; one without a label is named by its file, never by a
+    /// `data:` or `blob:` URL nor a query.
+    #[test]
+    fn media_elements_show_their_playback_state() {
+        for needle in [
+            "VIDEO: 'video', AUDIO: 'audio'",
+            "'progressbar', 'meter', 'video', 'audio']",
+            "if (tag === 'VIDEO' && decorative(el)) return null;",
+            "el.autoplay && el.muted && el.loop && !el.controls",
+            "!el.hasAttribute('aria-label') && !el.hasAttribute('aria-labelledby') && !el.hasAttribute('title')",
+            "el.ended ? '[ended]' : el.paused ? '[paused]' : '[playing]'",
+            "flag(el.muted, 'muted'); flag(el.seeking, 'seeking'); flag(el.controls, 'controls');",
+            "matches(el, ':stalled')",
+            "el.readyState < 3 || matches(el, ':buffering')",
+            "if (el.paused || el.ended) out.push('[time=' + seconds(el.currentTime) + (isFinite(el.duration) ? '/' + seconds(el.duration) : '') + ']');",
+            "(Math.round(t * 10) / 10).toFixed(1)",
+            "if (MEDIA.has(el.tagName)) out.push(...mediaStates(el));",
+            "if (!src || /^(data|blob):/i.test(src)) return '';",
+            "src.split(/[?#]/)[0]",
+            "nameOf(el, holder ? 'group' : role) || (MEDIA.has(el.tagName) ? mediaName(el) : '')",
+        ] {
+            assert!(OUTLINE.contains(needle), "{needle}");
+        }
+        // Every media state is read in no try block of its own
+        let states = OUTLINE.split("const mediaStates").nth(1).unwrap();
+        let states = states.split("const roleOf").next().unwrap();
+        assert!(!states.contains("try"), "{states}");
     }
 
     /// ISSUE-79: a tree item is named by its own text (not its nested
