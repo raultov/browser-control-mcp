@@ -19,6 +19,10 @@ from a copy of its code: entries describe the differences from that release.
   ending with a property named like a keyword (`const v = o.do`, `o.new`,
   `o.in`), and after a do-while's condition on the same line (`do { }
   while (false) 'x'`) (#169).
+- `get_network_logs` on Firefox: a socket refused or dropped at the
+  handshake is closed under its own URL and reason, never on a live socket
+  whose opening Firefox reports later (#171); the sockets of every removed
+  frame are listed closed, not only those of the 64 newest frames (#172).
 
 ## [0.22.0-beta.34] - 2026-11-18
 

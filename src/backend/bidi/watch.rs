@@ -13,10 +13,12 @@ use crate::handler::WebSocketFrame;
 use crate::handler::WsClose;
 use crate::handler::cdp_domains::event_pump::ListenerHandles;
 use crate::handler::cdp_domains::log::{Channel, ConsoleMessage, LogState};
+use crate::util::bounded::BoundedMap;
 use bidi_browser_lite::Debugger;
 use bidi_browser_lite::bidi_lite::rdp::protocol::RdpPacket;
 use bidi_browser_lite::bidi_lite::rdp::resources::parse_resources;
 use serde_json::Value;
+use std::collections::VecDeque;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio_stream::StreamExt;
@@ -115,47 +117,43 @@ fn watch_websockets(
 /// Why the sockets of a frame that went away are closed (#163).
 pub(crate) const FRAME_GONE: &str = "the frame was removed or navigated away";
 
-/// How many targets [`SocketOwners`] remembers, and how many connections
-/// each.
-const OWNERS: usize = 64;
+/// How many targets with sockets [`SocketOwners`] remembers: as many as
+/// the connections the log keeps, so every listed socket keeps its owner
+/// (#172).
+const OWNERS: usize = crate::handler::MAX_WS_CONNECTIONS;
+/// How many connections it remembers of each target.
 const OWNED: usize = 256;
+/// How many frames it remembers, with sockets or not: a frame is forgotten
+/// when it goes, so this only caps a page with that many frames at once.
+const FRAMES: usize = 1024;
 
 /// The WebSocket connections of each target of the tab, and which targets
 /// are frames, to close a frame's sockets when it goes (#163). Bounded:
-/// the oldest targets and connections are forgotten first.
+/// the oldest targets and connections are forgotten first. The frames are
+/// kept apart from the targets with sockets, so frames without sockets
+/// never push out those with some (#172).
 #[derive(Default)]
 pub(crate) struct SocketOwners {
-    targets: crate::util::bounded::BoundedMap<String, Owned, OWNERS>,
-}
-
-/// What [`SocketOwners`] knows of one target.
-#[derive(Default)]
-struct Owned {
-    /// Whether its watcher form says it is a frame, not the tab's document.
-    frame: bool,
-    connections: std::collections::VecDeque<String>,
+    /// The connections of each target that reported one.
+    targets: BoundedMap<String, VecDeque<String>, OWNERS>,
+    /// The targets announced as frames, not the tab's document.
+    frames: BoundedMap<String, (), FRAMES>,
 }
 
 impl SocketOwners {
     /// Records that the target `actor` reported the connection `id`.
     pub(crate) fn own(&mut self, actor: &str, id: String) {
-        self.update(actor, |owned| {
-            if !owned.connections.contains(&id) {
-                owned.connections.push_back(id);
-                if owned.connections.len() > OWNED {
-                    owned.connections.pop_front();
-                }
-            }
-        });
-    }
-
-    /// Changes what is known of `actor`, known from now on.
-    fn update(&mut self, actor: &str, change: impl FnOnce(&mut Owned)) {
         if !self.targets.contains_key(actor) {
-            self.targets.insert(actor.to_string(), Owned::default());
+            self.targets.insert(actor.to_string(), VecDeque::new());
         }
-        if let Some(owned) = self.targets.get_mut(actor) {
-            change(owned);
+        let Some(connections) = self.targets.get_mut(actor) else {
+            return;
+        };
+        if !connections.contains(&id) {
+            connections.push_back(id);
+            if connections.len() > OWNED {
+                connections.pop_front();
+            }
         }
     }
 
@@ -170,16 +168,18 @@ impl SocketOwners {
         let frame = target.get("isTopLevelTarget").and_then(Value::as_bool) == Some(false);
         match body.get("type").and_then(Value::as_str) {
             Some("target-available-form") if frame => {
-                self.update(actor, |owned| owned.frame = true)
+                self.frames.insert(actor.to_string(), ());
             }
             Some("target-destroyed-form") => {
-                let Some(owned) = self.targets.remove(&actor.to_string()) else {
+                let actor = actor.to_string();
+                let announced = self.frames.remove(&actor).is_some();
+                let Some(connections) = self.targets.remove(&actor) else {
                     return;
                 };
-                if !(owned.frame || frame) {
+                if !(announced || frame) {
                     return;
                 }
-                for id in &owned.connections {
+                for id in &connections {
                     let close = WsClose {
                         at: crate::handler::now_ms(),
                         code: None,
@@ -261,9 +261,11 @@ pub(crate) fn on_websocket(network: &mut NetworkState, resource: &Value) -> Opti
 /// the close frame it sent, if any (#158): that is the newest connection
 /// without a URL (it gets the URL of the newest accepted handshake no
 /// connection claims), or else one made for the newest WebSocket handshake
-/// of the log that no connection claims, under its request id: an accepted
-/// one (`101`), else one the server refused or that failed, whose
-/// connection then says why (#164).
+/// of the log that no connection claims, under its request id: one the
+/// server refused or that failed, whose connection then says why (#164),
+/// else an accepted one (`101`). An accepted handshake no connection claims
+/// yet is most often a live socket whose opening is not reported yet: it
+/// comes last, so a refusal's close is never put on it (#171).
 fn closed_connection(network: &mut NetworkState, id: String) -> Option<String> {
     if id != NEVER_OPENED {
         return Some(id);
@@ -273,7 +275,7 @@ fn closed_connection(network: &mut NetworkState, id: String) -> Option<String> {
         // It sent a frame: its handshake was accepted.
         Some(unopened) => (unopened, accepted),
         None => {
-            let handshake = accepted.or(refused)?;
+            let handshake = refused.or(accepted)?;
             (handshake.request.clone(), Some(handshake))
         }
     };
@@ -579,15 +581,19 @@ mod tests {
     fn handshakes(paths: &[(&str, &str)]) -> NetworkState {
         let mut network = NetworkState::default();
         for (id, path) in paths {
-            let request = crate::handler::NetworkRequest {
-                url: format!("http://127.0.0.1:8808{path}"),
-                method: "GET".into(),
-                response_status: Some(101),
-                ..Default::default()
-            };
-            network.insert_request((*id).into(), request);
+            network.insert_request((*id).into(), accepted_handshake(path));
         }
         network
+    }
+
+    /// A WebSocket handshake the server accepted (`101`).
+    fn accepted_handshake(path: &str) -> NetworkRequest {
+        NetworkRequest {
+            url: format!("http://127.0.0.1:8808{path}"),
+            method: "GET".into(),
+            response_status: Some(101),
+            ..Default::default()
+        }
     }
 
     /// #158: Firefox reports a socket that fails before it opens only by
@@ -691,30 +697,82 @@ mod tests {
         assert_eq!(network.ws_connections.len(), 1);
     }
 
-    /// #164: an accepted handshake no connection claims is still preferred
-    /// to a refused one; a handshake that failed without an answer gives
-    /// its network error.
+    /// #171: a socket that never opened was most likely refused, or its
+    /// handshake failed: a refused or failed handshake no connection claims
+    /// is preferred to an accepted one, which may be a live socket whose
+    /// opening is not reported yet; a handshake that failed without an
+    /// answer gives its network error.
     #[test]
-    fn accepted_handshakes_come_before_refused_ones() {
+    fn refused_handshakes_come_before_accepted_ones() {
         // Given a handshake that failed, then an accepted one
         let mut network = handshakes(&[]);
         let unanswered = refused_handshake("/down", None, Some("NS_ERROR_CONNECTION_REFUSED"));
         network.insert_request("r1".into(), unanswered);
-        let accepted = handshakes(&[("r2", "/up")]).find_request_mut("r2").cloned();
-        network.insert_request("r2".into(), accepted.unwrap());
+        network.insert_request("r2".into(), accepted_handshake("/up"));
         let failed = json!({"httpChannelId": 0, "wsMessageType": "webSocketClosed", "code": 1006});
-        // When two sockets close before they opened
+        // When a socket closes before it opened
         on_websocket(&mut network, &failed);
-        on_websocket(&mut network, &failed);
-        // Then the accepted handshake is claimed first, then the failed one
-        assert_eq!(network.ws_connections["r2"].url, "ws://127.0.0.1:8808/up");
-        assert_eq!(network.ws_connections["r2"].error, None);
+        // Then the failed handshake is claimed, with its error
         let down = &network.ws_connections["r1"];
         assert_eq!(down.url, "ws://127.0.0.1:8808/down");
         assert_eq!(
             down.error.as_deref(),
             Some("the handshake failed: NS_ERROR_CONNECTION_REFUSED")
         );
+        assert!(!network.ws_connections.contains_key("r2"));
+        // And when /up opens, it stays open; a second close finds nothing
+        let opened = json!({"httpChannelId": 45, "wsMessageType": "webSocketOpened",
+            "effectiveURI": "ws://127.0.0.1:8808/up"});
+        on_websocket(&mut network, &opened);
+        on_websocket(&mut network, &failed);
+        assert!(network.ws_connections["45"].closed_at.is_none());
+        assert_eq!(network.ws_connections.len(), 2);
+    }
+
+    /// #171: a burst of refused and dropped handshakes next to live
+    /// sockets whose opening comes late: each refusal or drop is closed
+    /// under its own handshake, and no live socket is listed closed.
+    #[test]
+    fn refusals_in_a_burst_never_close_a_live_socket() {
+        // Given 3 refused, 2 dropped and 2 accepted handshakes, interleaved
+        let mut network = NetworkState::default();
+        for (id, request) in [
+            ("d1", refused_handshake("/deny?n=1", Some(403), None)),
+            ("a1", accepted_handshake("/echo?live=1")),
+            (
+                "x1",
+                refused_handshake("/drop?n=1", None, Some("NS_ERROR_NET_RESET")),
+            ),
+            ("d2", refused_handshake("/deny?n=2", Some(403), None)),
+            ("a2", accepted_handshake("/echo?live=2")),
+            (
+                "x2",
+                refused_handshake("/drop?n=2", None, Some("NS_ERROR_NET_RESET")),
+            ),
+            ("d3", refused_handshake("/deny?n=3", Some(403), None)),
+        ] {
+            network.insert_request(id.into(), request);
+        }
+        let failed = json!({"httpChannelId": 0, "wsMessageType": "webSocketClosed", "code": 1006});
+        // When the 5 failures close before the live sockets report opening
+        for _ in 0..5 {
+            on_websocket(&mut network, &failed);
+        }
+        for (id, live) in [("51", 1), ("52", 2)] {
+            let opened = json!({"httpChannelId": id, "wsMessageType": "webSocketOpened",
+                "effectiveURI": format!("ws://127.0.0.1:8808/echo?live={live}")});
+            on_websocket(&mut network, &opened);
+        }
+        // Then each refusal and drop is closed under its own handshake
+        for id in ["d1", "d2", "d3", "x1", "x2"] {
+            let connection = &network.ws_connections[id];
+            assert!(connection.closed_at.is_some(), "{id}");
+            assert!(connection.error.is_some(), "{id}");
+        }
+        // And the live sockets are open, each listed once
+        assert_eq!(network.ws_connections.len(), 7);
+        assert!(network.ws_connections["51"].closed_at.is_none());
+        assert!(network.ws_connections["52"].closed_at.is_none());
     }
 
     /// #163: the sockets of a frame (same-origin too) are closed when its
@@ -757,6 +815,46 @@ mod tests {
         assert!(network.ws_connections["41"].closed_at.is_none());
     }
 
+    /// #172: the sockets of many frames (more than 64) are all closed when
+    /// their frames go, and many frames without sockets do not push out
+    /// the frames that have one.
+    #[test]
+    fn sockets_of_many_frames_are_closed() {
+        // Given a frame with a socket, 200 frames without, 70 frames with one
+        let mut network = NetworkState::default();
+        let mut owners = SocketOwners::default();
+        let announce = |owners: &mut SocketOwners, network: &mut NetworkState, actor: &str| {
+            let form = json!({"type": "target-available-form",
+                "target": {"actor": actor, "isTopLevelTarget": false}});
+            owners.on_target_form(&form, network);
+        };
+        let open = |owners: &mut SocketOwners, network: &mut NetworkState, actor: &str| {
+            let id = format!("{actor}-ws");
+            network.insert_ws_connection(id.clone(), format!("ws://a/{actor}"));
+            owners.own(actor, id);
+        };
+        announce(&mut owners, &mut network, "early");
+        open(&mut owners, &mut network, "early");
+        for n in 0..200 {
+            announce(&mut owners, &mut network, &format!("empty{n}"));
+        }
+        let frames: Vec<String> = (0..70).map(|n| format!("frame{n}")).collect();
+        for actor in &frames {
+            announce(&mut owners, &mut network, actor);
+            open(&mut owners, &mut network, actor);
+        }
+        // When every frame goes (its destroyed form says no more)
+        for actor in frames.iter().chain(std::iter::once(&"early".to_string())) {
+            let destroyed = json!({"type": "target-destroyed-form", "target": {"actor": actor}});
+            owners.on_target_form(&destroyed, &mut network);
+        }
+        // Then all their sockets are closed, saying why
+        assert_eq!(network.ws_connections.len(), 71);
+        for connection in network.ws_connections.values() {
+            assert_eq!(connection.close_reason.as_deref(), Some(FRAME_GONE));
+        }
+    }
+
     /// #163: a frame whose resources arrive before its announcement is
     /// still told a frame by its destroyed form; what is remembered stays
     /// bounded.
@@ -780,12 +878,13 @@ mod tests {
             }
         }
         assert_eq!(owners.targets.len(), OWNERS);
-        assert!(
-            owners
-                .targets
-                .values()
-                .all(|o| o.connections.len() == OWNED)
-        );
+        assert!(owners.targets.values().all(|c| c.len() == OWNED));
+        for n in 0..(FRAMES * 2) {
+            let form = json!({"type": "target-available-form",
+                "target": {"actor": format!("f{n}"), "isTopLevelTarget": false}});
+            owners.on_target_form(&form, &mut network);
+        }
+        assert_eq!(owners.frames.len(), FRAMES);
     }
 
     /// FWS-01: a long payload (a long string grip) keeps its first part
