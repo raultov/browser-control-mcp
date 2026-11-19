@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 `browser-control-mcp` is the successor of `chrome-debug-mcp` 1.5.6 and starts
 from a copy of its code: entries describe the differences from that release.
 
+## [Unreleased]
+
+### Fixed
+
+- `get_network_logs` redacts the `X-Appwrite-JWT` session JWT and the
+  `X-Firebase-AppCheck` token, and any header whose name contains `jwt` or
+  `appcheck`, unless `include_sensitive_headers: true` (#168).
+
 ## [0.22.0-beta.34] - 2026-11-18
 
 Public **BETA**. Two features and five fixes from an automated test

@@ -10,8 +10,9 @@ const SENSITIVE: &[&str] = &[
 
 /// Name fragments of the many non-standard credential headers (`X-Api-Key`,
 /// `X-CSRF-Token`, `X-Amz-Security-Token`, `X-Session-Id`...), compared
-/// case-insensitively. Challenges such as `WWW-Authenticate` hold no secret
-/// and stay readable.
+/// case-insensitively, plus the bearer tokens of web SDKs (`X-Appwrite-JWT`,
+/// `X-Firebase-AppCheck`; #168). Challenges such as `WWW-Authenticate` hold
+/// no secret and stay readable.
 const SENSITIVE_PARTS: &[&str] = &[
     "token",
     "secret",
@@ -22,6 +23,8 @@ const SENSITIVE_PARTS: &[&str] = &[
     "csrf",
     "xsrf",
     "credential",
+    "jwt",
+    "appcheck",
 ];
 
 /// Whole words of a header name (between `-`) that name a credential:
@@ -116,5 +119,20 @@ mod tests {
             assert!(is_sensitive(name), "{name}");
         }
         assert!(!is_sensitive("X-Dpopular"));
+    }
+
+    /// #168: the Appwrite session JWT and the Firebase App Check token are
+    /// bearer credentials sent by web SDKs.
+    #[test]
+    fn jwt_and_app_check_headers_are_sensitive() {
+        for name in [
+            "X-Appwrite-JWT",
+            "X-Firebase-AppCheck",
+            "X-JWT-Assertion",
+            "x_firebase_appcheck",
+        ] {
+            assert!(is_sensitive(name), "{name}");
+        }
+        assert!(!is_sensitive("X-Appwrite-Project"));
     }
 }

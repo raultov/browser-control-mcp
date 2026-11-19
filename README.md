@@ -791,7 +791,8 @@ incompatible:
   browser. Use `--no-firefox-debugger` when you do not need the debugger.
 - Credential headers (`Authorization`, `Cookie`, `Set-Cookie`, any
   header whose name contains `token`, `secret`, `api-key`, `password`,
-  `session`, `csrf` or `credential`, or has the word `key`, `dpop` or
+  `session`, `csrf`, `credential`, `jwt` or `appcheck`, such as
+  `X-Appwrite-JWT` or `X-Firebase-AppCheck`, or has the word `key`, `dpop` or
   `auth`, such as `X-Auth-Key`, `Ocp-Apim-Subscription-Key` or the `DPoP`
   proof, or a word starting with
   `authoriz`, `authentic`, `authn` or `authz`, such as `X-Authorization`,
