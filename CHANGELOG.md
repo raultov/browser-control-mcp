@@ -8,7 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 `browser-control-mcp` is the successor of `chrome-debug-mcp` 1.5.6 and starts
 from a copy of its code: entries describe the differences from that release.
 
-## [Unreleased]
+## [0.22.1-beta.35] - 2026-11-19
+
+Public **BETA**. Six fixes from an automated test round. Chrome lists
+the WebSocket of a removed frame of another origin as closed (#167), and
+Firefox closes the right socket when many are refused or dropped at the
+handshake (#171) and the sockets of more than 64 removed frames (#172).
+The `X-Appwrite-JWT` and `X-Firebase-AppCheck` headers are redacted
+(#168), top-level `await` returns the value after `o.do`, `o.new`, `o.in`
+and a same-line do-while (#169), and a field that refuses the focus
+itself is no longer blamed on the frame's Permissions-Policy (#170).
 
 ### Fixed
 
