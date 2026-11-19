@@ -27,6 +27,13 @@ from a copy of its code: entries describe the differences from that release.
   origin closed, with `the frame was removed or navigated away`, when the
   frame is removed, navigated away or its parent removed, as for
   same-origin frames and on Firefox (#167).
+- `fill_input`, `fill_form` and `press_key` no longer blame the frame's
+  Permissions-Policy (and advise a click) when a field of a frame denied
+  `focus-without-user-activation` refuses the focus itself (it got the
+  focus and gave it away, or its frame holds the focus): they say it cannot
+  take the focus. `fill_input` on a field that loses the focus while
+  typing (one that blurs itself) fails instead of reporting success with
+  only its first character typed (#170).
 
 ## [0.22.0-beta.34] - 2026-11-18
 

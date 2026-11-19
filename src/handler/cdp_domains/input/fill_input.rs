@@ -161,6 +161,11 @@ pub(crate) fn fill_reply(value: &Value, selector: &str) -> Result<CallToolResult
             format!("{done}\nNote: '{selector}' is an editor of its own (such as Monaco): its content could not be read back, so the text was typed but not checked.").into(),
         ]));
     }
+    if value["lost"].as_bool() == Some(true) {
+        return Err(CallToolError::from_message(format!(
+            "Element '{selector}' cannot take focus (hidden or inert, or it gives the focus away): it lost the focus while typing, so the text did not fully reach it."
+        )));
+    }
     let empty = value["empty"].as_bool() == Some(true);
     if value["rejected"].as_bool().unwrap_or(empty) {
         let state = if empty { "is empty" } else { "did not change" };
@@ -408,6 +413,30 @@ mod tests {
         let rejected = json!({"status": "rejected", "format": "YYYY-MM-DD"});
         let error = fill_start(&rejected, "#d").err().unwrap().to_string();
         assert!(error.contains("expects YYYY-MM-DD"), "{error}");
+    }
+
+    /// #170: a field that lost the focus to nothing while typing (it blurs
+    /// itself) fails instead of reporting success; one that took the text
+    /// anyway, or whose focus moved to another field, does not.
+    #[test]
+    fn a_field_that_loses_the_focus_fails() {
+        // Given a field that blurred itself after the first character
+        let lost = json!({"status": "done", "matches": false, "empty": false, "rejected": false, "lost": true});
+        // When the fill is checked
+        let error = fill_reply(&lost, "#b").unwrap_err().to_string();
+        // Then it fails, saying the field cannot take the focus
+        assert!(error.contains("'#b' cannot take focus"), "{error}");
+        // And a field that holds the text, or gave the focus to another
+        // field (a code input moving to its next box), is not an error
+        let matched = json!({"status": "done", "matches": true, "lost": true});
+        assert!(fill_reply(&matched, "#b").is_ok());
+        let moved = json!({"status": "done", "matches": false, "empty": false, "rejected": false, "lost": false});
+        let reply = fill_reply(&moved, "#b").unwrap();
+        let text = &reply.content[0].as_text_content().unwrap().text;
+        assert!(
+            text.contains("Note: the field holds something other"),
+            "{text}"
+        );
     }
 
     /// The reply text of a fill whose preparation answered `prepared`.

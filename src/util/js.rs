@@ -391,12 +391,19 @@ pub fn web_storage(action: &str, kind: &str, key: Option<&str>, value: Option<&s
     )
 }
 
-/// Declares `focusBlocked(doc)`: whether the Permissions-Policy of `doc`
-/// denies `focus-without-user-activation`, so a script focus without a
-/// user's gesture is refused (Chrome 158+, #165). `document.featurePolicy`
-/// is Chrome's only, and an older Chrome, which does not know the feature,
-/// answers `allowsFeature` false: the name must be in `features()`.
-const FOCUS_BLOCKED: &str = "const focusBlocked = doc => { const p = doc.featurePolicy; return !!p && \
+/// Declares `focusInto(el)`, which focuses `el` and answers whether it
+/// got the `focus` event (a field that blurs itself got it), and
+/// `focusBlocked(doc, got)`: whether a focus that did not land was refused
+/// by the Permissions-Policy of `doc`, which denies
+/// `focus-without-user-activation` to a script focus without a user's
+/// gesture (Chrome 158+, #165). Not when the element got the focus, nor
+/// when its frame holds the focus (handed down by its parent): the element
+/// refused it itself (#170). `document.featurePolicy` is Chrome's only,
+/// and an older Chrome, which does not know the feature, answers
+/// `allowsFeature` false: the name must be in `features()`.
+const FOCUS_BLOCKED: &str = "const focusInto = el => { let got = false; const seen = () => { got = true; }; \
+    el.addEventListener('focus', seen, true); el.focus(); el.removeEventListener('focus', seen, true); return got; }; \
+    const focusBlocked = (doc, got) => { const p = doc.featurePolicy; return !got && !doc.hasFocus() && !!p && \
     p.features().includes('focus-without-user-activation') && p.allowsFeature('focus-without-user-activation') === false; };";
 
 /// Focuses the element `selector` names (`press_key`): `{status}`
@@ -413,8 +420,8 @@ pub fn focus(selector: &str) -> String {
         &format!(
             "{FOCUS_BLOCKED} \
              {{ let w = el.ownerDocument.defaultView; while (w.frameElement) {{ w.frameElement.focus(); w = w.frameElement.ownerDocument.defaultView; }} }} \
-             el.focus(); const active = el.getRootNode().activeElement; \
-             return {{ status: active && (active === el || el.contains(active)) ? 'focused' : focusBlocked(el.ownerDocument) ? 'focus_blocked' : 'unfocusable' }};"
+             const got = focusInto(el); const active = el.getRootNode().activeElement; \
+             return {{ status: active && (active === el || el.contains(active)) ? 'focused' : focusBlocked(el.ownerDocument, got) ? 'focus_blocked' : 'unfocusable' }};"
         ),
     )
 }
@@ -563,9 +570,9 @@ const PREPARE_FILL: &str = "const W = el.ownerDocument.defaultView; \
     if (field && el.matches(':disabled')) return { status: 'not_editable', reason: 'disabled' }; \
     if (field && el.readOnly) return { status: 'not_editable', reason: 'read-only' }; \
     { let w = el.ownerDocument.defaultView; while (w.frameElement) { w.frameElement.focus(); w = w.frameElement.ownerDocument.defaultView; } } \
-    el.focus(); \
+    const got = focusInto(el); \
     const active = el.getRootNode().activeElement; \
-    if (active !== el && !(el.isContentEditable && active && active.contains(el))) return focusBlocked(el.ownerDocument) ? { status: 'focus_blocked' } \
+    if (active !== el && !(el.isContentEditable && active && active.contains(el))) return focusBlocked(el.ownerDocument, got) ? { status: 'focus_blocked' } \
         : { status: 'not_editable', reason: 'it cannot take focus (hidden or inert)', unfocused: true }; \
     const mac = /Mac|iPhone|iPad/.test(W.navigator.platform), mod = mac ? 'Meta' : 'Control'; \
     const clear = !append && text === '' ? [{ key: 'Backspace', modifiers: [] }] : []; \
@@ -597,8 +604,11 @@ const PREPARE_FILL: &str = "const W = el.ownerDocument.defaultView; \
     return { status: 'ready', prefix, keys: field ? [] : keys, multiline: !(el instanceof W.HTMLInputElement) };";
 
 /// What the element matching `selector` holds after `text` was typed:
-/// `{status: 'missing'}` or `{status: 'done', matches, empty}` (the value
-/// itself never leaves the page, as it may be a password). `change` is the
+/// `{status: 'missing'}` or `{status: 'done', matches, empty, lost}` (the
+/// value itself never leaves the page, as it may be a password); `lost`:
+/// the focus went to nothing (the `<body>`) while typing, so the rest of
+/// the text went nowhere (a field that blurs itself, #170), not to another
+/// field (a code input moving to its next box). `change` is the
 /// browser's, when the field loses focus, as for a user; but a window
 /// without focus (Firefox headless, a background window) fires no blur, so
 /// there an input or textarea whose value differs from the one the
@@ -615,7 +625,8 @@ pub fn fill_result(selector: &str, text: &str, mode: FillMode) -> String {
              const rejected = text !== '' && value === (append ? (before || '') : ''); \
              const lines = field ? value : (el.innerText || '').replace(/\\u00A0/g, ' ').replace(/\\n+$/, ''); \
              const matches = value === expected || lines === expected; \
-             return {{ status: 'done', matches, empty: value === '', rejected, append }};"
+             const active = el.ownerDocument.activeElement, lost = !active || active === el.ownerDocument.body; \
+             return {{ status: 'done', matches, empty: value === '', rejected, append, lost }};"
     );
     fill_snippet(selector, text, mode, &body)
 }
@@ -1169,27 +1180,54 @@ mod tests {
     /// `focus-without-user-activation` (Chrome 158+) from a hidden or inert
     /// element, guarded by `features()` (older Chrome does not know the
     /// name, and its `allowsFeature` answers false); a failed focus of a
-    /// fill is marked, so the tool can hand the frame the focus.
+    /// fill is marked, so the tool can hand the frame the focus. #170: an
+    /// element that got the focus and gave it away, or whose frame holds
+    /// the focus, refused it itself: the policy is not blamed.
     #[test]
     fn blocked_focus_is_told_from_an_unfocusable_element() {
         let guard = "p.features().includes('focus-without-user-activation') && p.allowsFeature('focus-without-user-activation') === false";
         for expression in [focus("#q"), prepare_fill("#q", "x", FillMode::Replace)] {
             assert!(expression.contains(guard), "{expression}");
             assert!(
-                expression.contains("const p = doc.featurePolicy; return !!p && "),
+                expression.contains(
+                    "const p = doc.featurePolicy; return !got && !doc.hasFocus() && !!p && "
+                ),
+                "{expression}"
+            );
+            assert!(
+                expression.contains("el.addEventListener('focus', seen, true); el.focus();"),
+                "{expression}"
+            );
+            assert!(
+                expression.contains("const got = focusInto(el);"),
                 "{expression}"
             );
             assert!(expression.contains("'focus_blocked'"), "{expression}");
         }
         assert!(
-            focus("#q")
-                .contains(": focusBlocked(el.ownerDocument) ? 'focus_blocked' : 'unfocusable'")
+            focus("#q").contains(
+                ": focusBlocked(el.ownerDocument, got) ? 'focus_blocked' : 'unfocusable'"
+            )
         );
         let fill = prepare_fill("#q", "x", FillMode::Replace);
         assert!(
             fill.contains("{ status: 'not_editable', reason: 'it cannot take focus (hidden or inert)', unfocused: true }"),
             "{fill}"
         );
+    }
+
+    /// #170: the fill check says when the focus went to nothing while
+    /// typing (the `<body>`), not when it went to another field.
+    #[test]
+    fn fill_result_tells_a_lost_focus() {
+        let check = fill_result("#b", "nope", FillMode::Replace);
+        assert!(
+            check.contains(
+                "const active = el.ownerDocument.activeElement, lost = !active || active === el.ownerDocument.body;"
+            ),
+            "{check}"
+        );
+        assert!(check.contains("append, lost }"), "{check}");
     }
 
     /// ISSUE-81: an editable element whose lines are blocks (Enter makes a
