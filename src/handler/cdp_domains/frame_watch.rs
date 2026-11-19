@@ -16,6 +16,7 @@ use crate::handler::cdp_domains::cdp_target::CdpTarget;
 use crate::handler::cdp_domains::debugger;
 use crate::handler::cdp_domains::event_pump::ListenerHandles;
 use crate::handler::cdp_domains::log::LogState;
+use crate::handler::cdp_domains::network::FRAME_GONE;
 use crate::handler::{DebuggerState, NetworkState};
 use cdp_browser_lite::{BrowserClient, NoParams, Tab, WsResponse};
 use serde_json::{Value, json};
@@ -59,6 +60,9 @@ pub(crate) struct FrameSinks {
     pub(crate) network: Arc<Mutex<NetworkState>>,
     pub(crate) debugger: Arc<Mutex<DebuggerState>>,
     watched: Arc<AtomicUsize>,
+    /// The targets of the watched frames the session lives in, outermost
+    /// first (none for the tab): the frames its sockets go with (#167).
+    frames: Vec<String>,
 }
 
 impl FrameSinks {
@@ -74,7 +78,15 @@ impl FrameSinks {
             network,
             debugger,
             watched: Arc::default(),
+            frames: Vec::new(),
         }
+    }
+
+    /// The sinks of the frame `target_id`, nested in this session.
+    fn within(&self, target_id: &str) -> Self {
+        let mut nested = self.clone();
+        nested.frames.push(target_id.to_string());
+        nested
     }
 
     /// Takes a place among the [`MAX_WATCHED`] frames, if one is free.
@@ -124,6 +136,8 @@ async fn watch(session: Tab, mut events: cdp_browser_lite::EventFilter, sinks: F
                 }
                 if let Some(target_id) = params["targetId"].as_str() {
                     sinks.debugger.lock().await.forget_frame_target(target_id);
+                    let mut network = sinks.network.lock().await;
+                    network.close_ws_connections_in(target_id, FRAME_GONE);
                 }
             }
             _ => {}
@@ -220,6 +234,7 @@ async fn watch_frame(session: &Tab, target_id: &str, sinks: FrameSinks) -> Liste
         return listeners;
     };
     let target = CdpTarget::tab(frame.clone());
+    let sinks = sinks.within(target_id);
     // Subscribed before the domains are enabled: nothing is missed.
     listeners.absorb(crate::handler::cdp_domains::log::start_log_listener(
         &target,
@@ -230,6 +245,7 @@ async fn watch_frame(session: &Tab, target_id: &str, sinks: FrameSinks) -> Liste
             &target,
             sinks.network.clone(),
             frame.session_id().to_string(),
+            sinks.frames.clone(),
         ),
     );
     let session = frame.session_id().to_string();
@@ -271,6 +287,7 @@ async fn watch_worker(session: &Tab, target_id: &str, sinks: FrameSinks) -> List
             &target,
             sinks.network.clone(),
             worker.session_id().to_string(),
+            sinks.frames.clone(),
         ),
     );
     for domain in WORKER_DOMAINS {
@@ -634,5 +651,49 @@ mod tests {
             .await;
         assert_eq!(session_of_request("F.1").as_deref(), Some(frame.as_str()));
         assert_eq!(session_of_request("DOC").as_deref(), Some(frame.as_str()));
+    }
+
+    /// #167: the sockets of a frame of another origin are closed when its
+    /// target detaches (removed, navigated away, or its parent removed),
+    /// Chrome reporting no close for them; the tab's sockets stay open.
+    #[tokio::test]
+    async fn sockets_of_a_frame_that_goes_are_closed() {
+        // Given a watched frame with a socket, and a socket of the tab
+        let watched = watched_tab().await;
+        attach(&watched, "AUTO-F", "iframe");
+        let frame = frame_session(&watched).await;
+        let network = &watched.sinks.network;
+        network
+            .lock()
+            .await
+            .insert_ws_connection("WS0".into(), "ws://a/tab".into());
+        let created = json!({"requestId": "WS1", "url": "ws://b/echo"});
+        watched
+            .mock
+            .emit("Network.webSocketCreated", created, Some(&frame));
+        let placed = || {
+            network.try_lock().is_ok_and(|n| {
+                n.ws_connections
+                    .get("WS1")
+                    .is_some_and(|c| !c.frames.is_empty())
+            })
+        };
+        eventually(placed).await;
+        // When the frame's target detaches
+        let gone = json!({"sessionId": "AUTO-F", "targetId": "T-iframe"});
+        let tab = Some(watched.tab.session_id());
+        watched.mock.emit("Target.detachedFromTarget", gone, tab);
+        let closed = || {
+            network
+                .try_lock()
+                .is_ok_and(|n| n.ws_connections["WS1"].closed_at.is_some())
+        };
+        eventually(closed).await;
+        // Then its socket is closed, saying why; the tab's is open
+        let network = network.lock().await;
+        let socket = &network.ws_connections["WS1"];
+        assert_eq!(socket.close_reason.as_deref(), Some(FRAME_GONE));
+        assert_eq!(socket.frames, ["T-iframe"]);
+        assert!(network.ws_connections["WS0"].closed_at.is_none());
     }
 }

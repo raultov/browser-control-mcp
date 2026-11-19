@@ -146,6 +146,9 @@ fn on_ws_frame(st: &mut NetworkState, request_id: &str, params: &serde_json::Val
 /// Why a WebSocket connection is closed when its document goes away.
 pub(crate) const NAVIGATED_AWAY: &str = "the page navigated away";
 
+/// Why the sockets of a frame that went away are closed (#163, #167).
+pub(crate) const FRAME_GONE: &str = "the frame was removed or navigated away";
+
 /// [`process_network_event`] for an event of the tab's whole stream: a
 /// main-frame navigation also closes the WebSocket connections the page
 /// it replaced left open, as Chrome reports no close for them (#154).
@@ -172,18 +175,47 @@ pub(crate) fn start_network_listener(
     crate::handler::cdp_domains::event_pump::spawn_state_listener(target, "", state, process)
 }
 
-/// [`start_network_listener`] for a frame of another origin on Chrome,
-/// whose session is `session`: its requests note it, so their bodies are
-/// asked there. Any event of a request counts: the frame's own document is
-/// requested by its parent, before the frame's session exists, and only
-/// its response reaches the frame's session.
+/// [`start_network_listener`] for a frame of another origin (or a worker)
+/// on Chrome, whose session is `session`: its requests note it, so their
+/// bodies are asked there. Any event of a request counts: the frame's own
+/// document is requested by its parent, before the frame's session exists,
+/// and only its response reaches the frame's session. Its WebSockets note
+/// `frames`, the targets of the frames of another origin it lives in, to
+/// be closed when one of them goes (#167).
 pub(crate) fn start_frame_network_listener(
     target: &crate::handler::cdp_domains::cdp_target::CdpTarget,
     state: Arc<Mutex<NetworkState>>,
     session: String,
+    frames: Vec<String>,
 ) -> tokio::task::JoinHandle<()> {
-    let process = move |event, state| process_frame_event(event, state, session.clone());
+    let frames = Arc::new(frames);
+    let process = move |event, state| {
+        process_placed_event(event, state, session.clone(), Arc::clone(&frames))
+    };
     crate::handler::cdp_domains::event_pump::spawn_state_listener(target, "Network", state, process)
+}
+
+/// [`process_frame_event`], then a socket the frame opened notes the
+/// frames it lives in.
+async fn process_placed_event(
+    event: WsResponse,
+    state: Arc<Mutex<NetworkState>>,
+    session: String,
+    frames: Arc<Vec<String>>,
+) {
+    let created = (event.method.as_deref() == Some("Network.webSocketCreated"))
+        .then(|| {
+            event
+                .params
+                .as_ref()
+                .and_then(|p| str_field(p, "requestId"))
+        })
+        .flatten()
+        .map(str::to_string);
+    process_frame_event(event, Arc::clone(&state), session).await;
+    if let Some(id) = created {
+        state.lock().await.place_ws_connection(&id, &frames);
+    }
 }
 
 /// [`process_network_event`] for an event of the frame (or the popup's

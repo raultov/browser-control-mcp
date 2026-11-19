@@ -222,6 +222,11 @@ pub struct WsConnection {
     /// Why a frame failed (Chrome's `webSocketFrameError`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// On Chrome, the targets of the frames of another origin the socket
+    /// lives in, outermost first: when one goes, the socket is closed, as
+    /// Chrome detaches the frame before it reports the close (#167).
+    #[serde(skip)]
+    pub(crate) frames: Vec<String>,
 }
 
 impl WsConnection {
@@ -587,6 +592,31 @@ impl NetworkState {
         for connection in open.filter(|c| c.closed_at.is_none()) {
             connection.closed_at = Some(at);
             connection.close_reason = Some(reason.to_string());
+        }
+    }
+
+    /// Notes the frames of another origin (Chrome target ids, outermost
+    /// first) the WebSocket connection `id` lives in (#167).
+    pub(crate) fn place_ws_connection(&mut self, id: &str, frames: &[String]) {
+        if let Some(connection) = self.ws_connections.get_mut(id)
+            && connection.frames.is_empty()
+        {
+            connection.frames = frames.to_vec();
+        }
+    }
+
+    /// Closes, for `reason`, the WebSocket connections still open that live
+    /// in the frame of another origin whose target is `frame`, or in a
+    /// frame nested in it: it went away, and Chrome reports no close for
+    /// them (#167).
+    pub(crate) fn close_ws_connections_in(&mut self, frame: &str, reason: &str) {
+        let at = now_ms();
+        let open = self.ws_connections.values_mut();
+        for connection in open.filter(|c| c.closed_at.is_none()) {
+            if connection.frames.iter().any(|f| f == frame) {
+                connection.closed_at = Some(at);
+                connection.close_reason = Some(reason.to_string());
+            }
         }
     }
 
@@ -1955,6 +1985,46 @@ mod tests {
         let (first, second) = (first.unwrap(), second.unwrap());
         assert!(Arc::ptr_eq(&first, &second));
         assert!(Arc::ptr_eq(&first, &handler.default_session));
+    }
+
+    /// #167: on Chrome, the sockets of a frame of another origin, and of the
+    /// frames nested in it, are closed when it goes; those already closed
+    /// and those of other frames keep what they had.
+    #[test]
+    fn sockets_of_a_gone_frame_are_closed() {
+        // Given sockets of the tab, of a frame, of a nested frame, of another
+        let mut network = NetworkState::default();
+        for (id, frames) in [
+            ("tab", vec![]),
+            ("outer", vec!["T-1"]),
+            ("inner", vec!["T-1", "T-2"]),
+            ("other", vec!["T-3"]),
+            ("done", vec!["T-1"]),
+        ] {
+            network.insert_ws_connection(id.into(), format!("ws://a/{id}"));
+            let frames: Vec<String> = frames.into_iter().map(str::to_string).collect();
+            network.place_ws_connection(id, &frames);
+        }
+        let close = WsClose {
+            at: 1.0,
+            code: Some(1000),
+            ..Default::default()
+        };
+        network.close_ws_connection("done", close);
+        // When the frame T-1 goes
+        network.close_ws_connections_in("T-1", "gone");
+        // Then its sockets and its nested frame's are closed
+        for id in ["outer", "inner"] {
+            assert_eq!(
+                network.ws_connections[id].close_reason.as_deref(),
+                Some("gone")
+            );
+        }
+        // And the others keep what they had
+        assert!(network.ws_connections["tab"].closed_at.is_none());
+        assert!(network.ws_connections["other"].closed_at.is_none());
+        assert_eq!(network.ws_connections["done"].close_code, Some(1000));
+        assert_eq!(network.ws_connections["done"].close_reason, None);
     }
 
     /// SEC-18: Observation buffers are bounded.

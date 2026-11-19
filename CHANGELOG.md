@@ -23,6 +23,10 @@ from a copy of its code: entries describe the differences from that release.
   handshake is closed under its own URL and reason, never on a live socket
   whose opening Firefox reports later (#171); the sockets of every removed
   frame are listed closed, not only those of the 64 newest frames (#172).
+- `get_network_logs` on Chrome lists the WebSocket of a frame of another
+  origin closed, with `the frame was removed or navigated away`, when the
+  frame is removed, navigated away or its parent removed, as for
+  same-origin frames and on Firefox (#167).
 
 ## [0.22.0-beta.34] - 2026-11-18
 

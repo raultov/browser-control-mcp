@@ -13,6 +13,7 @@ use crate::handler::WebSocketFrame;
 use crate::handler::WsClose;
 use crate::handler::cdp_domains::event_pump::ListenerHandles;
 use crate::handler::cdp_domains::log::{Channel, ConsoleMessage, LogState};
+use crate::handler::cdp_domains::network::FRAME_GONE;
 use crate::util::bounded::BoundedMap;
 use bidi_browser_lite::Debugger;
 use bidi_browser_lite::bidi_lite::rdp::protocol::RdpPacket;
@@ -113,9 +114,6 @@ fn watch_websockets(
         }
     })
 }
-
-/// Why the sockets of a frame that went away are closed (#163).
-pub(crate) const FRAME_GONE: &str = "the frame was removed or navigated away";
 
 /// How many targets with sockets [`SocketOwners`] remembers: as many as
 /// the connections the log keeps, so every listed socket keeps its owner
