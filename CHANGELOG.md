@@ -15,6 +15,10 @@ from a copy of its code: entries describe the differences from that release.
 - `get_network_logs` redacts the `X-Appwrite-JWT` session JWT and the
   `X-Firebase-AppCheck` token, and any header whose name contains `jwt` or
   `appcheck`, unless `include_sensitive_headers: true` (#168).
+- `evaluate_js` with top-level `await` returns the last value after a line
+  ending with a property named like a keyword (`const v = o.do`, `o.new`,
+  `o.in`), and after a do-while's condition on the same line (`do { }
+  while (false) 'x'`) (#169).
 
 ## [0.22.0-beta.34] - 2026-11-18
 

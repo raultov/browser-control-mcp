@@ -35,6 +35,9 @@ struct Token {
     end: usize,
     /// Whether a line break (in whitespace or a block comment) precedes it.
     line_before: bool,
+    /// Whether it is a word after `.` (or `?.`): a property's name, never
+    /// a keyword (`o.do`, `o.new`, `o.in`; #169).
+    property: bool,
 }
 
 impl Token {
@@ -69,17 +72,24 @@ impl Token {
     /// (`typeof`, `in`, `await`), not `return`, `throw` or `yield`, which
     /// a line break ends (#155), nor `of`, more often a variable's name
     /// than the end of a line in a `for (... of` head, which is inside
-    /// brackets anyway (#162).
+    /// brackets anyway (#162). A property named like one (`o.in`) is an
+    /// operand (#169).
     fn awaits_operand(&self, code: &str) -> bool {
         let text = self.text(code);
         match self.kind {
             Kind::Punct => !matches!(text, "++" | "--" | ";"),
             Kind::Word => {
-                BEFORE_OPERAND.contains(&text)
+                self.is_keyword(code, BEFORE_OPERAND)
                     && !matches!(text, "return" | "throw" | "yield" | "of")
             }
             _ => false,
         }
+    }
+
+    /// Whether this token is one of `keywords`, not a property named like
+    /// it.
+    fn is_keyword(&self, code: &str, keywords: &[&str]) -> bool {
+        !self.property && keywords.contains(&self.text(code))
     }
 }
 
@@ -262,7 +272,7 @@ impl Lexer<'_> {
         match last.kind {
             Kind::Open(_) => true,
             Kind::Punct => !matches!(last.text(self.code), "++" | "--"),
-            Kind::Word => BEFORE_OPERAND.contains(&last.text(self.code)),
+            Kind::Word => last.is_keyword(self.code, BEFORE_OPERAND),
             Kind::Literal | Kind::Close => false,
         }
     }
@@ -271,11 +281,13 @@ impl Lexer<'_> {
     /// its end.
     fn push(&mut self, kind: Kind, start: usize, end: usize) -> usize {
         let end = end.min(self.bytes.len());
+        let after_dot = self.tokens.last().is_some_and(|t| t.is(self.code, "."));
         self.tokens.push(Token {
             kind,
             start,
             end,
             line_before: std::mem::take(&mut self.line_before),
+            property: kind == Kind::Word && after_dot,
         });
         end
     }
@@ -418,7 +430,22 @@ struct StatementScan {
     /// Whether the current statement declares a function or a class whose
     /// body has not opened yet.
     declaring: bool,
+    /// How many `do` statements at depth 0 wait for their `while`.
+    pending_do: usize,
+    do_while: DoWhile,
     closed: Closed,
+}
+
+/// Where the scan is in a do-while at depth 0, whose condition's `)` ends
+/// the statement (#169).
+#[derive(Clone, Copy, Default, PartialEq)]
+enum DoWhile {
+    #[default]
+    Outside,
+    /// The `while` of a `do` was just read: its `(` holds the condition.
+    While,
+    /// The `(` open at depth 0 holds the condition.
+    Condition,
 }
 
 /// Keywords after which a `{` opens a block statement.
@@ -431,6 +458,7 @@ impl StatementScan {
         let previous = i.checked_sub(1).and_then(|p| tokens.get(p));
         let closed = std::mem::take(&mut self.closed);
         if self.depth == 0
+            && !self.read_do(code, token)
             && let Some(previous) = previous
             && starts_statement(code, (previous, token), closed)
         {
@@ -443,6 +471,10 @@ impl StatementScan {
             Kind::Open(byte) => {
                 if self.depth == 0 {
                     self.head = byte == b'(' && opens_head(code, tokens, i);
+                    let do_while = std::mem::take(&mut self.do_while);
+                    if byte == b'(' && do_while == DoWhile::While {
+                        self.do_while = DoWhile::Condition;
+                    }
                     let after = previous.is_some_and(|p| BEFORE_BLOCK.contains(&p.text(code)));
                     let body = byte == b'{' && std::mem::take(&mut self.declaring);
                     self.block = byte == b'{'
@@ -454,6 +486,9 @@ impl StatementScan {
                 self.depth -= 1;
                 if self.depth == 0 {
                     self.closed = match token.text(code) {
+                        ")" if std::mem::take(&mut self.do_while) == DoWhile::Condition => {
+                            Closed::Block
+                        }
                         ")" if self.head => Closed::Head,
                         "}" if self.block => Closed::Block,
                         _ => Closed::Other,
@@ -462,6 +497,21 @@ impl StatementScan {
             }
             _ => {}
         }
+    }
+
+    /// Counts a `do` at depth 0; answers whether `token` is the `while` of
+    /// one, which goes on with the `do` statement instead of starting one
+    /// (`do {...} while (c)`; #169).
+    fn read_do(&mut self, code: &str, token: &Token) -> bool {
+        if token.is_keyword(code, &["do"]) {
+            self.pending_do += 1;
+        }
+        let ends_do = self.pending_do > 0 && token.is_keyword(code, &["while"]);
+        if ends_do {
+            self.pending_do -= 1;
+            self.do_while = DoWhile::While;
+        }
+        ends_do
     }
 }
 
@@ -878,6 +928,48 @@ mod tests {
                 !wrapped.contains("return (()") && !wrapped.contains("return (.name"),
                 "{wrapped}"
             );
+        }
+    }
+
+    /// #169: a property named like a keyword (`o.do`, `o.new`, `o?.in`)
+    /// at a line's end ends its statement, and a value after a do-while's
+    /// condition on the same line is the last statement, returned.
+    #[test]
+    fn values_after_keyword_properties_and_do_while_are_returned() {
+        for (code, last) in [
+            (
+                "const o = await Promise.resolve({do: 4041})\nconst v = o.do\nv * 2",
+                "v * 2",
+            ),
+            (
+                "const o = await Promise.resolve({new: 5051})\nconst v = o.new\nv + 1",
+                "v + 1",
+            ),
+            (
+                "const o = await Promise.resolve({in: 6061})\nlet w = o?.in\nw - 1",
+                "w - 1",
+            ),
+            ("await 0; do { } while (false) 'dw-ok'", "'dw-ok'"),
+            ("await 0; do x++; while (x < 3) x", "x"),
+            ("await 0; do { } while (false)\n'dw-nl'", "'dw-nl'"),
+            ("await 0; o.do /2/ 1", "o.do /2/ 1"),
+        ] {
+            // When the code is wrapped
+            let wrapped = with_top_level_await(code);
+            // Then the last expression is returned
+            assert!(
+                wrapped.ends_with(&format!("return ({last}\n); }})()")),
+                "{wrapped}"
+            );
+        }
+        for code in [
+            "await 0; do { x++ } while (x < 3)",
+            "await 0; do {\n  await x\n}\nwhile (false)",
+        ] {
+            // When the last statement is a do-while
+            let wrapped = with_top_level_await(code);
+            // Then it runs as is in the async function
+            assert!(!wrapped.contains("return ("), "{wrapped}");
         }
     }
 
