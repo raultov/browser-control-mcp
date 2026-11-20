@@ -1030,10 +1030,7 @@ pub(crate) async fn open_tab(params: CallToolRequestParams, handler: &McpHandler
         .map_err(CallToolError::from_message)?;
     // Created blank and registered before navigating (as on Chrome), so the
     // page's first events reach its buffers.
-    let tab = browser
-        .new_tab("about:blank")
-        .await
-        .map_err(super::lifecycle_error)?;
+    let tab = blank_tab(&session, &browser).await?;
     let context = tab.context_id().to_string();
     let registered = write(&session.tabs).register(tab.clone(), args.label.clone(), &url);
     let tab_id = match registered {
@@ -1068,6 +1065,32 @@ pub(crate) async fn open_tab(params: CallToolRequestParams, handler: &McpHandler
     };
     let reply = json!({"tab_id": tab_id, "target_id": context, "url": url, "label": args.label});
     Ok(text(reply.to_string()))
+}
+
+/// The instance's start tab, if still untouched: the only tab, open when
+/// the session started, without a label, on about:blank with nothing in
+/// its history (#180).
+async fn start_tab(session: &FirefoxSession) -> Option<bidi_browser_lite::Tab> {
+    let tab = read(&session.tabs).start_tab()?;
+    let blank = "history.length === 1 && location.href === 'about:blank'";
+    let untouched = page::run_snippet(&tab, blank).await.ok()?;
+    (untouched == serde_json::Value::Bool(true)).then_some(tab)
+}
+
+/// The blank tab `open_tab` loads its URL in: the instance's untouched
+/// start tab ([`start_tab`]), rather than a tab opened beside it (#180),
+/// else a new one.
+async fn blank_tab(
+    session: &FirefoxSession,
+    browser: &bidi_browser_lite::Browser,
+) -> Result<bidi_browser_lite::Tab, CallToolError> {
+    match start_tab(session).await {
+        Some(tab) => Ok(tab),
+        None => browser
+            .new_tab("about:blank")
+            .await
+            .map_err(|e| super::lifecycle_error(e).into()),
+    }
 }
 
 /// `close_tab`.
@@ -1723,6 +1746,43 @@ mod tests {
         assert_eq!(created.len(), 1);
         let navigated = mock.bidi().commands_named("browsingContext.navigate");
         assert_eq!(navigated[0].params["wait"], "complete");
+        ts::stop(&handler).await;
+    }
+
+    /// #180: open_tab takes the session's untouched blank start tab, with
+    /// the label asked for, instead of opening a second tab beside it.
+    #[tokio::test]
+    async fn open_tab_takes_the_untouched_start_tab() {
+        // Given a Firefox whose only tab is blank, with nothing in its history
+        let mock = MockFirefox::start(false).await.unwrap();
+        mock.bidi().respond_with(
+            "browsingContext.getTree",
+            |_| json!({"contexts": [{"context": "ctx-0", "url": "about:blank", "children": null}]}),
+        );
+        mock.bidi().respond_with("script.evaluate", |_| {
+            evaluate_success(json!({"type": "boolean", "value": true}))
+        });
+        let handler = ts::handler(&mock);
+        // When open_tab opens a blank tab labelled "main"
+        let args = json!({"label": "main"});
+        let reply = ts::json_of(&open_tab(call("open_tab", args), &handler).await.unwrap());
+        // Then the start tab is used, now labelled, and no tab was created
+        assert_eq!(reply["tab_id"], "tab-1");
+        assert_eq!(reply["target_id"], "ctx-0");
+        assert_eq!(mock.bidi().count("browsingContext.create"), 0);
+        let session = handler.firefox(None).await.unwrap();
+        assert_eq!(
+            read(&session.tabs).tabs["tab-1"].label.as_deref(),
+            Some("main")
+        );
+        // And the next open_tab opens a tab of its own
+        let reply = ts::json_of(
+            &open_tab(call("open_tab", json!({})), &handler)
+                .await
+                .unwrap(),
+        );
+        assert_eq!(reply["tab_id"], "tab-2");
+        assert_eq!(mock.bidi().count("browsingContext.create"), 1);
         ts::stop(&handler).await;
     }
 

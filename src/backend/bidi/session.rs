@@ -109,6 +109,9 @@ pub(crate) struct FirefoxTabs {
     /// Tabs Firefox announced that were not registered, the instance being
     /// at [`MAX_TABS`]: an action that opened one says so (ISSUE-95).
     pub(crate) untracked: u64,
+    /// The tabs open when the session started (no action opened them):
+    /// `open_tab` takes one still blank instead of opening a tab (#180).
+    pub(crate) initial: std::collections::HashSet<String>,
 }
 
 impl FirefoxTabs {
@@ -181,6 +184,29 @@ impl FirefoxTabs {
         }
     }
 
+    /// Registers a tab open when the session started, as [`Self::adopt`],
+    /// remembering it in [`Self::initial`].
+    pub(crate) fn adopt_initial(&mut self, tab: Tab, url: &str) {
+        let context = tab.context_id().to_string();
+        self.adopt(tab, url);
+        if let Some(id) = self.tab_of_top(&context) {
+            self.initial.insert(id);
+        }
+    }
+
+    /// The instance's start tab (#180), if it may still be it: the only
+    /// tab, open when the session started, without a label and on
+    /// about:blank as far as the events told.
+    pub(crate) fn start_tab(&self) -> Option<Tab> {
+        let mut tabs = self.tabs.iter();
+        let (id, entry) = tabs.next()?;
+        let start = tabs.next().is_none()
+            && entry.label.is_none()
+            && entry.url == "about:blank"
+            && self.initial.contains(id);
+        start.then(|| entry.tab.clone())
+    }
+
     /// Whether a new tab labelled `label` may be registered (under the cap,
     /// label unused). `open_tab` checks before creating the page.
     pub(crate) fn check_new(&self, label: Option<&str>) -> Result<(), String> {
@@ -203,6 +229,7 @@ impl FirefoxTabs {
     /// restart never names a different tab.
     pub(crate) fn clear(&mut self) {
         self.tabs.clear();
+        self.initial.clear();
         self.parents.clear();
         self.recent.clear();
         self.active = None;
@@ -224,6 +251,7 @@ impl FirefoxTabs {
     /// Forgets a tab; the active tab falls back to another one.
     pub(crate) fn remove(&mut self, id: &str) -> Option<FirefoxTab> {
         let removed = self.tabs.remove(id);
+        self.initial.remove(id);
         self.recent.retain(|seen| seen != id);
         if self.active.as_deref() == Some(id) {
             let open = self.tabs.keys();
@@ -510,7 +538,7 @@ impl FirefoxSession {
             } else {
                 (tab, url)
             };
-            write(&self.tabs).adopt(tab, &url);
+            write(&self.tabs).adopt_initial(tab, &url);
         }
         Ok(())
     }
@@ -794,6 +822,42 @@ pub(crate) mod tests {
         tabs.adopt(extra, "http://a/");
         // Then it is counted, not registered
         assert_eq!((tabs.tabs.len(), tabs.untracked), (MAX_TABS, 1));
+    }
+
+    /// #180: the only tab, open when the session started, unlabelled and
+    /// blank, is the start tab open_tab takes; a tab an action opened, a
+    /// labelled one, one that left about:blank or one among others is not.
+    #[tokio::test]
+    async fn only_an_untouched_initial_tab_is_the_start_tab() {
+        let mock = MockBidi::start(MockBidiBehavior::Ready).await.unwrap();
+        let client = bidi_browser_lite::BrowserClient::connect(
+            &format!("127.0.0.1:{}", mock.port()),
+            std::time::Duration::from_secs(5),
+        )
+        .await
+        .unwrap();
+        // Given the tab the session found open
+        let mut tabs = FirefoxTabs::default();
+        tabs.adopt_initial(client.attach("ctx-1").await.unwrap(), "about:blank");
+        // Then it is the start tab
+        assert_eq!(
+            tabs.start_tab().map(|t| t.context_id().to_string()),
+            Some("ctx-1".into())
+        );
+        // But not once it went elsewhere, nor labelled
+        tabs.tabs.get_mut("tab-1").unwrap().url = "http://a/".into();
+        assert!(tabs.start_tab().is_none());
+        tabs.tabs.get_mut("tab-1").unwrap().url = "about:blank".into();
+        tabs.tabs.get_mut("tab-1").unwrap().label = Some("x".into());
+        assert!(tabs.start_tab().is_none());
+        tabs.tabs.get_mut("tab-1").unwrap().label = None;
+        // Nor beside another tab
+        tabs.register(client.attach("ctx-2").await.unwrap(), None, "about:blank")
+            .unwrap();
+        assert!(tabs.start_tab().is_none());
+        // And a blank tab an action opened never is
+        tabs.remove("tab-1");
+        assert!(tabs.start_tab().is_none());
     }
 
     /// REV-13: tab ids are not reused after a restart.

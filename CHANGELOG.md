@@ -12,6 +12,10 @@ from a copy of its code: entries describe the differences from that release.
 
 ### Fixed
 
+- `open_tab` uses an instance's start tab, when it is the only tab, still
+  blank and unlabelled, instead of opening a second tab beside it: a fresh
+  instance no longer keeps an empty `about:blank` tab open (Chrome and
+  Firefox) (#180).
 - `evaluate_js` with top-level `await` returns the value after a
   braceless do-while whose body is a loop (`do while (x < 3) x++; while
   (false) 'v'`): the inner loop's `while` was taken for the `do`'s

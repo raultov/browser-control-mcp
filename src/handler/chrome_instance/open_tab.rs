@@ -6,7 +6,7 @@ use rust_mcp_sdk::{
 
 #[macros::mcp_tool(
     name = "open_tab",
-    description = "Opens a tab (launching the instance if needed), makes it the active tab in front, and waits for 'url' to load. Returns {tab_id, target_id, url, label}; a network error fails naming the tab, which stays open.",
+    description = "Opens a tab (launching the instance if needed; a fresh instance's untouched blank start tab is used instead of opening a second one), makes it the active tab in front, and waits for 'url' to load. Returns {tab_id, target_id, url, label}; a network error fails naming the tab, which stays open.",
     destructive_hint = false
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
@@ -134,7 +134,54 @@ async fn drop_creation_page(
     }
 }
 
-/// Connects the session, then creates the tab. The session connection
+/// How long `open_tab` waits for the pages open before the session
+/// tracked the browser to be registered, to find its start tab.
+const DISCOVERY_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// Whether a navigation history is a page that never left the blank page
+/// it opened on: one entry, about:blank.
+fn is_blank_history(history: &serde_json::Value) -> bool {
+    history["entries"]
+        .as_array()
+        .is_some_and(|entries| entries.len() == 1 && entries[0]["url"] == BLANK)
+}
+
+/// The instance's start tab, which `open_tab` takes, labelled `label`,
+/// instead of opening a tab beside it (#180: a fresh instance kept its
+/// empty about:blank tab open next to the one the agent opened): the only
+/// tab, open before the session tracked the browser (no action opened it),
+/// without a label and still blank. `(tab id, target id)`.
+async fn start_tab(
+    session: &crate::handler::BrowserSession,
+    label: Option<&str>,
+) -> Option<(String, String)> {
+    super::tab_lifecycle::registrations_done(&session.tabs, DISCOVERY_WAIT).await;
+    let (tab_id, target_id) = {
+        let registry = crate::util::sync::read(&session.tabs);
+        let mut tabs = registry.tabs.iter();
+        let (id, entry) = tabs.next()?;
+        let target_id = entry.tab.target_id();
+        let start = tabs.next().is_none() && entry.label.is_none() && registry.was_open(target_id);
+        start.then(|| (id.clone(), target_id.to_string()))?
+    };
+    let target = session.target(Some(tab_id.clone())).await.ok()?;
+    let history = target
+        .send_raw_command("Page.getNavigationHistory", serde_json::json!({}))
+        .await
+        .ok()?
+        .result?;
+    if !is_blank_history(&history) {
+        return None;
+    }
+    let mut registry = crate::util::sync::write(&session.tabs);
+    registry.check_new(label).ok()?;
+    let entry = registry.tabs.get_mut(&tab_id)?;
+    entry.label = label.map(str::to_string);
+    Some((tab_id, target_id))
+}
+
+/// Connects the session, then takes the instance's untouched start tab
+/// ([`start_tab`]) or creates a tab. The session connection
 /// starts target discovery (popups, tabs the page or the user closes, the
 /// browser's first page): without it a session whose first call is
 /// open_tab would never track them. It connects to a page: with none left
@@ -162,6 +209,9 @@ async fn connect_and_create(
         };
     }
     drop(session.get_or_connect().await?);
+    if let Some(start) = start_tab(session, label.as_deref()).await {
+        return Ok(start);
+    }
     create_tab(session, label, url).await
 }
 
@@ -232,6 +282,51 @@ mod tests {
             Some("http://127.0.0.1/")
         );
         assert_eq!(deferred_navigation(BLANK), None);
+    }
+
+    /// #180: open_tab takes a fresh instance's start tab (the only tab,
+    /// open before the session tracked the browser, still blank), with
+    /// the label asked for, instead of opening a second tab beside it.
+    #[tokio::test]
+    async fn open_tab_takes_the_untouched_start_tab() {
+        use crate::handler::cdp_domains::tests::spawn_recording_mock;
+        // Given an instance whose only tab is its blank start page
+        let mock = spawn_recording_mock().await;
+        mock.respond_with("Page.getNavigationHistory", |_| {
+            serde_json::json!({"currentIndex": 0, "entries": [{"id": 1, "url": "about:blank"}]})
+        });
+        let (_handler, session, _browser, tab_id) = loading_tab(mock).await;
+        crate::util::sync::write(&session.tabs).set_preexisting(vec!["T-page-1".into()], vec![]);
+        // When open_tab looks for a tab to use
+        let start = start_tab(&session, Some("main")).await;
+        // Then it is the start tab, now labelled
+        assert_eq!(start, Some((tab_id.clone(), "T-page-1".to_string())));
+        let registry = crate::util::sync::read(&session.tabs);
+        assert_eq!(registry.tabs[&tab_id].label.as_deref(), Some("main"));
+    }
+
+    /// #180: a tab an action opened, or a start tab that left its blank
+    /// page, is never taken: open_tab opens a tab of its own.
+    #[tokio::test]
+    async fn open_tab_leaves_tabs_in_use_alone() {
+        use crate::handler::cdp_domains::tests::spawn_recording_mock;
+        // Given a tab that was not open before the session tracked the browser
+        let mock = spawn_recording_mock().await;
+        mock.respond_with("Page.getNavigationHistory", |_| {
+            serde_json::json!({"currentIndex": 0, "entries": [{"id": 1, "url": "about:blank"}]})
+        });
+        let (_handler, session, _browser, _tab_id) = loading_tab(mock).await;
+        crate::util::sync::write(&session.tabs).set_preexisting(Vec::new(), Vec::new());
+        // When open_tab looks for a tab to use, Then there is none
+        assert_eq!(start_tab(&session, None).await, None);
+        // And a start tab whose history went on is not blank
+        let went_on = serde_json::json!({"currentIndex": 1, "entries": [{"url": "about:blank"}, {"url": "http://127.0.0.1:8/"}]});
+        assert!(!is_blank_history(&went_on));
+        let elsewhere =
+            serde_json::json!({"currentIndex": 0, "entries": [{"url": "http://127.0.0.1:8/"}]});
+        assert!(!is_blank_history(&elsewhere));
+        let blank = serde_json::json!({"currentIndex": 0, "entries": [{"url": "about:blank"}]});
+        assert!(is_blank_history(&blank));
     }
 
     /// What [`loading_tab`] keeps alive: the handler, the session, the
