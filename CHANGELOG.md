@@ -16,6 +16,10 @@ from a copy of its code: entries describe the differences from that release.
   braceless do-while whose body is a loop (`do while (x < 3) x++; while
   (false) 'v'`): the inner loop's `while` was taken for the `do`'s
   condition (#179).
+- `fill_input` on a field whose page moves the focus to the next fields
+  while typing (a one-time code split over several boxes) succeeds, saying
+  how many other fields took the rest of the text, instead of failing as
+  if the field could not take the focus (#177).
 - `get_network_logs` redacts `X-GitHub-OTP`, `X-Vercel-Protection-Bypass`
   and `X-Honeycomb-Team`, any header with the word `otp`, `totp`, `hotp`,
   `mfa` or `2fa`, and any whose name contains `bypass`, `passcode`,

@@ -161,6 +161,11 @@ pub(crate) fn fill_reply(value: &Value, selector: &str) -> Result<CallToolResult
             format!("{done}\nNote: '{selector}' is an editor of its own (such as Monaco): its content could not be read back, so the text was typed but not checked.").into(),
         ]));
     }
+    if let Some(others) = value["others"].as_u64().filter(|n| *n > 0) {
+        return Ok(CallToolResult::text_content(vec![
+            format!("{done}\nNote: the page moved the focus on while typing (a code split over several boxes, for example): '{selector}' took the start of the text and {others} other field(s) the rest.").into(),
+        ]));
+    }
     if value["lost"].as_bool() == Some(true) {
         return Err(CallToolError::from_message(format!(
             "Element '{selector}' cannot take focus (hidden or inert, or it gives the focus away): it lost the focus while typing, so the text did not fully reach it."
@@ -437,6 +442,23 @@ mod tests {
             text.contains("Note: the field holds something other"),
             "{text}"
         );
+    }
+
+    /// #177: a field whose page moved the focus on to other fields that
+    /// took the rest of the text (a one-time code row), then blurred the
+    /// last one, is filled: the reply says where the text went.
+    #[test]
+    fn text_typed_on_into_other_fields_is_a_success() {
+        // Given a code row: the first box holds '1', three others the rest
+        let moved = json!({"status": "done", "matches": false, "empty": false, "rejected": false, "lost": false, "others": 3});
+        // When the fill is checked
+        let reply = fill_reply(&moved, "#d1").unwrap();
+        // Then it succeeds and says the page moved the focus on
+        let text = &reply.content[0].as_text_content().unwrap().text;
+        assert!(text.contains("Successfully filled input '#d1'"), "{text}");
+        assert!(text.contains("moved the focus on while typing"), "{text}");
+        assert!(text.contains("3 other field(s)"), "{text}");
+        assert!(!text.contains("cannot take focus"), "{text}");
     }
 
     /// The reply text of a fill whose preparation answered `prepared`.

@@ -458,6 +458,12 @@ pub fn file_names(selector: &str) -> String {
 /// check to fire `change` (a symbol: it never collides with the page's).
 const FILL_BEFORE: &str = "Symbol.for('browser-control-mcp.fill-before')";
 
+/// The property of the document where the preparation keeps its `input`
+/// watcher, which counts the characters typed into other fields than the
+/// target: a code split over several boxes moves the focus to the next one
+/// after each character (#177). Its name is written in [`PREPARE_FILL`].
+const FILL_ELSEWHERE: &str = "Symbol.for('browser-control-mcp.fill-elsewhere')";
+
 /// Whether `fill_input` replaces the content of a field or types after it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FillMode {
@@ -578,6 +584,10 @@ const PREPARE_FILL: &str = "const W = el.ownerDocument.defaultView; \
     const clear = !append && text === '' ? [{ key: 'Backspace', modifiers: [] }] : []; \
     const keys = append ? [{ key: mac ? 'ArrowDown' : 'End', modifiers: [mod] }] : [{ key: 'a', modifiers: [mod] }].concat(clear); \
     if (custom) return { status: 'ready', prefix: '', click: host, keys }; \
+    { const doc = el.ownerDocument, key = Symbol.for('browser-control-mcp.fill-elsewhere'), old = doc[key]; \
+      if (old) doc.removeEventListener('input', old.watch, true); \
+      const watch = e => { const t = e.composedPath()[0]; if (t !== el && !el.contains(t)) watch.fields.add(t); }; \
+      watch.fields = new Set(); doc[key] = { watch }; doc.addEventListener('input', watch, true); } \
     let prefix = ''; \
     if (field) { \
         el[Symbol.for('browser-control-mcp.fill-before')] = el.value; \
@@ -604,11 +614,13 @@ const PREPARE_FILL: &str = "const W = el.ownerDocument.defaultView; \
     return { status: 'ready', prefix, keys: field ? [] : keys, multiline: !(el instanceof W.HTMLInputElement) };";
 
 /// What the element matching `selector` holds after `text` was typed:
-/// `{status: 'missing'}` or `{status: 'done', matches, empty, lost}` (the
-/// value itself never leaves the page, as it may be a password); `lost`:
-/// the focus went to nothing (the `<body>`) while typing, so the rest of
-/// the text went nowhere (a field that blurs itself, #170), not to another
-/// field (a code input moving to its next box). `change` is the
+/// `{status: 'missing'}` or `{status: 'done', matches, empty, lost, others}`
+/// (the value itself never leaves the page, as it may be a password);
+/// `others`: how many other fields the page moved the focus to took part
+/// of the text (a code input moving to its next box, #177); `lost`: the
+/// focus went to nothing (the `<body>`) while typing and no other field
+/// took any text, so the rest of the text went nowhere (a field that blurs
+/// itself, #170). `change` is the
 /// browser's, when the field loses focus, as for a user; but a window
 /// without focus (Firefox headless, a background window) fires no blur, so
 /// there an input or textarea whose value differs from the one the
@@ -625,8 +637,11 @@ pub fn fill_result(selector: &str, text: &str, mode: FillMode) -> String {
              const rejected = text !== '' && value === (append ? (before || '') : ''); \
              const lines = field ? value : (el.innerText || '').replace(/\\u00A0/g, ' ').replace(/\\n+$/, ''); \
              const matches = value === expected || lines === expected; \
-             const active = el.ownerDocument.activeElement, lost = !active || active === el.ownerDocument.body; \
-             return {{ status: 'done', matches, empty: value === '', rejected, append, lost }};"
+             const doc = el.ownerDocument, watched = doc[{FILL_ELSEWHERE}]; delete doc[{FILL_ELSEWHERE}]; \
+             if (watched) doc.removeEventListener('input', watched.watch, true); \
+             const others = watched ? watched.watch.fields.size : 0; \
+             const active = doc.activeElement, lost = others === 0 && (!active || active === doc.body); \
+             return {{ status: 'done', matches, empty: value === '', rejected, append, lost, others }};"
     );
     fill_snippet(selector, text, mode, &body)
 }
@@ -1223,11 +1238,37 @@ mod tests {
         let check = fill_result("#b", "nope", FillMode::Replace);
         assert!(
             check.contains(
-                "const active = el.ownerDocument.activeElement, lost = !active || active === el.ownerDocument.body;"
+                "const active = doc.activeElement, lost = others === 0 && (!active || active === doc.body);"
             ),
             "{check}"
         );
-        assert!(check.contains("append, lost }"), "{check}");
+        assert!(check.contains("append, lost, others }"), "{check}");
+    }
+
+    /// #177: the preparation watches the `input` events of other fields
+    /// (a code split over several boxes moves the focus on), and the check
+    /// counts them and does not call the focus lost when one took text.
+    #[test]
+    fn fill_counts_the_text_typed_into_other_fields() {
+        let prepare = prepare_fill("#d1", "1234", FillMode::Replace);
+        assert!(
+            prepare.contains("if (t !== el && !el.contains(t)) watch.fields.add(t);"),
+            "{prepare}"
+        );
+        assert!(
+            prepare.contains("doc.addEventListener('input', watch, true);"),
+            "{prepare}"
+        );
+        assert!(prepare.contains(FILL_ELSEWHERE), "{prepare}");
+        let check = fill_result("#d1", "1234", FillMode::Replace);
+        assert!(
+            check.contains("doc.removeEventListener('input', watched.watch, true);"),
+            "{check}"
+        );
+        assert!(
+            check.contains("lost = others === 0 && (!active || active === doc.body);"),
+            "{check}"
+        );
     }
 
     /// ISSUE-81: an editable element whose lines are blocks (Enter makes a
