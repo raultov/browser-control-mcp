@@ -17,6 +17,15 @@ from a copy of its code: entries describe the differences from that release.
   missed one construct after another (#135-#179). An expression over
   64 KB is not parsed: it runs as is, and as an async function without
   returning a value when the browser refuses its `await`.
+- `get_network_logs` hides the value of every header but the standard ones
+  known to carry no credential (an allowlist: content negotiation, caching,
+  CORS, fetch metadata, client hints, security policies, request ids...),
+  instead of hiding the names on a list of credential words, which missed a
+  new one each round (#144, #149, #161, #168, #175): `X-WP-Nonce`,
+  `X-JFrog-Art-Api`, `CB-ACCESS-SIGN`, `X-Ovh-Application`, `X-WSSE`,
+  `X-Amzn-Oidc-Data`, `X-SID` and the like were shown. An app's own
+  harmless header (`X-Build`) is hidden too; `include_sensitive_headers:
+  true` shows every value.
 - `make e2e` also runs a differential check of top-level `await` on both
   browsers: the page's own `eval` is the oracle for thousands of generated
   statements (`tests/differential/fuzz_tla.py`).

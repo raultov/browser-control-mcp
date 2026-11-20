@@ -789,20 +789,17 @@ incompatible:
 - The Firefox debugger port needs `devtools.chrome.enabled`: any local
   process that reaches that port gets chrome (privileged) access to the
   browser. Use `--no-firefox-debugger` when you do not need the debugger.
-- Credential headers (`Authorization`, `Cookie`, `Set-Cookie`, any
-  header whose name contains `token`, `secret`, `api-key`, `password`,
-  `passcode`, `passphrase`, `session`, `csrf`, `credential`, `jwt`,
-  `appcheck`, `bypass` or `signature`, such as `X-Appwrite-JWT`,
-  `X-Firebase-AppCheck` or `X-Vercel-Protection-Bypass`, or has the word
-  `key`, `dpop`, `auth`, `otp`, `totp`, `hotp`, `mfa` or `2fa`, such as
-  `X-Auth-Key`, `Ocp-Apim-Subscription-Key`, the `DPoP` proof or
-  `X-GitHub-OTP`, the Honeycomb key `X-Honeycomb-Team`, or a word starting with
-  `authoriz`, `authentic`, `authn` or `authz`, such as `X-Authorization`,
-  `X-Forwarded-Authorization` or `Authentication`, but not the
-  `WWW-Authenticate` challenge; `_` counts as `-`) and
-  request bodies are redacted in
-  `get_network_logs` unless `include_sensitive_headers: true`. URLs and
-  response bodies are returned as they are.
+- Header values are shown only for the standard headers known to carry
+  no credential (content negotiation, caching, CORS `Access-Control-*`,
+  fetch metadata `Sec-Fetch-*`, client hints `Sec-CH-*`, security
+  policies, `Location`, `Origin`, `Referer`, `User-Agent`, request ids such
+  as `X-Request-Id` and `traceparent`, the `WWW-Authenticate` challenge...;
+  `_` counts as `-`). Every other header's value (`Authorization`,
+  `Cookie`, `Set-Cookie`, an app's or a vendor's own header such as
+  `X-Api-Key`, `X-WP-Nonce` or `CB-ACCESS-SIGN`, and
+  `Sec-WebSocket-Protocol`, where apps put tokens) and request bodies are
+  redacted in `get_network_logs` unless `include_sensitive_headers: true`.
+  URLs and response bodies are returned as they are.
 - Logs carry tool names, ids, protocol method names and sizes, never
   payloads, cookies or URLs with queries, whatever `RUST_LOG` asks for:
   the libraries that log protocol payloads, proxy URLs or wire frames (the
