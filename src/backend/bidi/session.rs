@@ -178,9 +178,14 @@ impl FirefoxTabs {
     /// Registers a tab Firefox announced (opened by a page, or there when
     /// the session started), counting it in `untracked` when the instance
     /// is at [`MAX_TABS`] (ISSUE-95: it was dropped without a word).
-    pub(crate) fn adopt(&mut self, tab: Tab, url: &str) {
-        if self.register(tab, None, url).is_err() {
-            self.untracked += 1;
+    pub(crate) fn adopt(&mut self, tab: Tab, url: &str) -> Option<String> {
+        let known = self.tab_of_top(tab.context_id()).is_some();
+        match self.register(tab, None, url) {
+            Ok(id) => (!known).then_some(id),
+            Err(_) => {
+                self.untracked += 1;
+                None
+            }
         }
     }
 
@@ -315,7 +320,9 @@ pub(crate) struct FirefoxSession {
     /// Events lost because the pump fell behind (reported once, then reset).
     pub(crate) lagged: Arc<AtomicU64>,
     /// Debuggers attached per tab (RDP), see `debugger.rs`.
-    pub(crate) debuggers: Mutex<HashMap<String, super::debugger::SharedDebugger>>,
+    pub(crate) debuggers: Arc<super::debugger::Debuggers>,
+    /// One lock per tab, held while its debugger attaches.
+    pub(crate) attach_gates: Arc<super::debugger::AttachGates>,
     /// Subscription id of the pump (`send_bidi_command` may not remove it).
     pub(crate) own_subscription: RwLock<Option<String>>,
     /// Modules the agent subscribed to through `send_bidi_command`.
@@ -352,6 +359,7 @@ impl FirefoxSession {
             pump: Mutex::new(ListenerHandles::default()),
             lagged: Default::default(),
             debuggers: Default::default(),
+            attach_gates: Default::default(),
             own_subscription: RwLock::new(None),
             custom_modules: Default::default(),
             rdp_forwards: Mutex::new(Vec::new()),
@@ -423,7 +431,7 @@ impl FirefoxSession {
     }
 
     /// Subscribes once, starts the pump, registers the tabs already open.
-    async fn start(&self, browser: &Browser) -> Result<(), BackendError> {
+    async fn start(&self, browser: &Arc<Browser>) -> Result<(), BackendError> {
         let client = browser.client().await.map_err(lifecycle_error)?;
         let events = client.subscribe();
         let all: Vec<&str> = super::pump::EVENTS
@@ -442,11 +450,23 @@ impl FirefoxSession {
         };
         *write(&self.own_subscription) = Some(id);
         *write(&self.pump_client) = Some(client.clone());
+        let watcher = self
+            .spec
+            .lock()
+            .await
+            .has_debugger()
+            .then(|| super::pump::Watcher {
+                browser: browser.clone(),
+                debuggers: self.debuggers.clone(),
+                gates: self.attach_gates.clone(),
+                tasks: Arc::default(),
+            });
         let state = super::pump::PumpState {
             tabs: self.tabs.clone(),
             lagged: self.lagged.clone(),
             custom_modules: self.custom_modules.clone(),
             downloads: self.downloads.clone(),
+            watcher,
         };
         let pump = super::pump::spawn(
             events,
@@ -498,7 +518,8 @@ impl FirefoxSession {
     /// Attaches the debugger of every registered tab (WebSocket frames and
     /// page errors from the first page load on). Runs once a session
     /// started, after the browser slot is released: attaching takes the
-    /// debuggers lock, which debugger tools take after the slot.
+    /// tab's attach gate and the map of debuggers, which debugger tools take
+    /// after the slot.
     async fn watch_initial_tabs(&self, browser: &Browser) {
         let tabs: Vec<(String, FirefoxTab)> = read(&self.tabs)
             .tabs
@@ -556,7 +577,7 @@ impl FirefoxSession {
     }
 
     /// Replaces a dead session's pump, subscription and tabs with new ones.
-    async fn restart_session(&self, browser: &Browser) -> Result<(), BackendError> {
+    async fn restart_session(&self, browser: &Arc<Browser>) -> Result<(), BackendError> {
         self.reset().await;
         self.start(browser).await
     }

@@ -5,7 +5,8 @@
 <p>A page that opens the WebSocket of its <code>u</code> parameter (and an iframe of its <code>child</code> parameter); used by tests/differential/ws_matrix.py.</p>
 <script>
 const params = new URLSearchParams(location.search);
-const say = text => top.postMessage(text, '*');
+// A popup tells its opener, a frame the top page.
+const say = text => (window.opener || top).postMessage(text, '*');
 if (params.get('child')) {
   const frame = document.createElement('iframe');
   frame.src = params.get('child');
@@ -14,6 +15,7 @@ if (params.get('child')) {
 if (params.get('u')) {
   window.sock = new WebSocket(params.get('u'));
   sock.onopen = () => { sock.send('hi'); say('open ' + params.get('u')); };
+  sock.onclose = () => say('closed ' + params.get('u'));
   addEventListener('message', event => {
     const text = String(event.data);
     if (text === 'close') sock.close();

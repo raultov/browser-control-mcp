@@ -215,67 +215,129 @@ fn attach_error(error: &BidiError) -> BackendError {
     }
 }
 
-/// Attaches the debugger of tab `id` in the background, so its WebSocket frames and page errors are captured from now on.
-/// `true` when the tab is watched (it may have been already). The attach
-/// runs without the debuggers lock (it takes several RDP round trips); a
-/// debugger another call attached meanwhile wins, and this one is detached.
+/// Attaches the debugger of tab `id` in the background, so its WebSocket
+/// frames and page errors are captured from now on. `true` when the tab is
+/// watched (it may have been already); see [`attached`].
 pub(crate) async fn watch_tab(
     session: &FirefoxSession,
     browser: &Browser,
     id: &str,
     tab: &FirefoxTab,
 ) -> bool {
-    if prune_and_check(session, id).await {
-        return true;
-    }
-    let Ok(entry) = attach(browser, tab).await else {
-        return false;
-    };
-    insert_or_detach(session, id, entry).await;
-    true
+    watch_tab_with(Watching::of(session), browser, (id, tab)).await
 }
 
-/// Keeps `entry` as tab `id`'s debugger, unless another call attached one
-/// meanwhile (that one wins, this one is detached); the tab's debugger.
-async fn insert_or_detach(
-    session: &FirefoxSession,
-    id: &str,
-    entry: TabDebugger,
-) -> SharedDebugger {
-    let mut debuggers = session.debuggers.lock().await;
-    if let Some(existing) = debuggers.get(id) {
-        let existing = existing.clone();
-        drop(debuggers);
-        let _ = entry.debugger.detach().await;
-        return existing;
-    }
-    let shared: SharedDebugger = Arc::new(tokio::sync::Mutex::new(entry));
-    debuggers.insert(id.to_string(), shared.clone());
-    shared
+/// What attaching a tab's debugger needs: the instance's tabs, its
+/// debuggers by tab and their attach gates. A session lends them, or the
+/// pump, which watches a tab the page opens as it opens (see
+/// `pump::Watcher`).
+#[derive(Clone, Copy)]
+pub(crate) struct Watching<'a> {
+    pub(crate) tabs: &'a std::sync::RwLock<super::session::FirefoxTabs>,
+    pub(crate) debuggers: &'a Debuggers,
+    pub(crate) gates: &'a AttachGates,
 }
 
-/// Forgets the debuggers of tabs that are gone (the page or the user closed
-/// them); whether tab `id` has one.
-async fn prune_and_check(session: &FirefoxSession, id: &str) -> bool {
-    let open: Vec<String> = crate::util::sync::read(&session.tabs)
+/// The debuggers attached, by tab id.
+pub(crate) type Debuggers = tokio::sync::Mutex<std::collections::HashMap<String, SharedDebugger>>;
+
+/// One lock per tab, held while its debugger attaches (see [`attached`]).
+pub(crate) type AttachGates =
+    StdMutex<std::collections::HashMap<String, Arc<tokio::sync::Mutex<()>>>>;
+
+impl<'a> Watching<'a> {
+    /// What `session` holds.
+    fn of(session: &'a FirefoxSession) -> Self {
+        Self {
+            tabs: &session.tabs,
+            debuggers: &session.debuggers,
+            gates: &session.attach_gates,
+        }
+    }
+}
+
+/// Tab `id`'s attach gate, made on first use.
+pub(crate) fn attach_gate(gates: &AttachGates, id: &str) -> Arc<tokio::sync::Mutex<()>> {
+    let mut gates = gates
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    gates.entry(id.to_string()).or_default().clone()
+}
+
+/// [`watch_tab`] with what `watching` lends, for tab `(id, tab)`.
+pub(crate) async fn watch_tab_with(
+    watching: Watching<'_>,
+    browser: &Browser,
+    (id, tab): (&str, &FirefoxTab),
+) -> bool {
+    attached(watching, browser, (id, tab)).await.is_ok()
+}
+
+/// Tab `id`'s debugger, attached first when it has none. One attach at a
+/// time per tab, behind the tab's attach gate: two debuggers of one tab
+/// share Firefox's watcher, and detaching the second stopped the first's
+/// resources (WebSocket frames and closes, page errors), as when the pump
+/// watched a new tab while a tool did. The map of debuggers is only
+/// locked to look up and insert, never across the attach's RDP round
+/// trips, so other tabs' tools are not held up.
+async fn attached(
+    watching: Watching<'_>,
+    browser: &Browser,
+    (id, tab): (&str, &FirefoxTab),
+) -> Result<SharedDebugger, BackendError> {
+    prune(watching).await;
+    let found = watching.debuggers.lock().await.get(id).cloned();
+    if let Some(found) = found {
+        return Ok(found);
+    }
+    let gate = attach_gate(watching.gates, id);
+    let _attaching = gate.lock().await;
+    // Another call may have attached it while this one waited.
+    let found = watching.debuggers.lock().await.get(id).cloned();
+    if let Some(found) = found {
+        return Ok(found);
+    }
+    let shared: SharedDebugger = Arc::new(tokio::sync::Mutex::new(attach(browser, tab).await?));
+    // Every attach passes the gate, so no other debugger is there: one would
+    // be kept (detaching this one would stop the watcher they share).
+    let mut debuggers = watching.debuggers.lock().await;
+    Ok(debuggers.entry(id.to_string()).or_insert(shared).clone())
+}
+
+/// Forgets the debuggers, and the attach gates, of tabs that are gone (the
+/// page or the user closed them), detaching the debuggers.
+async fn prune(watching: Watching<'_>) {
+    let open: Vec<String> = crate::util::sync::read(watching.tabs)
         .tabs
         .keys()
         .cloned()
         .collect();
-    let mut debuggers = session.debuggers.lock().await;
+    let mut debuggers = watching.debuggers.lock().await;
     let gone: Vec<String> = debuggers
         .keys()
         .filter(|tab_id| !open.contains(tab_id))
         .cloned()
         .collect();
     let detached: Vec<SharedDebugger> = gone.iter().filter_map(|g| debuggers.remove(g)).collect();
-    let watched = debuggers.contains_key(id);
     drop(debuggers);
+    forget_gates(watching);
     for entry in detached {
         let debugger = entry.lock().await.debugger.clone();
         let _ = debugger.detach().await;
     }
-    watched
+}
+
+/// Forgets the attach gates of tabs that are gone. The open tabs are read
+/// with the gates locked: a tab is registered before anything attaches it,
+/// so the gate of an attach in progress is never dropped (another attach
+/// would then make a second gate).
+fn forget_gates(watching: Watching<'_>) {
+    let mut gates = watching
+        .gates
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let tabs = crate::util::sync::read(watching.tabs);
+    gates.retain(|tab_id, _| tabs.tabs.contains_key(tab_id));
 }
 
 /// [`watch_tab`] for a session's tab, when the session has a debugger port.
@@ -294,8 +356,9 @@ pub(crate) async fn watch_session_tab(
 }
 
 /// Runs `f` with the tab's debugger, attaching it first if needed. Lock
-/// order: the browser (session slot), then the map of debuggers (only to
-/// look the tab's up), then the tab's debugger, held while `f` runs.
+/// order: the browser (session slot), the tab's attach gate while it
+/// attaches, the map of debuggers (only to look one up or insert it), then
+/// the tab's debugger, held while `f` runs.
 async fn with_debugger<T>(
     session: &FirefoxSession,
     tab_id: Option<&str>,
@@ -303,12 +366,7 @@ async fn with_debugger<T>(
 ) -> Result<T, BackendError> {
     let (id, tab) = session.tab(tab_id).await?;
     let browser = session.browser().await?;
-    prune_and_check(session, &id).await;
-    let found = session.debuggers.lock().await.get(&id).cloned();
-    let shared = match found {
-        Some(shared) => shared,
-        None => insert_or_detach(session, &id, attach(&browser, &tab).await?).await,
-    };
+    let shared = attached(Watching::of(session), &browser, (&id, &tab)).await?;
     let mut entry = shared.lock().await;
     f(&mut entry).await
 }
@@ -1396,7 +1454,7 @@ mod tests {
         let busy = tokio::spawn(hold_debugger(session.clone(), started, held));
         running.await.unwrap();
         // When another tab's attach check runs
-        let other = tokio::time::timeout(WAIT, prune_and_check(&session, "tab-9")).await;
+        let other = tokio::time::timeout(WAIT, prune(Watching::of(&session))).await;
         // Then it answers at once
         assert!(other.is_ok(), "blocked by tab-1's debugger call");
         let _ = release.send(());
@@ -1417,10 +1475,74 @@ mod tests {
         assert!(session.debuggers.lock().await.contains_key("tab-1"));
         // When the page closes it and a log tool checks another tab
         crate::util::sync::write(&session.tabs).remove_context("ctx-0");
-        prune_and_check(&session, "tab-9").await;
+        prune(Watching::of(&session)).await;
         // Then its debugger was detached (its targets unwatched)
         assert!(session.debuggers.lock().await.is_empty());
         assert!(rdp.wait_for_request("unwatchTargets", WAIT).await.is_some());
+        ts::stop(&handler).await;
+    }
+
+    /// Two calls that attach one tab's debugger at once attach it once: the
+    /// second waits at the tab's attach gate and takes the first's (two
+    /// debuggers of a tab share Firefox's watcher, and detaching one stopped
+    /// the other's WebSocket and error reports).
+    #[tokio::test]
+    async fn one_tab_is_attached_once_at_a_time() {
+        // Given tab-1 without a debugger
+        let mock = ts::firefox_with_debugger().await;
+        let rdp = mock.rdp().unwrap();
+        let handler = ts::handler(&mock);
+        let session = handler.firefox(None).await.unwrap();
+        session.browser().await.unwrap();
+        detach_all(&session).await;
+        rdp.clear_requests();
+        let (id, tab) = session.tab(Some("tab-1")).await.unwrap();
+        // When two calls watch it together
+        let (first, second) = tokio::join!(
+            watch_session_tab(&session, &id, &tab),
+            watch_session_tab(&session, &id, &tab)
+        );
+        // Then both see it watched, and one debugger was attached (one
+        // attach asks for the tab's watcher once)
+        assert!(first && second);
+        let requests = rdp.requests().into_iter();
+        let attaches = requests.filter(|r| r.request_type == "getWatcher");
+        assert_eq!(attaches.count(), 1);
+        assert_eq!(session.debuggers.lock().await.len(), 1);
+        ts::stop(&handler).await;
+    }
+
+    /// A tab whose debugger is attaching (its gate held, as during a slow
+    /// attach) holds up no other tab: the map of debuggers is free, and
+    /// another tab's check answers at once; the gate of a tab that is gone
+    /// is forgotten.
+    #[tokio::test]
+    async fn an_attach_in_progress_does_not_block_other_tabs() {
+        let mock = ts::firefox_with_debugger().await;
+        let handler = ts::handler(&mock);
+        let session = handler.firefox(None).await.unwrap();
+        session.browser().await.unwrap();
+        // Given tab-7 attaching
+        let gate = attach_gate(&session.attach_gates, "tab-7");
+        let _attaching = gate.lock().await;
+        // When another tab's tool looks its debugger up and prunes
+        let lookup = async { session.debuggers.lock().await.get("tab-1").cloned() };
+        let lookup = tokio::time::timeout(WAIT, lookup).await;
+        let pruned = tokio::time::timeout(WAIT, prune(Watching::of(&session))).await;
+        // Then both answer at once, and tab-1 keeps its debugger
+        assert!(matches!(lookup, Ok(Some(_))));
+        assert!(pruned.is_ok());
+        // And tab-7, not a tab, has no gate left; tab-1's is kept
+        attach_gate(&session.attach_gates, "tab-1");
+        prune(Watching::of(&session)).await;
+        let gates: Vec<String> = session
+            .attach_gates
+            .lock()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect();
+        assert_eq!(gates, ["tab-1"]);
         ts::stop(&handler).await;
     }
 

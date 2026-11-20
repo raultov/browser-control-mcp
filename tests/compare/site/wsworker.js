@@ -2,6 +2,7 @@
 // tests/differential/ws_matrix.py.
 const sock = new WebSocket(new URLSearchParams(location.search).get('u'));
 sock.onopen = () => { sock.send('hi'); postMessage('open'); };
+sock.onclose = () => postMessage('closed');
 onmessage = event => {
   const text = String(event.data);
   if (text === 'close') sock.close();

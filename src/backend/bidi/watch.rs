@@ -13,7 +13,7 @@ use crate::handler::WebSocketFrame;
 use crate::handler::WsClose;
 use crate::handler::cdp_domains::event_pump::ListenerHandles;
 use crate::handler::cdp_domains::log::{Channel, ConsoleMessage, LogState};
-use crate::handler::cdp_domains::network::FRAME_GONE;
+use crate::handler::cdp_domains::network::{FRAME_GONE, NAVIGATED_AWAY};
 use crate::util::bounded::BoundedMap;
 use bidi_browser_lite::Debugger;
 use bidi_browser_lite::bidi_lite::rdp::protocol::RdpPacket;
@@ -155,40 +155,78 @@ impl SocketOwners {
         }
     }
 
-    /// Applies a watcher `target-available-form` (a frame is announced)
-    /// or `target-destroyed-form` (the sockets of a frame that went are
-    /// closed, with [`FRAME_GONE`]).
+    /// Applies a watcher `target-available-form` or `target-destroyed-form`.
+    /// A frame announced is remembered; the sockets of a frame that went
+    /// are closed, with [`FRAME_GONE`]. The sockets of the tab's document
+    /// are closed, with [`NAVIGATED_AWAY`], when its target goes or when a
+    /// new top-level target replaces it (a navigation to another site moves
+    /// the tab to another process): Firefox may report only the close frame
+    /// it sent, and for a popup no `target-destroyed-form` at all.
     pub(crate) fn on_target_form(&mut self, body: &Value, network: &mut NetworkState) {
         let target = &body["target"];
         let Some(actor) = target.get("actor").and_then(Value::as_str) else {
             return;
         };
-        let frame = target.get("isTopLevelTarget").and_then(Value::as_bool) == Some(false);
-        match body.get("type").and_then(Value::as_str) {
-            Some("target-available-form") if frame => {
+        let top = target.get("isTopLevelTarget").and_then(Value::as_bool);
+        match (body.get("type").and_then(Value::as_str), top) {
+            (Some("target-available-form"), Some(false)) => {
                 self.frames.insert(actor.to_string(), ());
             }
-            Some("target-destroyed-form") => {
-                let actor = actor.to_string();
-                let announced = self.frames.remove(&actor).is_some();
-                let Some(connections) = self.targets.remove(&actor) else {
-                    return;
-                };
-                if !(announced || frame) {
-                    return;
-                }
-                for id in &connections {
-                    let close = WsClose {
-                        at: crate::handler::now_ms(),
-                        code: None,
-                        reason: Some(FRAME_GONE.to_string()),
-                        was_clean: None,
-                    };
-                    network.close_ws_connection(id, close);
-                }
-            }
+            (Some("target-available-form"), Some(true)) => self.replace_documents(actor, network),
+            (Some("target-destroyed-form"), _) => self.on_target_gone(actor, top, network),
             _ => {}
         }
+    }
+
+    /// A target went: its sockets are closed if it was a frame or the
+    /// tab's document.
+    fn on_target_gone(&mut self, actor: &str, top: Option<bool>, network: &mut NetworkState) {
+        let actor = actor.to_string();
+        let announced = self.frames.remove(&actor).is_some();
+        let Some(connections) = self.targets.remove(&actor) else {
+            return;
+        };
+        let reason = match (announced || top == Some(false), top) {
+            (true, _) => FRAME_GONE,
+            (false, Some(true)) => NAVIGATED_AWAY,
+            (false, _) => return,
+        };
+        close_all(network, &connections, reason);
+    }
+
+    /// The top-level target `actor` is the tab's document now: the sockets
+    /// of every other target with sockets that is not a frame (the
+    /// documents before it) are closed.
+    fn replace_documents(&mut self, actor: &str, network: &mut NetworkState) {
+        let before: Vec<String> = self
+            .targets
+            .keys()
+            .filter(|known| *known != actor && !self.frames.contains_key(*known))
+            .cloned()
+            .collect();
+        for gone in before {
+            if let Some(connections) = self.targets.remove(&gone) {
+                close_all(network, &connections, NAVIGATED_AWAY);
+            }
+        }
+    }
+}
+
+/// Closes `connections` for `reason`; one Firefox reported without its
+/// opening (it opened before the tab was watched) first takes the URL of
+/// its lone handshake (see [`claim_lone_handshake`]).
+fn close_all(network: &mut NetworkState, connections: &VecDeque<String>, reason: &str) {
+    for id in connections {
+        if network.ws_url(id).is_empty() {
+            claim_lone_handshake(network, id);
+        }
+        let close = WsClose {
+            at: crate::handler::now_ms(),
+            code: None,
+            reason: Some(reason.to_string()),
+            was_clean: None,
+        };
+        network.close_ws_connection(id, close);
     }
 }
 
@@ -227,6 +265,11 @@ pub(crate) fn on_websocket(network: &mut NetworkState, resource: &Value) -> Opti
                     .map(str::to_string),
                 was_clean: field("wasClean").and_then(Value::as_bool),
             };
+            if id != NEVER_OPENED {
+                // Its opening and frames may all have come before the watch.
+                network.insert_ws_connection(id.clone(), String::new());
+                claim_lone_handshake(network, &id);
+            }
             if let Some(id) = closed_connection(network, id) {
                 network.close_ws_connection(&id, close);
             }
@@ -247,6 +290,9 @@ fn on_frame(network: &mut NetworkState, id: &str, sent: bool, data: &Value) {
         Some(CLOSE_FRAME) => return close_frame(network, id, sent, data.get("payload")),
         _ => return,
     }
+    // Not on a close frame: a socket that fails before it opens has its
+    // close (id 0) take the handshake (see `closed_connection`).
+    claim_lone_handshake(network, id);
     // Large payloads come as a long string grip: its first part, marked
     // with the full length (as `evaluate_on_call_frame` does).
     let payload = match data.get("payload") {
@@ -260,6 +306,27 @@ fn on_frame(network: &mut NetworkState, id: &str, sent: bool, data: &Value) {
     let url = network.ws_url(id);
     let frame = WebSocketFrame::new(url, payload, sent);
     network.push_ws_frame(id.to_string(), frame);
+}
+
+/// A connection Firefox reports only by its frames or its close, its
+/// opening missed (a popup's socket that opened before the tab was
+/// watched), takes the URL of the accepted handshake no connection
+/// claims, when there is only that one and it is the only connection
+/// without a URL: then it can be no other socket's.
+fn claim_lone_handshake(network: &mut NetworkState, id: &str) {
+    let mut without_url = network
+        .ws_connections
+        .iter()
+        .filter(|(_, c)| c.url.is_empty());
+    let alone =
+        without_url.next().is_some_and(|(only, _)| only == id) && without_url.next().is_none();
+    if !alone {
+        return;
+    }
+    let unclaimed = unclaimed_handshakes(network);
+    if let (1, Some(handshake)) = (unclaimed.accepted_count, unclaimed.accepted) {
+        network.insert_ws_connection(id.to_string(), handshake.url);
+    }
 }
 
 /// The opcode of a WebSocket close frame.
@@ -336,7 +403,9 @@ fn closed_connection(network: &mut NetworkState, id: String) -> Option<String> {
     if id != NEVER_OPENED {
         return Some(id);
     }
-    let Unclaimed { accepted, refused } = unclaimed_handshakes(network);
+    let Unclaimed {
+        accepted, refused, ..
+    } = unclaimed_handshakes(network);
     let (id, handshake, guessed) = match newest_without_url(network) {
         // It sent a frame: its handshake was accepted.
         Some(unopened) => (unopened, accepted, false),
@@ -425,6 +494,8 @@ struct Handshake {
 #[derive(Default)]
 struct Unclaimed {
     accepted: Option<Handshake>,
+    /// How many accepted handshakes no connection claims.
+    accepted_count: usize,
     refused: Option<Handshake>,
 }
 
@@ -450,6 +521,7 @@ fn unclaimed_handshakes(network: &NetworkState) -> Unclaimed {
             match claims.get_mut(&(handshake.url.clone(), refused)) {
                 Some(count) if *count > 0 => *count -= 1,
                 _ if !refused => {
+                    unclaimed.accepted_count += 1;
                     unclaimed.accepted.get_or_insert(handshake);
                 }
                 _ => unclaimed.refused = Some(handshake),
@@ -1008,6 +1080,130 @@ mod tests {
         on_websocket(&mut network, &reported);
         assert_eq!(network.ws_connections["42"].close_code, Some(1000));
         assert_eq!(network.ws_connections["42"].close_reason, None);
+    }
+
+    /// A socket that opened before the tab was watched (a popup's, which
+    /// the watcher attaches to on the first tool that reads it) is known
+    /// only by its frames and its close: it takes the URL of the one
+    /// accepted handshake no connection claims, when it is the only
+    /// connection without one; with two candidates either way, none.
+    #[test]
+    fn a_socket_opened_before_the_watch_takes_its_lone_handshake() {
+        // Given a popup's handshake, its socket's opening missed
+        let mut network = handshakes(&[("h1", "/echo?popup")]);
+        // When its close frame and its close come
+        on_websocket(
+            &mut network,
+            &close_frame_of(42, "frameSent", "\u{3}\u{e8}"),
+        );
+        let closed = json!({"httpChannelId": 42, "wsMessageType": "webSocketClosed", "code": 1005});
+        on_websocket(&mut network, &closed);
+        // Then it is listed closed with the handshake's URL
+        let socket = &network.ws_connections["42"];
+        assert_eq!(socket.url, "ws://127.0.0.1:8808/echo?popup");
+        assert!(socket.closed_at.is_some());
+        // And a socket never seen before its close (a navigation of the
+        // tab ended it) is listed closed with its lone handshake's URL
+        let mut unseen = handshakes(&[("h1", "/echo?unseen")]);
+        let closed = json!({"httpChannelId": 77, "wsMessageType": "webSocketClosed", "code": 1001});
+        on_websocket(&mut unseen, &closed);
+        let socket = &unseen.ws_connections["77"];
+        assert_eq!(socket.url, "ws://127.0.0.1:8808/echo?unseen");
+        assert_eq!(socket.close_code, Some(1001));
+        // And with two handshakes unclaimed, a socket without a URL gets none
+        let mut two = handshakes(&[("h1", "/a"), ("h2", "/b")]);
+        let frame = json!({"httpChannelId": 50, "wsMessageType": "frameReceived",
+            "data": {"opCode": 1, "payload": "x"}});
+        on_websocket(&mut two, &frame);
+        assert_eq!(two.ws_connections["50"].url, "");
+        // And a second socket without a URL, the handshake taken, gets none
+        let mut lone = handshakes(&[("h1", "/a")]);
+        for id in [60, 61] {
+            let frame = json!({"httpChannelId": id, "wsMessageType": "frameReceived",
+                "data": {"opCode": 1, "payload": "x"}});
+            on_websocket(&mut lone, &frame);
+        }
+        assert_eq!(lone.ws_connections["60"].url, "ws://127.0.0.1:8808/a");
+        assert_eq!(lone.ws_connections["61"].url, "");
+    }
+
+    /// The sockets of the tab's document are closed when its target goes
+    /// (a navigation to another site moves the tab to another process):
+    /// Firefox may report only the close frame it sent; a socket that
+    /// closed already keeps its close, and a target that is neither the
+    /// tab's nor an announced frame closes nothing.
+    #[test]
+    fn sockets_of_a_document_whose_target_goes_are_closed() {
+        let mut network = NetworkState::default();
+        let mut owners = SocketOwners::default();
+        for (actor, id) in [("top1", "41"), ("top1", "42"), ("other9", "43")] {
+            let opened = json!({"httpChannelId": id, "wsMessageType": "webSocketOpened",
+                "effectiveURI": format!("ws://127.0.0.1:8808/{id}")});
+            on_websocket(&mut network, &opened);
+            owners.own(actor, id.to_string());
+        }
+        let done = json!({"httpChannelId": 42, "wsMessageType": "webSocketClosed", "code": 1000});
+        on_websocket(&mut network, &done);
+        // When the document's target goes, then another unknown target
+        let gone = |target: Value| json!({"type": "target-destroyed-form", "target": target});
+        owners.on_target_form(
+            &gone(json!({"actor": "top1", "isTopLevelTarget": true})),
+            &mut network,
+        );
+        owners.on_target_form(&gone(json!({"actor": "other9"})), &mut network);
+        // Then its open socket is closed, saying why
+        let closed = &network.ws_connections["41"];
+        assert_eq!(closed.close_reason.as_deref(), Some(NAVIGATED_AWAY));
+        assert_eq!(network.ws_connections["42"].close_code, Some(1000));
+        assert!(network.ws_connections["43"].closed_at.is_none());
+    }
+
+    /// A popup navigated to another site: Firefox announces its new
+    /// top-level target and never says the old one went, and reported only
+    /// the close frame of a socket that opened before the popup was
+    /// watched. The new document's target closes the old one's sockets,
+    /// the one without a URL taking its lone handshake's; a frame's
+    /// sockets, and the new document's, stay open.
+    #[test]
+    fn a_new_document_closes_the_sockets_of_the_old_one() {
+        // Given a popup's socket known by its close frame only, and a frame's
+        let mut network = handshakes(&[("h1", "/echo?popup")]);
+        let mut owners = SocketOwners::default();
+        let available = |actor: &str, top: bool| {
+            json!({"type": "target-available-form",
+            "target": {"actor": actor, "isTopLevelTarget": top}})
+        };
+        owners.on_target_form(&available("w.process8//top", true), &mut network);
+        owners.on_target_form(&available("w.process8//frame", false), &mut network);
+        on_websocket(
+            &mut network,
+            &close_frame_of(42, "frameSent", "\u{3}\u{e9}"),
+        );
+        owners.own("w.process8//top", "42".into());
+        let opened = json!({"httpChannelId": 43, "wsMessageType": "webSocketOpened",
+            "effectiveURI": "ws://127.0.0.1:8808/frame"});
+        on_websocket(&mut network, &opened);
+        owners.own("w.process8//frame", "43".into());
+        // When the same top-level target is announced again, nothing closes
+        owners.on_target_form(&available("w.process8//top", true), &mut network);
+        assert!(network.ws_connections["42"].closed_at.is_none());
+        // And when a new top-level target is announced
+        owners.on_target_form(&available("w.process9//top", true), &mut network);
+        // Then the old document's socket is closed, with its handshake's URL
+        let closed = &network.ws_connections["42"];
+        assert_eq!(closed.url, "ws://127.0.0.1:8808/echo?popup");
+        assert_eq!(closed.close_reason.as_deref(), Some(NAVIGATED_AWAY));
+        // And the frame's socket is left to its frame
+        assert!(network.ws_connections["43"].closed_at.is_none());
+        // And a socket of the new document stays open when it is announced again
+        owners.own("w.process9//top", "44".into());
+        on_websocket(
+            &mut network,
+            &json!({"httpChannelId": 44, "wsMessageType": "webSocketOpened",
+            "effectiveURI": "ws://127.0.0.1:8808/new"}),
+        );
+        owners.on_target_form(&available("w.process9//top", true), &mut network);
+        assert!(network.ws_connections["44"].closed_at.is_none());
     }
 
     /// #163: the sockets of a frame (same-origin too) are closed when its

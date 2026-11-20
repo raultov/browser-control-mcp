@@ -48,6 +48,49 @@ pub(crate) struct PumpState {
     pub(crate) custom_modules: Arc<RwLock<Vec<String>>>,
     /// The instance's downloads (#77).
     pub(crate) downloads: Arc<tokio::sync::Mutex<crate::handler::downloads::DownloadState>>,
+    /// Watches the tabs the page opens, when Firefox has a debugger port.
+    pub(crate) watcher: Option<Watcher>,
+}
+
+/// Attaches the debugger of each tab the page opens (a popup, a
+/// `target=_blank` link) as it opens, in a task of its own: watched only
+/// once a tool read it, the tab's WebSocket frames and closes until then
+/// were lost. The tasks are owned by `tasks`, which only the watcher holds
+/// (never a task): they are aborted when the pump, and its state, go.
+#[derive(Clone)]
+pub(crate) struct Watcher {
+    pub(crate) browser: Arc<bidi_browser_lite::Browser>,
+    pub(crate) debuggers: Arc<super::debugger::Debuggers>,
+    pub(crate) gates: Arc<super::debugger::AttachGates>,
+    pub(crate) tasks:
+        Arc<std::sync::Mutex<crate::handler::cdp_domains::event_pump::ListenerHandles>>,
+}
+
+impl Watcher {
+    /// Starts watching the tab `id` (`tabs` holds it).
+    fn watch(&self, tabs: &Arc<RwLock<super::session::FirefoxTabs>>, id: String) {
+        let Some(tab) = read(tabs).tabs.get(&id).cloned() else {
+            return;
+        };
+        // Not the watcher itself: a task holding `tasks` would keep its
+        // owner, and itself, alive past the pump.
+        let (browser, debuggers) = (self.browser.clone(), self.debuggers.clone());
+        let (gates, tabs) = (self.gates.clone(), tabs.clone());
+        let task = tokio::spawn(async move {
+            let watching = super::debugger::Watching {
+                tabs: &tabs,
+                debuggers: &debuggers,
+                gates: &gates,
+            };
+            super::debugger::watch_tab_with(watching, &browser, (&id, &tab)).await;
+        });
+        let mut tasks = self
+            .tasks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        tasks.retain_running();
+        tasks.push(task);
+    }
 }
 
 /// Starts the pump task.
@@ -296,7 +339,10 @@ async fn on_context_created(params: &Value, client: &BrowserClient, state: &Pump
             // A tab opened by the page (or by `open_tab`, which dedupes).
             if let Ok(tab) = client.attach(context).await {
                 let url = string_or_empty(params, "url");
-                write(&state.tabs).adopt(tab, &url);
+                let adopted = write(&state.tabs).adopt(tab, &url);
+                if let (Some(id), Some(watcher)) = (adopted, &state.watcher) {
+                    watcher.watch(&state.tabs, id);
+                }
             }
         }
     }
@@ -621,6 +667,40 @@ mod tests {
             .unwrap()
     }
 
+    /// A watch task the pump started is aborted when the pump's state (its
+    /// watcher) goes: the task never holds the list that owns it, which
+    /// kept it, its browser and the session's debuggers alive past a
+    /// session's reset.
+    #[tokio::test]
+    async fn watch_tasks_end_with_the_watcher() {
+        use super::super::test_support as ts;
+        let mock = ts::firefox_with_debugger().await;
+        let handler = ts::handler(&mock);
+        let session = handler.firefox(None).await.unwrap();
+        let browser = session.browser().await.unwrap();
+        super::super::debugger::detach_all(&session).await;
+        let watcher = Watcher {
+            browser,
+            debuggers: session.debuggers.clone(),
+            gates: session.attach_gates.clone(),
+            tasks: Arc::default(),
+        };
+        // Given a watch of tab-1 waiting at its attach gate
+        let gate = super::super::debugger::attach_gate(&session.attach_gates, "tab-1");
+        let held = gate.lock().await;
+        watcher.watch(&session.tabs, "tab-1".into());
+        let tasks = watcher.tasks.lock().unwrap().abort_handles();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(!tasks[0].is_finished());
+        // When the watcher goes
+        drop(watcher);
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        // Then its task was aborted
+        assert!(tasks[0].is_finished());
+        drop(held);
+        ts::stop(&handler).await;
+    }
+
     /// A pump state with tab-1 on the mock's context "ctx-0".
     async fn one_tab(mock: &MockBidi) -> (BrowserClient, PumpState) {
         let client = BrowserClient::connect(
@@ -634,6 +714,7 @@ mod tests {
             lagged: Default::default(),
             custom_modules: Default::default(),
             downloads: Default::default(),
+            watcher: None,
         };
         let tab = client.attach("ctx-0").await.unwrap();
         write(&state.tabs)

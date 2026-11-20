@@ -51,11 +51,12 @@ from a copy of its code: entries describe the differences from that release.
 - `make e2e` also runs a differential check of top-level `await` on both
   browsers: the page's own `eval` is the oracle for thousands of generated
   statements (`tests/differential/fuzz_tla.py`); and a matrix of
-  WebSocket closes (`tests/differential/ws_matrix.py`): 24 cells per
-  browser (the document, same- and cross-origin iframes, a nested iframe
-  and a worker, against the page's `close()`, the server's close, a
-  dropped connection, navigations, removal and `terminate()`), each of
-  which must list the socket closed exactly once. All 48 pass.
+  WebSocket closes (`tests/differential/ws_matrix.py`): 43 cells per
+  browser (the document, same- and cross-origin iframes, a nested iframe,
+  a worker and a popup, against the page's `close()`, the server's close,
+  a dropped connection, navigations, a reload, removal and `terminate()`,
+  and sockets refused, unanswered or dropped at the handshake), each of
+  which must list the socket closed exactly once. All 86 pass.
 
 - `make regressions` (also in `make check-all`) runs the reproduction
   scripts of the 70 closed GitHub issues that have one, saved in
@@ -67,6 +68,15 @@ from a copy of its code: entries describe the differences from that release.
 
 ### Fixed
 
+- `get_network_logs` on Firefox lists the WebSockets of a popup (a tab the
+  page opens) closed: its debugger was attached only once a tool read the
+  tab, so its sockets' closes were lost. Tabs the page opens are watched
+  as they open; a socket that opened before takes the URL of its lone
+  handshake; and the sockets of a document that navigated to another site
+  are closed with `the page navigated away` when Firefox reports only the
+  new document (it sends no `target-destroyed-form` for a popup's). Two
+  debuggers of one tab can no longer be attached at once (detaching the
+  second stopped the first's WebSocket and error reports).
 - `evaluate_js` with top-level `await` keeps an HTML-like closing comment
   (`-->`, Annex B) that starts the expression a comment: the wrapper's
   opening moved it off the start of its line, a syntax error.
