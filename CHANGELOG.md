@@ -25,7 +25,12 @@ from a copy of its code: entries describe the differences from that release.
   `X-JFrog-Art-Api`, `CB-ACCESS-SIGN`, `X-Ovh-Application`, `X-WSSE`,
   `X-Amzn-Oidc-Data`, `X-SID` and the like were shown. An app's own
   harmless header (`X-Build`) is hidden too; `include_sensitive_headers:
-  true` shows every value.
+  true` shows every value. CORS, cross-origin isolation and rate-limit
+  headers are listed by name, not by prefix (an app's own
+  `Access-Control-Token` is hidden); only the `Sec-CH-*` and `Sec-Fetch-*`
+  families, which a page cannot send, are shown by prefix. `make e2e`
+  checks it end to end on both browsers (`tests/differential/headers.py`:
+  53 request, response and cookie headers).
 - `--secrets` finds a value by decoding each reply layer by layer (JSON and
   JavaScript string escapes, HTML character references, percent-encoding,
   up to six layers in any order) and replaces it where it was written,

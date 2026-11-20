@@ -103,6 +103,12 @@ class Handler(SimpleHTTPRequestHandler):
             return self.send_body(200, body, headers=[("Content-Security-Policy", "script-src 'none'")])
         if path == "/api/echo":
             return self.send_body(200, json.dumps({"method": "GET", "query": query}), "application/json")
+        if path == "/headers":
+            # Answers with the response headers its `h` parameters name:
+            # "Name: value" in base64url, so the URL does not show the values.
+            named = [base64.urlsafe_b64decode(h).decode() for h in urllib.parse.parse_qs(url.query).get("h", [])]
+            headers = [tuple(part.strip() for part in h.split(":", 1)) for h in named if ":" in h]
+            return self.send_body(200, "{}", "application/json", headers)
         if path == "/silence.wav":
             return self.send_body(200, silence(int(query.get("ms", "1000"))), "audio/wav")
         if path == "/":

@@ -114,6 +114,34 @@ const SHOWN: &[&str] = &[
     "sec-websocket-accept",
     "sec-websocket-extensions",
     "sec-websocket-version",
+    // CORS
+    "access-control-allow-credentials",
+    "access-control-allow-headers",
+    "access-control-allow-methods",
+    "access-control-allow-origin",
+    "access-control-allow-private-network",
+    "access-control-expose-headers",
+    "access-control-max-age",
+    "access-control-request-headers",
+    "access-control-request-method",
+    "access-control-request-private-network",
+    // Cross-origin isolation
+    "cross-origin-embedder-policy",
+    "cross-origin-embedder-policy-report-only",
+    "cross-origin-opener-policy",
+    "cross-origin-opener-policy-report-only",
+    "cross-origin-resource-policy",
+    // Rate limits
+    "ratelimit",
+    "ratelimit-limit",
+    "ratelimit-policy",
+    "ratelimit-remaining",
+    "ratelimit-reset",
+    "x-ratelimit-limit",
+    "x-ratelimit-remaining",
+    "x-ratelimit-reset",
+    "x-ratelimit-resource",
+    "x-ratelimit-used",
     // HTTP/2 and HTTP/3 pseudo-headers
     ":authority",
     ":method",
@@ -122,17 +150,12 @@ const SHOWN: &[&str] = &[
     ":status",
 ];
 
-/// Starts of the names of standard header families whose value is shown:
-/// CORS, client hints, fetch metadata, cross-origin isolation and rate
-/// limits.
-const SHOWN_PREFIXES: &[&str] = &[
-    "access-control-",
-    "cross-origin-",
-    "ratelimit",
-    "sec-ch-",
-    "sec-fetch-",
-    "x-ratelimit-",
-];
+/// Starts of the names of the header families whose value is shown: client
+/// hints and fetch metadata, which only the browser sends (a page cannot
+/// set a `Sec-` header), and whose members grow. Other families (CORS,
+/// rate limits) are listed name by name in [`SHOWN`]: an app may name its
+/// own header `Access-Control-Token`.
+const SHOWN_PREFIXES: &[&str] = &["sec-ch-", "sec-fetch-"];
 
 /// Whether a header's value must be hidden by default: every header but
 /// the standard ones in `SHOWN` and `SHOWN_PREFIXES`. `_` counts as
@@ -262,8 +285,93 @@ mod tests {
             "X-RateLimit-Remaining",
             "RateLimit-Policy",
             " Content-Type ",
+            "\tcontent_TYPE\t",
+            "ACCESS_CONTROL_ALLOW_ORIGIN",
+            ":STATUS",
         ] {
             assert!(!is_sensitive(name), "{name}");
+        }
+    }
+
+    /// A name that only starts like a shown family, or is near a shown
+    /// name, is hidden: an app's own `Access-Control-Token`, a
+    /// `Content-Secret`, an `X-Request-Id-Signature`.
+    #[test]
+    fn names_near_shown_ones_are_hidden() {
+        for name in [
+            "Access-Control-Token",
+            "Access-Control-Api-Key",
+            "Cross-Origin-Secret",
+            "RateLimit-Key",
+            "X-RateLimit-Token",
+            "X-Request-Id-Signature",
+            "Content-Type-Token",
+            "Accept-Token",
+            "Etag-Secret",
+            "Location-Token",
+            "Authority",
+            ":authorization",
+            "Sec-WebSocket-Protocol",
+            "Sec-Token",
+            "WWW-Authenticate-Token",
+            "Proxy-Authenticate-Key",
+        ] {
+            assert!(is_sensitive(name), "{name}");
+        }
+    }
+
+    /// Names no server sends are hidden, without a panic: empty, only
+    /// punctuation, outside ASCII, control characters, very long.
+    #[test]
+    fn odd_names_are_hidden() {
+        let long = "x".repeat(100_000);
+        for name in [
+            "",
+            " ",
+            ":",
+            "-",
+            "_",
+            "X-\u{166}oken",
+            "Content-Type\u{0}",
+            "\u{feff}Accept",
+            &long,
+        ] {
+            assert!(is_sensitive(name), "{name:?}");
+        }
+    }
+
+    /// A hidden header's value is replaced whatever its JSON type (a list
+    /// of values, a number, null, an object); names differing only in case
+    /// are each handled; an empty object stays empty.
+    #[test]
+    fn hidden_values_of_any_type_are_replaced() {
+        let mut headers = serde_json::json!({
+            "Set-Cookie": ["a=1", "b=2"], "X-Count": 3, "X-Null": null, "X-Obj": {"k": "v"},
+            "cookie": "c=1", "COOKIE": "d=2", "Vary": ["Accept", "Origin"]
+        });
+        redact_sensitive(&mut headers);
+        for name in [
+            "Set-Cookie",
+            "X-Count",
+            "X-Null",
+            "X-Obj",
+            "cookie",
+            "COOKIE",
+        ] {
+            assert_eq!(headers[name], crate::cli::REDACTED, "{name}");
+        }
+        assert_eq!(headers["Vary"], serde_json::json!(["Accept", "Origin"]));
+        let mut empty = serde_json::json!({});
+        redact_sensitive(&mut empty);
+        assert_eq!(empty, serde_json::json!({}));
+        for mut other in [
+            serde_json::json!("Cookie: a"),
+            serde_json::json!(null),
+            serde_json::json!(7),
+        ] {
+            let before = other.clone();
+            redact_sensitive(&mut other);
+            assert_eq!(other, before);
         }
     }
 
@@ -302,8 +410,9 @@ mod tests {
     }
 
     /// Guard on the allowlist itself: no name shown, nor any prefix, has
-    /// a word that names a credential (a challenge `*-authenticate` and
-    /// the `:authority` pseudo-header, the host, aside).
+    /// a word that names a credential, but the ones reviewed: the
+    /// challenges `*-Authenticate` (how to authenticate), `:authority` (the
+    /// host) and `Access-Control-Allow-Credentials` (`true` or nothing).
     #[test]
     fn the_allowlist_names_no_credential() {
         let words = [
@@ -324,11 +433,16 @@ mod tests {
             "nonce",
             "protocol",
         ];
+        let reviewed = [
+            ("www-authenticate", "auth"),
+            ("proxy-authenticate", "auth"),
+            (":authority", "auth"),
+            ("access-control-allow-credentials", "credential"),
+        ];
         for name in SHOWN.iter().chain(SHOWN_PREFIXES) {
-            let challenge = name.ends_with("-authenticate") || *name == ":authority";
             for word in words {
                 assert!(
-                    !name.contains(word) || (word == "auth" && challenge),
+                    !name.contains(word) || reviewed.contains(&(*name, word)),
                     "{name} has {word}"
                 );
             }

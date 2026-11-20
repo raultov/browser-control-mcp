@@ -786,8 +786,9 @@ incompatible:
   process that reaches that port gets chrome (privileged) access to the
   browser. Use `--no-firefox-debugger` when you do not need the debugger.
 - Header values are shown only for the standard headers known to carry
-  no credential (content negotiation, caching, CORS `Access-Control-*`,
-  fetch metadata `Sec-Fetch-*`, client hints `Sec-CH-*`, security
+  no credential (content negotiation, caching, the CORS
+  `Access-Control-*` headers by name, fetch metadata `Sec-Fetch-*`,
+  client hints `Sec-CH-*`, security
   policies, `Location`, `Origin`, `Referer`, `User-Agent`, request ids such
   as `X-Request-Id` and `traceparent`, the `WWW-Authenticate` challenge...;
   `_` counts as `-`). Every other header's value (`Authorization`,
@@ -823,7 +824,9 @@ page's own `eval` of thousands of generated statements; `--sample 0` runs
 all of them), and `ws_matrix.py`: a WebSocket of the document, a same- or
 cross-origin iframe, a nested iframe and a worker, ended by the page, the
 server, a dropped connection, a navigation, a removal or `terminate()`,
-must get exactly one close line in `get_network_logs`. `make regressions`
+must get exactly one close line in `get_network_logs`, and `headers.py`:
+credential request, response and cookie headers are hidden and standard
+ones shown, by default and in one request's details. `make regressions`
 runs the reproduction scripts of the closed GitHub issues, saved in
 [tests/regressions](tests/regressions) by its `fetch.py`: an issue fails
 when its script shows its bug again (the issues closed with a documented

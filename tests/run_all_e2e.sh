@@ -49,12 +49,13 @@ status=$?
 
 # Differential checks on both browsers (launched, headless unless
 # E2E_VISIBLE=1): the browser's own `eval` is the oracle for what
-# evaluate_js answers with top-level await (fuzz_tla.py), and every owner
-# of a WebSocket against every way it ends must give one close line
-# (ws_matrix.py). One PASS or FAIL line each.
+# evaluate_js answers with top-level await (fuzz_tla.py), every owner of a
+# WebSocket against every way it ends must give one close line
+# (ws_matrix.py), and credential headers sent and answered must be hidden
+# and standard ones shown (headers.py). One PASS or FAIL line each.
 visible=()
 [ "${E2E_VISIBLE:-0}" = 1 ] && visible=(--visible)
-for check in "fuzz_tla.py:top-level await" "ws_matrix.py:WebSocket closes"; do
+for check in "fuzz_tla.py:top-level await" "ws_matrix.py:WebSocket closes" "headers.py:header redaction"; do
   for browser in chrome firefox; do
     report=$(python3 -I "tests/differential/${check%%:*}" --browser "$browser" ${visible[@]+"${visible[@]}"} 2>&1)
     if [ $? -eq 0 ]; then
