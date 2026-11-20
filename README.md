@@ -753,28 +753,24 @@ incompatible:
   name of the file a symlink points to). Paths are never logged.
 - `--secrets <file>` keeps known values (test passwords, API keys) out of
   what the agent reads: every tool result and error (text, embedded text,
-  structured content) shows them as `<secret:NAME>`, also when
-  URL-encoded as a form, `encodeURIComponent` or `encodeURI` encodes them
-  (a GET form puts a typed password in the URL) and when escaped inside
-  JSON strings, up to four deep (an `evaluate_js` of `JSON.stringify`),
-  with characters outside ASCII kept or written as `\uXXXX` (lower- or
-  uppercase hex, as Python's `json.dumps` does) and, in the page's own
-  JSON, with `/` written as `\/` (PHP) and `&`, `<`, `>`, `'`, `=` as
-  `\u00XX` escapes (Go, Gson, PHP's `JSON_HEX_*` flags), and as HTML
-  escapes them (`&amp;`, `&lt;`, `&gt;`, `&quot;`, `&#39;`, `&nbsp;`: an
-  `inspect_dom` or an `innerHTML`), also inside the page's JSON (an
-  attribute holding a JSON config, also stringified twice),
-  and `fill_input` / `fill_form` type the value of a
-  `<secret:NAME>` they are given, so the agent can log in without seeing
-  the password. It is a convenience, not a security boundary: the page can
-  transform a value (encode it otherwise, split it) past the masking, images
-  (screenshots, PDFs) are not masked, and the server stops at start-up if
-  the file has a malformed line, a value shorter than 4 characters or a
-  name defined twice (the error names the line, never a value). Values
-  never reach the logs. The encoded forms of all the secrets are capped at
-  4 MB, the likeliest first: a very long value (a certificate bundle) is
-  masked as is and in plain JSON, but may miss the rarer forms, and the
-  server warns which secrets these are.
+  structured content) shows them as `<secret:NAME>`, as they are and
+  under up to six layers, nested in any order, of JSON and JavaScript
+  string escapes (`\"`, `\\`, `\/`, `\'`, `\n`, `\uXXXX` in lower- or
+  uppercase and as surrogate pairs, `\u{...}`, `\xXX`: `JSON.stringify`,
+  Python's `json.dumps`, PHP, Go, Gson), HTML character references
+  (`&amp;`, `&lt;`, `&gt;`, `&quot;`, `&apos;`, `&nbsp;`, decimal and
+  hexadecimal: an `inspect_dom`, an `innerHTML`, a server's escaper) and
+  percent-encoding (a form with `+` for a space, `encodeURIComponent`,
+  `encodeURI`, `escape()`, upper- or lowercase hex): the server decodes the
+  reply layer by layer and replaces each value where it was written. And
+  `fill_input` / `fill_form` type the value of a `<secret:NAME>` they are
+  given, so the agent can log in without seeing the password. It is a
+  convenience, not a security boundary: a value the page encodes otherwise
+  (base64, a hash) or transforms (splits it, changes its case) is not
+  masked, nor are images (screenshots, PDFs); and the server stops at
+  start-up if the file has a malformed line, a value shorter than 4
+  characters or a name defined twice (the error names the line, never a
+  value). Values never reach the logs.
 - `save_pdf` writes only `.pdf` files, under the same upload roots and
   resolved the same way; it overwrites an existing `.pdf` there. The same
   holds for the `.mp4` of `record_video` and the `save_path` of

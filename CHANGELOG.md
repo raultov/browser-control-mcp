@@ -26,6 +26,16 @@ from a copy of its code: entries describe the differences from that release.
   `X-Amzn-Oidc-Data`, `X-SID` and the like were shown. An app's own
   harmless header (`X-Build`) is hidden too; `include_sensitive_headers:
   true` shows every value.
+- `--secrets` finds a value by decoding each reply layer by layer (JSON and
+  JavaScript string escapes, HTML character references, percent-encoding,
+  up to six layers in any order) and replaces it where it was written,
+  instead of writing out every encoded form of every value, which missed
+  one form after another (#118, #126, #129, #137, #148, #160) and needed a
+  cap on memory (#150). A probe found 8 of 16 encodings unmasked before:
+  JSON four deep, JSON in a URL, a URL encoded twice, decimal and
+  hexadecimal HTML references (`&#39;`, `&#x27;`), a JavaScript
+  single-quoted literal, HTML in a URL and `escape()`. A very long value
+  is masked in every form (no cap any more).
 - `make e2e` also runs a differential check of top-level `await` on both
   browsers: the page's own `eval` is the oracle for thousands of generated
   statements (`tests/differential/fuzz_tla.py`).
