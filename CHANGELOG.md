@@ -12,6 +12,10 @@ from a copy of its code: entries describe the differences from that release.
 
 ### Fixed
 
+- `evaluate_js` with top-level `await` returns the value after a
+  braceless do-while whose body is a loop (`do while (x < 3) x++; while
+  (false) 'v'`): the inner loop's `while` was taken for the `do`'s
+  condition (#179).
 - `get_network_logs` redacts `X-GitHub-OTP`, `X-Vercel-Protection-Bypass`
   and `X-Honeycomb-Team`, any header with the word `otp`, `totp`, `hotp`,
   `mfa` or `2fa`, and any whose name contains `bypass`, `passcode`,

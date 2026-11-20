@@ -458,7 +458,7 @@ impl StatementScan {
         let previous = i.checked_sub(1).and_then(|p| tokens.get(p));
         let closed = std::mem::take(&mut self.closed);
         if self.depth == 0
-            && !self.read_do(code, token)
+            && !self.read_do(code, (previous, token), closed)
             && let Some(previous) = previous
             && starts_statement(code, (previous, token), closed)
         {
@@ -501,12 +501,21 @@ impl StatementScan {
 
     /// Counts a `do` at depth 0; answers whether `token` is the `while` of
     /// one, which goes on with the `do` statement instead of starting one
-    /// (`do {...} while (c)`; #169).
-    fn read_do(&mut self, code: &str, token: &Token) -> bool {
+    /// (`do {...} while (c)`; #169). A `while` right after `do`, `else`, a
+    /// label or a control statement's head is a loop in the `do`'s body
+    /// (`do while (x < 3) x++; while (c)`; #179), not its condition.
+    fn read_do(
+        &mut self,
+        code: &str,
+        (previous, token): (Option<&Token>, &Token),
+        closed: Closed,
+    ) -> bool {
         if token.is_keyword(code, &["do"]) {
             self.pending_do += 1;
         }
-        let ends_do = self.pending_do > 0 && token.is_keyword(code, &["while"]);
+        let in_body = closed == Closed::Head
+            || previous.is_some_and(|p| matches!(p.text(code), "do" | "else" | ":"));
+        let ends_do = self.pending_do > 0 && token.is_keyword(code, &["while"]) && !in_body;
         if ends_do {
             self.pending_do -= 1;
             self.do_while = DoWhile::While;
@@ -971,6 +980,39 @@ mod tests {
             // Then it runs as is in the async function
             assert!(!wrapped.contains("return ("), "{wrapped}");
         }
+    }
+
+    /// #179: a `while` loop that is the body of a braceless `do` (or
+    /// nested deeper in it) is not the `do`'s condition, so the value
+    /// after the real condition is still the last statement.
+    #[test]
+    fn values_after_a_do_whose_body_is_a_loop_are_returned() {
+        for (code, last) in [
+            (
+                "await 0; let x = 0; do while (x < 3) x++; while (false) 'v'",
+                "'v'",
+            ),
+            ("await 0; do if (a) while (b) c(); while (d) 'w'", "'w'"),
+            (
+                "await 0; do if (a) b(); else while (c) d(); while (e) 'e'",
+                "'e'",
+            ),
+            ("await 0; do l: while (a) b(); while (c) 'l'", "'l'"),
+            ("await 0; do while (a) { b() } while (c) 'b'", "'b'"),
+            ("await 0; do do x(); while (a); while (b) 'n'", "'n'"),
+            ("await 0; do\nwhile (a) x++; while (b)\n'nl'", "'nl'"),
+        ] {
+            // When the code is wrapped
+            let wrapped = with_top_level_await(code);
+            // Then the value after the do-while is returned
+            assert!(
+                wrapped.ends_with(&format!("return ({last}\n); }})()")),
+                "{wrapped}"
+            );
+        }
+        // And a do-while whose body is a loop, last, returns nothing
+        let wrapped = with_top_level_await("await 0; do while (a) b(); while (c)");
+        assert!(!wrapped.contains("return ("), "{wrapped}");
     }
 
     /// #157: a long line of regular expressions that never close (`(/[`
