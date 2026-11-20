@@ -46,28 +46,150 @@ pub struct Secrets {
 /// The patterns of the secrets and the token replacing each.
 #[derive(Clone)]
 struct Masker {
-    /// Finds the leftmost form, the longest of those starting there, so a
-    /// value containing another is masked whole.
+    /// Finds every occurrence of every pattern, overlapping ones too: two
+    /// secrets that overlap in the text (`abcd7731` and `7731wxyz` in
+    /// `abcd7731wxyz`) are both found, and [`replaced`] masks them as one
+    /// stretch; a leftmost-first search left the second's end shown.
     forms: aho_corasick::AhoCorasick,
-    /// The token of each form, by the form's index.
-    tokens: Vec<String>,
+    /// Each form, by its index, to find what a cut left of it.
+    texts: Vec<String>,
+    /// What each form stands for, by the form's index.
+    tokens: Vec<Token>,
+}
+
+/// What a pattern stands for: the token replacing it, and which part of
+/// its value it is.
+#[derive(Clone)]
+struct Token {
+    text: String,
+    cut: Cut,
+}
+
+/// Which part of a value a pattern is. A value's first character may
+/// complete an escape the text before it starts (a `\` before its `n`), and
+/// its last ones may start an escape the text after it completes (its
+/// trailing `\` before an attribute's closing `"`): decoded, the value is
+/// then not whole, but the rest of it is, and the escape it shares with
+/// its surroundings is masked with it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Cut {
+    /// The whole value.
+    Whole,
+    /// The value without its first character: the character before a
+    /// match is masked with it.
+    Start,
+    /// The value without the escape start that ends it: the character
+    /// after a match is masked with it.
+    End,
 }
 
 impl Masker {
-    fn new(forms: Vec<(String, String)>) -> Result<Option<Self>, String> {
+    fn new(forms: Vec<(String, Token)>) -> Result<Option<Self>, String> {
         if forms.is_empty() {
             return Ok(None);
         }
-        let (forms, tokens): (Vec<String>, Vec<String>) = forms.into_iter().unzip();
+        let (texts, tokens): (Vec<String>, Vec<Token>) = forms.into_iter().unzip();
         // Never a DFA: its 256 transitions a state take gigabytes for a
         // long value (#150).
         let forms = aho_corasick::AhoCorasick::builder()
-            .match_kind(aho_corasick::MatchKind::LeftmostLongest)
+            .match_kind(aho_corasick::MatchKind::Standard)
             .kind(Some(aho_corasick::AhoCorasickKind::ContiguousNFA))
-            .build(forms)
+            .build(&texts)
             .map_err(|e| format!("the secrets are too long to mask: {e}"))?;
-        Ok(Some(Self { forms, tokens }))
+        Ok(Some(Self {
+            forms,
+            texts,
+            tokens,
+        }))
     }
+}
+
+impl Masker {
+    /// The parts of values a cut left in `text`: before a cut mark (see
+    /// [`CUT_MARKS`]), the longest start of a whole value's form, of
+    /// [`MIN_LENGTH`] characters or more; after one, the longest end. A
+    /// tool cuts long text (a line, a value, `inspect_dom`'s context)
+    /// before masking it, and may cut through a value.
+    fn cut_parts(&self, text: &str) -> Vec<(std::ops::Range<usize>, usize)> {
+        let marks = CUT_MARKS.iter().flat_map(|mark| {
+            let found = text.match_indices(mark);
+            found.map(|(at, _)| at..at + mark.len())
+        });
+        marks
+            .flat_map(|mark| self.parts_around(text, mark))
+            .collect()
+    }
+
+    /// [`Self::cut_parts`] around the cut mark at `mark` of `text`.
+    fn parts_around(
+        &self,
+        text: &str,
+        mark: std::ops::Range<usize>,
+    ) -> Vec<(std::ops::Range<usize>, usize)> {
+        // The mark may stand on a line of its own (`inspect_dom`).
+        let before = text.get(..mark.start).unwrap_or_default().trim_end();
+        let rest = text.get(mark.end..).unwrap_or_default();
+        let start = mark.end + (rest.len() - rest.trim_start().len());
+        let after = text.get(start..).unwrap_or_default();
+        let whole = self
+            .tokens
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| t.cut == Cut::Whole);
+        let forms = whole.filter_map(|(i, _)| Some((i, self.texts.get(i)?)));
+        forms
+            .flat_map(|(index, form)| {
+                let head = longest_start(before, form).map(|n| before.len() - n..before.len());
+                let tail = longest_end(after, form).map(|n| start..start + n);
+                [head, tail]
+                    .into_iter()
+                    .flatten()
+                    .map(move |range| (range, index))
+            })
+            .collect()
+    }
+}
+
+/// What the tools write where they cut a text: `…` (a cut line, name,
+/// preview or value, `… [cut: ...]`, a preview's `[…]`) and `[...]`
+/// (`inspect_dom`'s context).
+const CUT_MARKS: &[&str] = &["\u{2026}", "[...]"];
+
+/// The length (bytes) of the longest start of `form`, of [`MIN_LENGTH`]
+/// characters or more, that `before` ends with.
+fn longest_start(before: &str, form: &str) -> Option<usize> {
+    let head_end = form
+        .char_indices()
+        .nth(MIN_LENGTH)
+        .map_or(form.len(), |(at, _)| at);
+    let head = form.get(..head_end)?;
+    let from = (before.len().saturating_sub(form.len())..=before.len())
+        .find(|i| before.is_char_boundary(*i))?;
+    let window = before.get(from..)?;
+    let start = window
+        .match_indices(head)
+        .map(|(at, _)| at)
+        .find(|at| form.starts_with(&window[*at..]))?;
+    Some(window.len() - start)
+}
+
+/// The length (bytes) of the longest end of `form`, of [`MIN_LENGTH`]
+/// characters or more, that `after` starts with.
+fn longest_end(after: &str, form: &str) -> Option<usize> {
+    let foot_start = form
+        .char_indices()
+        .rev()
+        .nth(MIN_LENGTH - 1)
+        .map_or(0, |(at, _)| at);
+    let foot = form.get(foot_start..)?;
+    let to = (0..=after.len().min(form.len()))
+        .rev()
+        .find(|i| after.is_char_boundary(*i))?;
+    let window = after.get(..to)?;
+    window
+        .rmatch_indices(foot)
+        .map(|(at, _)| at + foot.len())
+        .find(|end| form.ends_with(&window[..*end]))
 }
 
 impl std::fmt::Debug for Secrets {
@@ -144,14 +266,19 @@ impl Secrets {
         let mut layers: Vec<Layer> = Vec::new();
         let mut current = std::borrow::Cow::Borrowed(text);
         for layer in 0..=LAYERS {
-            for value in masker.forms.find_iter(current.as_ref()) {
+            // Standard matching (see `Masker::new`) always allows it.
+            let found_here = masker.forms.try_find_overlapping_iter(current.as_ref());
+            let whole = found_here.into_iter().flatten().map(|value| {
+                let token = value.pattern().as_usize();
+                let cut = masker.tokens.get(token).map_or(Cut::Whole, |t| t.cut);
+                (widened(&current, value.range(), cut), token)
+            });
+            for (range, token) in whole.chain(masker.cut_parts(&current)) {
                 let range = layers
                     .iter()
                     .rev()
-                    .fold(value.start()..value.end(), |range, layer| {
-                        layer.source(range)
-                    });
-                found.push((range, value.pattern().as_usize()));
+                    .fold(range, |range, layer| layer.source(range));
+                found.push((range, token));
             }
             if layer == LAYERS {
                 break;
@@ -297,29 +424,78 @@ impl Secrets {
 const LAYERS: usize = 6;
 
 /// The patterns the masker looks for, each with its token: every secret's
-/// value decoded 0 to [`LAYERS`] times (a value holding what reads as an
-/// escape, `%41` or `&amp;`, is decoded in the text as well), each also
-/// with its spaces as `+` (a form's encoding). Patterns shorter than
-/// [`MIN_LENGTH`] are left out: they would mangle unrelated output.
-fn patterns(entries: &[(String, String)]) -> Vec<(String, String)> {
+/// value, and its [`cuts`], decoded 0 to [`LAYERS`] times (a value holding
+/// what reads as an escape, `%41` or `&amp;`, is decoded in the text as
+/// well), each also with its spaces as `+` (a form's encoding). Patterns
+/// shorter than [`MIN_LENGTH`] are left out: they would mangle unrelated
+/// output.
+fn patterns(entries: &[(String, String)]) -> Vec<(String, Token)> {
     let mut patterns = Vec::new();
     let mut seen = std::collections::HashSet::new();
     for (name, value) in entries {
-        let token = format!("<secret:{name}>");
-        let mut form = value.clone();
-        for layer in 0..=LAYERS {
-            for variant in [form.clone(), form.replace(' ', "+")] {
-                if variant.chars().count() >= MIN_LENGTH && seen.insert(variant.clone()) {
+        for (form, cut) in cuts(value) {
+            let token = Token {
+                text: format!("<secret:{name}>"),
+                cut,
+            };
+            let variants = decodings(form)
+                .into_iter()
+                .flat_map(|f| [f.replace(' ', "+"), f]);
+            for variant in variants.filter(|v| v.chars().count() >= MIN_LENGTH) {
+                if seen.insert(variant.clone()) {
                     patterns.push((variant, token.clone()));
                 }
-            }
-            match decoded(&form) {
-                Some((next, _)) if layer < LAYERS => form = next,
-                _ => break,
             }
         }
     }
     patterns
+}
+
+/// `form`, then it decoded once, twice... up to [`LAYERS`] times, while
+/// decoding changes it.
+fn decodings(form: String) -> Vec<String> {
+    let mut forms = vec![form];
+    while forms.len() <= LAYERS {
+        let Some((next, _)) = forms.last().and_then(|last| decoded(last)) else {
+            break;
+        };
+        forms.push(next);
+    }
+    forms
+}
+
+/// `value`, and the parts of it that stay whole when it shares an escape
+/// with the text around it (see [`Cut`]): without its first character
+/// when that character completes a script escape (`"'\/bfnrtuvx`), and
+/// without each end that starts an escape (from a `\`, `%` or `&` among its
+/// last 9 characters).
+fn cuts(value: &str) -> Vec<(String, Cut)> {
+    let mut cuts = vec![(value.to_string(), Cut::Whole)];
+    let mut chars = value.chars();
+    if chars.next().is_some_and(|c| "\"'\\/bfnrtuvx".contains(c)) {
+        cuts.push((chars.as_str().to_string(), Cut::Start));
+    }
+    let ends = value.char_indices().rev().take(9);
+    for (at, _) in ends.filter(|(at, c)| *at > 0 && matches!(c, '\\' | '%' | '&')) {
+        cuts.push((value[..at].to_string(), Cut::End));
+    }
+    cuts
+}
+
+/// `range` of `text` widened as `cut` says: by the character before it
+/// ([`Cut::Start`]) or after it ([`Cut::End`]), when there is one.
+fn widened(text: &str, range: std::ops::Range<usize>, cut: Cut) -> std::ops::Range<usize> {
+    match cut {
+        Cut::Whole => range,
+        Cut::Start => {
+            let before = text.get(..range.start).and_then(|t| t.chars().next_back());
+            range.start - before.map_or(0, char::len_utf8)..range.end
+        }
+        Cut::End => {
+            let after = text.get(range.end..).and_then(|t| t.chars().next());
+            range.start..range.end + after.map_or(0, char::len_utf8)
+        }
+    }
 }
 
 /// Where each character of a text with one layer of escapes decoded came
@@ -528,7 +704,7 @@ fn percent_escape(text: &str, at: usize) -> Option<(char, usize)> {
 fn replaced(
     text: &str,
     mut found: Vec<(std::ops::Range<usize>, usize)>,
-    tokens: &[String],
+    tokens: &[Token],
 ) -> String {
     found.sort_by_key(|(range, _)| (range.start, std::cmp::Reverse(range.end)));
     let mut merged: Vec<(std::ops::Range<usize>, usize)> = Vec::new();
@@ -542,7 +718,7 @@ fn replaced(
     let mut copied = 0;
     for (range, token) in merged {
         out.push_str(text.get(copied..range.start).unwrap_or_default());
-        out.push_str(tokens.get(token).map_or("<secret>", String::as_str));
+        out.push_str(tokens.get(token).map_or("<secret>", |t| t.text.as_str()));
         copied = range.end;
     }
     out.push_str(text.get(copied..).unwrap_or_default());
@@ -1123,6 +1299,263 @@ mod tests {
         );
         let elapsed = started.elapsed();
         assert!(elapsed < std::time::Duration::from_secs(10), "{elapsed:?}");
+    }
+
+    /// A value is masked wherever it is: the whole text, its start, its
+    /// end, twice in a row, a thousand times; between escapes of what
+    /// surrounds it (`\"`, `&quot;`, `%22`).
+    #[test]
+    fn values_are_masked_wherever_they_are() {
+        let s = Secrets::parse("PW=p@ss7731\n").unwrap();
+        for (text, masked) in [
+            ("p@ss7731", "<secret:PW>"),
+            ("p@ss7731 end", "<secret:PW> end"),
+            ("start p@ss7731", "start <secret:PW>"),
+            ("p@ss7731p@ss7731", "<secret:PW><secret:PW>"),
+            (r#"\"p@ss7731\""#, r#"\"<secret:PW>\""#),
+            ("&quot;p@ss7731&quot;", "&quot;<secret:PW>&quot;"),
+            ("%22p%40ss7731%22", "%22<secret:PW>%22"),
+        ] {
+            assert_eq!(s.mask(text), masked, "{text}");
+        }
+        let many = "p@ss7731, ".repeat(1000);
+        assert_eq!(s.mask(&many), "<secret:PW>, ".repeat(1000));
+    }
+
+    /// Secrets that overlap: the longer one is masked when one holds the
+    /// other; when they only overlap, the one that starts first names the
+    /// whole stretch, so neither shows.
+    #[test]
+    fn overlapping_secrets_are_masked_together() {
+        let s = Secrets::parse("A=abcd7731\nB=7731wxyz\nC=abcd7731wxyz-long\n").unwrap();
+        assert_eq!(s.mask("abcd7731wxyz-long"), "<secret:C>");
+        assert_eq!(s.mask("abcd7731wxyz"), "<secret:A>");
+        assert_eq!(s.mask("xx7731wxyz"), "xx<secret:B>");
+        // And encoded, the same
+        assert_eq!(s.mask("abcd7731wxyz%2Dlong"), "<secret:C>");
+    }
+
+    /// Text that only looks like an escape is never changed, and nothing
+    /// panics on it: cut, invalid, out of range or lone surrogate escapes
+    /// of every kind, also at the very end of the text.
+    #[test]
+    fn malformed_escapes_are_left_as_they_are() {
+        let s = Secrets::parse("PW=p@ss7731\n").unwrap();
+        for text in [
+            "\\",
+            "\\u",
+            "\\u12",
+            "\\u{",
+            "\\u{}",
+            "\\u{110000}",
+            "\\u{1234567}",
+            "\\uD800",
+            "\\uD800\\u0041",
+            "\\uDC00",
+            "\\x",
+            "\\x4",
+            "\\x4G",
+            "\\u+123",
+            "%",
+            "%4",
+            "%G1",
+            "%+1",
+            "%E9%",
+            "%F0%9F%98",
+            "%C3",
+            "%u",
+            "%uD83D",
+            "%uD83D%u0041",
+            "&",
+            "&#",
+            "&#;",
+            "&#x;",
+            "&#99999999;",
+            "&#x110000;",
+            "&#xD800;",
+            "&amp",
+            "&AMP;",
+            "&#x+41;",
+            "&#-1;",
+            "a\\\\\\",
+            "%%%",
+            "&&&;;",
+        ] {
+            assert_eq!(s.mask(text), text, "{text:?}");
+            let around = format!("{text}p@ss7731{text}");
+            assert!(!s.mask(&around).contains("p@ss7731"), "{around:?}");
+        }
+    }
+
+    /// Masking is idempotent, leaves a token already in the text alone,
+    /// and is case-sensitive (a value in another case is another value).
+    #[test]
+    fn masking_twice_changes_nothing_more() {
+        let s = Secrets::parse("PW=p@ss7731\nTOKEN='<secret:PW>x'\n").unwrap();
+        for text in [
+            "a p@ss7731 b",
+            r#"{"v":"p%40ss7731"}"#,
+            "<secret:PW> stays",
+            "&lt;secret:PW&gt;x",
+            "P@SS7731",
+        ] {
+            let once = s.mask(text);
+            assert_eq!(s.mask(&once), once, "{text}");
+        }
+        assert_eq!(s.mask("P@SS7731"), "P@SS7731");
+        assert_eq!(s.mask("<secret:PW> stays"), "<secret:PW> stays");
+    }
+
+    /// A value that reads as an escape is masked as written and as decoded
+    /// (a page may decode it): `%41%42%43%44` hides `ABCD` too. A decoded
+    /// form shorter than [`MIN_LENGTH`] is not looked for.
+    #[test]
+    fn values_that_read_as_escapes_are_masked_as_decoded_too() {
+        let s = Secrets::parse("P=%41%42%43%44\nQ='&lt;&gt;'\n").unwrap();
+        assert_eq!(s.mask("%41%42%43%44 ABCD"), "<secret:P> <secret:P>");
+        assert_eq!(s.mask("&lt;&gt; <>"), "<secret:Q> <>");
+    }
+
+    /// Property, with random values (a fixed sequence): values made of the
+    /// characters encodings change, encoded by random chains of up to four
+    /// of [`encoders`], are masked; and random texts of escapes without the
+    /// value are left byte for byte.
+    #[test]
+    fn random_values_and_chains_are_masked() {
+        let alphabet: Vec<char> = "ab9 \"'\\&<>%+/=?#;:é€😀\t-_.~".chars().collect();
+        let encoders = encoders();
+        let mut random = Xorshift(0x9E37_79B9_7F4A_7C15);
+        for _ in 0..400 {
+            let length = 4 + random.below(24);
+            let mut value: String = (0..length)
+                .map(|_| alphabet[random.below(alphabet.len())])
+                .collect();
+            value.push_str("Zq");
+            let value = value.trim().replace(['"', '\''], "x");
+            let s = Secrets::parse(&format!("PW='{value}'\n")).unwrap();
+            let chain: Vec<usize> = (0..1 + random.below(4))
+                .map(|_| random.below(encoders.len()))
+                .collect();
+            let encoded = chain
+                .iter()
+                .fold(value.clone(), |text, &e| (encoders[e].1)(&text));
+            let masked = s.mask(&format!("<p>{encoded}</p>"));
+            let names: Vec<&str> = chain.iter().map(|&e| encoders[e].0).collect();
+            assert!(
+                masked.contains("<secret:PW>") && !masked.contains(&encoded),
+                "{value:?} {names:?}: {masked}"
+            );
+            // And a text of escapes without the value is left as it is
+            let noise: String = (0..64)
+                .map(|_| {
+                    [
+                        "\\\\", "\\\"", "&amp;", "&#39;", "%25", "%2B", "+", " ", "\\u0026", "a",
+                        "é",
+                    ][random.below(11)]
+                })
+                .collect();
+            assert_eq!(s.mask(&noise), noise, "{value:?}");
+        }
+    }
+
+    /// A value whose last characters start an escape the text around it
+    /// completes (a trailing `\` before an attribute's closing `"`, a `%`
+    /// before hex digits, an `&` before `amp;`), or whose first character
+    /// completes one the text around it starts (a `\` before an `n`), is
+    /// masked whole: the escape it shares with its surroundings is masked
+    /// with it.
+    #[test]
+    fn values_sharing_an_escape_with_their_surroundings_are_masked() {
+        let s = Secrets::parse(
+            "B='Qx9\"w&<z>7731\\'\nP='Qx9&w7731%'\nA='Qx9<w7731&'\nN='nQx9&w7731'\n",
+        )
+        .unwrap();
+        for text in [
+            // Raw HTML: an attribute, its JSON, a text node (inspect_dom)
+            r#"<div a="Qx9&quot;w&amp;&lt;z&gt;7731\" b=1>"#,
+            r#"<div j="{&quot;p&quot;:&quot;Qx9\&quot;w&amp;&lt;z&gt;7731\\&quot;}">"#,
+            r"<p>Qx9&quot;w&amp;&lt;z&gt;7731\n</p>",
+            r"'Qx9&quot;w&amp;&lt;z&gt;7731\'",
+            r"Qx9&quot;w&amp;&lt;z&gt;7731\u0041",
+            "Qx9&amp;w7731%41",
+            "Qx9&lt;w7731&amp;amp;",
+            r"C:\nQx9&amp;w7731",
+        ] {
+            let masked = s.mask(text);
+            assert!(
+                !masked.contains("7731") && masked.contains("<secret:"),
+                "{text}: {masked}"
+            );
+        }
+        // And the text around a value that shares no escape stays whole
+        assert_eq!(s.mask(r#"<i a="Qx9&amp;w7731%">"#), r#"<i a="<secret:P>">"#);
+    }
+
+    /// A tool that cuts its output may cut through a value: what is left
+    /// of it next to the cut mark (`…`, `[...]`), its start before one or
+    /// its end after one, encoded or not, is masked; text next to a cut
+    /// mark that is no part of a value is left as it is.
+    #[test]
+    fn values_cut_by_a_tool_are_masked() {
+        let s = Secrets::parse("PW='Qx9\"w&<z> Zk7731'\n").unwrap();
+        for (text, masked) in [
+            (
+                "<p>Qx9\"w&amp;&lt;z&gt; Zk7\n[...]",
+                "<p><secret:PW>\n[...]",
+            ),
+            (
+                "[...]\nw&amp;&lt;z&gt; Zk7731</p>",
+                "[...]\n<secret:PW></p>",
+            ),
+            (
+                "line Qx9\"w&<z> Zk… [cut: the first 9 of 99 characters]",
+                "line <secret:PW>… [cut: the first 9 of 99 characters]",
+            ),
+            (
+                r#"{"v":"Qx9\"w…(5000 chars)"}"#,
+                r#"{"v":"<secret:PW>…(5000 chars)"}"#,
+            ),
+            ("other text… and more […]", "other text… and more […]"),
+            ("Qx9…", "Qx9…"),
+        ] {
+            assert_eq!(s.mask(text), masked, "{text}");
+        }
+    }
+
+    /// A reply of a thousand cut lines (a console of long messages) is
+    /// checked for cut values quickly, with 100 secrets.
+    #[test]
+    fn many_cut_marks_are_checked_quickly() {
+        let file: String = (0..100)
+            .map(|i| format!("S{i:03}='Pw{i:03}&<\"x y'\n"))
+            .collect();
+        let s = Secrets::parse(&file).unwrap();
+        let reply = format!(
+            "{}[log] Pw050&<\"x… [cut]\n",
+            "[log] some long message text…\n".repeat(1000)
+        );
+        let started = std::time::Instant::now();
+        let masked = s.mask(&reply);
+        assert!(
+            masked.ends_with("[log] <secret:S050>… [cut]\n"),
+            "{}",
+            &masked[masked.len() - 60..]
+        );
+        let elapsed = started.elapsed();
+        assert!(elapsed < std::time::Duration::from_secs(5), "{elapsed:?}");
+    }
+
+    /// A small deterministic random sequence (xorshift64).
+    struct Xorshift(u64);
+
+    impl Xorshift {
+        /// A number below `n`.
+        fn below(&mut self, n: usize) -> usize {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            usize::try_from(self.0 % u64::try_from(n).unwrap()).unwrap()
+        }
     }
 
     /// SECRETS-03: a tool's text, embedded text, structured content and

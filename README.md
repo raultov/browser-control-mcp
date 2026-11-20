@@ -762,7 +762,11 @@ incompatible:
   hexadecimal: an `inspect_dom`, an `innerHTML`, a server's escaper) and
   percent-encoding (a form with `+` for a space, `encodeURIComponent`,
   `encodeURI`, `escape()`, upper- or lowercase hex): the server decodes the
-  reply layer by layer and replaces each value where it was written. And
+  reply layer by layer and replaces each value where it was written, also
+  when the value shares an escape with the text around it (a trailing `\`
+  before an attribute's closing quote), when two secrets overlap, and when
+  a tool cut its output through a value (what is left of it next to the
+  `…` or `[...]` mark). And
   `fill_input` / `fill_form` type the value of a `<secret:NAME>` they are
   given, so the agent can log in without seeing the password. It is a
   convenience, not a security boundary: a value the page encodes otherwise
@@ -826,7 +830,10 @@ cross-origin iframe, a nested iframe and a worker, ended by the page, the
 server, a dropped connection, a navigation, a removal or `terminate()`,
 must get exactly one close line in `get_network_logs`, and `headers.py`:
 credential request, response and cookie headers are hidden and standard
-ones shown, by default and in one request's details. `make regressions`
+ones shown, by default and in one request's details, and `secrets.py`:
+a secret the page writes through its encoders into 34 places a tool reads
+(values, errors, the console, the DOM, the snapshot, requests, storage,
+the tab's URL) shows in no reply. `make regressions`
 runs the reproduction scripts of the closed GitHub issues, saved in
 [tests/regressions](tests/regressions) by its `fetch.py`: an issue fails
 when its script shows its bug again (the issues closed with a documented

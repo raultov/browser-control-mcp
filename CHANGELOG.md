@@ -40,7 +40,14 @@ from a copy of its code: entries describe the differences from that release.
   JSON four deep, JSON in a URL, a URL encoded twice, decimal and
   hexadecimal HTML references (`&#39;`, `&#x27;`), a JavaScript
   single-quoted literal, HTML in a URL and `escape()`. A very long value
-  is masked in every form (no cap any more).
+  is masked in every form (no cap any more). Edge cases found while
+  testing it are masked too: a value ending in `\` written before an
+  attribute's closing quote (`inspect_dom`), or sharing any escape with
+  the text around it; two secrets that overlap in the text (the second's
+  end was shown); and what is left of a value a tool cut through (next to
+  its `…` or `[...]` mark: `inspect_dom`'s context, a cut console line).
+  `make e2e` checks it end to end on both browsers
+  (`tests/differential/secrets.py`: 34 places a tool reads).
 - `make e2e` also runs a differential check of top-level `await` on both
   browsers: the page's own `eval` is the oracle for thousands of generated
   statements (`tests/differential/fuzz_tla.py`); and a matrix of
