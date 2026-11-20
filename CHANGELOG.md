@@ -8,7 +8,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 `browser-control-mcp` is the successor of `chrome-debug-mcp` 1.5.6 and starts
 from a copy of its code: entries describe the differences from that release.
 
-## [Unreleased]
+## [0.23.0-beta.37] - 2026-11-20
+
+Public **BETA**. The four areas most bug reports came from are rebuilt
+so a new case is handled by design, not by one more patch. `evaluate_js`
+parses top-level `await` with a JavaScript parser (oxc) instead of a
+hand-written scanner. `get_network_logs` shows only allowlisted standard
+headers: an app's or a vendor's own header is hidden unless
+`include_sensitive_headers: true` (a behaviour change). `--secrets`
+decodes each reply layer by layer instead of writing out encoded forms.
+And Firefox now lists a popup's WebSocket closes. New checks keep them so:
+differential tests against the browsers (top-level `await`, a 43-cell
+WebSocket matrix per browser, headers, secrets) in `make e2e`, and the
+reproductions of 70 closed issues in `make regressions`.
 
 ### Changed
 
@@ -57,7 +69,6 @@ from a copy of its code: entries describe the differences from that release.
   a dropped connection, navigations, a reload, removal and `terminate()`,
   and sockets refused, unanswered or dropped at the handshake), each of
   which must list the socket closed exactly once. All 86 pass.
-
 - `make regressions` (also in `make check-all`) runs the reproduction
   scripts of the 70 closed GitHub issues that have one, saved in
   `tests/regressions` (`fetch.py` refreshes them): an issue fails when its
