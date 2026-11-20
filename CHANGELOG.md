@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 `browser-control-mcp` is the successor of `chrome-debug-mcp` 1.5.6 and starts
 from a copy of its code: entries describe the differences from that release.
 
+## [Unreleased]
+
+### Fixed
+
+- `get_network_logs` redacts `X-GitHub-OTP`, `X-Vercel-Protection-Bypass`
+  and `X-Honeycomb-Team`, any header with the word `otp`, `totp`, `hotp`,
+  `mfa` or `2fa`, and any whose name contains `bypass`, `passcode`,
+  `passphrase` or `signature`, unless `include_sensitive_headers: true`
+  (#175).
+
 ## [0.22.1-beta.35] - 2026-11-19
 
 Public **BETA**. Six fixes from an automated test round. Chrome lists

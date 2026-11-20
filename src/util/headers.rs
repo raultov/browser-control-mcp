@@ -1,18 +1,23 @@
 //! HTTP header values that must not be handed to the agent by default.
 
-/// Headers carrying credentials or session state (compared case-insensitively).
+/// Headers carrying credentials or session state (compared case-insensitively),
+/// plus vendor credential headers whose words name no credential, such as
+/// the Honeycomb API key `X-Honeycomb-Team` (#175).
 const SENSITIVE: &[&str] = &[
     "authorization",
     "proxy-authorization",
     "cookie",
     "set-cookie",
+    "x-honeycomb-team",
 ];
 
 /// Name fragments of the many non-standard credential headers (`X-Api-Key`,
 /// `X-CSRF-Token`, `X-Amz-Security-Token`, `X-Session-Id`...), compared
 /// case-insensitively, plus the bearer tokens of web SDKs (`X-Appwrite-JWT`,
-/// `X-Firebase-AppCheck`; #168). Challenges such as `WWW-Authenticate` hold
-/// no secret and stay readable.
+/// `X-Firebase-AppCheck`; #168), the protection bypass secrets
+/// (`X-Vercel-Protection-Bypass`; #175) and request signatures
+/// (`X-Signature`). Challenges such as `WWW-Authenticate` hold no secret and
+/// stay readable.
 const SENSITIVE_PARTS: &[&str] = &[
     "token",
     "secret",
@@ -25,13 +30,18 @@ const SENSITIVE_PARTS: &[&str] = &[
     "credential",
     "jwt",
     "appcheck",
+    "bypass",
+    "passcode",
+    "passphrase",
+    "signature",
 ];
 
 /// Whole words of a header name (between `-`) that name a credential:
 /// vendor key headers such as `X-Auth-Key` (Cloudflare) or
 /// `Ocp-Apim-Subscription-Key` (Azure) (#144), and the `DPoP` proof of
-/// possession (RFC 9449), a signed JWT sent along an access token (#161).
-const SENSITIVE_WORDS: &[&str] = &["key", "dpop"];
+/// possession (RFC 9449), a signed JWT sent along an access token (#161),
+/// and the one-time codes of a second factor (`X-GitHub-OTP`; #175).
+const SENSITIVE_WORDS: &[&str] = &["key", "dpop", "otp", "totp", "hotp", "mfa", "2fa"];
 
 /// Starts of the words that name authorization or authentication.
 const AUTH_PREFIXES: &[&str] = &["authoriz", "authentic", "authn", "authz"];
@@ -134,5 +144,26 @@ mod tests {
             assert!(is_sensitive(name), "{name}");
         }
         assert!(!is_sensitive("X-Appwrite-Project"));
+    }
+
+    /// #175: a second-factor one-time code, a deployment protection bypass
+    /// secret and the Honeycomb API key are credentials; words that merely
+    /// contain `otp` or `team` are not.
+    #[test]
+    fn otp_bypass_and_honeycomb_headers_are_sensitive() {
+        for name in [
+            "X-GitHub-OTP",
+            "X-Vercel-Protection-Bypass",
+            "X-Honeycomb-Team",
+            "x_honeycomb_team",
+            "X-TOTP",
+            "X-MFA-Code",
+            "X-Signature",
+        ] {
+            assert!(is_sensitive(name), "{name}");
+        }
+        for name in ["X-Team", "X-Hotplug", "X-Footprint", "X-Honeycomb-Dataset"] {
+            assert!(!is_sensitive(name), "{name}");
+        }
     }
 }
