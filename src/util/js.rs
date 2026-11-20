@@ -818,7 +818,7 @@ pub const PAGE_VITALS: &str = "(() => { \
     }; \
 })()";
 
-pub use super::top_level_await::{has_top_level_await, with_top_level_await};
+pub use super::top_level_await::{async_form, has_top_level_await, with_top_level_await};
 
 #[cfg(test)]
 mod tests {

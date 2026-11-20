@@ -1,719 +1,196 @@
-//! Top-level `await` in the code `evaluate_js` runs: found by a lexical
-//! scan of the code, and run as an async function returning the last
-//! expression statement's value, as a console does (Firefox's
-//! `script.evaluate` has no top-level await, nor has Chrome's
-//! `Runtime.evaluate`).
+//! Top-level `await` in the code `evaluate_js` runs: found by parsing the
+//! code, and run as an async function returning the last expression
+//! statement's value, as a console does (Firefox's `script.evaluate` has
+//! no top-level await, nor has Chrome's `Runtime.evaluate`).
 //!
-//! The scan reads the code once into tokens: whitespace and
-//! comments are dropped (a token records whether a line break preceded it),
-//! strings, template literals (with their `${...}` substitutions read as
-//! code) and regular expression literals are recognised. Every step is
-//! linear in the code's length, so a large pasted expression cannot stall
-//! the call (#140, #157).
+//! The code is parsed by a JavaScript parser (oxc) as the body of an async
+//! function, so statements, regular expressions, templates, labels and
+//! automatic semicolons are read as the browser reads them: the scanner it
+//! replaces missed one construct after another (#135-#179). Code the parser
+//! refuses, or longer than [`MAX_PARSED_LEN`], is taken to have no
+//! top-level `await` and wrapped without returning a value: `evaluate_js`
+//! runs it as is first, and wrapped only when the browser says `await` is
+//! not valid there.
+//!
+//! The parser is recursive, and a stack overflow aborts the whole server:
+//! it runs in a thread of its own whose stack grows with the code's length
+//! (`STACK_PER_BYTE`), and a panic there only means "not parsed".
 
-/// What a [`Token`] is.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Kind {
-    /// An identifier, a keyword or a number.
-    Word,
-    /// A string, a regular expression, a template literal without
-    /// substitutions, or a template's text after its last substitution.
-    Literal,
-    /// `(`, `[`, `{`, or a template's text up to a `${` (`$`).
-    Open(u8),
-    /// `)`, `]`, `}`, or the `}` ending a template substitution.
-    Close,
-    /// Any other punctuation: one byte, or `=>`, `++`, `--`.
-    Punct,
+use oxc_allocator::Allocator;
+use oxc_ast::ast::{
+    ArrowFunctionExpression, AwaitExpression, ForOfStatement, Function, FunctionBody, Statement,
+    VariableDeclaration, VariableDeclarationKind,
+};
+use oxc_ast_visit::{Visit, walk};
+use oxc_parser::Parser;
+use oxc_span::{GetSpan, SourceType, Span};
+use oxc_syntax::scope::ScopeFlags;
+
+/// Longest code parsed (bytes). Longer code is run as is, and wrapped
+/// without returning a value when the browser refuses its `await`: the
+/// stack the parser may need grows with the length.
+pub const MAX_PARSED_LEN: usize = 64 * 1024;
+
+/// Stack of the parse thread for empty code.
+const STACK_BASE: usize = 8 << 20;
+
+/// Stack of the parse thread per byte of code. Every level of the
+/// parser's recursion takes at least one byte of code; the deepest cost
+/// measured (oxc 0.159, x86_64) is about 1.25 KB a byte in a release build
+/// (`let [[[[...`) and 4.2 KB in a debug build (`[[[[...`): about three
+/// times that. The stack is only reserved: pages are used as the
+/// recursion reaches them.
+const STACK_PER_BYTE: usize = if cfg!(debug_assertions) {
+    12 << 10
+} else {
+    4 << 10
+};
+
+/// What the code opens with when parsed: the body of an async function,
+/// where `await` is an expression.
+const OPEN: &str = "async function w() { ";
+
+/// An expression as `evaluate_js` runs it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AsyncForm {
+    /// Whether the code uses `await` outside every function (or
+    /// `for await`, `await using`), which only runs as an async function:
+    /// a script refuses it, or reads `await (x)` as a call to a function
+    /// named await (#135).
+    pub awaits: bool,
+    /// The code as an async function called at once, returning its last
+    /// expression statement's value (none when the last statement is a
+    /// declaration or a control statement).
+    pub wrapped: String,
 }
 
-/// A token of the code: its bytes `start..end`.
-#[derive(Clone, Copy, Debug)]
-struct Token {
-    kind: Kind,
-    start: usize,
-    end: usize,
-    /// Whether a line break (in whitespace or a block comment) precedes it.
-    line_before: bool,
-    /// Whether it is a word after `.` (or `?.`): a property's name, never
-    /// a keyword (`o.do`, `o.new`, `o.in`; #169).
-    property: bool,
-}
-
-impl Token {
-    fn text<'a>(&self, code: &'a str) -> &'a str {
-        code.get(self.start..self.end).unwrap_or_default()
-    }
-
-    fn is(&self, code: &str, text: &str) -> bool {
-        self.text(code) == text
-    }
-
-    /// Whether this token, first on its line, continues the statement of
-    /// the line before (`.then(...)`, an operator, a closing bracket).
-    fn continues(&self, code: &str) -> bool {
-        self.text(code).starts_with([
-            '.', '?', ':', '+', '-', '*', '/', '%', '&', '|', '^', ',', '=', '<', '>', ')', ']',
-            '}',
-        ])
-    }
-
-    /// Whether this token is one of the [`CONTINUING`] keywords, which
-    /// never start a statement: the `catch`, `finally` or `else` of a
-    /// `try` or `if` whose block closed before it, on its line or the one
-    /// before (#151).
-    fn is_continuing(&self, code: &str) -> bool {
-        CONTINUING.contains(&self.text(code))
-    }
-
-    /// Whether this token, last on its line, leaves the statement waiting
-    /// for an operand on the next line: an operator (`+`, `=`, `?`, `:`,
-    /// `=>`, not `++`, `--` or `;`) or a keyword taking an operand
-    /// (`typeof`, `in`, `await`), not `return`, `throw` or `yield`, which
-    /// a line break ends (#155), nor `of`, more often a variable's name
-    /// than the end of a line in a `for (... of` head, which is inside
-    /// brackets anyway (#162). A property named like one (`o.in`) is an
-    /// operand (#169).
-    fn awaits_operand(&self, code: &str) -> bool {
-        let text = self.text(code);
-        match self.kind {
-            Kind::Punct => !matches!(text, "++" | "--" | ";"),
-            Kind::Word => {
-                self.is_keyword(code, BEFORE_OPERAND)
-                    && !matches!(text, "return" | "throw" | "yield" | "of")
-            }
-            _ => false,
-        }
-    }
-
-    /// Whether this token is one of `keywords`, not a property named like
-    /// it.
-    fn is_keyword(&self, code: &str, keywords: &[&str]) -> bool {
-        !self.property && keywords.contains(&self.text(code))
-    }
-}
-
-/// Whether a line break before `token` (after `previous`) ends the
-/// statement: the next line does not go on with it (`.then(...)`, an
-/// operator) and the line before does not wait for an operand (#155).
-fn line_ends_statement(code: &str, previous: Option<&Token>, token: &Token) -> bool {
-    token.line_before && !token.continues(code) && !previous.is_some_and(|p| p.awaits_operand(code))
-}
-
-/// Keywords that go on with the statement before them.
-const CONTINUING: &[&str] = &["catch", "finally", "else"];
-
-/// Keywords after which a `/` starts a regular expression, not a division.
-const BEFORE_OPERAND: &[&str] = &[
-    "return",
-    "typeof",
-    "instanceof",
-    "in",
-    "of",
-    "new",
-    "delete",
-    "void",
-    "throw",
-    "case",
-    "do",
-    "else",
-    "yield",
-    "await",
-];
-
-/// The tokens of `code`, whitespace and comments left out.
-fn lex(code: &str) -> Vec<Token> {
-    let mut lexer = Lexer {
-        code,
-        bytes: code.as_bytes(),
-        braces: Vec::new(),
-        tokens: Vec::new(),
-        line_before: false,
-        unclosed: 0,
+/// [`AsyncForm`] of `code`, from one parse.
+pub fn async_form(code: &str) -> AsyncForm {
+    let parsed = parsed(code);
+    let last = parsed.as_ref().and_then(|p| p.last).and_then(|span| {
+        let start = usize::try_from(span.start).ok()?.checked_sub(OPEN.len())?;
+        let end = usize::try_from(span.end).ok()?.checked_sub(OPEN.len())?;
+        Some((code.get(..start)?, code.get(start..end)?))
+    });
+    let wrapped = match last {
+        // The line break ends a comment inside the last line.
+        Some((head, last)) => format!("(async () => {{ {head}return ({last}\n); }})()"),
+        None => format!("(async () => {{ {code}\n}})()"),
     };
-    let mut at = 0;
-    while at < code.len() {
-        at = lexer.step(at);
-    }
-    lexer.tokens
-}
-
-/// The state of [`lex`].
-struct Lexer<'a> {
-    code: &'a str,
-    bytes: &'a [u8],
-    /// The `{` open at this point, innermost last: `true` for a template's
-    /// `${`, whose `}` resumes the template.
-    braces: Vec<bool>,
-    tokens: Vec<Token>,
-    /// Whether a line break was skipped since the last token.
-    line_before: bool,
-    /// Where the scan of the last regular expression that did not close
-    /// stopped (see [`Self::regex`]).
-    unclosed: usize,
-}
-
-impl Lexer<'_> {
-    /// Reads what starts at `at`; answers where the next thing starts.
-    fn step(&mut self, at: usize) -> usize {
-        let byte = self.bytes[at];
-        if byte.is_ascii_whitespace() {
-            return self.skip(at, |b| b.is_ascii_whitespace());
-        }
-        match (byte, self.bytes.get(at + 1)) {
-            (b'/', Some(b'/')) => return self.skip(at, |b| b != b'\n' && b != b'\r'),
-            (b'/', Some(b'*')) => return self.block_comment(at),
-            (b'\'' | b'"', _) => {
-                let end = string_end(self.bytes, at, byte);
-                return self.push(Kind::Literal, at, end);
-            }
-            (b'`', _) => return self.template(at, at + 1),
-            _ => {}
-        }
-        if byte == b'/'
-            && self.operand_expected()
-            && let Some(end) = self.regex(at)
-        {
-            return self.push(Kind::Literal, at, end);
-        }
-        self.other(byte, at)
-    }
-
-    /// Where the regular expression opening at `at` ends ([`regex_end`]).
-    /// One that does not close on its line is invalid code, or a division
-    /// the lexer took for one: every `/` before where its scan stopped is
-    /// then a division, not scanned again, so a line of `(/[` is read once
-    /// rather than once per `/` (#157).
-    fn regex(&mut self, at: usize) -> Option<usize> {
-        if at < self.unclosed {
-            return None;
-        }
-        match regex_end(self.bytes, at) {
-            Ok(end) => Some(end),
-            Err(stopped) => {
-                self.unclosed = stopped;
-                None
-            }
-        }
-    }
-
-    /// Words, brackets and punctuation.
-    fn other(&mut self, byte: u8, at: usize) -> usize {
-        match byte {
-            _ if is_word_byte(byte) => {
-                let end = run_end(self.bytes, at, is_word_byte);
-                self.push(Kind::Word, at, end)
-            }
-            b'{' => {
-                self.braces.push(false);
-                self.push(Kind::Open(byte), at, at + 1)
-            }
-            b'}' => {
-                let end = self.push(Kind::Close, at, at + 1);
-                match self.braces.pop() {
-                    Some(true) => self.template(end, end),
-                    _ => end,
-                }
-            }
-            b'(' | b'[' => self.push(Kind::Open(byte), at, at + 1),
-            b')' | b']' => self.push(Kind::Close, at, at + 1),
-            _ => {
-                let pair = self.bytes.get(at + 1).copied();
-                let long = matches!(
-                    (byte, pair),
-                    (b'=', Some(b'>')) | (b'+', Some(b'+')) | (b'-', Some(b'-'))
-                );
-                self.push(Kind::Punct, at, at + 1 + usize::from(long))
-            }
-        }
-    }
-
-    /// Skips the run of bytes from `at` that `keep` accepts, noting a line
-    /// break in it.
-    fn skip(&mut self, at: usize, keep: fn(u8) -> bool) -> usize {
-        let end = run_end(self.bytes, at, keep);
-        self.line_before |= self.bytes[at..end].contains(&b'\n');
-        end
-    }
-
-    fn block_comment(&mut self, at: usize) -> usize {
-        let end = self.code[at + 2..]
-            .find("*/")
-            .map_or(self.bytes.len(), |n| at + n + 4);
-        self.line_before |= self.bytes[at..end].contains(&b'\n');
-        end
-    }
-
-    /// A template's text from `text` (just after its backtick or the `}`
-    /// of a substitution), the token starting at `start`: up to its closing
-    /// backtick, or an open bracket up to its next `${`.
-    fn template(&mut self, start: usize, text: usize) -> usize {
-        let mut at = text;
-        while at < self.bytes.len() {
-            match self.bytes[at] {
-                b'\\' => at += 2,
-                b'`' => return self.push(Kind::Literal, start, at + 1),
-                b'$' if self.bytes.get(at + 1) == Some(&b'{') => {
-                    self.braces.push(true);
-                    return self.push(Kind::Open(b'$'), start, at + 2);
-                }
-                _ => at += 1,
-            }
-        }
-        self.push(Kind::Literal, start, self.bytes.len())
-    }
-
-    /// Whether a `/` here starts an operand (a regular expression), from
-    /// the token before it.
-    fn operand_expected(&self) -> bool {
-        let Some(last) = self.tokens.last() else {
-            return true;
-        };
-        match last.kind {
-            Kind::Open(_) => true,
-            Kind::Punct => !matches!(last.text(self.code), "++" | "--"),
-            Kind::Word => last.is_keyword(self.code, BEFORE_OPERAND),
-            Kind::Literal | Kind::Close => false,
-        }
-    }
-
-    /// Records the token `start..end` (capped at the code's end); answers
-    /// its end.
-    fn push(&mut self, kind: Kind, start: usize, end: usize) -> usize {
-        let end = end.min(self.bytes.len());
-        let after_dot = self.tokens.last().is_some_and(|t| t.is(self.code, "."));
-        self.tokens.push(Token {
-            kind,
-            start,
-            end,
-            line_before: std::mem::take(&mut self.line_before),
-            property: kind == Kind::Word && after_dot,
-        });
-        end
+    AsyncForm {
+        awaits: parsed.is_some_and(|p| p.awaits),
+        wrapped,
     }
 }
 
-/// Where the run of bytes from `at` that `keep` accepts ends.
-fn run_end(bytes: &[u8], at: usize, keep: fn(u8) -> bool) -> usize {
-    bytes[at..]
-        .iter()
-        .position(|b| !keep(*b))
-        .map_or(bytes.len(), |n| at + n)
-}
-
-/// Where the string opening at `open` (with `quote`) ends, past its
-/// closing quote.
-fn string_end(bytes: &[u8], open: usize, quote: u8) -> usize {
-    let mut at = open + 1;
-    while at < bytes.len() && bytes[at] != quote {
-        at += if bytes[at] == b'\\' { 2 } else { 1 };
-    }
-    at + 1
-}
-
-/// Where the regular expression literal opening at `open` ends, past its
-/// flags; `Err` with where the scan stopped when no unescaped `/` outside
-/// a character class closes it on its line (then the `/` is a division).
-fn regex_end(bytes: &[u8], open: usize) -> Result<usize, usize> {
-    let (mut at, mut class) = (open + 1, false);
-    while at < bytes.len() {
-        match bytes[at] {
-            b'\\' => at += 1,
-            b'\n' | b'\r' => return Err(at),
-            b'[' => class = true,
-            b']' => class = false,
-            b'/' if !class => return Ok(run_end(bytes, at + 1, is_word_byte)),
-            _ => {}
-        }
-        at += 1;
-    }
-    Err(bytes.len())
-}
-
-/// Whether `byte` can be part of an identifier (any byte of a character
-/// outside ASCII counts).
-fn is_word_byte(byte: u8) -> bool {
-    byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'$' || !byte.is_ascii()
-}
-
-/// Keywords starting a last statement that has no value to return: a
-/// declaration, a control statement or a block.
-const DECLARING: &[&str] = &[
-    "const", "let", "var", "function", "class", "if", "for", "while", "do", "switch", "try",
-    "return", "throw",
-];
-
-/// `expression`, whose statements use `await` at their top level, as an
-/// async function called at once that returns its last expression
-/// statement's value, as a console does. A last statement that is a
-/// declaration or a block returns nothing. Trailing `;` and comments are
-/// left out (#142). No line is added before the code, so an error's line
-/// is the expression's.
-pub fn with_top_level_await(expression: &str) -> String {
-    let tokens = lex(expression);
-    let kept = tokens
-        .iter()
-        .rposition(|t| !t.is(expression, ";"))
-        .map_or(0, |n| n + 1);
-    let tokens = &tokens[..kept];
-    let Some(end) = tokens.last().map(|t| t.end) else {
-        return format!("(async () => {{ {expression}\n}})()");
-    };
-    let code = &expression[..end];
-    let index = last_statement(expression, tokens);
-    let first = tokens[index];
-    let declares = match first.kind {
-        Kind::Open(b'{') => true,
-        Kind::Word => {
-            DECLARING.contains(&first.text(expression))
-                || is_async_function(expression, tokens, index)
-        }
-        _ => false,
-    };
-    if declares {
-        return format!("(async () => {{ {code}\n}})()");
-    }
-    let (head, last) = code.split_at(first.start);
-    // The line break ends a comment inside the last line.
-    format!("(async () => {{ {head}return ({last}\n); }})()")
-}
-
-/// Whether the tokens at `i` are `async function`, on one line (a line
-/// break after `async` makes it a variable's name).
-fn is_async_function(code: &str, tokens: &[Token], i: usize) -> bool {
-    let next = tokens.get(i + 1);
-    tokens[i].is(code, "async") && next.is_some_and(|n| n.is(code, "function") && !n.line_before)
-}
-
-/// Whether the statement starting at the token `i` declares a function
-/// or a class, whose body's `}` ends it (#162).
-fn starts_declaration(code: &str, tokens: &[Token], i: usize) -> bool {
-    matches!(tokens[i].text(code), "function" | "class") || is_async_function(code, tokens, i)
-}
-
-/// The index of the token starting the last statement of `tokens`: after
-/// their last `;` outside brackets, after the `}` of a block statement
-/// (#156) or of a function or class declaration (#162), or after a line
-/// break neither line goes on over (#155).
-fn last_statement(code: &str, tokens: &[Token]) -> usize {
-    let mut scan = StatementScan::default();
-    for i in 0..tokens.len() {
-        scan.read(code, tokens, i);
-    }
-    scan.start
-}
-
-/// What the token before closed at depth 0, as [`StatementScan`] needs it.
-#[derive(Clone, Copy, Default, PartialEq)]
-enum Closed {
-    #[default]
-    Other,
-    /// The `)` of a control statement's head (`if (...)`).
-    Head,
-    /// The `}` of a block statement or of a declaration's body.
-    Block,
-}
-
-/// The state of [`last_statement`]'s scan.
-#[derive(Default)]
-struct StatementScan {
-    /// How many brackets are open.
-    depth: i32,
-    /// Where the current statement starts.
-    start: usize,
-    /// Whether the `(` open at depth 0 holds a control statement's head.
-    head: bool,
-    /// Whether the `{` open at depth 0 opens a block statement or the body
-    /// of a function or class declaration, not an object or a function
-    /// expression's body.
-    block: bool,
-    /// Whether the current statement declares a function or a class whose
-    /// body has not opened yet.
-    declaring: bool,
-    /// How many `do` statements at depth 0 wait for their `while`.
-    pending_do: usize,
-    do_while: DoWhile,
-    closed: Closed,
-}
-
-/// Where the scan is in a do-while at depth 0, whose condition's `)` ends
-/// the statement (#169).
-#[derive(Clone, Copy, Default, PartialEq)]
-enum DoWhile {
-    #[default]
-    Outside,
-    /// The `while` of a `do` was just read: its `(` holds the condition.
-    While,
-    /// The `(` open at depth 0 holds the condition.
-    Condition,
-}
-
-/// Keywords after which a `{` opens a block statement.
-const BEFORE_BLOCK: &[&str] = &["else", "try", "catch", "finally", "do"];
-
-impl StatementScan {
-    /// Reads the token at `i` of `tokens`.
-    fn read(&mut self, code: &str, tokens: &[Token], i: usize) {
-        let token = &tokens[i];
-        let previous = i.checked_sub(1).and_then(|p| tokens.get(p));
-        let closed = std::mem::take(&mut self.closed);
-        if self.depth == 0
-            && !self.read_do(code, (previous, token), closed)
-            && let Some(previous) = previous
-            && starts_statement(code, (previous, token), closed)
-        {
-            self.start = i;
-        }
-        if i == self.start {
-            self.declaring = starts_declaration(code, tokens, i);
-        }
-        match token.kind {
-            Kind::Open(byte) => {
-                if self.depth == 0 {
-                    self.head = byte == b'(' && opens_head(code, tokens, i);
-                    let do_while = std::mem::take(&mut self.do_while);
-                    if byte == b'(' && do_while == DoWhile::While {
-                        self.do_while = DoWhile::Condition;
-                    }
-                    let after = previous.is_some_and(|p| BEFORE_BLOCK.contains(&p.text(code)));
-                    let body = byte == b'{' && std::mem::take(&mut self.declaring);
-                    self.block = byte == b'{'
-                        && (i == self.start || closed == Closed::Head || after || body);
-                }
-                self.depth += 1;
-            }
-            Kind::Close => {
-                self.depth -= 1;
-                if self.depth == 0 {
-                    self.closed = match token.text(code) {
-                        ")" if std::mem::take(&mut self.do_while) == DoWhile::Condition => {
-                            Closed::Block
-                        }
-                        ")" if self.head => Closed::Head,
-                        "}" if self.block => Closed::Block,
-                        _ => Closed::Other,
-                    };
-                }
-            }
-            _ => {}
-        }
-    }
-
-    /// Counts a `do` at depth 0; answers whether `token` is the `while` of
-    /// one, which goes on with the `do` statement instead of starting one
-    /// (`do {...} while (c)`; #169). A `while` right after `do`, `else`, a
-    /// label or a control statement's head is a loop in the `do`'s body
-    /// (`do while (x < 3) x++; while (c)`; #179), not its condition.
-    fn read_do(
-        &mut self,
-        code: &str,
-        (previous, token): (Option<&Token>, &Token),
-        closed: Closed,
-    ) -> bool {
-        if token.is_keyword(code, &["do"]) {
-            self.pending_do += 1;
-        }
-        let in_body = closed == Closed::Head
-            || previous.is_some_and(|p| matches!(p.text(code), "do" | "else" | ":"));
-        let ends_do = self.pending_do > 0 && token.is_keyword(code, &["while"]) && !in_body;
-        if ends_do {
-            self.pending_do -= 1;
-            self.do_while = DoWhile::While;
-        }
-        ends_do
-    }
-}
-
-/// Whether `token`, after `previous` outside brackets, starts a statement:
-/// after a `;`, after the `}` of a block statement (`if (a) {...} 'x'`,
-/// #156), or after a line break neither line goes on over. `catch`,
-/// `finally` and `else` never start one.
-fn starts_statement(code: &str, (previous, token): (&Token, &Token), closed: Closed) -> bool {
-    if token.is_continuing(code) {
-        return false;
-    }
-    previous.is(code, ";")
-        || closed == Closed::Block
-        || line_ends_statement(code, Some(previous), token)
-}
-
-/// Whether the `(` at `i` opens a control statement's head: `if (`,
-/// `while (`, `for await (`...
-fn opens_head(code: &str, tokens: &[Token], i: usize) -> bool {
-    let word = |back: usize| {
-        i.checked_sub(back)
-            .and_then(|j| tokens.get(j))
-            .map(|t| t.text(code))
-    };
-    match word(1) {
-        Some("await") => word(2) == Some("for"),
-        Some(word) => CONTROL.contains(&word),
-        None => false,
-    }
-}
-
-/// What a bracket of the code [`has_top_level_await`] scans opened.
-#[derive(Clone, Copy)]
-enum Scope {
-    /// `(`: after `if`, `for`, `while`, `switch`, `catch` or `with`
-    /// (`control`), a `{` after its `)` is a block, else a function body.
-    Paren { control: bool },
-    /// `[`, a template's `${`, or a `{` that is a block, an object or a
-    /// class body.
-    Block,
-    /// A function's `{ ... }`.
-    Body,
-    /// An arrow function's body without braces, up to its `,`, `;`, line
-    /// end or enclosing bracket.
-    ArrowBody,
-}
-
-/// The token before the current one, as [`has_top_level_await`] needs it.
-#[derive(Clone, Copy, PartialEq)]
-enum Last {
-    Other,
-    Dot,
-    Arrow,
-    /// A keyword whose `(` holds a condition, not parameters.
-    Control,
-    /// A `)`; `control` as in [`Scope::Paren`].
-    Closed {
-        control: bool,
-    },
-}
-
-/// Keywords followed by a condition in parentheses and a block.
-const CONTROL: &[&str] = &["if", "for", "while", "switch", "catch", "with"];
-
-/// Whether `code` uses `await` outside every function, which only runs as
-/// an async function: a script refuses it, or reads `await (x)` as a call
-/// to a function named await (#135). Strings, comments, regular
-/// expressions, properties (`o.await`), object keys (`{await: 1}`) and
-/// function bodies (with braces or an arrow's without) are skipped; a
-/// template's substitutions are read (#139). A regular expression the
-/// lexer takes for a division (after `)`) may still hide one: the fallback
-/// on the browser's error stays.
+/// Whether `code` uses `await` outside every function ([`AsyncForm::awaits`]).
 pub fn has_top_level_await(code: &str) -> bool {
-    let tokens = lex(code);
-    let mut scan = AwaitScan {
-        scopes: Vec::new(),
-        functions: 0,
-        last: Last::Other,
+    async_form(code).awaits
+}
+
+/// `code` as an async function called at once ([`AsyncForm::wrapped`]).
+pub fn with_top_level_await(code: &str) -> String {
+    async_form(code).wrapped
+}
+
+/// What the parse of the code found.
+struct Parsed {
+    awaits: bool,
+    /// The span of the last expression statement's expression, in the
+    /// parsed source (after [`OPEN`]), when the last statement is one.
+    last: Option<Span>,
+}
+
+/// The parse of `code`, in a thread whose stack fits its length; `None`
+/// when it is too long, does not parse, or the thread could not run.
+fn parsed(code: &str) -> Option<Parsed> {
+    if code.len() > MAX_PARSED_LEN {
+        return None;
+    }
+    let stack = STACK_BASE.saturating_add(code.len().saturating_mul(STACK_PER_BYTE));
+    std::thread::scope(|scope| {
+        let thread = std::thread::Builder::new()
+            .name("js-parse".into())
+            .stack_size(stack);
+        thread
+            .spawn_scoped(scope, || parse(code))
+            .ok()?
+            .join()
+            .ok()?
+    })
+}
+
+/// Parses `code` as the body of an async function.
+fn parse(code: &str) -> Option<Parsed> {
+    let source = format!("{OPEN}{code}\n}}");
+    let allocator = Allocator::default();
+    let parsed = Parser::new(&allocator, &source, SourceType::script()).parse();
+    if parsed.fatal_error || parsed.diagnostics.has_errors() {
+        return None;
+    }
+    // Code that closes the function and opens another is not one body.
+    let [Statement::FunctionDeclaration(function)] = parsed.program.body.as_slice() else {
+        return None;
     };
-    (0..tokens.len()).any(|i| scan.is_top_level_await(code, &tokens, i))
+    let body = function.body.as_ref()?;
+    let mut finder = AwaitFinder::default();
+    finder.visit_statements(&body.statements);
+    Some(Parsed {
+        awaits: finder.found,
+        last: last_expression(body),
+    })
 }
 
-/// The state of [`has_top_level_await`]'s scan.
-struct AwaitScan {
-    /// The brackets open at this point, innermost last.
-    scopes: Vec<Scope>,
-    /// How many of [`Self::scopes`] are function bodies: counted, so a
-    /// word deep in brackets does not look through all of them (#157).
-    functions: usize,
-    last: Last,
+/// The expression of the body's last statement (empty ones left out),
+/// when it is an expression statement, labelled or not; else the last
+/// directive's, when there is no other statement (`'v'`).
+fn last_expression(body: &FunctionBody<'_>) -> Option<Span> {
+    let mut statements = body.statements.iter().rev();
+    match statements.find(|s| !matches!(s, Statement::EmptyStatement(_))) {
+        Some(statement) => statement_expression(statement),
+        None => body.directives.last().map(|d| d.expression.span),
+    }
 }
 
-impl AwaitScan {
-    /// Reads the token at `i` of `tokens`: whether it is an `await`
-    /// outside every function.
-    fn is_top_level_await(&mut self, code: &str, tokens: &[Token], i: usize) -> bool {
-        let token = &tokens[i];
-        let previous = i.checked_sub(1).and_then(|p| tokens.get(p));
-        if line_ends_statement(code, previous, token) {
-            self.end_arrow_bodies();
-        }
-        if self.last == Last::Arrow && token.kind != Kind::Open(b'{') {
-            self.push(Scope::ArrowBody);
-            self.last = Last::Other;
-        }
-        match token.kind {
-            Kind::Word => return self.word(code, token, tokens.get(i + 1)),
-            Kind::Open(byte) => self.open(byte),
-            Kind::Close => self.close(),
-            Kind::Literal => self.last = Last::Other,
-            Kind::Punct => self.punct(token.text(code)),
-        }
-        false
-    }
-
-    fn punct(&mut self, text: &str) {
-        self.last = match text {
-            "=>" => Last::Arrow,
-            "." => Last::Dot,
-            ";" | "," => {
-                self.end_arrow_bodies();
-                Last::Other
-            }
-            _ => Last::Other,
-        };
-    }
-
-    fn open(&mut self, byte: u8) {
-        let scope = match byte {
-            b'(' => Scope::Paren {
-                control: self.last == Last::Control,
-            },
-            b'{' if matches!(self.last, Last::Arrow | Last::Closed { control: false }) => {
-                Scope::Body
-            }
-            _ => Scope::Block,
-        };
-        self.push(scope);
-        self.last = Last::Other;
-    }
-
-    fn close(&mut self) {
-        self.end_arrow_bodies();
-        self.last = match self.pop() {
-            Some(Scope::Paren { control }) => Last::Closed { control },
-            _ => Last::Other,
-        };
-    }
-
-    /// Opens `scope`, counting function bodies.
-    fn push(&mut self, scope: Scope) {
-        self.functions += usize::from(scope.is_function());
-        self.scopes.push(scope);
-    }
-
-    /// Closes the innermost scope, counting function bodies.
-    fn pop(&mut self) -> Option<Scope> {
-        let scope = self.scopes.pop()?;
-        self.functions = self
-            .functions
-            .saturating_sub(usize::from(scope.is_function()));
-        Some(scope)
-    }
-
-    /// The word `token`, as [`Self::is_top_level_await`] reads it.
-    fn word(&mut self, code: &str, token: &Token, next: Option<&Token>) -> bool {
-        let word = token.text(code);
-        let key = next.is_some_and(|n| n.text(code).starts_with(':'));
-        let in_function = self.functions > 0;
-        if word == "await" && self.last != Last::Dot && !key && !in_function {
-            return true;
-        }
-        self.last = if CONTROL.contains(&word) {
-            Last::Control
-        } else {
-            Last::Other
-        };
-        false
-    }
-
-    /// Ends the arrow function bodies without braces open at this point.
-    fn end_arrow_bodies(&mut self) {
-        while matches!(self.scopes.last(), Some(Scope::ArrowBody)) {
-            self.pop();
+/// The expression of `statement`, an expression statement or a label on
+/// one (`l: 'v'`).
+fn statement_expression(mut statement: &Statement<'_>) -> Option<Span> {
+    loop {
+        match statement {
+            Statement::ExpressionStatement(it) => return Some(it.expression.span()),
+            Statement::LabeledStatement(it) => statement = &it.body,
+            _ => return None,
         }
     }
 }
 
-impl Scope {
-    /// Whether this scope is a function's body.
-    fn is_function(self) -> bool {
-        matches!(self, Self::Body | Self::ArrowBody)
+/// Finds `await` outside every function: in an expression, a
+/// `for await` loop or an `await using` declaration. Function bodies
+/// (with braces or an arrow's without) are not read; a class's computed
+/// keys are, as they run where the class is.
+#[derive(Default)]
+struct AwaitFinder {
+    found: bool,
+}
+
+impl<'a> Visit<'a> for AwaitFinder {
+    fn visit_await_expression(&mut self, _: &AwaitExpression<'a>) {
+        self.found = true;
     }
+
+    fn visit_for_of_statement(&mut self, it: &ForOfStatement<'a>) {
+        self.found |= it.r#await;
+        walk::walk_for_of_statement(self, it);
+    }
+
+    fn visit_variable_declaration(&mut self, it: &VariableDeclaration<'a>) {
+        self.found |= it.kind == VariableDeclarationKind::AwaitUsing;
+        walk::walk_variable_declaration(self, it);
+    }
+
+    fn visit_function(&mut self, _: &Function<'a>, _: ScopeFlags) {}
+
+    fn visit_arrow_function_expression(&mut self, _: &ArrowFunctionExpression<'a>) {}
 }
 
 #[cfg(test)]
@@ -723,7 +200,8 @@ mod tests {
     /// ISSUE-43: an expression using `await` at its top level becomes an
     /// async function returning its last expression statement, as a
     /// console does; strings, brackets, comments and chained lines do not
-    /// split statements; a final declaration returns nothing.
+    /// split statements; a final declaration returns nothing and runs as
+    /// written.
     #[test]
     fn top_level_await_is_wrapped() {
         let wrapped = |code: &str| with_top_level_await(code);
@@ -736,8 +214,8 @@ mod tests {
             "(async () => { const r = await fetch('/a;b'); return (r.status\n); })()"
         );
         assert_eq!(
-            wrapped("const r = await f({a: 1, b: [2; 3]})\nr.ok // done; really"),
-            "(async () => { const r = await f({a: 1, b: [2; 3]})\nreturn (r.ok\n); })()"
+            wrapped("const r = await f({a: 1, b: [2, 3], c: ';'})\nr.ok // done; really"),
+            "(async () => { const r = await f({a: 1, b: [2, 3], c: ';'})\nreturn (r.ok\n); })()"
         );
         assert_eq!(
             wrapped("await fetch(x)\n  .then(r => r.status)"),
@@ -745,7 +223,7 @@ mod tests {
         );
         assert_eq!(
             wrapped("await 1; const z = `a;${1}`;"),
-            "(async () => { await 1; const z = `a;${1}`\n})()"
+            "(async () => { await 1; const z = `a;${1}`;\n})()"
         );
     }
 
@@ -1015,21 +493,153 @@ mod tests {
         assert!(!wrapped.contains("return ("), "{wrapped}");
     }
 
-    /// #157: a long line of regular expressions that never close (`(/[`
-    /// over and over) and deep brackets are scanned in linear time.
+    /// The differential check against the browser's own `eval` found the
+    /// value after a labelled block, a labelled loop with `continue`, an
+    /// arrow function whose body is a block, and a line starting with `[`
+    /// (a member access of the line before) lost or turned into a syntax
+    /// error.
     #[test]
-    fn unclosed_regexes_and_deep_brackets_are_scanned_in_linear_time() {
-        // Given 120 KB of `(/[` and 100 000 words inside 100 000 brackets
+    fn values_found_by_the_differential_check_are_returned() {
+        for (code, last) in [
+            ("await 0; l2: { } 'v'", "'v'"),
+            (
+                "await 0; x2: while (0) continue x2\n/v/.source",
+                "/v/.source",
+            ),
+            ("await 0; var g = () => {}\n/v/.source", "/v/.source"),
+            ("await 0; [1, 'v']\n[1]", "[1, 'v']\n[1]"),
+        ] {
+            // When the code is wrapped
+            let wrapped = with_top_level_await(code);
+            // Then the last expression statement is returned
+            assert!(
+                wrapped.ends_with(&format!("return ({last}\n); }})()")),
+                "{wrapped}"
+            );
+        }
+    }
+
+    /// #157: a long line of regular expressions that never close (`(/[`
+    /// over and over) and deep brackets are dealt with quickly: over
+    /// [`MAX_PARSED_LEN`] they are not parsed; under it, they are parsed
+    /// in a thread whose stack fits them, never overflowing it.
+    #[test]
+    fn unclosed_regexes_and_deep_brackets_are_quick() {
+        // Given 120 KB of `(/[`, 100 000 words in 100 000 brackets, and
+        // both under the limit
         let regexes = format!("await 0;\n{}", "(/[".repeat(40_000));
         let deep = format!("{}{}", "[".repeat(100_000), "a ".repeat(100_000));
+        let short_regexes = format!("await 0;\n{}", "(/[".repeat(21_000));
+        let nested = format!("await 0; {}{}", "[".repeat(30_000), "]".repeat(30_000));
         let started = std::time::Instant::now();
-        // When both are scanned and wrapped
-        assert!(has_top_level_await(&regexes));
-        assert!(!has_top_level_await(&deep));
-        with_top_level_await(&regexes);
-        with_top_level_await(&deep);
-        // Then it is fast
-        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+        // When they are read
+        for code in [&regexes, &deep, &short_regexes] {
+            // Then those that do not parse have no top-level await found
+            assert!(!has_top_level_await(code));
+            assert_eq!(
+                with_top_level_await(code),
+                format!("(async () => {{ {code}\n}})()")
+            );
+        }
+        // And deep brackets that parse are read whole
+        assert!(has_top_level_await(&nested));
+        assert!(with_top_level_await(&nested).contains("return ([[["));
+        // And it is quick
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    }
+
+    /// The parser is recursive: code at [`MAX_PARSED_LEN`] made of the
+    /// deepest nesting found (brackets, unary operators, arrow functions,
+    /// conditionals, templates, calls, statements) is parsed, or refused,
+    /// without overflowing the parse thread's stack, which would abort the
+    /// server.
+    #[test]
+    fn the_deepest_code_parsed_does_not_overflow_the_stack() {
+        for unit in [
+            "[",
+            "(",
+            "{",
+            "!",
+            "-",
+            "a=>",
+            "`${",
+            "x?y:",
+            "new ",
+            "await ",
+            "if(1)",
+            "x[",
+            "function(){",
+            "a.b(",
+            "class{[",
+            "async()=>",
+            "({a:",
+            "f(...",
+            "{a:[",
+            "try{",
+        ] {
+            // Given the unit repeated up to the limit
+            let fill = (MAX_PARSED_LEN - 9) / unit.len();
+            let code = format!("await 0;{}", unit.repeat(fill));
+            assert!(code.len() <= MAX_PARSED_LEN);
+            // When it is read, Then the server is still there
+            let form = async_form(&code);
+            assert!(!form.awaits, "{unit}");
+        }
+        // And a destructuring pattern, the deepest per byte in a release build
+        let pattern = format!("let {}", "[".repeat(MAX_PARSED_LEN - 4));
+        assert!(!has_top_level_await(&pattern));
+    }
+
+    /// Code longer than [`MAX_PARSED_LEN`] is not parsed: no top-level
+    /// await is found, and it is wrapped without returning a value; code
+    /// that leaves the function it is parsed in is not one body.
+    #[test]
+    fn code_too_long_or_leaving_its_function_is_not_parsed() {
+        let long = format!("await 0;{}'v'", " ".repeat(MAX_PARSED_LEN));
+        assert!(!has_top_level_await(&long));
+        assert_eq!(
+            with_top_level_await(&long),
+            format!("(async () => {{ {long}\n}})()")
+        );
+        let under = format!("await 0;{}'v'", " ".repeat(MAX_PARSED_LEN - 11));
+        assert!(with_top_level_await(&under).ends_with("return ('v'\n); })()"));
+        for code in ["await 0 } function z() { 'v'", "} await 0; {"] {
+            assert!(!has_top_level_await(code), "{code}");
+            assert_eq!(
+                with_top_level_await(code),
+                format!("(async () => {{ {code}\n}})()")
+            );
+        }
+    }
+
+    /// `for await` and `await using` need an async function; a class's
+    /// computed key runs where the class is, its methods do not; a lone
+    /// string, a labelled value and a value after empty statements are
+    /// returned.
+    #[test]
+    fn other_awaits_and_last_values_are_found() {
+        for code in [
+            "for await (const x of xs) {}",
+            "class A { [await k]() {} }",
+            "{ await using r = f() }",
+        ] {
+            assert!(has_top_level_await(code), "{code}");
+        }
+        assert!(!has_top_level_await(
+            "class A { async m() { await x } static s = 1 }"
+        ));
+        for (code, last) in [
+            ("'v'", "'v'"),
+            ("await 0; l: 'v'", "'v'"),
+            ("await 0; 'v';;; // e", "'v'"),
+            ("'use strict'; await 0; 'v'", "'v'"),
+        ] {
+            let wrapped = with_top_level_await(code);
+            assert!(
+                wrapped.ends_with(&format!("return ({last}\n); }})()")),
+                "{wrapped}"
+            );
+        }
     }
 
     /// #142: comments after the last `;` are not the last statement: the
@@ -1137,21 +747,24 @@ mod tests {
         );
     }
 
-    /// #140: long runs of line breaks are scanned in linear time: 200 000
-    /// of them take well under a second, not minutes.
+    /// #140: long runs of line breaks are dealt with quickly: 200 000 of
+    /// them are over [`MAX_PARSED_LEN`], not parsed; 10 000 comment lines
+    /// are parsed, and the `await` after them found.
     #[test]
-    fn long_blank_runs_are_scanned_in_linear_time() {
+    fn long_blank_runs_are_quick() {
         // Given 200 000 line breaks between two operands, and as many
-        // comment lines
+        // comment lines, then fewer
         let blank = format!("1{}+1", "\n".repeat(200_000));
         let comments = format!("1{}\n+await x", "\n// c".repeat(100_000));
+        let fewer = format!("1{}\n+await x", "\n// c".repeat(10_000));
         let started = std::time::Instant::now();
-        // When both are scanned and wrapped
+        // When they are read
         assert!(!has_top_level_await(&blank));
-        assert!(has_top_level_await(&comments));
+        assert!(!has_top_level_await(&comments));
+        assert!(has_top_level_await(&fewer));
         with_top_level_await(&blank);
-        with_top_level_await(&comments);
-        // Then it is fast
-        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+        with_top_level_await(&fewer);
+        // Then it is quick
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
     }
 }

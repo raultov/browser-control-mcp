@@ -56,10 +56,11 @@ impl EvaluateJsTool {
         };
         // `await` at the top level is refused by a script, or read as a
         // call (#135): it runs as an async function, as on Firefox (not
-        // `replMode`, whose `const`s outlive the call); one the scan missed
-        // runs again so on the browser's error.
-        let wrapped = crate::util::js::with_top_level_await(&args.expression);
-        let at_once = !paused && crate::util::js::has_top_level_await(&args.expression);
+        // `replMode`, whose `const`s outlive the call); code not parsed
+        // (too long) runs again so on the browser's error.
+        let form = crate::util::js::async_form(&args.expression);
+        let wrapped = form.wrapped;
+        let at_once = !paused && form.awaits;
         let first = if at_once { &wrapped } else { &args.expression };
         let evaluated = match evaluate(first).await {
             Err(error) if !paused && !at_once && error.contains("await is only valid") => {
@@ -304,7 +305,7 @@ mod tests {
 
     /// ISSUE-43, #135: an expression awaiting at its top level, which a
     /// script refuses or reads as a call, runs as an async function (as on
-    /// Firefox); one the scan misses runs again so on the browser's error.
+    /// Firefox); one not parsed runs again so on the browser's error.
     #[tokio::test]
     async fn top_level_await_runs_as_an_async_function() {
         // Given a page that refuses top-level await
@@ -339,10 +340,11 @@ mod tests {
             assert_eq!(body["value"], 7);
             assert_eq!(expressions(sent), [wrapped(expression)]);
         }
-        // And one the scan misses (a regular expression after a `)`, read as
-        // a division, hiding the await in a string) runs as is first, then
-        // wrapped on the browser's error
-        let missed = "if (s) /'/.test(s); await f()";
+        // And one too long to be parsed runs as is first, then wrapped on
+        // the browser's error
+        let padding = " ".repeat(crate::util::top_level_await::MAX_PARSED_LEN);
+        let missed = format!("if (s) /'/.test(s);{padding} await f()");
+        let missed = missed.as_str();
         let sent = mock.commands_named("Runtime.evaluate").len();
         evaluate(missed).await.unwrap();
         assert_eq!(expressions(sent), [json!(missed), wrapped(missed)]);

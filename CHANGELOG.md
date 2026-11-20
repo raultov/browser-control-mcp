@@ -8,6 +8,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 `browser-control-mcp` is the successor of `chrome-debug-mcp` 1.5.6 and starts
 from a copy of its code: entries describe the differences from that release.
 
+## [Unreleased]
+
+### Changed
+
+- `evaluate_js` finds a top-level `await` and the last expression statement
+  with a JavaScript parser (oxc) instead of a hand-written scanner, which
+  missed one construct after another (#135-#179). An expression over
+  64 KB is not parsed: it runs as is, and as an async function without
+  returning a value when the browser refuses its `await`.
+- `make e2e` also runs a differential check of top-level `await` on both
+  browsers: the page's own `eval` is the oracle for thousands of generated
+  statements (`tests/differential/fuzz_tla.py`).
+
+### Fixed
+
+- `evaluate_js` with top-level `await` returns the value after a labelled
+  block (`l: { } 'v'`, a syntax error before), after a labelled loop with
+  `continue` and after an arrow function with a block body on the line
+  before (`undefined` before), and reads a line starting with `[` as a
+  member access of the line before, as the browser does; a lone labelled
+  value (`l: 'v'`) is returned too.
+
 ## [0.22.2-beta.36] - 2026-11-20
 
 Public **BETA**. Eight fixes from an automated test round. `open_tab`

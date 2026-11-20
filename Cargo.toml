@@ -67,6 +67,15 @@ bidi-browser-lite = "0.1.6"
 # std has no openat/renameat and unsafe is denied.
 cap-std = "4.0.3"
 chrono = "0.4.45"
+# evaluate_js parses the expression to find a top-level `await` and its last
+# expression statement: a hand-written scanner missed a construct each test
+# round (#135-#179). Pinned: oxc is 0.x and changes its AST between minors.
+oxc_allocator = "=0.159.0"
+oxc_ast = "=0.159.0"
+oxc_ast_visit = "=0.159.0"
+oxc_parser = "=0.159.0"
+oxc_span = "=0.159.0"
+oxc_syntax = "=0.159.0"
 clap = { version = "4.6.7", features = ["derive"] }
 # Registrable domain (eTLD+1) for "same site" (Public Suffix List, embedded).
 psl = "2.1.241"
