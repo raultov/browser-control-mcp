@@ -181,7 +181,10 @@ pub(crate) fn start_network_listener(
 /// document is requested by its parent, before the frame's session exists,
 /// and only its response reaches the frame's session. Its WebSockets note
 /// `frames`, the targets of the frames of another origin it lives in, to
-/// be closed when one of them goes (#167).
+/// be closed when one of them goes (#167), or when the innermost one
+/// navigates within its origin, which keeps its target (#173). One ordered
+/// stream of every domain, as for the tab: the old document's sockets are
+/// closed before the new one's open.
 pub(crate) fn start_frame_network_listener(
     target: &crate::handler::cdp_domains::cdp_target::CdpTarget,
     state: Arc<Mutex<NetworkState>>,
@@ -192,17 +195,40 @@ pub(crate) fn start_frame_network_listener(
     let process = move |event, state| {
         process_placed_event(event, state, session.clone(), Arc::clone(&frames))
     };
-    crate::handler::cdp_domains::event_pump::spawn_state_listener(target, "Network", state, process)
+    crate::handler::cdp_domains::event_pump::spawn_state_listener(target, "", state, process)
+}
+
+/// The id of the frame a `Page.frameNavigated` committed a new document
+/// in (`None` for another event).
+fn navigated_frame<'a>(method: &str, params: &'a serde_json::Value) -> Option<&'a str> {
+    (method == "Page.frameNavigated")
+        .then(|| params.get("frame").and_then(|frame| str_field(frame, "id")))
+        .flatten()
 }
 
 /// [`process_frame_event`], then a socket the frame opened notes the
-/// frames it lives in.
+/// frames it lives in. A new document in the frame itself (its root frame
+/// has the id of its target) closes the sockets the old one left open:
+/// Chrome reports no close for them (#173).
 async fn process_placed_event(
     event: WsResponse,
     state: Arc<Mutex<NetworkState>>,
     session: String,
     frames: Arc<Vec<String>>,
 ) {
+    let (Some(method), Some(params)) = (event.method.as_deref(), &event.params) else {
+        return;
+    };
+    if let Some(navigated) = navigated_frame(method, params) {
+        if frames.last().is_some_and(|frame| frame == navigated) {
+            let mut state = state.lock().await;
+            state.close_ws_connections_in(navigated, FRAME_GONE);
+        }
+        return;
+    }
+    if !method.starts_with("Network.") {
+        return;
+    }
     let created = (event.method.as_deref() == Some("Network.webSocketCreated"))
         .then(|| {
             event

@@ -30,8 +30,9 @@ use tokio_stream::StreamExt;
 /// past it a new frame is released without being watched.
 pub(crate) const MAX_WATCHED: usize = 50;
 
-/// The domains enabled on a watched frame's session.
-const FRAME_DOMAINS: [&str; 5] = ["Runtime", "Log", "Network", "Debugger", "Audits"];
+/// The domains enabled on a watched frame's session: `Page` tells when
+/// the frame navigates within its origin, keeping its target (#173).
+const FRAME_DOMAINS: [&str; 6] = ["Runtime", "Log", "Network", "Debugger", "Audits", "Page"];
 
 /// The domains enabled on a watched worker's session: not `Log`, whose
 /// worker messages the tab already reports (as `info` for `console.log`).
@@ -695,5 +696,47 @@ mod tests {
         assert_eq!(socket.close_reason.as_deref(), Some(FRAME_GONE));
         assert_eq!(socket.frames, ["T-iframe"]);
         assert!(network.ws_connections["WS0"].closed_at.is_none());
+    }
+
+    /// Whether the socket `id` noted the frames it lives in.
+    fn is_placed(network: &Mutex<NetworkState>, id: &str) -> bool {
+        let Ok(network) = network.try_lock() else {
+            return false;
+        };
+        let socket = network.ws_connections.get(id);
+        socket.is_some_and(|c| !c.frames.is_empty())
+    }
+
+    /// #173: a frame of another origin that navigates within its origin
+    /// keeps its target, and Chrome reports no close for the old
+    /// document's sockets: its new document closes them. A navigation of
+    /// a frame inside it does not, nor are the new document's sockets
+    /// closed.
+    #[tokio::test]
+    async fn sockets_of_a_frame_that_navigates_in_its_origin_are_closed() {
+        // Given a watched frame with a socket
+        let watched = watched_tab().await;
+        attach(&watched, "AUTO-F", "iframe");
+        let frame = frame_session(&watched).await;
+        let network = &watched.sinks.network;
+        let socket = |id: &str| json!({"requestId": id, "url": "ws://b/echo"});
+        let mock = watched.mock;
+        mock.emit("Network.webSocketCreated", socket("WS1"), Some(&frame));
+        let placed = |id: &'static str| move || is_placed(network, id);
+        eventually(placed("WS1")).await;
+        // When a frame inside it navigates, then the frame itself
+        let navigated = |id: &str| json!({"frame": {"id": id, "parentId": "P", "url": "http://b/basic.html"}, "type": "Navigation"});
+        mock.emit("Page.frameNavigated", navigated("INNER"), Some(&frame));
+        mock.emit("Page.frameNavigated", navigated("T-iframe"), Some(&frame));
+        mock.emit("Network.webSocketCreated", socket("WS2"), Some(&frame));
+        eventually(placed("WS2")).await;
+        // Then the old document's socket is closed, saying why
+        let network = network.lock().await;
+        let old = &network.ws_connections["WS1"];
+        assert_eq!(old.close_reason.as_deref(), Some(FRAME_GONE));
+        // And the new document's socket is open
+        assert!(network.ws_connections["WS2"].closed_at.is_none());
+        // And Page was enabled on the frame's session
+        assert!(session_of(mock, "Page.enable").contains(&Some(frame.clone())));
     }
 }

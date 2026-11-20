@@ -49,6 +49,10 @@ pub(crate) const MAX_TABS: usize = 16;
 pub(crate) const MAX_PAUSE_ON_LOAD_SOURCES: usize = 64;
 /// Most WebSocket connections remembered per tab, with their frames.
 pub(crate) const MAX_WS_CONNECTIONS: usize = 100;
+/// Most ids of WebSocket connections forgotten beyond
+/// [`MAX_WS_CONNECTIONS`] remembered per tab, so their later frames are
+/// dropped too (#176).
+pub(crate) const MAX_WS_EVICTED: usize = 1000;
 
 #[derive(Default)]
 pub(crate) struct DebuggerState {
@@ -227,12 +231,47 @@ pub struct WsConnection {
     /// Chrome detaches the frame before it reports the close (#167).
     #[serde(skip)]
     pub(crate) frames: Vec<String>,
+    /// On Firefox, whether the connection was made for a close that named
+    /// no socket, from an accepted handshake no socket claimed: a guess,
+    /// moved when a socket opening late claims that handshake (#174).
+    #[serde(skip)]
+    pub(crate) guessed: bool,
+    /// On Firefox, its closing handshake as its close frames tell it.
+    #[serde(skip)]
+    pub(crate) closing: WsClosing,
+}
+
+/// The code and reason a WebSocket close frame carries (each optional).
+pub(crate) type CloseFrame = (Option<u16>, Option<String>);
+
+/// The closing handshake of a Firefox WebSocket, read from its close
+/// frames: Firefox reports no `webSocketClosed` for the socket of a
+/// dedicated worker it terminated (#178).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct WsClosing {
+    /// Whether the browser sent its close frame.
+    pub(crate) sent: bool,
+    /// The code and reason of the peer's close frame, once received.
+    pub(crate) received: Option<CloseFrame>,
+    /// Whether the connection's close was told by them: a close the
+    /// browser reports later replaces it.
+    pub(crate) inferred: bool,
 }
 
 impl WsConnection {
     /// Whether the connection closed or failed.
     pub(crate) fn ended(&self) -> bool {
         self.closed_at.is_some() || self.error.is_some()
+    }
+
+    /// How the connection closed, if it did.
+    pub(crate) fn close(&self) -> Option<WsClose> {
+        Some(WsClose {
+            at: self.closed_at?,
+            code: self.close_code,
+            reason: self.close_reason.clone(),
+            was_clean: self.was_clean,
+        })
     }
 }
 
@@ -292,6 +331,10 @@ pub(crate) struct NetworkState {
         std::collections::VecDeque<WebSocketFrame>,
         MAX_WS_CONNECTIONS,
     >,
+    /// The connections forgotten beyond [`MAX_WS_CONNECTIONS`]: their
+    /// frames and closes that come later are dropped, not listed as a
+    /// socket without URL that never closes (#176).
+    pub ws_evicted: crate::util::bounded::BoundedMap<String, (), MAX_WS_EVICTED>,
     /// Document request id per navigation id, where they differ (BiDi's
     /// `navigation`; Chrome's document request id is its loader id).
     pub documents: crate::util::bounded::BoundedMap<String, String, MAX_DOCUMENTS>,
@@ -366,6 +409,7 @@ impl Default for NetworkState {
         Self {
             navigations,
             ws_connections: Default::default(),
+            ws_evicted: Default::default(),
             ws_frames: Default::default(),
             documents: Default::default(),
             extra_headers: Default::default(),
@@ -552,12 +596,16 @@ impl NetworkState {
             }
             return;
         }
+        if self.ws_evicted.contains_key(&id) {
+            return;
+        }
         let connection = WsConnection {
             url,
             ..Default::default()
         };
         if let Some(evicted) = self.ws_connections.insert(id, connection) {
             self.ws_frames.remove(&evicted);
+            self.ws_evicted.insert(evicted, ());
         }
     }
 
@@ -570,14 +618,16 @@ impl NetworkState {
     }
 
     /// Records that the WebSocket connection `id` closed. The first close
-    /// counts: a second session may deliver the same event later.
+    /// counts (a second session may deliver the same event later), unless
+    /// it was told by the close frames only (#178).
     pub(crate) fn close_ws_connection(&mut self, id: &str, close: WsClose) {
         let Some(connection) = self.ws_connections.get_mut(id) else {
             return;
         };
-        if connection.closed_at.is_some() {
+        if connection.closed_at.is_some() && !connection.closing.inferred {
             return;
         }
+        connection.closing.inferred = false;
         connection.closed_at = Some(close.at);
         connection.close_code = close.code;
         connection.close_reason = close.reason;
@@ -628,7 +678,13 @@ impl NetworkState {
         }
     }
 
+    /// Keeps a frame of the WebSocket connection `id`, unless the
+    /// connection was forgotten beyond the cap (#176). A frame may come
+    /// before its connection (Firefox, #158).
     pub(crate) fn push_ws_frame(&mut self, id: String, frame: WebSocketFrame) {
+        if self.ws_evicted.contains_key(&id) {
+            return;
+        }
         if self.ws_frames.get_mut(&id).is_none() {
             self.ws_frames
                 .insert(id.clone(), std::collections::VecDeque::new());
@@ -2061,6 +2117,15 @@ mod tests {
             !network.ws_frames.contains_key("0"),
             "evicted connection keeps frames"
         );
+        // #176: frames of a forgotten connection that come later are not
+        // kept either, nor is the connection remembered again
+        network.push_ws_frame(
+            "0".into(),
+            WebSocketFrame::new(String::new(), String::new(), true),
+        );
+        network.insert_ws_connection("0".into(), "wss://x".into());
+        assert!(!network.ws_frames.contains_key("0"));
+        assert!(!network.ws_connections.contains_key("0"));
         assert_eq!(
             webmcp.invocations.len(),
             cdp_domains::webmcp::MAX_INVOCATIONS

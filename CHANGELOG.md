@@ -16,15 +16,29 @@ from a copy of its code: entries describe the differences from that release.
   braceless do-while whose body is a loop (`do while (x < 3) x++; while
   (false) 'v'`): the inner loop's `while` was taken for the `do`'s
   condition (#179).
+- `get_network_logs` on Firefox closes the socket of a terminated
+  dedicated worker once both close frames are exchanged, with the server's
+  code and reason: Firefox reports no close for it (#178).
 - `fill_input` on a field whose page moves the focus to the next fields
   while typing (a one-time code split over several boxes) succeeds, saying
   how many other fields took the rest of the text, instead of failing as
   if the field could not take the focus (#177).
+- `get_network_logs` on Chrome no longer lists frames of a WebSocket
+  connection forgotten past the 100 kept per tab as a socket with no URL
+  that never closes: they are dropped with it (#176).
 - `get_network_logs` redacts `X-GitHub-OTP`, `X-Vercel-Protection-Bypass`
   and `X-Honeycomb-Team`, any header with the word `otp`, `totp`, `hotp`,
   `mfa` or `2fa`, and any whose name contains `bypass`, `passcode`,
   `passphrase` or `signature`, unless `include_sensitive_headers: true`
   (#175).
+- `get_network_logs` on Firefox: the close of a socket the server accepted
+  then dropped is never put on a live socket whose opening Firefox reports
+  later; it moves to the dropped socket's handshake when the live socket
+  opens (#174).
+- `get_network_logs` on Chrome lists the WebSocket of a frame of another
+  origin closed, with `the frame was removed or navigated away`, when the
+  frame navigates within its origin (its target stays), as on Firefox
+  (#173).
 
 ## [0.22.1-beta.35] - 2026-11-19
 

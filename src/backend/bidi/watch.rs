@@ -205,30 +205,12 @@ pub(crate) fn on_websocket(network: &mut NetworkState, resource: &Value) -> Opti
     match resource.get("wsMessageType").and_then(Value::as_str) {
         Some("webSocketOpened") => {
             let url = text(resource, "effectiveURI").unwrap_or_default();
-            network.insert_ws_connection(id.clone(), url);
+            network.insert_ws_connection(id.clone(), url.clone());
+            move_guessed_close(network, &url);
             Some(id)
         }
         Some(kind @ ("frameSent" | "frameReceived")) => {
-            // Firefox may report frames before the socket opened, or only
-            // the close frame of one that fails before it opens (#158).
-            network.insert_ws_connection(id.clone(), String::new());
-            let data = &resource["data"];
-            if !matches!(data.get("opCode").and_then(Value::as_u64), Some(1 | 2)) {
-                return Some(id);
-            }
-            // Large payloads come as a long string grip: its first part,
-            // marked with the full length (as `evaluate_on_call_frame` does).
-            let payload = match data.get("payload") {
-                Some(Value::String(s)) => s.clone(),
-                Some(grip) => match super::grip::to_json(grip) {
-                    Value::String(s) => s,
-                    _ => String::new(),
-                },
-                None => String::new(),
-            };
-            let url = network.ws_url(&id);
-            let frame = WebSocketFrame::new(url, payload, kind == "frameSent");
-            network.push_ws_frame(id.clone(), frame);
+            on_frame(network, &id, kind == "frameSent", &resource["data"]);
             Some(id)
         }
         // #153: `code`, `reason` and `wasClean` (Firefox 157), each optional.
@@ -254,27 +236,114 @@ pub(crate) fn on_websocket(network: &mut NetworkState, resource: &Value) -> Opti
     }
 }
 
+/// A frame of the connection `id`, `sent` or received, whose resource
+/// `data` is given.
+fn on_frame(network: &mut NetworkState, id: &str, sent: bool, data: &Value) {
+    // Firefox may report frames before the socket opened, or only the
+    // close frame of one that fails before it opens (#158).
+    network.insert_ws_connection(id.to_string(), String::new());
+    match data.get("opCode").and_then(Value::as_u64) {
+        Some(1 | 2) => {}
+        Some(CLOSE_FRAME) => return close_frame(network, id, sent, data.get("payload")),
+        _ => return,
+    }
+    // Large payloads come as a long string grip: its first part, marked
+    // with the full length (as `evaluate_on_call_frame` does).
+    let payload = match data.get("payload") {
+        Some(Value::String(s)) => s.clone(),
+        Some(grip) => match super::grip::to_json(grip) {
+            Value::String(s) => s,
+            _ => String::new(),
+        },
+        None => String::new(),
+    };
+    let url = network.ws_url(id);
+    let frame = WebSocketFrame::new(url, payload, sent);
+    network.push_ws_frame(id.to_string(), frame);
+}
+
+/// The opcode of a WebSocket close frame.
+const CLOSE_FRAME: u64 = 8;
+
+/// A close frame of the connection `id`, `sent` or received: once both
+/// sides sent theirs, the closing handshake is over and the connection is
+/// closed cleanly, with the code and reason of the peer's frame. Firefox
+/// reports no `webSocketClosed` for the socket of a dedicated worker it
+/// terminated, only the close frames (#178); a `webSocketClosed` that comes
+/// replaces this close.
+fn close_frame(network: &mut NetworkState, id: &str, sent: bool, payload: Option<&Value>) {
+    let Some(connection) = network.ws_connections.get_mut(id) else {
+        return;
+    };
+    let closing = &mut connection.closing;
+    if sent {
+        closing.sent = true;
+    } else {
+        closing.received = Some(close_payload(payload));
+    }
+    let Some((code, reason)) = closing.received.clone().filter(|_| closing.sent) else {
+        return;
+    };
+    if connection.closed_at.is_some() {
+        return;
+    }
+    let close = WsClose {
+        at: crate::handler::now_ms(),
+        code,
+        reason,
+        was_clean: Some(true),
+    };
+    network.close_ws_connection(id, close);
+    if let Some(connection) = network.ws_connections.get_mut(id) {
+        connection.closing.inferred = true;
+    }
+}
+
+/// The code and reason of a close frame's payload, which Firefox gives as
+/// a string of one character per byte: the code in the first two, then
+/// the reason's UTF-8 bytes.
+fn close_payload(payload: Option<&Value>) -> crate::handler::CloseFrame {
+    let bytes: Option<Vec<u8>> = payload
+        .and_then(Value::as_str)
+        .and_then(|text| text.chars().map(|c| u8::try_from(c).ok()).collect());
+    let Some(bytes) = bytes else {
+        return (None, None);
+    };
+    let code = match bytes.as_slice() {
+        [high, low, ..] => Some(u16::from_be_bytes([*high, *low])),
+        _ => None,
+    };
+    let reason = bytes
+        .get(2..)
+        .filter(|rest| !rest.is_empty())
+        .map(|rest| String::from_utf8_lossy(rest).into_owned());
+    (code, reason)
+}
+
 /// The connection a `webSocketClosed` for `id` closes. Firefox gives the
 /// id 0 to a socket that failed before it opened, which it reports only by
 /// the close frame it sent, if any (#158): that is the newest connection
-/// without a URL (it gets the URL of the newest accepted handshake no
-/// connection claims), or else one made for the newest WebSocket handshake
-/// of the log that no connection claims, under its request id: one the
+/// without a URL (it gets the URL of the oldest accepted handshake no
+/// connection claims), or else one made for a WebSocket handshake of the
+/// log that no connection claims, under its request id: the newest one the
 /// server refused or that failed, whose connection then says why (#164),
-/// else an accepted one (`101`). An accepted handshake no connection claims
-/// yet is most often a live socket whose opening is not reported yet: it
-/// comes last, so a refusal's close is never put on it (#171).
+/// else the oldest accepted one (`101`; the server dropped it after
+/// accepting it). An accepted handshake no connection claims yet may be a
+/// live socket whose opening is not reported yet: it comes last, so a
+/// refusal's close is never put on it (#171), and its connection is a
+/// guess, moved to another handshake when that socket opens (#174).
 fn closed_connection(network: &mut NetworkState, id: String) -> Option<String> {
     if id != NEVER_OPENED {
         return Some(id);
     }
     let Unclaimed { accepted, refused } = unclaimed_handshakes(network);
-    let (id, handshake) = match newest_without_url(network) {
+    let (id, handshake, guessed) = match newest_without_url(network) {
         // It sent a frame: its handshake was accepted.
-        Some(unopened) => (unopened, accepted),
+        Some(unopened) => (unopened, accepted, false),
         None => {
+            let guessed = refused.is_none();
             let handshake = refused.or(accepted)?;
-            (handshake.request.clone(), Some(handshake))
+            (handshake.request.clone(), Some(handshake), guessed)
         }
     };
     let (url, refusal) = handshake.map_or_else(Default::default, |h| (h.url, h.refusal));
@@ -282,7 +351,43 @@ fn closed_connection(network: &mut NetworkState, id: String) -> Option<String> {
     if let Some(refusal) = refusal {
         network.fail_ws_connection(&id, &refusal);
     }
+    if let Some(connection) = network.ws_connections.get_mut(&id) {
+        connection.guessed = guessed;
+    }
     Some(id)
+}
+
+/// A socket to `url` opened: a close put on an accepted handshake to
+/// `url` no socket claimed was put on this live socket's handshake (its
+/// opening came after the close). The close moves to the oldest accepted
+/// handshake still unclaimed, the socket the server really dropped, or is
+/// dropped when there is none (#174).
+fn move_guessed_close(network: &mut NetworkState, url: &str) {
+    let guessed = network
+        .ws_connections
+        .keys_oldest_first()
+        .find(|id| {
+            network
+                .ws_connections
+                .get(*id)
+                .is_some_and(|c| c.guessed && c.url == url)
+        })
+        .cloned();
+    let Some(close) = guessed
+        .and_then(|id| network.ws_connections.remove(&id))
+        .and_then(|wrong| wrong.close())
+    else {
+        return;
+    };
+    let Some(handshake) = unclaimed_handshakes(network).accepted else {
+        return;
+    };
+    let id = handshake.request;
+    network.insert_ws_connection(id.clone(), handshake.url);
+    network.close_ws_connection(&id, close);
+    if let Some(connection) = network.ws_connections.get_mut(&id) {
+        connection.guessed = true;
+    }
 }
 
 /// The `httpChannelId` Firefox gives the close of a socket that never
@@ -315,16 +420,18 @@ struct Handshake {
     refusal: Option<String>,
 }
 
-/// The newest handshakes of the log no connection claims.
+/// The handshakes of the log no connection claims (see
+/// [`unclaimed_handshakes`]).
 #[derive(Default)]
 struct Unclaimed {
     accepted: Option<Handshake>,
     refused: Option<Handshake>,
 }
 
-/// The newest WebSocket handshakes of the log that no connection claims,
-/// accepted (`101`) and refused or failed: each connection claims the
-/// oldest handshake to its URL, a refused one if it was refused.
+/// The WebSocket handshakes of the log that no connection claims: the
+/// oldest accepted (`101`) and the newest refused or failed: each
+/// connection claims the oldest handshake to its URL, a refused one if it
+/// was refused.
 fn unclaimed_handshakes(network: &NetworkState) -> Unclaimed {
     let mut claims: std::collections::HashMap<(String, bool), usize> =
         std::collections::HashMap::new();
@@ -342,7 +449,9 @@ fn unclaimed_handshakes(network: &NetworkState) -> Unclaimed {
             let refused = handshake.refusal.is_some();
             match claims.get_mut(&(handshake.url.clone(), refused)) {
                 Some(count) if *count > 0 => *count -= 1,
-                _ if !refused => unclaimed.accepted = Some(handshake),
+                _ if !refused => {
+                    unclaimed.accepted.get_or_insert(handshake);
+                }
                 _ => unclaimed.refused = Some(handshake),
             }
         }
@@ -771,6 +880,134 @@ mod tests {
         assert_eq!(network.ws_connections.len(), 7);
         assert!(network.ws_connections["51"].closed_at.is_none());
         assert!(network.ws_connections["52"].closed_at.is_none());
+    }
+
+    /// #174: a socket the server accepted then dropped closes with the id
+    /// 0 while live sockets opened with it have not reported opening yet:
+    /// its close goes to the oldest accepted handshake no socket claims,
+    /// and moves when that one's socket opens, so no live socket is ever
+    /// listed closed and the dropped one is.
+    #[test]
+    fn a_dropped_accepted_socket_never_closes_a_live_one() {
+        // Given live /echo?a=1, refused /deny, dropped /acc-close, unanswered
+        // /drop and live /echo?a=2, opened together
+        let mut network = NetworkState::default();
+        for (id, request) in [
+            ("e1", accepted_handshake("/echo?r=1&a=1")),
+            ("d1", refused_handshake("/deny?r=1", Some(403), None)),
+            ("c1", accepted_handshake("/acc-close?r=1")),
+            (
+                "x1",
+                refused_handshake("/drop?r=1", None, Some("NS_ERROR_NET_RESET")),
+            ),
+            ("e2", accepted_handshake("/echo?r=1&a=2")),
+        ] {
+            network.insert_request(id.into(), request);
+        }
+        let failed = json!({"httpChannelId": 0, "wsMessageType": "webSocketClosed", "code": 1006, "wasClean": false});
+        // When the three failures close before the live sockets open
+        for _ in 0..3 {
+            on_websocket(&mut network, &failed);
+        }
+        for (id, live) in [("61", 1), ("62", 2)] {
+            let opened = json!({"httpChannelId": id, "wsMessageType": "webSocketOpened",
+                "effectiveURI": format!("ws://127.0.0.1:8808/echo?r=1&a={live}")});
+            on_websocket(&mut network, &opened);
+        }
+        // Then the live sockets are open, each listed once
+        assert!(network.ws_connections["61"].closed_at.is_none());
+        assert!(network.ws_connections["62"].closed_at.is_none());
+        let closed: Vec<&str> = network
+            .ws_connections
+            .values()
+            .filter(|c| c.closed_at.is_some())
+            .map(|c| c.url.as_str())
+            .collect();
+        // And the dropped, refused and unanswered sockets are closed, once
+        let mut closed = closed;
+        closed.sort_unstable();
+        assert_eq!(
+            closed,
+            [
+                "ws://127.0.0.1:8808/acc-close?r=1",
+                "ws://127.0.0.1:8808/deny?r=1",
+                "ws://127.0.0.1:8808/drop?r=1",
+            ]
+        );
+        assert_eq!(network.ws_connections.len(), 5);
+        let dropped = &network.ws_connections["c1"];
+        assert_eq!(
+            (dropped.close_code, dropped.was_clean),
+            (Some(1006), Some(false))
+        );
+    }
+
+    /// #174: a close put on a live socket's handshake, with no other
+    /// accepted handshake left, is dropped when the socket opens.
+    #[test]
+    fn a_wrong_guess_with_nothing_left_is_dropped() {
+        // Given one accepted handshake whose socket opens late
+        let mut network = handshakes(&[("e1", "/echo")]);
+        let failed = json!({"httpChannelId": 0, "wsMessageType": "webSocketClosed", "code": 1006});
+        on_websocket(&mut network, &failed);
+        assert!(network.ws_connections["e1"].closed_at.is_some());
+        // When it opens
+        let opened = json!({"httpChannelId": 70, "wsMessageType": "webSocketOpened",
+            "effectiveURI": "ws://127.0.0.1:8808/echo"});
+        on_websocket(&mut network, &opened);
+        // Then only the live socket is listed, open
+        assert_eq!(network.ws_connections.len(), 1);
+        assert!(network.ws_connections["70"].closed_at.is_none());
+    }
+
+    /// The close frame `kind` (`frameSent`, `frameReceived`) of
+    /// connection `id` with `payload`.
+    fn close_frame_of(id: u64, kind: &str, payload: &str) -> Value {
+        json!({"httpChannelId": id, "wsMessageType": kind,
+            "data": {"opCode": 8, "payload": payload}})
+    }
+
+    /// #178: Firefox reports only the close frames of a terminated
+    /// dedicated worker's socket, no `webSocketClosed`: once both sides
+    /// sent theirs, the socket is closed cleanly with the peer's code and
+    /// reason; one side's frame alone closes nothing.
+    #[test]
+    fn a_closing_handshake_closes_the_socket() {
+        // Given a worker's open socket (Firefox 159's resources)
+        let mut network = NetworkState::default();
+        let opened = json!({"httpChannelId": 42, "wsMessageType": "webSocketOpened",
+            "effectiveURI": "ws://127.0.0.1:8808/echo?k=worker"});
+        on_websocket(&mut network, &opened);
+        // When the browser sends its close frame (1001, going away)
+        on_websocket(
+            &mut network,
+            &close_frame_of(42, "frameSent", "\u{3}\u{e9}"),
+        );
+        // Then it is still open
+        assert!(network.ws_connections["42"].closed_at.is_none());
+        // And when the server answers with its own, it is closed, cleanly
+        on_websocket(
+            &mut network,
+            &close_frame_of(42, "frameReceived", "\u{3}\u{e9}bye \u{c3}\u{a9}"),
+        );
+        let closed = &network.ws_connections["42"];
+        assert!(closed.closed_at.is_some());
+        assert_eq!(
+            (
+                closed.close_code,
+                closed.close_reason.as_deref(),
+                closed.was_clean
+            ),
+            (Some(1001), Some("bye é"), Some(true))
+        );
+        // And no frame is listed for the close frames
+        assert!(network.ws_frames.get("42").is_none_or(VecDeque::is_empty));
+        // And a webSocketClosed that comes after replaces it
+        let reported = json!({"httpChannelId": 42, "wsMessageType": "webSocketClosed",
+            "code": 1000, "reason": "", "wasClean": true});
+        on_websocket(&mut network, &reported);
+        assert_eq!(network.ws_connections["42"].close_code, Some(1000));
+        assert_eq!(network.ws_connections["42"].close_reason, None);
     }
 
     /// #163: the sockets of a frame (same-origin too) are closed when its
