@@ -196,7 +196,7 @@ dependencies = [
 
 [[package]]
 name = "browser-control-mcp"
-version = "0.22.1-beta.35"
+version = "0.22.2-beta.36"
 dependencies = [
  "aho-corasick",
  "async-trait",

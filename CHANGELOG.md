@@ -8,7 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 `browser-control-mcp` is the successor of `chrome-debug-mcp` 1.5.6 and starts
 from a copy of its code: entries describe the differences from that release.
 
-## [Unreleased]
+## [0.22.2-beta.36] - 2026-11-20
+
+Public **BETA**. Eight fixes from an automated test round. `open_tab`
+uses a fresh instance's blank start tab instead of leaving it open
+beside the new one (#180). WebSocket closes: Chrome closes the sockets of
+a frame of another origin that navigates within its origin (#173) and
+drops the frames of connections forgotten past the cap (#176); Firefox
+never puts a dropped socket's close on a live one (#174) and closes a
+terminated worker's socket (#178). More credential headers are redacted
+(#175), top-level `await` returns the value after a do whose body is a
+loop (#179), and `fill_input` succeeds on a one-time code row that moves
+the focus on (#177).
 
 ### Fixed
 
