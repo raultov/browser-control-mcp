@@ -1,0 +1,10 @@
+{
+ "number": 134,
+ "title": "Default instance is unusable if open_instance calls fill --max-instances before its first use",
+ "family": "other",
+ "command": [
+  "repro_default_cap.py"
+ ],
+ "bug_regex": "RESULT DEFAULT_BLOCKED",
+ "exit_on_bug": false
+}

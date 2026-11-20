@@ -1,0 +1,10 @@
+{
+ "number": 110,
+ "title": "[Medium] --proxy-server host:port (no scheme) launches Chrome with --proxy-server=<unparsable url>",
+ "family": "other",
+ "command": [
+  "repro_proxy_no_scheme.py"
+ ],
+ "bug_regex": "--proxy-server=<unparsable",
+ "exit_on_bug": true
+}

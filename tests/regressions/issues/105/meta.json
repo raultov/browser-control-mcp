@@ -1,0 +1,12 @@
+{
+ "number": 105,
+ "title": "[High] --local is bypassed by an HTTP redirect from 127.0.0.1 to a non-local host (navigate, open_tab, lighthouse_report)",
+ "family": "other",
+ "command": [
+  "repro_local_redirect.py",
+  "chrome",
+  "firefox"
+ ],
+ "bug_regex": "FAILS \\[.+\\]",
+ "exit_on_bug": true
+}

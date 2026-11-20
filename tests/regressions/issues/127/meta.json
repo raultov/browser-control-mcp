@@ -1,0 +1,10 @@
+{
+ "number": 127,
+ "title": "Chrome list_tabs lists no tab on a fresh instance (Firefox lists its start tab)",
+ "family": "other",
+ "command": [
+  "repro_list_tabs_fresh.py"
+ ],
+ "bug_regex": "NO_TABS",
+ "exit_on_bug": true
+}

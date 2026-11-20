@@ -807,7 +807,8 @@ incompatible:
 ```sh
 make check        # fmt, clippy -D warnings, tests, docs, duplication, packaging, version
 make e2e          # E2E smoke against real Chrome and Firefox, headless (E2E_VISIBLE=1 shows them; Linux, macOS)
-make check-all    # both
+make regressions  # the reproductions of the closed GitHub issues (tests/regressions)
+make check-all    # all three
 make compare      # the same tasks on this and other browser MCP servers (tests/compare)
 ```
 
@@ -822,7 +823,11 @@ page's own `eval` of thousands of generated statements; `--sample 0` runs
 all of them), and `ws_matrix.py`: a WebSocket of the document, a same- or
 cross-origin iframe, a nested iframe and a worker, ended by the page, the
 server, a dropped connection, a navigation, a removal or `terminate()`,
-must get exactly one close line in `get_network_logs`. `make compare` runs the scenarios of
+must get exactly one close line in `get_network_logs`. `make regressions`
+runs the reproduction scripts of the closed GitHub issues, saved in
+[tests/regressions](tests/regressions) by its `fetch.py`: an issue fails
+when its script shows its bug again (the issues closed with a documented
+deviation are skipped, saying why). `make compare` runs the scenarios of
 [tests/compare](tests/compare/README.md) (from common tasks to rare ones, each
 with a check) on browser-control and on Playwright MCP, chrome-devtools-mcp
 and a Puppeteer MCP, and compares the outcome, calls and tokens with a saved

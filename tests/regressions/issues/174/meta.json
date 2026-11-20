@@ -1,0 +1,10 @@
+{
+ "number": 174,
+ "title": "Firefox: close of a socket accepted then dropped is attributed to a live socket (echo listed closed 1006)",
+ "family": "websockets",
+ "command": [
+  "repro_ff_ws_accclose.py"
+ ],
+ "bug_regex": "BUG: live \\(readyState 1\\) socket listed closed",
+ "exit_on_bug": true
+}

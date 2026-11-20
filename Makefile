@@ -1,4 +1,4 @@
-.PHONY: all fmt fmt-check clippy clippy-windows test test-lib doc dupes dupes-cleanup publish-check version-check changelog-check check build install e2e compare check-all help
+.PHONY: all fmt fmt-check clippy clippy-windows test test-lib doc dupes dupes-cleanup publish-check version-check changelog-check check build install e2e regressions compare check-all help
 
 # cargo-dupes reads dupes.toml ONLY from the analysed path (no parent lookup)
 # and silently passes when it finds none, so the gate refuses to run without it.
@@ -109,15 +109,21 @@ e2e:
 compare: build
 	python3 -I tests/compare/run.py $(COMPARE_ARGS)
 
-# All local quality gates AND the E2E smoke
-check-all: check e2e
+# The reproductions of the closed GitHub issues, saved in tests/regressions
+# by its fetch.py (real browsers; not a gate of `make check`). A bug that
+# comes back fails its issue. REGRESSION_ARGS: e.g. --family secrets --jobs 2
+regressions: build
+	python3 -I tests/regressions/run.py --bin target/release/$(BIN)$(EXT) $(REGRESSION_ARGS)
+
+# All local quality gates, the E2E smoke and the issue regressions
+check-all: check e2e regressions
 
 help:
 	@echo "Available targets:"
 	@echo "  make (or make all)  - Alias for 'make check'"
 	@echo "  make check          - All gates (fmt-check, clippy, test, doc, dupes, publish-check, version-check, changelog-check)"
 	@echo "  make test-lib       - Library unit tests only (fast inner loop, not a gate)"
-	@echo "  make check-all      - Quality gates AND the E2E smoke against real browsers"
+	@echo "  make check-all      - Quality gates, the E2E smoke and the issue regressions"
 	@echo "  make fmt            - Auto-fix formatting"
 	@echo "  make fmt-check      - Verify formatting"
 	@echo "  make clippy         - Lints with -D warnings on every target"
@@ -131,4 +137,5 @@ help:
 	@echo "  make build          - Release binary"
 	@echo "  make install        - Release binary into ~/.cargo/bin"
 	@echo "  make e2e            - Smoke against real Chrome and Firefox (tests/run_all_e2e.sh)"
+	@echo "  make regressions    - Reproductions of the closed GitHub issues (tests/regressions)"
 	@echo "  make compare        - Compare browser MCP servers on the same tasks (tests/compare)"

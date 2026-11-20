@@ -1,0 +1,10 @@
+{
+ "number": 123,
+ "title": "Chrome --local bypass: a redirect to a non-local page that alert()s right after load reports success and stays",
+ "family": "other",
+ "command": [
+  "repro_local_late_alert.py"
+ ],
+ "bug_regex": "LEAKED",
+ "exit_on_bug": true
+}

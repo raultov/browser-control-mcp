@@ -1,0 +1,10 @@
+{
+ "number": 146,
+ "title": "evaluate_js top-level await fails after a regex literal containing a quote",
+ "family": "top-level-await",
+ "command": [
+  "repro_await_regex.py"
+ ],
+ "bug_regex": "BAD .*(ReferenceError: await is not defined|SyntaxError)",
+ "exit_on_bug": true
+}

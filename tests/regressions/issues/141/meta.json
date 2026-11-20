@@ -1,0 +1,10 @@
+{
+ "number": 141,
+ "title": "Chrome get_network_logs misses a popup tab's first requests (document, scripts)",
+ "family": "other",
+ "command": [
+  "repro_popup_netlog.py"
+ ],
+ "bug_regex": "chrome (link|window\\.open) BAD /popup\\.(html|js)",
+ "exit_on_bug": true
+}

@@ -1,0 +1,10 @@
+{
+ "number": 129,
+ "title": "--secrets leaks an ASCII value when JSON escapes '/' as \\/ or '&' as &",
+ "family": "secrets",
+ "command": [
+  "repro_json_escapes.py"
+ ],
+ "bug_regex": "LEAK: secret QA_KEY visible",
+ "exit_on_bug": true
+}

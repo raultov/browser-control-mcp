@@ -1,0 +1,10 @@
+{
+ "number": 144,
+ "title": "get_network_logs leaves X-Auth-Key, Ocp-Apim-Subscription-Key and X-API_KEY headers unredacted",
+ "family": "headers",
+ "command": [
+  "repro_netlog_hdr.py"
+ ],
+ "bug_regex": "chrome BAD X-Auth-Key hidden",
+ "exit_on_bug": true
+}

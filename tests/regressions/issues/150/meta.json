@@ -1,0 +1,11 @@
+{
+ "number": 150,
+ "title": "--secrets: one 32 KB symbol-heavy value uses over 3 GB of memory at startup",
+ "family": "secrets",
+ "command": [
+  "repro_big_secret_memory.py",
+  "32000"
+ ],
+ "bug_regex": "verdict RSS_OVER_3GB",
+ "exit_on_bug": true
+}

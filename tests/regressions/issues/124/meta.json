@@ -1,0 +1,10 @@
+{
+ "number": 124,
+ "title": "--local bypass on Chrome: a non-local redirect target that pauses on `debugger;` is readable after resume",
+ "family": "other",
+ "command": [
+  "repro_local_debugger_pause.py"
+ ],
+ "bug_regex": "LEAKED",
+ "exit_on_bug": true
+}

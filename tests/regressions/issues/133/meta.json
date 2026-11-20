@@ -1,0 +1,10 @@
+{
+ "number": 133,
+ "title": "Chrome get_network_logs misses the first page's requests (document, scripts, fetch) on a fresh server",
+ "family": "other",
+ "command": [
+  "repro_netlog_first_nav.py"
+ ],
+ "bug_regex": "MISSED_RUNS [1-5] of 5",
+ "exit_on_bug": true
+}

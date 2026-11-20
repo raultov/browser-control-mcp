@@ -1,0 +1,10 @@
+{
+ "number": 131,
+ "title": "Chrome relaunched by list_tabs after stop_browser starts on chrome://newtab/, not about:blank",
+ "family": "other",
+ "command": [
+  "repro_stop_list_tabs.py"
+ ],
+ "bug_regex": "START_TAB_NOT_BLANK",
+ "exit_on_bug": true
+}

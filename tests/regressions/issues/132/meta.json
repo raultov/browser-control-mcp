@@ -1,0 +1,10 @@
+{
+ "number": 132,
+ "title": "Concurrent first tool calls fail: \"Failed to register default session: Instance id 'default' already exists\"",
+ "family": "other",
+ "command": [
+  "repro_first_call_race.py"
+ ],
+ "bug_regex": "RACE: a concurrent first call failed",
+ "exit_on_bug": true
+}

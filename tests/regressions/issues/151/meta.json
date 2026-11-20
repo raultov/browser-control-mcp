@@ -1,0 +1,10 @@
+{
+ "number": 151,
+ "title": "Top-level await: `catch`/`finally`/`else` on its own line after `}` causes a SyntaxError",
+ "family": "top-level-await",
+ "command": [
+  "repro_await_catch.py"
+ ],
+ "bug_regex": "BAD True SyntaxError",
+ "exit_on_bug": true
+}

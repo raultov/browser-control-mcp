@@ -1,0 +1,10 @@
+{
+ "number": 156,
+ "title": "evaluate_js top-level await: a value right after a closing '}' returns undefined",
+ "family": "top-level-await",
+ "command": [
+  "repro_await_block_value.py"
+ ],
+ "bug_regex": "BUG: 2 top-level-await expression",
+ "exit_on_bug": true
+}

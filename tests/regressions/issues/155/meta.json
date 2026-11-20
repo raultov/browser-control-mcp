@@ -1,0 +1,10 @@
+{
+ "number": 155,
+ "title": "evaluate_js top-level await: a trailing operator before a line break causes a SyntaxError",
+ "family": "top-level-await",
+ "command": [
+  "repro_await_trailing_op.py"
+ ],
+ "bug_regex": "BUG: 3 expression",
+ "exit_on_bug": true
+}

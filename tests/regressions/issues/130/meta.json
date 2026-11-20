@@ -1,0 +1,10 @@
+{
+ "number": 130,
+ "title": "Chrome list_tabs errors 'No tab is open in this instance' after the last tab is closed (Firefox lists none)",
+ "family": "other",
+ "command": [
+  "repro_list_tabs_no_tab.py"
+ ],
+ "bug_regex": "LIST_TABS_ERROR",
+ "exit_on_bug": true
+}

@@ -1,0 +1,10 @@
+{
+ "number": 157,
+ "title": "evaluate_js top-level-await scan is quadratic on repeated '(/[' (13 s for a 120 KB expression)",
+ "family": "top-level-await",
+ "command": [
+  "repro_await_scan_quadratic.py"
+ ],
+ "bug_regex": "QUADRATIC",
+ "exit_on_bug": true
+}

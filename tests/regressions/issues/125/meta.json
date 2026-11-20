@@ -1,0 +1,10 @@
+{
+ "number": 125,
+ "title": "--downloads-dir: a long or non-ASCII instance label sends its downloads to ~/Downloads",
+ "family": "other",
+ "command": [
+  "repro_downloads_long_label.py"
+ ],
+ "bug_regex": "DOWNLOAD_NOT_IN_DOWNLOADS_DIR",
+ "exit_on_bug": true
+}

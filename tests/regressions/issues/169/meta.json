@@ -1,0 +1,10 @@
+{
+ "number": 169,
+ "title": "evaluate_js top-level await: value lost after `o.do`/`o.new`/`o.in` at line end and after same-line do-while",
+ "family": "top-level-await",
+ "command": [
+  "repro_await_kw.py"
+ ],
+ "bug_regex": "BAD 'const o = await Promise.resolve\\(\\{do: 4041\\}\\)",
+ "exit_on_bug": true
+}

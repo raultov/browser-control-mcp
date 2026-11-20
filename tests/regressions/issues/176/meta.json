@@ -1,0 +1,10 @@
+{
+ "number": 176,
+ "title": "Chrome: past the 100-connection cap, WebSocket frames stay listed with an empty URL and no close",
+ "family": "websockets",
+ "command": [
+  "repro_ws_over_cap.py"
+ ],
+ "bug_regex": "BUG: \\d+ WebSocket\\(s\\) listed with frames, an empty URL and no close",
+ "exit_on_bug": true
+}

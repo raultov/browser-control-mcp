@@ -1,0 +1,10 @@
+{
+ "number": 116,
+ "title": "Chrome open_tab drops history entries the page pushState()s while loading",
+ "family": "other",
+ "command": [
+  "repro_pushstate.py"
+ ],
+ "bug_regex": "PARITY BUG",
+ "exit_on_bug": true
+}

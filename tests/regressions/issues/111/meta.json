@@ -1,0 +1,10 @@
+{
+ "number": 111,
+ "title": "[Low] Unknown-argument hint lists copy_cookies/source_profile/confirm_restart that tools/list hides",
+ "family": "other",
+ "command": [
+  "repro_unknown_arg_hint.py"
+ ],
+ "bug_regex": "hint lists but tools/list hides: \\['confirm_restart', 'copy_cookies', 'source_profile'\\]",
+ "exit_on_bug": true
+}

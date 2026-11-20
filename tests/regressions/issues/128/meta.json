@@ -1,0 +1,10 @@
+{
+ "number": 128,
+ "title": "Firefox --downloads-dir: a read-only instance folder is deleted and recreated, then downloads complete into it",
+ "family": "other",
+ "command": [
+  "repro_ro_download_folder.py"
+ ],
+ "bug_regex": "BUG: read-only instance folder",
+ "exit_on_bug": true
+}

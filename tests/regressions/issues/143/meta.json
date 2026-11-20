@@ -1,0 +1,10 @@
+{
+ "number": 143,
+ "title": "Firefox cookies get/delete match path /app on page /application (prefix, not RFC 6265 path-match)",
+ "family": "other",
+ "command": [
+  "repro_cookie_path.py"
+ ],
+ "bug_regex": "firefox BAD delete qa_path matches nothing -> Deleted 1 cookie",
+ "exit_on_bug": true
+}

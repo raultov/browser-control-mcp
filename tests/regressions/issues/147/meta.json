@@ -1,0 +1,10 @@
+{
+ "number": 147,
+ "title": "evaluate_js top-level await: final `const{a}=`, `let[b]=` or `var<TAB>` declaration fails",
+ "family": "top-level-await",
+ "command": [
+  "repro_await_decl.py"
+ ],
+ "bug_regex": "BAD .*(SyntaxError|ReferenceError)",
+ "exit_on_bug": true
+}

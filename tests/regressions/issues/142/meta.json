@@ -1,0 +1,10 @@
+{
+ "number": 142,
+ "title": "evaluate_js top-level await: a comment after the final ';' gives SyntaxError",
+ "family": "top-level-await",
+ "command": [
+  "repro_await_comment.py"
+ ],
+ "bug_regex": "BAD .*SyntaxError",
+ "exit_on_bug": true
+}

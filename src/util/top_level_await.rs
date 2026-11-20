@@ -66,6 +66,7 @@ pub struct AsyncForm {
 
 /// [`AsyncForm`] of `code`, from one parse.
 pub fn async_form(code: &str) -> AsyncForm {
+    let code = &*closing_comment_at_start(code);
     let parsed = parsed(code);
     let last = parsed.as_ref().and_then(|p| p.last).and_then(|span| {
         let start = usize::try_from(span.start).ok()?.checked_sub(OPEN.len())?;
@@ -80,6 +81,21 @@ pub fn async_form(code: &str) -> AsyncForm {
     AsyncForm {
         awaits: parsed.is_some_and(|p| p.awaits),
         wrapped,
+    }
+}
+
+/// `code` with the `-->` it starts with (after spaces) written `// `: an
+/// HTML-like closing comment (Annex B), which only counts at the start of
+/// a line, where the wrapper's opening would no longer leave it. As long,
+/// so lines and columns stay.
+fn closing_comment_at_start(code: &str) -> std::borrow::Cow<'_, str> {
+    let indent = code.len() - code.trim_start_matches([' ', '\t']).len();
+    match code
+        .get(indent..)
+        .is_some_and(|rest| rest.starts_with("-->"))
+    {
+        true => std::borrow::Cow::Owned(format!("{}// {}", &code[..indent], &code[indent + 3..])),
+        false => std::borrow::Cow::Borrowed(code),
     }
 }
 
@@ -515,6 +531,198 @@ mod tests {
             assert!(
                 wrapped.ends_with(&format!("return ({last}\n); }})()")),
                 "{wrapped}"
+            );
+        }
+    }
+
+    /// The last expression is cut by bytes: characters of 2 to 4 bytes
+    /// before it, in it and after it (strings, identifiers, comments) keep
+    /// it whole; line breaks of every kind end a statement.
+    #[test]
+    fn characters_outside_ascii_and_line_terminators_keep_the_cut() {
+        for (code, last) in [
+            ("const s = 'Žluť😀'; await 0; s + '✓'", "s + '✓'"),
+            ("await 0; /* ünïcödé 😀 */ const ñ = 1\nñ + 'é'", "ñ + 'é'"),
+            ("await 0; 'a😀b' // 末尾", "'a😀b'"),
+            ("await 0;\r\nconst a = 1\r\na\r\n", "a"),
+            ("await 0;\u{2028}const b = 2\u{2029}b", "b"),
+            ("\u{feff}await 0; 'bom'", "'bom'"),
+            ("await 0;\t\u{b}\u{c}\u{a0}'ws'", "'ws'"),
+        ] {
+            let wrapped = with_top_level_await(code);
+            assert!(
+                wrapped.ends_with(&format!("return ({last}\n); }})()")),
+                "{wrapped:?}"
+            );
+        }
+    }
+
+    /// Annex B comments: `<!--` anywhere and `-->` at a line's start are
+    /// comments; a `-->` that starts the code still is, once wrapped (the
+    /// wrapper writes it `// `, as long).
+    #[test]
+    fn html_like_comments_stay_comments() {
+        for (code, wrapped) in [
+            (
+                "--> closer\nawait 0; 'v'",
+                "(async () => { //  closer\nawait 0; return ('v'\n); })()",
+            ),
+            (
+                "  --> closer\nawait 0; 'v'",
+                "(async () => {   //  closer\nawait 0; return ('v'\n); })()",
+            ),
+            (
+                "await 0; x = 1 <!-- opener\n--> closer\n'v'",
+                "(async () => { await 0; x = 1 <!-- opener\n--> closer\nreturn ('v'\n); })()",
+            ),
+        ] {
+            assert_eq!(with_top_level_await(code), wrapped);
+        }
+        assert!(!has_top_level_await("--> await x\n1"));
+        assert_eq!(
+            with_top_level_await("x-->0"),
+            "(async () => { return (x-->0\n); })()"
+        );
+    }
+
+    /// Code with nothing to return runs as it is: empty, blank, only
+    /// semicolons or comments, or a last statement that is not an
+    /// expression (a declaration, a loop, a block, `debugger`).
+    #[test]
+    fn code_without_a_last_expression_runs_as_it_is() {
+        for code in [
+            "",
+            "   \n\t",
+            ";;;",
+            "// only\n/* comments */",
+            "await 0; debugger",
+            "await 0; for (;;) break",
+            "await 0; { 'v' }",
+            "await 0; if (1) 'v'",
+            "await 0; class K {}",
+            "await 0; let x = 'v'",
+        ] {
+            assert_eq!(
+                with_top_level_await(code),
+                format!("(async () => {{ {code}\n}})()"),
+                "{code:?}"
+            );
+        }
+        assert!(!has_top_level_await(""));
+    }
+
+    /// The last expression statement is whatever the parser makes of the
+    /// last line: a line starting with `(`, `[` or a template goes on with
+    /// the line before, as in the browser; one starting with `++` does not;
+    /// a sequence, a function and an assignment are returned whole.
+    #[test]
+    fn automatic_semicolons_are_inserted_as_the_browser_inserts_them() {
+        for (code, last) in [
+            ("await 0; f\n(1)", "f\n(1)"),
+            ("await 0; a\n[0]", "a\n[0]"),
+            ("await 0; tag\n`t`", "tag\n`t`"),
+            ("await 0; x\n++y", "++y"),
+            ("await 0; 'u', 'v'", "'u', 'v'"),
+            ("await 0; () => 'v'", "() => 'v'"),
+            ("await 0; async x => await x", "async x => await x"),
+            ("await 0; o.v ??= await p", "o.v ??= await p"),
+            ("await 0; a: b: 'v'", "'v'"),
+            (
+                "await 0; (class { static v = 'v' }).v",
+                "(class { static v = 'v' }).v",
+            ),
+        ] {
+            let wrapped = with_top_level_await(code);
+            assert!(
+                wrapped.ends_with(&format!("return ({last}\n); }})()")),
+                "{wrapped:?}"
+            );
+        }
+    }
+
+    /// `await` is found wherever it runs at the top level (control
+    /// statements, switch cases, labels, destructuring defaults, optional
+    /// chains, computed keys, template substitutions), never inside a
+    /// function of any kind, nor where it is a name or a property.
+    #[test]
+    fn await_is_found_only_at_the_top_level() {
+        for code in [
+            "switch (x) { case await y: break }",
+            "l: { await x }",
+            "const { a = await d } = o",
+            "o?.[await k]",
+            "({ [await k]: 1 })",
+            "try {} finally { await x }",
+            "for (const x of await xs) {}",
+            "if (a) b; else await c",
+            "`${`${await x}`}`",
+            "x = class { static [await k] = 1 }",
+        ] {
+            assert!(has_top_level_await(code), "{code}");
+        }
+        for code in [
+            "async function f() { await x }",
+            "const f = async () => await x",
+            "const f = async x => { for await (const y of x) {} }",
+            "({ async m() { await x }, get g() { return 1 } })",
+            "class C { async m() { await x } static async s() { await y } }",
+            "async function* g() { yield await x }",
+            "o.await; o?.await; ({ await: 1 }).await",
+            "'await x'; `await ${'x'}`; /await x/",
+            "var async = 1; async",
+        ] {
+            assert!(!has_top_level_await(code), "{code}");
+        }
+    }
+
+    /// A code exactly [`MAX_PARSED_LEN`] bytes long is parsed, one byte
+    /// more is not; a character of several bytes counts for its bytes.
+    #[test]
+    fn the_length_limit_counts_bytes() {
+        let at = |len: usize, pad: char| {
+            let fill = len - "await 0;'v'".len();
+            let pad = pad.to_string().repeat(fill / pad.len_utf8());
+            format!("await 0;{pad}'v'")
+        };
+        assert!(has_top_level_await(&at(MAX_PARSED_LEN, ' ')));
+        assert!(!has_top_level_await(&at(MAX_PARSED_LEN + 1, ' ')));
+        let wide = at(MAX_PARSED_LEN - 1, '\u{2003}');
+        assert!(wide.len() <= MAX_PARSED_LEN && has_top_level_await(&wide));
+        let over = format!("{wide}\u{2003}\u{2003}");
+        assert!(over.len() > MAX_PARSED_LEN && !has_top_level_await(&over));
+    }
+
+    /// Syntax only an async function body accepts (`return` at the top
+    /// level) runs in the async function; syntax neither accepts (a
+    /// hashbang after the start, `import.meta`) and an unclosed string,
+    /// template, comment or bracket are not parsed: no top-level await is
+    /// found and nothing is cut. Errors the parser leaves to semantic
+    /// analysis (`super` outside a method, a name declared twice) are the
+    /// browser's to report, as for the code as written.
+    #[test]
+    fn code_the_parser_refuses_is_not_cut() {
+        let wrapped = with_top_level_await("await 0; return 5");
+        assert_eq!(wrapped, "(async () => { await 0; return 5\n})()");
+        for code in [
+            "await 0; super.x",
+            "await 0; let a = 1; let a = 2; a",
+            "await 0; let let = 1",
+        ] {
+            assert!(has_top_level_await(code), "{code}");
+        }
+        for code in [
+            "await 0;\n#!/bin/x\n1",
+            "await 0; import.meta.url",
+            "await 0; 'open",
+            "await 0; `open ${x}",
+            "await 0; /* open",
+            "await 0; f(",
+            "await 0; var await = 1",
+        ] {
+            assert!(!has_top_level_await(code), "{code}");
+            assert_eq!(
+                with_top_level_await(code),
+                format!("(async () => {{ {code}\n}})()")
             );
         }
     }

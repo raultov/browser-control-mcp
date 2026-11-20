@@ -1,0 +1,10 @@
+{
+ "number": 154,
+ "title": "Chrome: a WebSocket closed by navigating away never shows as closed in get_network_logs",
+ "family": "websockets",
+ "command": [
+  "repro_ws_chrome_nav.py"
+ ],
+ "bug_regex": "BUG: the WebSocket closed by navigation is not listed as closed",
+ "exit_on_bug": true
+}

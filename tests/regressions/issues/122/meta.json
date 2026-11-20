@@ -1,0 +1,10 @@
+{
+ "number": 122,
+ "title": "--local bypass: lighthouse_report redirected to a non-local page that opens a dialog leaves that page readable",
+ "family": "other",
+ "command": [
+  "repro_local_lighthouse_dialog.py"
+ ],
+ "bug_regex": "LEAKED",
+ "exit_on_bug": true
+}

@@ -1,0 +1,11 @@
+{
+ "number": 117,
+ "title": "--local: a redirect to a non-local page that alert()s stays readable after handle_dialog",
+ "family": "other",
+ "command": [
+  "repro_local_dialog_redirect.py",
+  "chrome"
+ ],
+ "bug_regex": "BUG: non-local page readable under --local",
+ "exit_on_bug": true
+}

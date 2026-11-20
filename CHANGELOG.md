@@ -45,8 +45,19 @@ from a copy of its code: entries describe the differences from that release.
   dropped connection, navigations, removal and `terminate()`), each of
   which must list the socket closed exactly once. All 48 pass.
 
+- `make regressions` (also in `make check-all`) runs the reproduction
+  scripts of the 70 closed GitHub issues that have one, saved in
+  `tests/regressions` (`fetch.py` refreshes them): an issue fails when its
+  script shows its bug again. 67 pass; #105, #108 and #116 were closed
+  with a documented deviation and are skipped, saying why. The
+  top-level `await` differential check also runs hand-written edge cases
+  and random programs of nested statements (about 15 000 codes in all).
+
 ### Fixed
 
+- `evaluate_js` with top-level `await` keeps an HTML-like closing comment
+  (`-->`, Annex B) that starts the expression a comment: the wrapper's
+  opening moved it off the start of its line, a syntax error.
 - `evaluate_js` with top-level `await` returns the value after a labelled
   block (`l: { } 'v'`, a syntax error before), after a labelled loop with
   `continue` and after an arrow function with a block body on the line

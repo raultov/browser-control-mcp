@@ -1,0 +1,10 @@
+{
+ "number": 118,
+ "title": "--secrets: a value with a quote and a backslash leaks when evaluate_js returns JSON.stringify of it",
+ "family": "secrets",
+ "command": [
+  "repro_secret_stringify.py"
+ ],
+ "bug_regex": "BUG: secret value shown",
+ "exit_on_bug": true
+}

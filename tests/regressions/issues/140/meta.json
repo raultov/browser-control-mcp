@@ -1,0 +1,10 @@
+{
+ "number": 140,
+ "title": "evaluate_js: O(n^2) top-level-await scan, 200 KB of line breaks takes ~80 s",
+ "family": "top-level-await",
+ "command": [
+  "repro_newlines.py"
+ ],
+ "bug_regex": "SLOW ratio",
+ "exit_on_bug": true
+}

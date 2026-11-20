@@ -1,0 +1,10 @@
+{
+ "number": 137,
+ "title": "--secrets: secret with & < > is shown unmasked in inspect_dom/innerHTML as HTML entities",
+ "family": "secrets",
+ "command": [
+  "repro_html_secret.py"
+ ],
+ "bug_regex": "LEAKS \\[1, 2\\]",
+ "exit_on_bug": true
+}

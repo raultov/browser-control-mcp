@@ -1,0 +1,11 @@
+{
+ "number": 160,
+ "title": "--secrets leaves a secret unmasked in double-stringified JSON inside an HTML attribute",
+ "family": "secrets",
+ "command": [
+  "repro_secrets_twice.py",
+  "chrome"
+ ],
+ "bug_regex": "SECRET_LEAKED",
+ "exit_on_bug": false
+}

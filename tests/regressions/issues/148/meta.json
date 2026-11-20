@@ -1,0 +1,10 @@
+{
+ "number": 148,
+ "title": "--secrets: a value in JSON inside an HTML attribute leaks in outerHTML and inspect_dom",
+ "family": "secrets",
+ "command": [
+  "repro_secret_json_attr.py"
+ ],
+ "bug_regex": "outerHTML LEAK",
+ "exit_on_bug": true
+}

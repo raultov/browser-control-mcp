@@ -1,0 +1,11 @@
+{
+ "number": 119,
+ "title": "History back on the initial tab reaches its new-tab/blank start page (Chrome and Firefox)",
+ "family": "other",
+ "command": [
+  "repro_initial_tab_back.py",
+  "chrome"
+ ],
+ "bug_regex": "BUG: history back left the visited pages",
+ "exit_on_bug": true
+}

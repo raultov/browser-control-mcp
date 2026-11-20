@@ -1,0 +1,10 @@
+{
+ "number": 167,
+ "title": "Chrome: a cross-origin iframe's WebSocket is never listed closed when the iframe is removed or navigated",
+ "family": "websockets",
+ "command": [
+  "repro_ws_oopif_close.py"
+ ],
+ "bug_regex": "CROSS_ORIGIN_SOCKET_NOT_CLOSED",
+ "exit_on_bug": true
+}

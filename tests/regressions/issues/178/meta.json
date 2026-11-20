@@ -1,0 +1,10 @@
+{
+ "number": 178,
+ "title": "Firefox: WebSocket of a terminated dedicated worker is never listed closed",
+ "family": "websockets",
+ "command": [
+  "repro_ws_worker.py"
+ ],
+ "bug_regex": "BUG: terminated worker socket still looks open",
+ "exit_on_bug": true
+}

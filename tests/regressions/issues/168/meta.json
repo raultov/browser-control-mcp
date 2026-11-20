@@ -1,0 +1,10 @@
+{
+ "number": 168,
+ "title": "get_network_logs shows X-Appwrite-JWT and X-Firebase-AppCheck credential headers unredacted",
+ "family": "headers",
+ "command": [
+  "repro_jwt_headers.py"
+ ],
+ "bug_regex": "LEAKED: \\['jwt-appwrite-81', 'appcheck-83'\\]",
+ "exit_on_bug": true
+}

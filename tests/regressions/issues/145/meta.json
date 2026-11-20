@@ -1,0 +1,10 @@
+{
+ "number": 145,
+ "title": "Secret masking takes ~150 s on a 99 KB reply when 100 secrets contain symbols",
+ "family": "secrets",
+ "command": [
+  "repro_mask_time.py"
+ ],
+ "bug_regex": "masked True SLOW",
+ "exit_on_bug": true
+}

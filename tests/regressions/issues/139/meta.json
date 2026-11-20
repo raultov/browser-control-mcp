@@ -1,0 +1,10 @@
+{
+ "number": 139,
+ "title": "evaluate_js: await inside a template literal ${...} errors instead of evaluating",
+ "family": "top-level-await",
+ "command": [
+  "repro_await_tpl.py"
+ ],
+ "bug_regex": "BAD '`sum=\\$\\{await \\(1\\+2\\)\\}`' -> True",
+ "exit_on_bug": true
+}

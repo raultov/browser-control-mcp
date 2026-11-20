@@ -1,0 +1,10 @@
+{
+ "number": 109,
+ "title": "[Medium] --secrets: a secret sent by a GET form shows URL-encoded (p%40ss+w%26rd9) in tool replies",
+ "family": "secrets",
+ "command": [
+  "repro_secret_form_encoded.py"
+ ],
+ "bug_regex": "secret value leaked in replies: \\[.*list_tabs shows p%40ss\\+w%26rd9",
+ "exit_on_bug": true
+}

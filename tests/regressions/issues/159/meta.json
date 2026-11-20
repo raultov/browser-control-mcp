@@ -1,0 +1,10 @@
+{
+ "number": 159,
+ "title": "profile_page_performance long_frames/long_scripts include frames from before the profile window",
+ "family": "other",
+ "command": [
+  "repro_loaf_window.py"
+ ],
+ "bug_regex": "BUG: a long frame from before the profile window is listed",
+ "exit_on_bug": true
+}

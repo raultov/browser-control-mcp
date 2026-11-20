@@ -1,0 +1,10 @@
+{
+ "number": 179,
+ "title": "Top-level await: value lost after `do while (c) s; while (d) v` (braceless do whose body is a while)",
+ "family": "top-level-await",
+ "command": [
+  "repro_await_do_while.py"
+ ],
+ "bug_regex": "BUG: value after do-while lost",
+ "exit_on_bug": true
+}

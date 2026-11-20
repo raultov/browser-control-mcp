@@ -1,0 +1,10 @@
+{
+ "number": 172,
+ "title": "Firefox: sockets of frames beyond the 64 newest are never listed closed when their frames are removed",
+ "family": "websockets",
+ "command": [
+  "repro_ff_ws_70frames.py"
+ ],
+ "bug_regex": "FRAME_SOCKETS_NOT_CLOSED",
+ "exit_on_bug": true
+}

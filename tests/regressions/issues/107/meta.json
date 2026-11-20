@@ -1,0 +1,10 @@
+{
+ "number": 107,
+ "title": "[Medium] Firefox: wait_for on a closed instance runs to its full timeout instead of failing at once",
+ "family": "other",
+ "command": [
+  "repro_ff_close_wait.py"
+ ],
+ "bug_regex": "answered later than 10 s after close_instance: \\[9001\\]",
+ "exit_on_bug": true
+}

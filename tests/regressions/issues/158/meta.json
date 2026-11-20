@@ -1,0 +1,10 @@
+{
+ "number": 158,
+ "title": "Firefox: a WebSocket that fails before onopen is missing from get_network_logs",
+ "family": "websockets",
+ "command": [
+  "repro_ws_firefox_bad.py"
+ ],
+ "bug_regex": "BUG: the failed WebSocket is not listed as closed",
+ "exit_on_bug": true
+}

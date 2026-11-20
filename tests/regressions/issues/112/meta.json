@@ -1,0 +1,10 @@
+{
+ "number": 112,
+ "title": "[Low] Chrome: open_tab {url} leaves an about:blank history entry, so history 'back' leaves the first page",
+ "family": "other",
+ "command": [
+  "repro_chrome_opentab_blank.py"
+ ],
+ "bug_regex": "back from the first page: ok Went back to about:blank",
+ "exit_on_bug": true
+}

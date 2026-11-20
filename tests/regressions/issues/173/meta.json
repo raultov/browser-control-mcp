@@ -1,0 +1,10 @@
+{
+ "number": 173,
+ "title": "Chrome: socket of a cross-origin iframe that navigates within its origin is never listed closed",
+ "family": "websockets",
+ "command": [
+  "repro_ws_hop.py"
+ ],
+ "bug_regex": "BUG: socket closed by the browser but not listed closed",
+ "exit_on_bug": true
+}

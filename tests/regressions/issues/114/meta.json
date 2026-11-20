@@ -1,0 +1,10 @@
+{
+ "number": 114,
+ "title": "RUST_LOG=trace writes --secrets values to stderr via tungstenite::protocol",
+ "family": "secrets",
+ "command": [
+  "repro_trace_secret.py"
+ ],
+ "bug_regex": "SECRET IN LOG",
+ "exit_on_bug": true
+}

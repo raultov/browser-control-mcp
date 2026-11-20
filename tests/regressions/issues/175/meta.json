@@ -1,0 +1,10 @@
+{
+ "number": 175,
+ "title": "get_network_logs shows X-GitHub-OTP, X-Vercel-Protection-Bypass and X-Honeycomb-Team values unredacted",
+ "family": "headers",
+ "command": [
+  "repro_cred_headers.py"
+ ],
+ "bug_regex": "LEAKED",
+ "exit_on_bug": true
+}

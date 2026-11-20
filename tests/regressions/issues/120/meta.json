@@ -1,0 +1,10 @@
+{
+ "number": 120,
+ "title": "--downloads-dir: two instance labels that clean alike and collide in FNV-1a share one folder",
+ "family": "other",
+ "command": [
+  "repro_downloads_collision.py"
+ ],
+ "bug_regex": "BUG: two instances share one downloads folder",
+ "exit_on_bug": true
+}

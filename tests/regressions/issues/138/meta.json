@@ -1,0 +1,10 @@
+{
+ "number": 138,
+ "title": "evaluate_js top-level await returns undefined when last expression starts with do/for/if/try",
+ "family": "top-level-await",
+ "command": [
+  "repro_await_prefix.py"
+ ],
+ "bug_regex": "BAD 'const done = await Promise.resolve\\(7071\\); done'",
+ "exit_on_bug": true
+}

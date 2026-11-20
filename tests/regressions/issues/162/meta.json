@@ -1,0 +1,11 @@
+{
+ "number": 162,
+ "title": "Top-level await: value after same-line function/class declaration lost; async function errors",
+ "family": "top-level-await",
+ "command": [
+  "repro_tla_decl.py",
+  "chrome"
+ ],
+ "bug_regex": "BAD [1-9]",
+ "exit_on_bug": false
+}

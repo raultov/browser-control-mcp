@@ -1,0 +1,11 @@
+{
+ "number": 163,
+ "title": "Firefox: get_network_logs omits WebSocket frames and closes of a same-origin iframe's socket",
+ "family": "websockets",
+ "command": [
+  "repro_ff_iframe_ws.py",
+  "firefox"
+ ],
+ "bug_regex": "IFRAME_SOCKET_MISSING",
+ "exit_on_bug": false
+}

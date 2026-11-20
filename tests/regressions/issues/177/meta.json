@@ -1,0 +1,10 @@
+{
+ "number": 177,
+ "title": "fill_input on an auto-advancing OTP row reports 'cannot take focus' although the page received the whole code",
+ "family": "other",
+ "command": [
+  "repro_otp_focus.py"
+ ],
+ "bug_regex": "BUG: fill_input says the field cannot take focus",
+ "exit_on_bug": true
+}

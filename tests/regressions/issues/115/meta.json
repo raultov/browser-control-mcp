@@ -1,0 +1,10 @@
+{
+ "number": 115,
+ "title": "save_pdf writes outside --upload-root when a parent dir is swapped for a symlink (TOCTOU)",
+ "family": "other",
+ "command": [
+  "repro_pdf_race.py"
+ ],
+ "bug_regex": "ESCAPED: files written outside the upload root",
+ "exit_on_bug": true
+}

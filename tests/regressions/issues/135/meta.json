@@ -1,0 +1,10 @@
+{
+ "number": 135,
+ "title": "evaluate_js top-level await fails when await is followed by '(' or wrapped in parentheses",
+ "family": "top-level-await",
+ "command": [
+  "repro_eval_await_paren.py"
+ ],
+ "bug_regex": "BROKEN_FORMS [1-3]",
+ "exit_on_bug": true
+}

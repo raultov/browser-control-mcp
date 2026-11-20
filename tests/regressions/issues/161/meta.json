@@ -1,0 +1,11 @@
+{
+ "number": 161,
+ "title": "get_network_logs shows the DPoP proof header unredacted by default",
+ "family": "headers",
+ "command": [
+  "repro_dpop_redact.py",
+  "chrome"
+ ],
+ "bug_regex": "DPOP_PROOF_SHOWN_BY_DEFAULT",
+ "exit_on_bug": false
+}

@@ -1,0 +1,10 @@
+{
+ "number": 171,
+ "title": "Firefox: a dropped WebSocket handshake's close is listed against a live socket and the failure goes missing",
+ "family": "websockets",
+ "command": [
+  "repro_ff_ws_burst.py"
+ ],
+ "bug_regex": "MISATTRIBUTED_CLOSE",
+ "exit_on_bug": true
+}

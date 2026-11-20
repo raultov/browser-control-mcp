@@ -1,0 +1,10 @@
+{
+ "number": 113,
+ "title": "[Low] --downloads-dir: instances labelled 'a/b' and 'a_b' share one download folder",
+ "family": "other",
+ "command": [
+  "repro_dl_folder_collision.py"
+ ],
+ "bug_regex": "share one downloads directory: True",
+ "exit_on_bug": true
+}

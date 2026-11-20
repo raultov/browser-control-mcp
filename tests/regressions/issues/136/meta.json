@@ -1,0 +1,10 @@
+{
+ "number": 136,
+ "title": "upload_file passes the unresolved symlink path to the browser; swapping the link after the check uploads an outside file",
+ "family": "other",
+ "command": [
+  "repro_upload_swap.py"
+ ],
+ "bug_regex": "OUTSD-MARK5521[\\s\\S]*(^|\\n)LEAK",
+ "exit_on_bug": false
+}

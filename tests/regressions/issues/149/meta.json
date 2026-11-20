@@ -1,0 +1,10 @@
+{
+ "number": 149,
+ "title": "get_network_logs shows X-Authorization, X-Forwarded-Authorization and Authentication values unredacted",
+ "family": "headers",
+ "command": [
+  "repro_auth_headers.py"
+ ],
+ "bug_regex": "LEAKED \\['QAHDR7xauth33'",
+ "exit_on_bug": true
+}

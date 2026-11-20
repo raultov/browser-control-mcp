@@ -1,0 +1,10 @@
+{
+ "number": 108,
+ "title": "[Medium] Firefox: mocked routes do not answer while set_offline is on (NetworkError), contrary to README",
+ "family": "other",
+ "command": [
+  "repro_ff_mock_offline.py"
+ ],
+ "bug_regex": "mocked fetch while offline failed: True",
+ "exit_on_bug": true
+}

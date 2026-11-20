@@ -1,0 +1,10 @@
+{
+ "number": 170,
+ "title": "fill_input/press_key blame the frame's Permissions-Policy when a field in a denied frame refuses the focus itself",
+ "family": "other",
+ "command": [
+  "repro_focus_blame.py"
+ ],
+ "bug_regex": "POLICY_BLAMED: [1-9]",
+ "exit_on_bug": true
+}

@@ -1,0 +1,10 @@
+{
+ "number": 126,
+ "title": "--secrets: non-ASCII secret leaks when a page returns it as JSON \\uXXXX escapes",
+ "family": "secrets",
+ "command": [
+  "repro_secret_unicode.py"
+ ],
+ "bug_regex": "LEAKED",
+ "exit_on_bug": true
+}

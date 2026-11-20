@@ -1,0 +1,11 @@
+{
+ "number": 164,
+ "title": "Firefox: WebSocket refused at handshake (HTTP 403) is missing from get_network_logs websocket list",
+ "family": "websockets",
+ "command": [
+  "repro_ff_ws_403.py",
+  "firefox"
+ ],
+ "bug_regex": "DENIED_SOCKET_MISSING",
+ "exit_on_bug": false
+}
