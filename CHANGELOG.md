@@ -38,7 +38,12 @@ from a copy of its code: entries describe the differences from that release.
   is masked in every form (no cap any more).
 - `make e2e` also runs a differential check of top-level `await` on both
   browsers: the page's own `eval` is the oracle for thousands of generated
-  statements (`tests/differential/fuzz_tla.py`).
+  statements (`tests/differential/fuzz_tla.py`); and a matrix of
+  WebSocket closes (`tests/differential/ws_matrix.py`): 24 cells per
+  browser (the document, same- and cross-origin iframes, a nested iframe
+  and a worker, against the page's `close()`, the server's close, a
+  dropped connection, navigations, removal and `terminate()`), each of
+  which must list the socket closed exactly once. All 48 pass.
 
 ### Fixed
 

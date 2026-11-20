@@ -47,19 +47,24 @@ export BCM_E2E_ATTACH_FIREFOX="--browser firefox --firefox-port $FIREFOX_PORT --
 output=$(cargo test --quiet --test e2e_mcp -- --ignored --nocapture --test-threads=1 2>&1)
 status=$?
 
-# Differential checks: the browser's own `eval` is the oracle for what
-# evaluate_js answers with top-level await, on both browsers (launched,
-# headless unless E2E_VISIBLE=1). One PASS or FAIL line each.
+# Differential checks on both browsers (launched, headless unless
+# E2E_VISIBLE=1): the browser's own `eval` is the oracle for what
+# evaluate_js answers with top-level await (fuzz_tla.py), and every owner
+# of a WebSocket against every way it ends must give one close line
+# (ws_matrix.py). One PASS or FAIL line each.
 visible=()
 [ "${E2E_VISIBLE:-0}" = 1 ] && visible=(--visible)
-for browser in chrome firefox; do
-  report=$(python3 -I tests/differential/fuzz_tla.py --browser "$browser" ${visible[@]+"${visible[@]}"} 2>&1)
-  if [ $? -eq 0 ]; then
-    output+=$'\n'"PASS differential top-level await ($browser)"
-  else
-    output+=$'\n'"FAIL differential top-level await ($browser)"$'\n'"      ${report//$'\n'/ | }"
-    status=1
-  fi
+for check in "fuzz_tla.py:top-level await" "ws_matrix.py:WebSocket closes"; do
+  for browser in chrome firefox; do
+    report=$(python3 -I "tests/differential/${check%%:*}" --browser "$browser" ${visible[@]+"${visible[@]}"} 2>&1)
+    if [ $? -eq 0 ]; then
+      output+=$'\n'"PASS differential ${check#*:} ($browser)"
+    else
+      failed_cells=$(grep -E '^FAIL|failure|^  ' <<< "$report")
+      output+=$'\n'"FAIL differential ${check#*:} ($browser)"$'\n'"      ${failed_cells//$'\n'/ | }"
+      status=1
+    fi
+  done
 done
 
 echo
