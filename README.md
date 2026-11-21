@@ -790,9 +790,10 @@ incompatible:
   process that reaches that port gets chrome (privileged) access to the
   browser. Use `--no-firefox-debugger` when you do not need the debugger.
 - Header values are shown only for the standard headers known to carry
-  no credential (content negotiation, caching, the CORS
-  `Access-Control-*` headers by name, fetch metadata `Sec-Fetch-*`,
-  client hints `Sec-CH-*`, security
+  no credential, each by its exact name, never by how a name starts
+  (the list is `SHOWN` in [src/util/headers.rs](src/util/headers.rs):
+  content negotiation, caching, the CORS `Access-Control-*` headers, the
+  fetch metadata and client hints browsers send, security
   policies, `Location`, `Origin`, `Referer`, `User-Agent`, request ids such
   as `X-Request-Id` and `traceparent`, the `WWW-Authenticate` challenge...;
   `_` counts as `-`). Every other header's value (`Authorization`,

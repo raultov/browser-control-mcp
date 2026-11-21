@@ -1,12 +1,20 @@
 //! HTTP header values that must not be handed to the agent by default.
 //!
-//! An allowlist: a header's value is shown only when it is a standard
-//! header known to carry no credential (content negotiation, caching,
-//! CORS, fetch metadata, client hints, security policies, request ids...).
-//! Every other header, standard credential or vendor's own, is hidden: a
-//! credential hides under any name (`X-WP-Nonce`, `CB-ACCESS-SIGN`,
-//! `X-Honeycomb-Team`...), and a list of the sensitive names missed a new
-//! one each test round (#144, #149, #161, #168, #175).
+//! An allowlist of exact names: a header's value is shown only when its
+//! name is one of the standard headers known to carry no credential
+//! (content negotiation, caching, CORS, fetch metadata, client hints,
+//! security policies, request ids...). Every other header, standard
+//! credential or vendor's own, is hidden: a credential hides under any name
+//! (`X-WP-Nonce`, `CB-ACCESS-SIGN`, `X-Honeycomb-Team`...), and a list of
+//! the sensitive names missed a new one each test round (#144, #149, #161,
+//! #168, #175).
+//!
+//! The rule goes by name only, and fails closed: a harmless header that is
+//! not listed is hidden (`include_sensitive_headers` shows it), and no
+//! pattern lets a name through (#189). What a listed header's value holds
+//! is not looked at: a token a server puts in a `Location` URL is for
+//! `--secrets` to mask. Chrome DevTools' own header sanitizer works the
+//! same way, on a shorter list.
 
 /// Headers whose value is shown (compared lowercase, `_` as `-`). Not
 /// here on purpose: `Sec-WebSocket-Protocol` (apps send their token in
@@ -142,6 +150,35 @@ const SHOWN: &[&str] = &[
     "x-ratelimit-reset",
     "x-ratelimit-resource",
     "x-ratelimit-used",
+    // Fetch metadata and client hints, name by name: a new one is hidden
+    // until it is added here
+    "sec-fetch-dest",
+    "sec-fetch-mode",
+    "sec-fetch-site",
+    "sec-fetch-storage-access",
+    "sec-fetch-user",
+    "sec-gpc",
+    "sec-ch-device-memory",
+    "sec-ch-dpr",
+    "sec-ch-forced-colors",
+    "sec-ch-prefers-color-scheme",
+    "sec-ch-prefers-contrast",
+    "sec-ch-prefers-reduced-motion",
+    "sec-ch-prefers-reduced-transparency",
+    "sec-ch-ua",
+    "sec-ch-ua-arch",
+    "sec-ch-ua-bitness",
+    "sec-ch-ua-form-factors",
+    "sec-ch-ua-full-version",
+    "sec-ch-ua-full-version-list",
+    "sec-ch-ua-mobile",
+    "sec-ch-ua-model",
+    "sec-ch-ua-platform",
+    "sec-ch-ua-platform-version",
+    "sec-ch-ua-wow64",
+    "sec-ch-viewport-height",
+    "sec-ch-viewport-width",
+    "sec-ch-width",
     // HTTP/2 and HTTP/3 pseudo-headers
     ":authority",
     ":method",
@@ -150,19 +187,13 @@ const SHOWN: &[&str] = &[
     ":status",
 ];
 
-/// Starts of the names of the header families whose value is shown: client
-/// hints and fetch metadata, which only the browser sends (a page cannot
-/// set a `Sec-` header), and whose members grow. Other families (CORS,
-/// rate limits) are listed name by name in [`SHOWN`]: an app may name its
-/// own header `Access-Control-Token`.
-const SHOWN_PREFIXES: &[&str] = &["sec-ch-", "sec-fetch-"];
-
 /// Whether a header's value must be hidden by default: every header but
-/// the standard ones in `SHOWN` and `SHOWN_PREFIXES`. `_` counts as
-/// `-` (`X-API_KEY`).
+/// the standard ones in `SHOWN`, each by its exact name: no name is shown
+/// for how it starts (#189: a server may send `Sec-Fetch-Token`). `_`
+/// counts as `-` (`X-API_KEY`).
 pub fn is_sensitive(name: &str) -> bool {
     let name = name.trim().to_ascii_lowercase().replace('_', "-");
-    !(SHOWN.contains(&name.as_str()) || SHOWN_PREFIXES.iter().any(|p| name.starts_with(p)))
+    !SHOWN.contains(&name.as_str())
 }
 
 /// Replaces the value of every sensitive header in a `{name: value}` object
@@ -179,7 +210,7 @@ pub fn redact_sensitive(headers: &mut serde_json::Value) {
 
 #[cfg(test)]
 mod tests {
-    use super::{SHOWN, SHOWN_PREFIXES, is_sensitive, redact_sensitive};
+    use super::{SHOWN, is_sensitive, redact_sensitive};
 
     /// Credential headers seen in the wild and in earlier reports: the
     /// standard ones, vendor key, token, signature and session headers
@@ -268,7 +299,7 @@ mod tests {
     }
 
     /// The standard headers listed as shown are shown, in any case and
-    /// with `_` for `-`, and so are the families shown by prefix.
+    /// with `_` for `-`.
     #[test]
     fn standard_headers_are_shown() {
         for name in SHOWN {
@@ -317,6 +348,40 @@ mod tests {
             "Proxy-Authenticate-Key",
         ] {
             assert!(is_sensitive(name), "{name}");
+        }
+    }
+
+    /// #189: no name is shown for how it starts. A server may send any
+    /// name: `Sec-Fetch-Token` and `Sec-CH-Session` are hidden like every
+    /// unknown header, while the fetch metadata and client hints browsers
+    /// send are shown, each by its own name.
+    #[test]
+    fn no_header_is_shown_for_its_prefix() {
+        for name in [
+            "Sec-Fetch-Token",
+            "Sec-CH-Session",
+            "Sec-CH-UA-Secret",
+            "Sec-Fetch-",
+            "Sec-CH-",
+            "Sec-Fetch-Site-Key",
+        ] {
+            assert!(is_sensitive(name), "{name}");
+        }
+        for name in [
+            "Sec-Fetch-Dest",
+            "Sec-Fetch-Mode",
+            "Sec-Fetch-Site",
+            "Sec-Fetch-User",
+            "Sec-Fetch-Storage-Access",
+            "Sec-CH-UA",
+            "Sec-CH-UA-Mobile",
+            "Sec-CH-UA-Platform",
+            "Sec-CH-UA-Full-Version-List",
+            "Sec-CH-Prefers-Color-Scheme",
+            "Sec-CH-Viewport-Width",
+            "Sec-GPC",
+        ] {
+            assert!(!is_sensitive(name), "{name}");
         }
     }
 
@@ -409,8 +474,8 @@ mod tests {
         }
     }
 
-    /// Guard on the allowlist itself: no name shown, nor any prefix, has
-    /// a word that names a credential, but the ones reviewed: the
+    /// Guard on the allowlist itself: no name shown has a word that names
+    /// a credential, but the ones reviewed: the
     /// challenges `*-Authenticate` (how to authenticate), `:authority` (the
     /// host) and `Access-Control-Allow-Credentials` (`true` or nothing).
     #[test]
@@ -439,7 +504,7 @@ mod tests {
             (":authority", "auth"),
             ("access-control-allow-credentials", "credential"),
         ];
-        for name in SHOWN.iter().chain(SHOWN_PREFIXES) {
+        for name in SHOWN {
             for word in words {
                 assert!(
                     !name.contains(word) || reviewed.contains(&(*name, word)),

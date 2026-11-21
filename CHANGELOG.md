@@ -15,6 +15,10 @@ from a copy of its code: entries describe the differences from that release.
 - `open_tab` takes a fresh instance's start tab once: after an `open_tab`
   without a label or a URL, which leaves it blank, a second `open_tab`
   took the same tab again and navigated it (#187), on Chrome and Firefox.
+- `get_network_logs` shows a header's value only for an exact name on its
+  allowlist. `Sec-CH-*` and `Sec-Fetch-*` were shown by prefix, so a
+  server's own `Sec-Fetch-Token` response header was shown (#189); the
+  fetch metadata and client hints browsers send are now listed one by one.
 
 ## [0.23.0-beta.37] - 2026-11-20
 
