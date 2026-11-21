@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 `browser-control-mcp` is the successor of `chrome-debug-mcp` 1.5.6 and starts
 from a copy of its code: entries describe the differences from that release.
 
+## [Unreleased]
+
+### Fixed
+
+- `open_tab` takes a fresh instance's start tab once: after an `open_tab`
+  without a label or a URL, which leaves it blank, a second `open_tab`
+  took the same tab again and navigated it (#187), on Chrome and Firefox.
+
 ## [0.23.0-beta.37] - 2026-11-20
 
 Public **BETA**. The four areas most bug reports came from are rebuilt

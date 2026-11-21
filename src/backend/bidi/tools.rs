@@ -1069,12 +1069,14 @@ pub(crate) async fn open_tab(params: CallToolRequestParams, handler: &McpHandler
 
 /// The instance's start tab, if still untouched: the only tab, open when
 /// the session started, without a label, on about:blank with nothing in
-/// its history (#180).
+/// its history (#180). Taken once (#187).
 async fn start_tab(session: &FirefoxSession) -> Option<bidi_browser_lite::Tab> {
     let tab = read(&session.tabs).start_tab()?;
     let blank = "history.length === 1 && location.href === 'about:blank'";
     let untouched = page::run_snippet(&tab, blank).await.ok()?;
-    (untouched == serde_json::Value::Bool(true)).then_some(tab)
+    let taken =
+        untouched == serde_json::Value::Bool(true) && write(&session.tabs).take_start_tab(&tab);
+    taken.then_some(tab)
 }
 
 /// The blank tab `open_tab` loads its URL in: the instance's untouched
@@ -1782,6 +1784,32 @@ mod tests {
                 .unwrap(),
         );
         assert_eq!(reply["tab_id"], "tab-2");
+        assert_eq!(mock.bidi().count("browsingContext.create"), 1);
+        ts::stop(&handler).await;
+    }
+
+    /// #187 (Firefox): the start tab is taken once. An open_tab without a
+    /// label or a URL leaves it blank and unlabelled: the next open_tab
+    /// opens a tab of its own instead of taking it again.
+    #[tokio::test]
+    async fn open_tab_takes_the_start_tab_only_once() {
+        // Given a Firefox whose only tab is blank, with nothing in its history
+        let mock = MockFirefox::start(false).await.unwrap();
+        mock.bidi().respond_with(
+            "browsingContext.getTree",
+            |_| json!({"contexts": [{"context": "ctx-0", "url": "about:blank", "children": null}]}),
+        );
+        mock.bidi().respond_with("script.evaluate", |_| {
+            evaluate_success(json!({"type": "boolean", "value": true}))
+        });
+        let handler = ts::handler(&mock);
+        // When open_tab runs twice, without a label or a URL
+        let open = || open_tab(call("open_tab", json!({})), &handler);
+        let first = ts::json_of(&open().await.unwrap());
+        let second = ts::json_of(&open().await.unwrap());
+        // Then the first took the start tab and the second opened its own
+        assert_eq!(first["tab_id"], "tab-1");
+        assert_eq!(second["tab_id"], "tab-2");
         assert_eq!(mock.bidi().count("browsingContext.create"), 1);
         ts::stop(&handler).await;
     }

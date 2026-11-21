@@ -6,7 +6,7 @@ use rust_mcp_sdk::{
 
 #[macros::mcp_tool(
     name = "open_tab",
-    description = "Opens a tab (launching the instance if needed; a fresh instance's untouched blank start tab is used instead of opening a second one), makes it the active tab in front, and waits for 'url' to load. Returns {tab_id, target_id, url, label}; a network error fails naming the tab, which stays open.",
+    description = "Opens a tab (launching the instance if needed; a fresh instance's untouched blank start tab is used, once, instead of opening a second one), makes it the active tab in front, and waits for 'url' to load. Returns {tab_id, target_id, url, label}; a network error fails naming the tab, which stays open.",
     destructive_hint = false
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
@@ -150,7 +150,9 @@ fn is_blank_history(history: &serde_json::Value) -> bool {
 /// instead of opening a tab beside it (#180: a fresh instance kept its
 /// empty about:blank tab open next to the one the agent opened): the only
 /// tab, open before the session tracked the browser (no action opened it),
-/// without a label and still blank. `(tab id, target id)`.
+/// without a label and still blank. Taken once (#187): an `open_tab`
+/// without a label or a URL leaves it looking untouched, and the next one
+/// must open a tab of its own. `(tab id, target id)`.
 async fn start_tab(
     session: &crate::handler::BrowserSession,
     label: Option<&str>,
@@ -161,7 +163,10 @@ async fn start_tab(
         let mut tabs = registry.tabs.iter();
         let (id, entry) = tabs.next()?;
         let target_id = entry.tab.target_id();
-        let start = tabs.next().is_none() && entry.label.is_none() && registry.was_open(target_id);
+        let start = tabs.next().is_none()
+            && entry.label.is_none()
+            && registry.was_open(target_id)
+            && !registry.start_tab_taken;
         start.then(|| (id.clone(), target_id.to_string()))?
     };
     let target = session.target(Some(tab_id.clone())).await.ok()?;
@@ -175,8 +180,13 @@ async fn start_tab(
     }
     let mut registry = crate::util::sync::write(&session.tabs);
     registry.check_new(label).ok()?;
+    // Checked again: another open_tab may have taken it meanwhile.
+    if registry.start_tab_taken {
+        return None;
+    }
     let entry = registry.tabs.get_mut(&tab_id)?;
     entry.label = label.map(str::to_string);
+    registry.start_tab_taken = true;
     Some((tab_id, target_id))
 }
 
@@ -303,6 +313,27 @@ mod tests {
         assert_eq!(start, Some((tab_id.clone(), "T-page-1".to_string())));
         let registry = crate::util::sync::read(&session.tabs);
         assert_eq!(registry.tabs[&tab_id].label.as_deref(), Some("main"));
+    }
+
+    /// #187: the start tab is taken once. An open_tab without a label or a
+    /// URL leaves it as it was (blank, no label): the next open_tab opens
+    /// a tab of its own instead of taking it again.
+    #[tokio::test]
+    async fn open_tab_takes_the_start_tab_only_once() {
+        use crate::handler::cdp_domains::tests::spawn_recording_mock;
+        // Given an instance whose only tab is its blank start page
+        let mock = spawn_recording_mock().await;
+        mock.respond_with("Page.getNavigationHistory", |_| {
+            serde_json::json!({"currentIndex": 0, "entries": [{"id": 1, "url": "about:blank"}]})
+        });
+        let (_handler, session, _browser, tab_id) = loading_tab(mock).await;
+        crate::util::sync::write(&session.tabs).set_preexisting(vec!["T-page-1".into()], vec![]);
+        // When open_tab takes it without a label, and looks again
+        let first = start_tab(&session, None).await;
+        let second = start_tab(&session, None).await;
+        // Then only the first call got it
+        assert_eq!(first, Some((tab_id, "T-page-1".to_string())));
+        assert_eq!(second, None);
     }
 
     /// #180: a tab an action opened, or a start tab that left its blank

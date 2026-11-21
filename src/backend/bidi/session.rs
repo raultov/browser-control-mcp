@@ -201,7 +201,8 @@ impl FirefoxTabs {
 
     /// The instance's start tab (#180), if it may still be it: the only
     /// tab, open when the session started, without a label and on
-    /// about:blank as far as the events told.
+    /// about:blank as far as the events told, and not taken yet
+    /// ([`Self::take_start_tab`]).
     pub(crate) fn start_tab(&self) -> Option<Tab> {
         let mut tabs = self.tabs.iter();
         let (id, entry) = tabs.next()?;
@@ -210,6 +211,14 @@ impl FirefoxTabs {
             && entry.url == "about:blank"
             && self.initial.contains(id);
         start.then(|| entry.tab.clone())
+    }
+
+    /// `open_tab` takes the start tab `tab`: it is no longer one (#187: an
+    /// `open_tab` without a label or a URL leaves it looking untouched, and
+    /// the next one took it again). `false` when another call took it first.
+    pub(crate) fn take_start_tab(&mut self, tab: &Tab) -> bool {
+        let id = self.tab_of_top(tab.context_id());
+        id.is_some_and(|id| self.initial.remove(&id))
     }
 
     /// Whether a new tab labelled `label` may be registered (under the cap,

@@ -87,6 +87,9 @@ pub(crate) struct TabRegistry {
     /// (at most [`MAX_KNOWN_PAGES`]): Chrome announces them again, and an
     /// action during which they are registered did not open them (ISSUE-97).
     preexisting: HashSet<String>,
+    /// Whether `open_tab` already took the instance's start tab (#187): it
+    /// is taken once, however it looks afterwards.
+    pub(crate) start_tab_taken: bool,
     /// Those of them Chrome has not announced (or closed) yet: an action
     /// waits for them, so the tab it opened, announced after them, is
     /// registered before it names it.
@@ -169,6 +172,7 @@ impl TabRegistry {
             untracked: 0,
             untracked_pages: HashSet::new(),
             preexisting: HashSet::new(),
+            start_tab_taken: false,
             replay_pending: HashSet::new(),
             listing: false,
             recent: Vec::new(),
@@ -289,6 +293,7 @@ impl TabRegistry {
         self.listing = false;
         self.replay_pending.clear();
         self.preexisting.clear();
+        self.start_tab_taken = false;
         self.untracked_pages.clear();
     }
 }
