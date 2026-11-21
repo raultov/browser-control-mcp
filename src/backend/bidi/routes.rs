@@ -197,6 +197,9 @@ async fn answer_requests(
         let Some(blocked) = blocked(&event) else {
             continue;
         };
+        // The routes live as long as the tab: once they are gone its
+        // context is closed or its session ended, and nothing of it is
+        // still blocked.
         let Some(routes) = routes.upgrade() else {
             break;
         };

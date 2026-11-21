@@ -2703,6 +2703,18 @@ mod e2e {
                 "503 true yes",
             ),
             (
+                "#193 a mock beside it",
+                "mock_route",
+                json!({"instance_id": i, "url_pattern": "*/api/mocked193*", "body": "mock193"}),
+                "without reaching the network",
+            ),
+            (
+                "#193 the mock answers while a route is upstream",
+                "evaluate_js",
+                fresh_fetch(i, "/api/mocked193?"),
+                "mock193",
+            ),
+            (
                 "#193 remove the upstream route",
                 "remove_route",
                 json!({"instance_id": i}),

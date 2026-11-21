@@ -346,6 +346,10 @@ async fn answer_requests(
             continue;
         };
         let Some(routes) = routes.upgrade() else {
+            // The routes went (the connection is being reset): let it
+            // through, as with no route, rather than leave it paused.
+            let (method, params) = answered(&paused, &mut RouteState::default());
+            let _ = target.send_raw_command(method, params).await;
             break;
         };
         let (method, params) = answered(&paused, &mut *routes.lock().await);
@@ -700,6 +704,42 @@ mod tests {
                 json!({"requestId": "R3", "errorReason": "ConnectionRefused"})
             )
         );
+    }
+
+    /// A request Chrome paused after the tab's routes went (its connection
+    /// is being reset) is let through, not left paused: the task stops
+    /// once it answered it.
+    #[tokio::test]
+    async fn chrome_lets_paused_requests_through_once_the_routes_are_gone() {
+        // Given the answering task of routes that are gone
+        let mock = spawn_recording_mock().await;
+        let address = format!("127.0.0.1:{}", mock.http_port);
+        let timeout = std::time::Duration::from_secs(2);
+        let browser = cdp_browser_lite::BrowserClient::connect(&address, timeout)
+            .await
+            .unwrap();
+        let tab = browser.attach("T-page-1").await.unwrap();
+        let target = CdpTarget::tab(tab.clone());
+        let gone = Arc::downgrade(&Arc::new(Mutex::new(RouteState::default())));
+        let task = tokio::spawn(answer_requests(
+            target.clone(),
+            target.on_domain("Fetch"),
+            gone,
+        ));
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        // When Chrome pauses a response
+        let session = Some(tab.session_id());
+        mock.emit(
+            "Fetch.requestPaused",
+            paused_response("R1", "http://a/x"),
+            session,
+        );
+        until_sent(mock, "Fetch.continueResponse").await;
+        // Then it goes on as it is, and the task ends
+        let continued = mock.commands_named("Fetch.continueResponse");
+        assert_eq!(continued[0].params, json!({"requestId": "R1"}));
+        let ended = tokio::time::timeout(std::time::Duration::from_secs(1), task).await;
+        assert!(ended.is_ok());
     }
 
     /// Upstream routes: `*/teapot*` sets status 418, `*/plain*` removes
