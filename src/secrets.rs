@@ -13,9 +13,15 @@
 //! space). The text is decoded layer by layer and each value found is
 //! replaced where it was written: decoding is one function, where writing
 //! every form of every value kept missing one and grew without bound
-//! (#118-#160). A convenience, not a security boundary: a value encoded
-//! otherwise (base64, a hash), transformed or split by the page, or in an
-//! image (screenshots, PDFs) is not masked.
+//! (#118-#160).
+//!
+//! A convenience, not a security boundary: it keeps known values from
+//! reaching the agent by accident. Only a **whole** value is masked. Not
+//! masked, by design: a part of a value (a result cut by a size limit, a
+//! window the caller chose, `slice()`: the agent can ask for any part
+//! anyway, and guessing parts next to a cut mark only moved the gap,
+//! #181-#184), a value encoded otherwise (base64, a hash), transformed or
+//! split by the page, or in an image (screenshots, PDFs).
 
 use rust_mcp_sdk::schema::{
     CallToolError, CallToolRequestParams, CallToolResult, ContentBlock, EmbeddedResourceResource,
@@ -51,8 +57,6 @@ struct Masker {
     /// `abcd7731wxyz`) are both found, and [`replaced`] masks them as one
     /// stretch; a leftmost-first search left the second's end shown.
     forms: aho_corasick::AhoCorasick,
-    /// Each form, by its index, to find what a cut left of it.
-    texts: Vec<String>,
     /// What each form stands for, by the form's index.
     tokens: Vec<Token>,
 }
@@ -96,100 +100,8 @@ impl Masker {
             .kind(Some(aho_corasick::AhoCorasickKind::ContiguousNFA))
             .build(&texts)
             .map_err(|e| format!("the secrets are too long to mask: {e}"))?;
-        Ok(Some(Self {
-            forms,
-            texts,
-            tokens,
-        }))
+        Ok(Some(Self { forms, tokens }))
     }
-}
-
-impl Masker {
-    /// The parts of values a cut left in `text`: before a cut mark (see
-    /// [`CUT_MARKS`]), the longest start of a whole value's form, of
-    /// [`MIN_LENGTH`] characters or more; after one, the longest end. A
-    /// tool cuts long text (a line, a value, `inspect_dom`'s context)
-    /// before masking it, and may cut through a value.
-    fn cut_parts(&self, text: &str) -> Vec<(std::ops::Range<usize>, usize)> {
-        let marks = CUT_MARKS.iter().flat_map(|mark| {
-            let found = text.match_indices(mark);
-            found.map(|(at, _)| at..at + mark.len())
-        });
-        marks
-            .flat_map(|mark| self.parts_around(text, mark))
-            .collect()
-    }
-
-    /// [`Self::cut_parts`] around the cut mark at `mark` of `text`.
-    fn parts_around(
-        &self,
-        text: &str,
-        mark: std::ops::Range<usize>,
-    ) -> Vec<(std::ops::Range<usize>, usize)> {
-        // The mark may stand on a line of its own (`inspect_dom`).
-        let before = text.get(..mark.start).unwrap_or_default().trim_end();
-        let rest = text.get(mark.end..).unwrap_or_default();
-        let start = mark.end + (rest.len() - rest.trim_start().len());
-        let after = text.get(start..).unwrap_or_default();
-        let whole = self
-            .tokens
-            .iter()
-            .enumerate()
-            .filter(|(_, t)| t.cut == Cut::Whole);
-        let forms = whole.filter_map(|(i, _)| Some((i, self.texts.get(i)?)));
-        forms
-            .flat_map(|(index, form)| {
-                let head = longest_start(before, form).map(|n| before.len() - n..before.len());
-                let tail = longest_end(after, form).map(|n| start..start + n);
-                [head, tail]
-                    .into_iter()
-                    .flatten()
-                    .map(move |range| (range, index))
-            })
-            .collect()
-    }
-}
-
-/// What the tools write where they cut a text: `…` (a cut line, name,
-/// preview or value, `… [cut: ...]`, a preview's `[…]`) and `[...]`
-/// (`inspect_dom`'s context).
-const CUT_MARKS: &[&str] = &["\u{2026}", "[...]"];
-
-/// The length (bytes) of the longest start of `form`, of [`MIN_LENGTH`]
-/// characters or more, that `before` ends with.
-fn longest_start(before: &str, form: &str) -> Option<usize> {
-    let head_end = form
-        .char_indices()
-        .nth(MIN_LENGTH)
-        .map_or(form.len(), |(at, _)| at);
-    let head = form.get(..head_end)?;
-    let from = (before.len().saturating_sub(form.len())..=before.len())
-        .find(|i| before.is_char_boundary(*i))?;
-    let window = before.get(from..)?;
-    let start = window
-        .match_indices(head)
-        .map(|(at, _)| at)
-        .find(|at| form.starts_with(&window[*at..]))?;
-    Some(window.len() - start)
-}
-
-/// The length (bytes) of the longest end of `form`, of [`MIN_LENGTH`]
-/// characters or more, that `after` starts with.
-fn longest_end(after: &str, form: &str) -> Option<usize> {
-    let foot_start = form
-        .char_indices()
-        .rev()
-        .nth(MIN_LENGTH - 1)
-        .map_or(0, |(at, _)| at);
-    let foot = form.get(foot_start..)?;
-    let to = (0..=after.len().min(form.len()))
-        .rev()
-        .find(|i| after.is_char_boundary(*i))?;
-    let window = after.get(..to)?;
-    window
-        .rmatch_indices(foot)
-        .map(|(at, _)| at + foot.len())
-        .find(|end| form.ends_with(&window[..*end]))
 }
 
 impl std::fmt::Debug for Secrets {
@@ -273,7 +185,7 @@ impl Secrets {
                 let cut = masker.tokens.get(token).map_or(Cut::Whole, |t| t.cut);
                 (widened(&current, value.range(), cut), token)
             });
-            for (range, token) in whole.chain(masker.cut_parts(&current)) {
+            for (range, token) in whole {
                 let range = layers
                     .iter()
                     .rev()
@@ -1491,58 +1403,46 @@ mod tests {
         assert_eq!(s.mask(r#"<i a="Qx9&amp;w7731%">"#), r#"<i a="<secret:P>">"#);
     }
 
-    /// A tool that cuts its output may cut through a value: what is left
-    /// of it next to the cut mark (`…`, `[...]`), its start before one or
-    /// its end after one, encoded or not, is masked; text next to a cut
-    /// mark that is no part of a value is left as it is.
+    /// Only a whole value is masked: what a tool's size limit, a window the
+    /// caller chose or the page's own code left of one is text like any
+    /// other (the agent can ask for any part of a value with `slice()`;
+    /// guessing parts next to a cut mark missed cuts without a mark and
+    /// cuts inside an escape, #181-#183). The whole value beside a mark is
+    /// still masked.
     #[test]
-    fn values_cut_by_a_tool_are_masked() {
+    fn only_whole_values_are_masked() {
         let s = Secrets::parse("PW='Qx9\"w&<z> Zk7731'\n").unwrap();
-        for (text, masked) in [
-            (
-                "<p>Qx9\"w&amp;&lt;z&gt; Zk7\n[...]",
-                "<p><secret:PW>\n[...]",
-            ),
-            (
-                "[...]\nw&amp;&lt;z&gt; Zk7731</p>",
-                "[...]\n<secret:PW></p>",
-            ),
-            (
-                "line Qx9\"w&<z> Zk… [cut: the first 9 of 99 characters]",
-                "line <secret:PW>… [cut: the first 9 of 99 characters]",
-            ),
-            (
-                r#"{"v":"Qx9\"w…(5000 chars)"}"#,
-                r#"{"v":"<secret:PW>…(5000 chars)"}"#,
-            ),
-            ("other text… and more […]", "other text… and more […]"),
-            ("Qx9…", "Qx9…"),
+        for text in [
+            "<p>Qx9\"w&amp;&lt;z&gt; Zk7\n[...]",
+            "[...]\nw&amp;&lt;z&gt; Zk7731</p>",
+            "line Qx9\"w&<z> Zk… [cut: the first 9 of 99 characters]",
+            "Qx9\"w&<z> Zk773",
+            "x9\"w&<z> Zk7731",
         ] {
-            assert_eq!(s.mask(text), masked, "{text}");
+            assert_eq!(s.mask(text), text);
         }
+        assert_eq!(
+            s.mask("Qx9\"w&amp;&lt;z&gt; Zk7731… [cut]\n[...]"),
+            "<secret:PW>… [cut]\n[...]"
+        );
     }
 
-    /// A reply of a thousand cut lines (a console of long messages) is
-    /// checked for cut values quickly, with 100 secrets.
+    /// #184: a reply made of cut marks after an escape encoded six times
+    /// (every layer is decoded) is masked in a time that does not grow
+    /// with the marks times the secrets: well under the 3 s of #145, with
+    /// 100 secrets.
     #[test]
-    fn many_cut_marks_are_checked_quickly() {
+    fn a_reply_full_of_cut_marks_is_masked_quickly() {
         let file: String = (0..100)
             .map(|i| format!("S{i:03}='Pw{i:03}&<\"x y'\n"))
             .collect();
         let s = Secrets::parse(&file).unwrap();
-        let reply = format!(
-            "{}[log] Pw050&<\"x… [cut]\n",
-            "[log] some long message text…\n".repeat(1000)
-        );
+        let reply = format!("%25252525252541{} Pw050&<\"x y", "\u{2026}".repeat(99_985));
         let started = std::time::Instant::now();
         let masked = s.mask(&reply);
-        assert!(
-            masked.ends_with("[log] <secret:S050>… [cut]\n"),
-            "{}",
-            &masked[masked.len() - 60..]
-        );
         let elapsed = started.elapsed();
-        assert!(elapsed < std::time::Duration::from_secs(5), "{elapsed:?}");
+        assert!(masked.ends_with(" <secret:S050>"));
+        assert!(elapsed < std::time::Duration::from_secs(3), "{elapsed:?}");
     }
 
     /// A small deterministic random sequence (xorshift64).

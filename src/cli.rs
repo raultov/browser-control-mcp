@@ -60,7 +60,7 @@ pub struct Args {
 /// Values the agent should not read back (see `crate::secrets`).
 #[derive(clap::Args, Debug, Clone, Default, PartialEq, Eq)]
 pub struct SecretArgs {
-    /// Dotenv file (NAME=value lines) whose values every tool result and error shows as <secret:NAME>; fill_input and fill_form type the value of a <secret:NAME> they are given. A convenience, not a security boundary.
+    /// Dotenv file (NAME=value lines) whose values every tool result and error shows as <secret:NAME>; fill_input and fill_form type the value of a <secret:NAME> they are given. Whole values only, as written or JSON-, HTML- or URL-encoded: a part of a value, or one transformed otherwise (base64, reversed), is not masked. A convenience, not a security boundary.
     #[arg(long = "secrets", value_name = "FILE")]
     pub secrets: Option<std::path::PathBuf>,
 }

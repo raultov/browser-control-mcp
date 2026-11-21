@@ -500,7 +500,7 @@ To debug JavaScript, add `--tool-groups debug` (see [Tool groups](#tool-groups))
 | `--enable-automation` | off | shows the automation infobar | ignored; `list_instances` shows a warning |
 | `--user-profile` | off | your default profile (no `--user-data-dir`) | only with `--firefox-port` (attach to your running Firefox) |
 | `--allow-cookie-import` | off | exposes `copy_cookies` | capability error |
-| `--secrets <FILE>` | none | dotenv file (`NAME=value`, at least 4 characters per value) whose values every tool result and error shows as `<secret:NAME>`; `fill_input` and `fill_form` type the value of a `<secret:NAME>` (see [Security notes](#security-notes)) | same |
+| `--secrets <FILE>` | none | dotenv file (`NAME=value`, at least 4 characters per value) whose values every tool result and error shows as `<secret:NAME>`; `fill_input` and `fill_form` type the value of a `<secret:NAME>`. Whole values only (see [Scope of the convenience features](#scope-of-the-convenience-features) and [Security notes](#security-notes)) | same |
 | `--tool-groups <GROUPS>` | none | lists the opt-in tool groups, comma separated: `debug`, `storage`, `files`, `raw`, `perf`, `emulation`, `network` or `all` (see [Tool groups](#tool-groups)) | same |
 | `--upload-root <DIR>` | working + temp dir | directory `upload_file` may read files from and `save_pdf` may write PDFs to (repeatable; replaces the defaults) | same |
 | `--downloads-dir <DIR>` | inside the instance's profile | each instance saves downloads in a folder of `<DIR>` named after its id (see [Security notes](#security-notes); kept after the instance closes); without it, in a `downloads` folder of the instance's temporary profile (deleted with it), or a new folder in the system temp directory for an attached browser or `--user-profile` | same; snap Firefox can only write to non-hidden folders of `$HOME` (not `~/.local/...`): it cancels the download otherwise |
@@ -764,14 +764,17 @@ incompatible:
   `encodeURI`, `escape()`, upper- or lowercase hex): the server decodes the
   reply layer by layer and replaces each value where it was written, also
   when the value shares an escape with the text around it (a trailing `\`
-  before an attribute's closing quote), when two secrets overlap, and when
-  a tool cut its output through a value (what is left of it next to the
-  `…` or `[...]` mark). And
+  before an attribute's closing quote) and when two secrets overlap. Only a
+  **whole** value is masked: see
+  [Scope of the convenience features](#scope-of-the-convenience-features)
+  for what is not. And
   `fill_input` / `fill_form` type the value of a `<secret:NAME>` they are
   given, so the agent can log in without seeing the password. It is a
-  convenience, not a security boundary: a value the page encodes otherwise
-  (base64, a hash) or transforms (splits it, changes its case) is not
-  masked, nor are images (screenshots, PDFs); and the server stops at
+  convenience, not a security boundary: a part of a value (a result cut by
+  a size limit, a window the caller chose, `slice()`), a value the page
+  encodes otherwise (base64, a hash) or transforms (splits it, changes its
+  case) is not masked, nor are images (screenshots, PDFs); and the server
+  stops at
   start-up if the file has a malformed line, a value shorter than 4
   characters or a name defined twice (the error names the line, never a
   value). Values never reach the logs.

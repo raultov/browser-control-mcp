@@ -84,7 +84,8 @@ READS = [
     ("thrown error", "evaluate_js", {"expression": "throw new Error(%s)" % V}, True),
     ("console", "get_console_logs", {}, True),
     ("console details", "get_console_logs", {"include_details": True}, True),
-    ("inspect_dom", "inspect_dom", {"query": "qa-secret"}, True),
+    # A window wide enough for the whole element: only whole values are masked.
+    ("inspect_dom", "inspect_dom", {"query": "qa-secret", "after": 2000}, True),
     ("snapshot", "snapshot", {}, True),
     ("find_in_snapshot", "find_in_snapshot", {"text": "qa"}, False),
     ("network list", "get_network_logs", {"url_filter": "net="}, True),

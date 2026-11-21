@@ -10,6 +10,16 @@ from a copy of its code: entries describe the differences from that release.
 
 ## [Unreleased]
 
+### Changed
+
+- `--secrets` masks **whole** values only. The rule added in 0.23.0 that
+  guessed what a tool's cut had left of a value next to a `…` or `[...]`
+  mark is removed: it missed cuts without a mark and cuts inside an escape
+  (#181, #182, #183), and made a reply full of marks take 15 s to mask
+  (#184). A part of a value (a result cut by a size limit, a window the
+  caller chose, `slice()`) is not masked, as the agent can ask for any
+  part of a value anyway.
+
 ### Fixed
 
 - `open_tab` takes a fresh instance's start tab once: after an `open_tab`
