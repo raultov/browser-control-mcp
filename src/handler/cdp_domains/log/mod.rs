@@ -76,8 +76,10 @@ pub(crate) struct LogState {
     /// target).
     workers: Vec<String>,
     /// Uncaught errors whose `cause` chain is being read (Chrome, see
-    /// [`CauseLookup`]): `get_console_logs` waits for them, bounded.
-    pub(crate) causes_pending: usize,
+    /// [`CauseLookup`]): `get_console_logs` waits for them, bounded. Each
+    /// is counted by a [`Pending`] it carries, so the count goes down
+    /// however the lookup ends.
+    pub(crate) causes_pending: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl LogState {
@@ -298,21 +300,47 @@ fn cause_lookup(method: &str, params: &Value, message: &ConsoleMessage) -> Optio
     })
 }
 
+/// A lookup queued to the reader, counted in `LogState::causes_pending`
+/// as long as it lives: until its causes are in, or until it is dropped
+/// unread (the queue was full, or the reader stopped with it queued, as a
+/// frame's listeners do when the frame goes: the tab's count, which every
+/// `get_console_logs` waits on, stayed up).
+struct Queued {
+    lookup: CauseLookup,
+    _pending: Pending,
+}
+
+/// One unit of a count while it lives.
+struct Pending(Arc<std::sync::atomic::AtomicUsize>);
+
+impl Pending {
+    fn new(count: &Arc<std::sync::atomic::AtomicUsize>) -> Self {
+        count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Self(count.clone())
+    }
+}
+
+impl Drop for Pending {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
 /// Reads the cause chain of each error `lookups` names in the page of
 /// `target`, and adds it to its entry (see [`LogState::add_causes`]).
 async fn read_causes(
     target: crate::handler::cdp_domains::cdp_target::CdpTarget,
     state: Arc<Mutex<LogState>>,
-    mut lookups: tokio::sync::mpsc::Receiver<CauseLookup>,
+    mut lookups: tokio::sync::mpsc::Receiver<Queued>,
 ) {
-    while let Some(lookup) = lookups.recv().await {
+    while let Some(queued) = lookups.recv().await {
+        let lookup = &queued.lookup;
         let read = tokio::time::timeout(CAUSE_TIMEOUT, cause_chain(&target, &lookup.object_id));
         let causes = read.await.ok().flatten().unwrap_or_default();
-        let mut state = state.lock().await;
-        state.causes_pending = state.causes_pending.saturating_sub(1);
         if !causes.is_empty() {
-            state.add_causes(&lookup, &causes);
+            state.lock().await.add_causes(lookup, &causes);
         }
+        // `queued` goes here: counted out once its causes are in.
     }
 }
 
@@ -348,7 +376,10 @@ async fn cause_chain(
 /// [`CauseLookup`]).
 pub(crate) async fn causes_read(state: &Arc<Mutex<LogState>>, wait: std::time::Duration) {
     let deadline = tokio::time::Instant::now() + wait;
-    while state.lock().await.causes_pending > 0 && tokio::time::Instant::now() < deadline {
+    let pending = state.lock().await.causes_pending.clone();
+    while pending.load(std::sync::atomic::Ordering::SeqCst) > 0
+        && tokio::time::Instant::now() < deadline
+    {
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
 }
@@ -631,12 +662,12 @@ pub(crate) fn start_log_listener(
                 let Some(lookup) = process_log_event(&event, &state).await else {
                     return;
                 };
-                // Counted first: the reader may be done before the send returns.
-                state.lock().await.causes_pending += 1;
-                if lookups.try_send(lookup).is_err() {
-                    let mut state = state.lock().await;
-                    state.causes_pending = state.causes_pending.saturating_sub(1);
-                }
+                let count = state.lock().await.causes_pending.clone();
+                // Counted before it is sent; a full queue drops it uncounted.
+                let _ = lookups.try_send(Queued {
+                    lookup,
+                    _pending: Pending::new(&count),
+                });
             }
         },
     ));
@@ -791,7 +822,32 @@ mod tests {
             )
         );
         assert_eq!(call["functionDeclaration"], CAUSE_CHAIN);
-        assert_eq!(state.lock().await.causes_pending, 0);
+        let pending = state.lock().await.causes_pending.clone();
+        assert_eq!(pending.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    /// #192: a lookup is counted while it lives: a full queue drops it,
+    /// and a reader that stops (a frame's listeners end) drops the ones
+    /// still queued; either way the count goes back to zero, so
+    /// get_console_logs does not wait for them.
+    #[tokio::test]
+    async fn unread_lookups_are_not_waited_for() {
+        let count = LogState::default().causes_pending;
+        let lookup = || CauseLookup {
+            object_id: "o-1".into(),
+            text: "Error: e".into(),
+            timestamp: 1.0,
+        };
+        let queued = || Queued {
+            lookup: lookup(),
+            _pending: Pending::new(&count),
+        };
+        let (lookups, reader) = tokio::sync::mpsc::channel(1);
+        lookups.try_send(queued()).ok().unwrap();
+        assert!(lookups.try_send(queued()).is_err());
+        assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1);
+        drop(reader);
+        assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 0);
     }
 
     /// #192: a reader waits for the cause chains being read, and no longer
@@ -799,16 +855,16 @@ mod tests {
     #[tokio::test]
     async fn readers_wait_for_causes_a_bounded_time() {
         let state = Arc::new(Mutex::new(LogState::default()));
-        state.lock().await.causes_pending = 1;
-        let reader = state.clone();
+        let count = state.lock().await.causes_pending.clone();
+        let pending = Pending::new(&count);
         tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_millis(40)).await;
-            reader.lock().await.causes_pending = 0;
+            drop(pending);
         });
         let started = std::time::Instant::now();
         causes_read(&state, std::time::Duration::from_secs(2)).await;
         assert!(started.elapsed() >= std::time::Duration::from_millis(40));
-        state.lock().await.causes_pending = 1;
+        let _stays = Pending::new(&count);
         let started = std::time::Instant::now();
         causes_read(&state, std::time::Duration::from_millis(60)).await;
         let waited = started.elapsed();
