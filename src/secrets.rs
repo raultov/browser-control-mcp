@@ -59,6 +59,10 @@ struct Masker {
     forms: aho_corasick::AhoCorasick,
     /// What each form stands for, by the form's index.
     tokens: Vec<Token>,
+    /// How far (bytes) a match may reach past an escape it touches: the
+    /// longest form and a character [`widened`] adds (see
+    /// [`Layer::windows`]).
+    reach: usize,
 }
 
 /// What a pattern stands for: the token replacing it, and which part of
@@ -93,6 +97,7 @@ impl Masker {
             return Ok(None);
         }
         let (texts, tokens): (Vec<String>, Vec<Token>) = forms.into_iter().unzip();
+        let reach = texts.iter().map(String::len).max().unwrap_or(0) + 4;
         // Never a DFA: its 256 transitions a state take gigabytes for a
         // long value (#150).
         let forms = aho_corasick::AhoCorasick::builder()
@@ -100,9 +105,52 @@ impl Masker {
             .kind(Some(aho_corasick::AhoCorasickKind::ContiguousNFA))
             .build(&texts)
             .map_err(|e| format!("the secrets are too long to mask: {e}"))?;
-        Ok(Some(Self { forms, tokens }))
+        Ok(Some(Self {
+            forms,
+            tokens,
+            reach,
+        }))
+    }
+
+    /// The forms found in `text`, widened as their cut says (see [`Cut`]),
+    /// with their token's index, in `text`'s bytes. In a layer `decoded`
+    /// from the one before, only the matches that hold a character one of
+    /// its escapes decoded to: any other is the same bytes as in the layer
+    /// before, found there already (#191: 100 overlapping secrets made each
+    /// of seven layers find and remap a million matches). A match inside
+    /// the one kept before it is left out: it changes neither what is
+    /// masked nor the token (see [`replaced`]).
+    fn found_in(&self, text: &str, decoded: Option<&Layer>) -> Vec<(Range, usize)> {
+        let windows = match decoded {
+            None => std::iter::once(0..text.len()).collect(),
+            Some(layer) => layer.windows(text, self.reach),
+        };
+        let mut found: Vec<(Range, usize)> = Vec::new();
+        for window in windows {
+            let slice = text.get(window.clone()).unwrap_or_default();
+            // Standard matching (see `Masker::new`) always allows it.
+            let matches = self.forms.try_find_overlapping_iter(slice);
+            let ranges = matches.into_iter().flatten().map(|value| {
+                let token = value.pattern().as_usize();
+                let cut = self.tokens.get(token).map_or(Cut::Whole, |t| t.cut);
+                let at = window.start + value.start()..window.start + value.end();
+                (widened(text, at, cut), token)
+            });
+            for (range, token) in ranges.filter(|(r, _)| decoded.is_none_or(|l| l.touches(r))) {
+                let inside = found
+                    .last()
+                    .is_some_and(|(kept, _)| kept.start <= range.start && range.end <= kept.end);
+                if !inside {
+                    found.push((range, token));
+                }
+            }
+        }
+        found
     }
 }
+
+/// A stretch of a text, in bytes.
+type Range = std::ops::Range<usize>;
 
 impl std::fmt::Debug for Secrets {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -178,14 +226,7 @@ impl Secrets {
         let mut layers: Vec<Layer> = Vec::new();
         let mut current = std::borrow::Cow::Borrowed(text);
         for layer in 0..=LAYERS {
-            // Standard matching (see `Masker::new`) always allows it.
-            let found_here = masker.forms.try_find_overlapping_iter(current.as_ref());
-            let whole = found_here.into_iter().flatten().map(|value| {
-                let token = value.pattern().as_usize();
-                let cut = masker.tokens.get(token).map_or(Cut::Whole, |t| t.cut);
-                (widened(&current, value.range(), cut), token)
-            });
-            for (range, token) in whole {
+            for (range, token) in masker.found_in(&current, layers.last()) {
                 let range = layers
                     .iter()
                     .rev()
@@ -426,6 +467,32 @@ struct Escape {
 }
 
 impl Layer {
+    /// The stretches of `text`, the text this layer decoded to, that hold
+    /// every match touching one of its escapes: `reach` bytes around each
+    /// escape, at character boundaries, overlapping ones joined. A layer
+    /// that decoded 15 characters is searched around them, not whole.
+    fn windows(&self, text: &str, reach: usize) -> Vec<Range> {
+        let mut windows: Vec<Range> = Vec::new();
+        for escape in &self.escapes {
+            let start = text.floor_char_boundary(escape.out.start.saturating_sub(reach));
+            let end = text.ceil_char_boundary(escape.out.end.saturating_add(reach));
+            match windows.last_mut() {
+                Some(last) if start <= last.end => last.end = last.end.max(end),
+                _ => windows.push(start..end),
+            }
+        }
+        windows
+    }
+
+    /// Whether `range` of the decoded text holds a character one of the
+    /// layer's escapes decoded to.
+    fn touches(&self, range: &Range) -> bool {
+        let next = self.escapes.partition_point(|e| e.out.end <= range.start);
+        self.escapes
+            .get(next)
+            .is_some_and(|e| e.out.start < range.end)
+    }
+
     /// The bytes of the text decoded that `range` of the decoded text
     /// came from.
     fn source(&self, range: std::ops::Range<usize>) -> std::ops::Range<usize> {
@@ -1443,6 +1510,34 @@ mod tests {
         let elapsed = started.elapsed();
         assert!(masked.ends_with(" <secret:S050>"));
         assert!(elapsed < std::time::Duration::from_secs(3), "{elapsed:?}");
+    }
+
+    /// #191: a reply where every position starts ten overlapping secrets,
+    /// after one escape encoded six times (every layer is decoded), is
+    /// masked in a time that does not grow with the matches times the
+    /// layers: a layer only adds what its decoded escapes changed, and the
+    /// matches are merged without sorting them. Well under the 3 s of the
+    /// README, with 100 secrets.
+    #[test]
+    fn overlapping_secrets_in_every_layer_are_masked_quickly() {
+        let period = "Qx7Lm9Pz2R".repeat(3);
+        let file: String = (0..10)
+            .flat_map(|o| (4..14).map(move |l| (o, l)))
+            .enumerate()
+            .map(|(i, (o, l))| format!("S{i:03}='{}'\n", &period[o..o + l]))
+            .collect();
+        let s = Secrets::parse(&file).unwrap();
+        let reply = format!("%25252525252541{}", "Qx7Lm9Pz2R".repeat(9990));
+        let started = std::time::Instant::now();
+        let masked = s.mask(&reply);
+        let elapsed = started.elapsed();
+        assert!(
+            masked.starts_with("%25252525252541<secret:S"),
+            "{}",
+            &masked[..60]
+        );
+        assert_eq!(masked.matches("<secret:").count(), 1);
+        assert!(elapsed < std::time::Duration::from_secs(1), "{elapsed:?}");
     }
 
     /// A small deterministic random sequence (xorshift64).

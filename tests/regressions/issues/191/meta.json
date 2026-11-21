@@ -1,0 +1,10 @@
+{
+ "number": 191,
+ "title": "--secrets: masking a 99 953-character reply takes over 4 s with 100 overlapping secrets and one 6x-encoded escape",
+ "family": "secrets",
+ "command": [
+  "repro_secrets_overlap_slow.py"
+ ],
+ "bug_regex": "BUG: masking a reply of under 100 000 characters added \\d+ ms",
+ "exit_on_bug": true
+}

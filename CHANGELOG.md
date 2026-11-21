@@ -17,6 +17,11 @@ from a copy of its code: entries describe the differences from that release.
   calls returned the same tab (#190). A session that reconnects to a
   browser that lived on offers no start tab any more: the new connection
   cannot tell it from a tab an action opened.
+- `--secrets` masks a reply where secrets overlap at every position, after
+  an escape encoded six times, in about 10 ms instead of over 4 s (#191).
+  Each decoded layer is searched only around the escapes it decoded (the
+  rest is the same text as the layer before), and a match inside the one
+  found before it is not kept.
 
 ## [0.24.0-beta.38] - 2026-11-21
 
