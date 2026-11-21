@@ -1,0 +1,10 @@
+{
+ "number": 190,
+ "title": "open_tab on Chrome: after the last tab is closed, two open_tab calls return the same tab",
+ "family": "other",
+ "command": [
+  "repro_open_tab_after_close.py"
+ ],
+ "bug_regex": "BUG: two open_tab calls returned the same tab",
+ "exit_on_bug": true
+}

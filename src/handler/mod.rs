@@ -1448,6 +1448,10 @@ impl BrowserSession {
             return Ok(());
         }
         self.reset_connection_state().await;
+        // The browser lives on: the pages a new connection finds are not its
+        // start tab, whatever they look like (#190: the tab open_tab created
+        // after the last one closed was taken again as the start tab).
+        crate::util::sync::write(&self.tabs).start_tab_taken = true;
         if self.page_count().await == Some(0) {
             tracing::debug!("DevTools connection closed with the last page");
             return Ok(());
@@ -2423,6 +2427,8 @@ mod tests {
     /// AUD-EV-23: a tab whose DevTools connection dropped (Chrome closes it
     /// on a message over 256 MB) while the browser lives is forgotten and the
     /// session reconnects, instead of answering "Connection lost" forever.
+    /// #190: the reconnected session cannot tell the instance's start tab
+    /// from a tab an action opened, so open_tab no longer takes one.
     #[tokio::test]
     async fn dropped_connection_is_reconnected() {
         use cdp_browser_lite::test_support::mock_devtools::{MockDevTools, MockWsBehavior};
@@ -2446,6 +2452,8 @@ mod tests {
         let target = session.target(None).await.unwrap();
         // Then the dead tab is gone and the call runs on a live connection
         assert!(crate::util::sync::read(&session.tabs).tabs.is_empty());
+        // And no page is the start tab any more
+        assert!(crate::util::sync::read(&session.tabs).start_tab_taken);
         let reply = target
             .send_raw_command("Runtime.evaluate", serde_json::json!({"expression": "1"}))
             .await;

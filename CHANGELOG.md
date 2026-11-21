@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 `browser-control-mcp` is the successor of `chrome-debug-mcp` 1.5.6 and starts
 from a copy of its code: entries describe the differences from that release.
 
+## [Unreleased]
+
+### Fixed
+
+- `open_tab` on Chrome no longer takes the tab it created as the
+  instance's start tab: after the last tab was closed, two `open_tab`
+  calls returned the same tab (#190). A session that reconnects to a
+  browser that lived on offers no start tab any more: the new connection
+  cannot tell it from a tab an action opened.
+
 ## [0.24.0-beta.38] - 2026-11-21
 
 Public **BETA**. States the scope of the four convenience features

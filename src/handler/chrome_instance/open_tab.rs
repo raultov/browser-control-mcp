@@ -152,7 +152,11 @@ fn is_blank_history(history: &serde_json::Value) -> bool {
 /// tab, open before the session tracked the browser (no action opened it),
 /// without a label and still blank. Taken once (#187): an `open_tab`
 /// without a label or a URL leaves it looking untouched, and the next one
-/// must open a tab of its own. `(tab id, target id)`.
+/// must open a tab of its own. Never after a new connection to a browser
+/// that lived on (#190, see [`TabRegistry::start_tab_taken`]).
+/// `(tab id, target id)`.
+///
+/// [`TabRegistry::start_tab_taken`]: super::tab_registry::TabRegistry::start_tab_taken
 async fn start_tab(
     session: &crate::handler::BrowserSession,
     label: Option<&str>,
@@ -211,6 +215,9 @@ async fn connect_and_create(
             .await
             .map(drop)
             .map_err(|e| e.to_string());
+        // The connection lists the tab just created as open before it: it
+        // is not the instance's start tab (#190).
+        crate::util::sync::write(&session.tabs).start_tab_taken = true;
         return match connecting {
             Ok(()) => Ok((tab_id, target_id)),
             Err(e) => Err(CallToolError::from_message(format!(

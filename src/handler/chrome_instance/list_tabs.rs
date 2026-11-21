@@ -172,7 +172,8 @@ mod tests {
     }
 
     /// #130: once the last tab was closed (its connection with it), a
-    /// Chrome lists no tab, without an error, as Firefox does.
+    /// Chrome lists no tab, without an error, as Firefox does. #190: the
+    /// tab open_tab creates next is not the instance's start tab.
     #[tokio::test]
     async fn a_browser_whose_last_tab_closed_lists_no_tab() {
         use cdp_browser_lite::test_support::mock_devtools::MockWsBehavior;
@@ -205,6 +206,8 @@ mod tests {
         assert_eq!(reply["tabs"], json!([]));
         assert_eq!(reply["active_tab_id"], json!(null));
         assert!(handler.default_session.client.lock().await.is_none());
+        let registry = crate::util::sync::read(&handler.default_session.tabs);
+        assert!(registry.start_tab_taken);
     }
 
     /// FIX-09: list_tabs shows the current URL.

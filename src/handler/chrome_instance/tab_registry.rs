@@ -87,13 +87,16 @@ pub(crate) struct TabRegistry {
     /// (at most [`MAX_KNOWN_PAGES`]): Chrome announces them again, and an
     /// action during which they are registered did not open them (ISSUE-97).
     preexisting: HashSet<String>,
-    /// Whether `open_tab` already took the instance's start tab (#187): it
-    /// is taken once, however it looks afterwards.
-    pub(crate) start_tab_taken: bool,
     /// Those of them Chrome has not announced (or closed) yet: an action
     /// waits for them, so the tab it opened, announced after them, is
     /// registered before it names it.
     replay_pending: HashSet<String>,
+    /// Whether the instance's start tab is no longer offered to `open_tab`:
+    /// it took it already (#187: it is taken once, however it looks
+    /// afterwards), or the session reconnected to a browser that lived on
+    /// (#190: a new connection cannot tell the start tab from a tab an
+    /// action opened). Cleared with the registry, for a new browser.
+    pub(crate) start_tab_taken: bool,
     /// Whether the lifecycle listener is still listing the open pages.
     listing: bool,
     /// Tabs in the order they were last made active (most recent last), so
