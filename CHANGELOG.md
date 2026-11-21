@@ -8,7 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 `browser-control-mcp` is the successor of `chrome-debug-mcp` 1.5.6 and starts
 from a copy of its code: entries describe the differences from that release.
 
-## [Unreleased]
+## [0.24.0-beta.38] - 2026-11-21
+
+Public **BETA**. States the scope of the four convenience features
+(top-level `await`, `--secrets`, header redaction, WebSocket closes) and
+how they compare with Playwright MCP and chrome-devtools-mcp: `--secrets`
+masks whole values only (removing the cut-mark heuristic, #181-#184),
+`evaluate_js` runs code over 64 KB or unparsed code once as written
+(#188), `get_network_logs` matches header names by exact name only (#189)
+and documents Firefox's popup WebSocket attach boundary (#185, #186), and
+`open_tab` takes the untouched start tab once (#187).
 
 ### Changed
 
