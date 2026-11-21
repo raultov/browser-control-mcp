@@ -1,0 +1,10 @@
+{
+ "number": 189,
+ "title": "get_network_logs shows server-sent Sec-Fetch-*/Sec-CH-* response header values unredacted",
+ "family": "headers",
+ "command": [
+  "repro_sec_response_headers.py"
+ ],
+ "bug_regex": "SHOWN without include_sensitive_headers",
+ "exit_on_bug": true
+}

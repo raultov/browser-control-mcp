@@ -1,0 +1,10 @@
+{
+ "number": 181,
+ "title": "--secrets: evaluate_js shows the start of a secret cut by the 100 000-character value limit",
+ "family": "secrets",
+ "command": [
+  "repro_secret_cut_eval.py"
+ ],
+ "bug_regex": "LEAK: secret prefix shown",
+ "exit_on_bug": true
+}

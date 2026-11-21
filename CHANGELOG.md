@@ -12,6 +12,13 @@ from a copy of its code: entries describe the differences from that release.
 
 ### Changed
 
+- The four features that go beyond what other browser MCP servers do
+  (top-level `await` in `evaluate_js`, `--secrets`, header redaction and
+  WebSocket closes in `get_network_logs`) now have a stated scope, in the
+  README's "Scope of the convenience features": inside it a failure is a
+  bug, outside it it is not. The README's comparison says what Playwright
+  MCP 0.0.86 and chrome-devtools-mcp 1.13.0 do in each (checked in their
+  sources and by running them).
 - `--secrets` masks **whole** values only. The rule added in 0.23.0 that
   guessed what a tool's cut had left of a value next to a `…` or `[...]`
   mark is removed: it missed cuts without a mark and cuts inside an escape
@@ -25,6 +32,11 @@ from a copy of its code: entries describe the differences from that release.
   second time, as an async function, when the error says `await is only
   valid` (#188; doing the same for `await is not defined`, a runtime
   error, would have run the code before the `await` twice).
+- On Firefox, `get_network_logs` documents what it cannot record of a tab
+  the page opened: the WebSocket frames sent, and the sockets that end,
+  before the debugger is attached to it (#185, #186). Firefox cannot
+  pause a new tab; a socket still open by then is listed closed when it
+  ends.
 
 ### Fixed
 
@@ -35,6 +47,13 @@ from a copy of its code: entries describe the differences from that release.
   allowlist. `Sec-CH-*` and `Sec-Fetch-*` were shown by prefix, so a
   server's own `Sec-Fetch-Token` response header was shown (#189); the
   fetch metadata and client hints browsers send are now listed one by one.
+
+### Development
+
+- `tests/regressions/fetch.py --state all` also snapshots the open
+  issues' reproductions, to check a fix before closing them; the six
+  issues above that are outside the stated scope are skipped by
+  `make regressions`, saying why.
 
 ## [0.23.0-beta.37] - 2026-11-20
 

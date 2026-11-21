@@ -30,9 +30,17 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
 
 # Reproductions whose check still fails by design: the issue was closed
-# with a documented deviation (see its closing comment). Reported as SKIP,
-# never run.
+# with a documented deviation, or as outside what the feature promises (the
+# README's "Scope of the convenience features"). Reported as SKIP, never run.
 CHANGED_BY_DESIGN = {
+    181: "--secrets masks whole values only: a value cut by evaluate_js's 100 000-character limit is a part of one",
+    182: "--secrets masks whole values only: an inspect_dom window chosen to end inside a value shows a part of one",
+    183: "--secrets masks whole values only: a value cut by inspect_dom's 100 000-character limit is a part of one",
+    185: "Firefox cannot pause a popup: its WebSocket frames before the debugger attaches are not recorded (documented)",
+    186: "Firefox cannot pause a popup: a socket that opens and ends before the debugger attaches is not recorded "
+         "(documented); the popup of a popup is recorded like any popup once attached",
+    188: "code over 64 KB runs once as written: the browser's error is the answer, with a note on the limit "
+         "(a second run after a runtime error would run the code before it twice)",
     105: "the redirected request is still sent under --local; the tab is checked where it ended and "
          "sent back to about:blank, which the script's 0-requests criterion does not see",
     108: "Firefox's offline emulation fails mocked routes; documented, and set_offline and mock_route say so",

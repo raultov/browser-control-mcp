@@ -1,0 +1,10 @@
+{
+ "number": 188,
+ "title": "evaluate_js over 64 KB: `await (x)` at top level fails with 'ReferenceError: await is not defined'",
+ "family": "top-level-await",
+ "command": [
+  "repro_tla_await_call.py"
+ ],
+ "bug_regex": "await is not defined",
+ "exit_on_bug": true
+}

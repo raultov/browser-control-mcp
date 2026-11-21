@@ -1,0 +1,10 @@
+{
+ "number": 187,
+ "title": "open_tab takes the start tab again: a second open_tab returns the same tab and navigates it",
+ "family": "other",
+ "command": [
+  "repro_open_tab_twice.py"
+ ],
+ "bug_regex": "BUG: both open_tab calls returned the same tab",
+ "exit_on_bug": true
+}

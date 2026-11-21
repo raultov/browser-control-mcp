@@ -10,7 +10,7 @@ regular expression `...`"). This writes the files as they are, and
 meta.json: {number, title, family, command, bug_regex, exit_on_bug}.
 
 Usage (from the repository root):
-    python3 -I tests/regressions/fetch.py [--repo raultov/browser-control-mcp]
+    python3 -I tests/regressions/fetch.py [--repo raultov/browser-control-mcp] [--state all]
 """
 
 import argparse
@@ -25,10 +25,10 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 
 # The families of the issues filed most often (see the CHANGELOG of 0.23).
 FAMILIES = {
-    "top-level-await": {135, 138, 139, 140, 142, 146, 147, 151, 155, 156, 157, 162, 169, 179},
-    "headers": {144, 149, 161, 168, 175},
-    "secrets": {109, 114, 118, 126, 129, 137, 145, 148, 150, 160},
-    "websockets": {154, 158, 163, 164, 167, 171, 172, 173, 174, 176, 178},
+    "top-level-await": {135, 138, 139, 140, 142, 146, 147, 151, 155, 156, 157, 162, 169, 179, 188},
+    "headers": {144, 149, 161, 168, 175, 189},
+    "secrets": {109, 114, 118, 126, 129, 137, 145, 148, 150, 160, 181, 182, 183, 184},
+    "websockets": {154, 158, 163, 164, 167, 171, 172, 173, 174, 176, 178, 185, 186},
 }
 
 FILE = re.compile(r"`([\w.-]+)`:\s*\n\s*```(\w*)\n(.*?)```", re.S)
@@ -86,14 +86,16 @@ def snapshot(issue):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--repo", default="raultov/browser-control-mcp")
+    parser.add_argument("--state", default="closed", choices=["closed", "all"],
+                        help="all: also the open issues, to check a fix before closing them")
     args = parser.parse_args()
     listed = subprocess.run(
-        ["gh", "api", "--paginate", f"repos/{args.repo}/issues?state=closed&per_page=100",
+        ["gh", "api", "--paginate", f"repos/{args.repo}/issues?state={args.state}&per_page=100",
          "--jq", ".[] | select(.pull_request == null) | {number, title, body}"],
         check=True, capture_output=True, text=True).stdout
     issues = [json.loads(line) for line in listed.splitlines() if line.strip()]
     saved = [i["number"] for i in issues if snapshot(i)]
-    print("%d closed issues, %d with a reproduction saved" % (len(issues), len(saved)))
+    print("%d %s issues, %d with a reproduction saved" % (len(issues), args.state, len(saved)))
     return 0
 
 

@@ -1,0 +1,10 @@
+{
+ "number": 184,
+ "title": "--secrets: masking a reply full of cut marks with a multiply-encoded escape takes ~15 s",
+ "family": "secrets",
+ "command": [
+  "repro_secret_marks_slow.py"
+ ],
+ "bug_regex": "SLOW: masking",
+ "exit_on_bug": true
+}

@@ -29,7 +29,11 @@ the current sources, `@playwright/mcp` 0.0.84 and `chrome-devtools-mcp`
 156.0.8078.47 (headless, Linux) with `tests/compare/bench.py`. Every
 outcome was checked in the page, not taken from the reply. Tokens are
 estimated as characters / 4 for every server. The HTTP authentication row
-comes from the `tests/compare` scenarios.
+comes from the `tests/compare` scenarios. The rows on secrets, top-level
+`await`, credential headers and WebSockets were checked on 2026-11-21, in
+the sources and by running them, against `@playwright/mcp` 0.0.86 and
+`chrome-devtools-mcp` 1.13.0; what browser-control promises there, and
+what it does not, is in [Scope of the convenience features](#scope-of-the-convenience-features).
 
 **What each one can do**
 
@@ -47,7 +51,10 @@ comes from the `tests/compare` scenarios.
 | Mock requests, offline mode | ✓ | ✓ | offline only |
 | PDF | ✓ file or inline | ✓ file | ✗ |
 | Cookies and web storage | ✓ values hidden unless asked | ✓ values shown | ✗ |
-| Secrets masked in output (`--secrets`) | ✓ | ✓ | ✗ |
+| Secrets masked in output (`--secrets`) | **✓ a whole value, as written and JSON-, HTML- or URL-encoded** (up to six layers) | ✓ the literal text only: a value with `"` or `&` shows once the reply is JSON-, HTML- or URL-encoded | ✗ |
+| `await` at the top level of evaluated code | **✓ statements as in a console** (`const r = await fetch(u); r.status`), the last expression's value returned | ✗ takes a function (`async () => { ... }`) | ✗ takes a function; `format: "script"` runs statements, without `await` |
+| Credential headers in a request's details (`Authorization`, `Cookie`, `X-Api-Key`...) | **hidden by default**: only the standard headers on an allowlist of exact names show their value | shown | shown; `--redactNetworkHeaders` (off by default) hides them the same way |
+| WebSocket frames and closes | **✓ per connection**: the document's, its frames', its workers' and its popups' (a Firefox popup's from when the debugger attaches) | ✗ not listed | ✗ not listed |
 | Performance | vitals + insights (INP, LCP breakdown and discovery, layout shifts, render-blocking, long scripts, DOM size, images, third parties; on Chrome: forced reflows, unused JS/CSS, trace export `.json`/`.gz`, DOM/listener counters after GC); CPU and network throttling on Chrome | trace file | trace + insights; CPU and network throttling |
 | Page audit (accessibility, SEO, best practices) | ✓ `audit_page`, on Chrome and Firefox: failing elements with snapshot refs, no bundle; `lighthouse_report`: Lighthouse-style 0-100 scores of a cold mobile or desktop load (performance from a trace, with Speed Index, on Chrome) and the points each failing check costs | ✗ | Lighthouse, Chrome only: scores, failing elements with selectors, reports saved to disk |
 | Heap snapshots, CSS styles, screencast | ✗ | video, tracing | ✓ |
@@ -157,7 +164,7 @@ see the note.
 | `web_storage` | ✓ | ✓ | `storage` group; `get` / `set` / `delete` / `clear` on the page's `localStorage` or `sessionStorage`; values hidden unless `show_values: true` |
 | `get_console_logs` | ✓ | ✓ | one line per message, oldest first: `[level] text @ url:line` (lines from 1), objects and arrays previewed as the console shows them (`{n: 1}`, `[1, 2, 3]`), repeats in a row folded (`[x3]`), uncaught errors marked with up to 5 stack lines indented (an unhandled rejection `Uncaught (in promise) …`; Firefox: with its debugger port), `console.count` and the timers with their count and time, and Firefox's own messages (a rejected cookie, a CSP report) not marked uncaught; `include_details: true` gives the JSON with every field; a message keeps at most 10 000 characters; Firefox: page errors, CSS warnings and platform messages need the debugger port |
 | `get_issues` | ✓ | partial | the problems the browser diagnosed that the console hides or words vaguely, one line each, oldest first: `[code] title: summary @ url [xN]` (a cookie blocked or warned and why, a CORS or Content-Security-Policy block, mixed content, a deprecated feature...); `code` filters, `include_details` gives the browser's details, `clear` removes what was returned. Chrome: its DevTools Issues panel (`Audits` domain, every issue code, in the tab and its frames of another origin), cleared when the tab moves to another site; the common codes and form problems have a title, `N` counts distinct reports (Chrome sends some twice with the same details: counted once), and the elements an issue of the tab is about follow its line as `selector [ref=eN]` (at most 10; in `include_details`, `elements` with ref, selector and opening tag). Firefox: no Issues panel; its security console messages read as `CookieIssue`, `ContentSecurityPolicyIssue`, `MixedContentIssue`, `CorsIssue` or `SecurityIssue`, and its deprecation warnings as `DeprecationIssue` (they need the debugger port) |
-| `get_network_logs` | ✓ | ✓ | the tab's requests, its frames' and its dedicated workers', a popup's from its first (Chrome pauses each popup until its requests are recorded); one line per request, oldest first (`id METHOD url => status [type]`, or `failed: <reason>` / `pending`; a redirected request says `(after N redirects from <first URL>)`, and `url_filter` matches any hop; a CORS block says `blocked by CORS: <reason>`; a request the page canceled after its response, such as a closed `EventSource`, keeps its status with `canceled by the page`), then one per WebSocket frame (payload preview) and, after a connection's frames (also when it has none), `id closed <url>` once it closed or `id failed <url>: <error>` after a frame error, with Firefox's close code and reason (`: code 1000 bye`; Chrome gives none, and reports no close for a connection the page left open when it navigated away: it is `closed <url>: the page navigated away`, nor for a socket of a frame of another origin when the frame goes: it is `closed <url>: the frame was removed or navigated away` (also when the frame navigates within its origin); not listed with `ws_content_filter`; `clear` forgets a closed connection with no frame left; the 100 newest connections of a tab are kept, and the frames of an older one, forgotten, are dropped with it, later ones too); `request_id` shows one request's headers and body, `include_details: true` every request's as JSON (a binary body has `response_body_encoding: "base64"`; bodies at most 64 000 characters; a body over 2 MB is not fetched and `response_body_omitted` gives its size; `redirects` lists each hop with its `status` and `location`; a WebSocket payload keeps 64 000, `payload_len` is the whole; `websocket_closes` gives each ended connection's `closed_at` (Unix ms, when the server saw it), `close_code`, `close_reason`, `was_clean` and `error`, when set); the browser's own requests (`chrome://`, `devtools://`, `data:`, `about:`, extensions) are not logged; a note counts the responses with no body because they are still loading or the page never read them (an open stream; on Chrome, a `fetch` whose body the page did not consume); Firefox: WebSocket frames need the debugger port, a frame's sockets (same-origin too) are listed and, as Firefox reports no close for them, `closed <url>: the frame was removed or navigated away` once the frame goes, a tab the page opens (a popup) is watched as it opens, the sockets of a document that navigated to another site are `closed <url>: the page navigated away` when Firefox reports no close for them, the socket of a terminated dedicated worker is closed once both close frames are exchanged (Firefox reports no close for it; when its server never answers the close frame it stays listed open, as on both browsers a socket the page closed does until its connection ends), a socket that fails before it opens is listed under the id of the close frame it sent (or its handshake's request id) with its handshake's URL, and one whose handshake the server refused (or that failed) as `closed <url>: the handshake was refused: HTTP 403 Forbidden` (or `the handshake failed: <error>`), a fetch or XHR has the type `fetch` / `xmlhttprequest` and a beacon none (Firefox gives no type for it) |
+| `get_network_logs` | ✓ | ✓ | the tab's requests, its frames' and its dedicated workers', a popup's from its first (Chrome pauses each popup until its requests are recorded; on Firefox a popup's WebSocket frames and closes are recorded from the moment the debugger is attached to it, some milliseconds after it opens: Firefox cannot pause a new tab, so the frames of a socket opened at once, or a socket that opens and ends at once, are not listed); one line per request, oldest first (`id METHOD url => status [type]`, or `failed: <reason>` / `pending`; a redirected request says `(after N redirects from <first URL>)`, and `url_filter` matches any hop; a CORS block says `blocked by CORS: <reason>`; a request the page canceled after its response, such as a closed `EventSource`, keeps its status with `canceled by the page`), then one per WebSocket frame (payload preview) and, after a connection's frames (also when it has none), `id closed <url>` once it closed or `id failed <url>: <error>` after a frame error, with Firefox's close code and reason (`: code 1000 bye`; Chrome gives none, and reports no close for a connection the page left open when it navigated away: it is `closed <url>: the page navigated away`, nor for a socket of a frame of another origin when the frame goes: it is `closed <url>: the frame was removed or navigated away` (also when the frame navigates within its origin); not listed with `ws_content_filter`; `clear` forgets a closed connection with no frame left; the 100 newest connections of a tab are kept, and the frames of an older one, forgotten, are dropped with it, later ones too); `request_id` shows one request's headers and body, `include_details: true` every request's as JSON (a binary body has `response_body_encoding: "base64"`; bodies at most 64 000 characters; a body over 2 MB is not fetched and `response_body_omitted` gives its size; `redirects` lists each hop with its `status` and `location`; a WebSocket payload keeps 64 000, `payload_len` is the whole; `websocket_closes` gives each ended connection's `closed_at` (Unix ms, when the server saw it), `close_code`, `close_reason`, `was_clean` and `error`, when set); the browser's own requests (`chrome://`, `devtools://`, `data:`, `about:`, extensions) are not logged; a note counts the responses with no body because they are still loading or the page never read them (an open stream; on Chrome, a `fetch` whose body the page did not consume); Firefox: WebSocket frames need the debugger port, a frame's sockets (same-origin too) are listed and, as Firefox reports no close for them, `closed <url>: the frame was removed or navigated away` once the frame goes, a tab the page opens (a popup) is watched as it opens (see above for what comes before), the sockets of a document that navigated to another site are `closed <url>: the page navigated away` when Firefox reports no close for them, the socket of a terminated dedicated worker is closed once both close frames are exchanged (Firefox reports no close for it; when its server never answers the close frame it stays listed open, as on both browsers a socket the page closed does until its connection ends), a socket that fails before it opens is listed under the id of the close frame it sent (or its handshake's request id) with its handshake's URL, and one whose handshake the server refused (or that failed) as `closed <url>: the handshake was refused: HTTP 403 Forbidden` (or `the handshake failed: <error>`), a fetch or XHR has the type `fetch` / `xmlhttprequest` and a beacon none (Firefox gives no type for it) |
 | `mock_route` | ✓ | ✓ | `network` group; requests whose URL matches a glob (`*`, `?`, `\` escapes) get a mocked `status`, `body` (text, at most 1 MB), `content_type` and `headers` without reaching the network; the latest matching route wins; at most 50 routes per tab, kept until `remove_route` or the tab closes (Chrome `Fetch`, not while `enable_proxy_auth` is active; Firefox a `network` intercept) |
 | `list_routes` | ✓ | ✓ | `network` group; the tab's routes with the `hits` each answered |
 | `remove_route` | ✓ | ✓ | `network` group; one route by id, or all |
@@ -643,6 +650,47 @@ incompatible:
 | `evaluate_on_call_frame` | Chrome: raw `RemoteObject` (exceptions as success); Firefox: bare value | the `evaluate_js` shape; exceptions are errors (`Evaluation threw: ...`) |
 | `get_custom_events` | `Found N custom events. Captured events: [...]`, the oldest events | `{events, total, truncated}`, the newest `limit` events; `clear` removes the returned ones |
 | `get_console_logs` | a JSON array; `clear` emptied the whole buffer | `{messages, total, truncated, notes?}`, at most `limit` (200) messages; `clear` removes the returned ones; the buffer is cleared on cross-site navigation |
+
+## Scope of the convenience features
+
+Four things this server does go beyond passing the agent's request to the
+browser (see the [comparison](#comparison-with-playwright-mcp-and-chrome-devtools-mcp):
+the other servers do not do them, or do less). Each is a convenience with
+a stated scope. Inside it, a failure is a bug; outside it, it is not.
+
+- **`evaluate_js` runs the agent's code.** A syntax error, a runtime error
+  or a rejected promise is returned as the browser reports it, with its
+  line and column. Top-level `await` works for code of up to 64 KB that
+  parses as JavaScript: it runs inside an async function (so its `var`
+  and function declarations are not globals) and the last expression
+  statement's value is returned. Longer code, and code the parser refuses,
+  runs once as written; nothing is retried on what an error says.
+- **`--secrets` masks whole values.** A value of 4 characters or more that
+  appears whole in a tool's result or error, as written or under the
+  encodings listed in the [security notes](#security-notes) (up to six
+  layers), is shown as `<secret:NAME>`; masking a reply of 100 000
+  characters adds under 3 seconds. Not masked: a part of a value (a
+  result cut by a size limit, the window `inspect_dom` was asked for,
+  `slice()`, a value split across elements, requests or replies); a value
+  transformed any other way (base64, hex, reversed, another case, hashed,
+  an encoding not listed, more than six layers); what is not text
+  (screenshots, PDFs, videos, saved files). It keeps known values from
+  reaching the agent by accident; it is not a security boundary.
+- **Header redaction in `get_network_logs` goes by name.** A header's value
+  is shown only when its exact name is on the allowlist; every other
+  value is replaced unless `include_sensitive_headers: true`. A harmless
+  header that is not on the list is hidden too. What the value of a listed
+  header holds (a token a server puts in a `Location` URL) is not looked
+  at: URLs and response bodies are returned as they are, and `--secrets`
+  masks a known value in them.
+- **WebSocket frames and closes in `get_network_logs`.** For a socket of a
+  tab the server already watches (its document, its frames, its dedicated
+  workers): its frames, and one `closed` or `failed` line once it ends. On
+  Firefox, what happens in a tab the page opened (a popup) before the
+  debugger is attached to it is not recorded (the first frames of a
+  socket opened at once, a handshake refused at once): Firefox cannot
+  pause a new tab. A socket still open by then is listed closed when it
+  ends.
 
 ## Limitations and TODO
 

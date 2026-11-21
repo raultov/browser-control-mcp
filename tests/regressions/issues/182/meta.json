@@ -1,0 +1,10 @@
+{
+ "number": 182,
+ "title": "--secrets: inspect_dom context cut inside an &amp; / \\&quot; escape shows the secret's start or end",
+ "family": "secrets",
+ "command": [
+  "repro_secret_escape_cut.py"
+ ],
+ "bug_regex": "LEAK in [ABC]",
+ "exit_on_bug": true
+}

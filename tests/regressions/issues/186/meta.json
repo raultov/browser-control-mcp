@@ -1,0 +1,10 @@
+{
+ "number": 186,
+ "title": "Firefox: get_network_logs misses a popup's refused WebSocket and everything from a popup's popup",
+ "family": "websockets",
+ "command": [
+  "repro_ff_popup_ws.py"
+ ],
+ "bug_regex": "BUG: expected exactly 1 closed/failed line",
+ "exit_on_bug": true
+}

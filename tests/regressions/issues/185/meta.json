@@ -1,0 +1,10 @@
+{
+ "number": 185,
+ "title": "Firefox: get_network_logs drops a popup's first WebSocket frames (sent before the debugger attaches)",
+ "family": "websockets",
+ "command": [
+  "repro_ff_popup_first_frames.py"
+ ],
+ "bug_regex": "BUG: the popup's first WebSocket frames are missing",
+ "exit_on_bug": true
+}

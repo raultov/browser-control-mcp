@@ -1,0 +1,10 @@
+{
+ "number": 183,
+ "title": "--secrets: inspect_dom shows the start of a secret cut by the 100 000-character document limit",
+ "family": "secrets",
+ "command": [
+  "repro_secret_cut_dom.py"
+ ],
+ "bug_regex": "LEAK: secret prefix shown",
+ "exit_on_bug": true
+}
