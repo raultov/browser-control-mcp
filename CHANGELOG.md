@@ -8,7 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 `browser-control-mcp` is the successor of `chrome-debug-mcp` 1.5.6 and starts
 from a copy of its code: entries describe the differences from that release.
 
-## [Unreleased]
+## [0.25.0-beta.39] - 2026-11-21
+
+Public **BETA**. Two features and two fixes. `mock_route` with
+`upstream: true` lets a request reach the real server and changes the
+status and headers of its response (#193); `get_console_logs` on Chrome
+shows an uncaught error's `cause` chain (#192). `--secrets` masks a reply
+of overlapping secrets under a six-times-encoded escape in milliseconds
+instead of seconds (#191), and `open_tab` on Chrome no longer returns the
+same tab twice after the last tab was closed (#190).
 
 ### Added
 
