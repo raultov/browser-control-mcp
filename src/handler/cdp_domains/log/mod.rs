@@ -75,6 +75,9 @@ pub(crate) struct LogState {
     /// are dropped. At most `frame_watch::MAX_WATCHED` (one per watched
     /// target).
     workers: Vec<String>,
+    /// Uncaught errors whose `cause` chain is being read (Chrome, see
+    /// [`CauseLookup`]): `get_console_logs` waits for them, bounded.
+    pub(crate) causes_pending: usize,
 }
 
 impl LogState {
@@ -184,11 +187,181 @@ impl LogState {
     pub(crate) fn take_cleared_note(&mut self) -> Option<String> {
         self.cleared_note.take()
     }
+
+    /// Adds `causes`, one `Caused by:` line each, to the uncaught error
+    /// `lookup` was made for, when it is still in the buffer as it was
+    /// pushed (a navigation may have cleared it, `clear` removed it, or it
+    /// was dropped for a newer one: the causes are then dropped too).
+    pub(crate) fn add_causes(&mut self, lookup: &CauseLookup, causes: &[String]) {
+        let entry = self.messages.iter_mut().rev().find(|m| {
+            m.source == "exception"
+                && m.timestamp.to_bits() == lookup.timestamp.to_bits()
+                && m.text == lookup.text
+        });
+        if let Some(entry) = entry {
+            let lines: String = causes.iter().map(|c| format!("\n{CAUSED_BY}{c}")).collect();
+            entry.text =
+                crate::util::text::capped(&format!("{}{lines}", entry.text), CONSOLE_TEXT_MAX);
+        }
+    }
 }
 
-pub(crate) async fn process_log_event(event: &WsResponse, state: &Arc<Mutex<LogState>>) {
+/// How each link of an uncaught error's `cause` chain starts, in its text.
+pub(crate) const CAUSED_BY: &str = "Caused by: ";
+
+/// Most links of a `cause` chain read: a chain may loop.
+const MAX_CAUSES: usize = 10;
+
+/// How long one cause chain is read for: a busy page answers late, and the
+/// error then keeps its text without its causes.
+const CAUSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// How long `get_console_logs` waits at most for the cause chains still
+/// being read (see [`causes_read`]).
+pub(crate) const CAUSES_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// How many cause chains wait to be read: a page throwing in a loop must
+/// not queue without bound (the ones over it keep their text as is).
+const CAUSE_QUEUE: usize = 64;
+
+/// The `cause` chain of the error the function is called on, as text:
+/// each link's stack (an error) or a short preview (any other value), at
+/// most `max` links ([`MAX_CAUSES`]), a loop ended by `[Circular]`. It reads `cause`
+/// through its property descriptor, so no getter of the page runs for it
+/// (a `cause` getter is shown `(...)`, as a preview shows one).
+const CAUSE_CHAIN: &str = r#"function (max) {
+  const CHARS = 2000;
+  const isObject = v => v !== null && (typeof v === 'object' || typeof v === 'function');
+  const cut = s => s.length > CHARS ? s.slice(0, CHARS) + '…' : s;
+  const cause = o => {
+    try { return Object.getOwnPropertyDescriptor(o, 'cause') || null; } catch (_) { return null; }
+  };
+  const brief = v => typeof v === 'string' ? "'" + (v.length > 100 ? v.slice(0, 100) + '…' : v) + "'"
+    : Array.isArray(v) ? 'Array(' + v.length + ')' : isObject(v) ? 'Object' : String(v);
+  const text = v => {
+    try {
+      if (Object.prototype.toString.call(v) === '[object Error]') return String(v.stack || v);
+      if (typeof v === 'string') return v;
+      if (typeof v === 'function') return 'function ' + (v.name || '(anonymous)');
+      if (!isObject(v)) return String(v);
+      const array = Array.isArray(v), items = [];
+      for (const key of Object.getOwnPropertyNames(v)) {
+        const d = Object.getOwnPropertyDescriptor(v, key);
+        if (!d || !d.enumerable) continue;
+        if (items.length === 5) { items.push('…'); break; }
+        const value = 'value' in d ? brief(d.value) : '(...)';
+        items.push(array ? value : key + ': ' + value);
+      }
+      return array ? '[' + items.join(', ') + ']' : '{' + items.join(', ') + '}';
+    } catch (_) { return '[unreadable]'; }
+  };
+  const chain = [], seen = new Set([this]);
+  for (let at = this; isObject(at);) {
+    const found = cause(at);
+    if (!found) break;
+    if (!('value' in found)) { chain.push('(...)'); break; }
+    if (chain.length === max) { chain.push('… (the chain goes on)'); break; }
+    if (seen.has(found.value)) { chain.push('[Circular]'); break; }
+    seen.add(found.value);
+    chain.push(cut(text(found.value)));
+    at = found.value;
+  }
+  return chain;
+}"#;
+
+/// An uncaught error whose `cause` chain is to be read (Chrome): the
+/// error's remote object, and how to find its entry in the buffer again.
+/// V8's description of an error (its stack) leaves the cause out, and the
+/// object cannot be reached once the event is gone, so the chain is read
+/// as the error comes, by a task of its own: the listener's ordered stream
+/// is never held up.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct CauseLookup {
+    object_id: String,
+    text: String,
+    timestamp: f64,
+}
+
+/// The lookup of `message`'s cause chain, for an uncaught error Chrome
+/// gave a remote object for (`Runtime.exceptionThrown`); none for a text
+/// already cut (the causes would be cut away).
+fn cause_lookup(method: &str, params: &Value, message: &ConsoleMessage) -> Option<CauseLookup> {
+    let exception = params.pointer("/exceptionDetails/exception")?;
+    let error =
+        method == "Runtime.exceptionThrown" && str_field(exception, "subtype") == Some("error");
+    let fits = message.text.chars().count() <= CONSOLE_TEXT_MAX;
+    let object_id = str_field(exception, "objectId").filter(|_| error && fits)?;
+    Some(CauseLookup {
+        object_id: object_id.to_string(),
+        text: message.text.clone(),
+        timestamp: message.timestamp,
+    })
+}
+
+/// Reads the cause chain of each error `lookups` names in the page of
+/// `target`, and adds it to its entry (see [`LogState::add_causes`]).
+async fn read_causes(
+    target: crate::handler::cdp_domains::cdp_target::CdpTarget,
+    state: Arc<Mutex<LogState>>,
+    mut lookups: tokio::sync::mpsc::Receiver<CauseLookup>,
+) {
+    while let Some(lookup) = lookups.recv().await {
+        let read = tokio::time::timeout(CAUSE_TIMEOUT, cause_chain(&target, &lookup.object_id));
+        let causes = read.await.ok().flatten().unwrap_or_default();
+        let mut state = state.lock().await;
+        state.causes_pending = state.causes_pending.saturating_sub(1);
+        if !causes.is_empty() {
+            state.add_causes(&lookup, &causes);
+        }
+    }
+}
+
+/// The cause chain of the error `object_id` ([`CAUSE_CHAIN`]); `None` when
+/// the page cannot answer (it navigated, it is paused or blocked).
+async fn cause_chain(
+    target: &crate::handler::cdp_domains::cdp_target::CdpTarget,
+    object_id: &str,
+) -> Option<Vec<String>> {
+    let params = serde_json::json!({
+        "objectId": object_id,
+        "functionDeclaration": CAUSE_CHAIN,
+        "arguments": [{"value": MAX_CAUSES}],
+        "returnByValue": true,
+        "silent": true,
+    });
+    let reply = target
+        .send_raw_command("Runtime.callFunctionOn", params)
+        .await
+        .ok()?;
+    let links = reply.result?.pointer("/result/value")?.as_array()?.clone();
+    Some(
+        links
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::to_string)
+            .collect(),
+    )
+}
+
+/// Waits until no cause chain is being read in `state`, at most `wait`, so
+/// a reply right after an uncaught error shows its causes (see
+/// [`CauseLookup`]).
+pub(crate) async fn causes_read(state: &Arc<Mutex<LogState>>, wait: std::time::Duration) {
+    let deadline = tokio::time::Instant::now() + wait;
+    while state.lock().await.causes_pending > 0 && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+}
+
+/// Applies one event of the tab's ordered stream to its console state.
+/// Returns the lookup of an uncaught error's cause chain to read, if any
+/// (see [`CauseLookup`]).
+pub(crate) async fn process_log_event(
+    event: &WsResponse,
+    state: &Arc<Mutex<LogState>>,
+) -> Option<CauseLookup> {
     let (Some(method), Some(params)) = (event.method.as_deref(), &event.params) else {
-        return;
+        return None;
     };
     if let Some(url) = main_frame_commit(method, params) {
         let mut state = state.lock().await;
@@ -208,11 +381,14 @@ pub(crate) async fn process_log_event(event: &WsResponse, state: &Arc<Mutex<LogS
             state.note_same_document(url);
         }
     } else if let Some(message) = console_message(method, params) {
+        let lookup = cause_lookup(method, params, &message);
         let mut state = state.lock().await;
         if !state.is_watched_worker_copy(&message) {
             state.push_message(message);
+            return lookup;
         }
     }
+    None
 }
 
 /// A console level in the vocabulary both browsers report, lowercase:
@@ -439,11 +615,30 @@ pub(crate) fn start_log_listener(
     // a navigation must clear the buffer before the new page's first
     // messages, which separate per-domain tasks would not guarantee.
     let mut handles = ListenerHandles::default();
+    let (lookups, queued) = tokio::sync::mpsc::channel(CAUSE_QUEUE);
+    handles.push(tokio::spawn(read_causes(
+        target.clone(),
+        state.clone(),
+        queued,
+    )));
     handles.push(spawn_state_listener(
         target,
         "",
         state,
-        |event, state| async move { process_log_event(&event, &state).await },
+        move |event, state| {
+            let lookups = lookups.clone();
+            async move {
+                let Some(lookup) = process_log_event(&event, &state).await else {
+                    return;
+                };
+                // Counted first: the reader may be done before the send returns.
+                state.lock().await.causes_pending += 1;
+                if lookups.try_send(lookup).is_err() {
+                    let mut state = state.lock().await;
+                    state.causes_pending = state.causes_pending.saturating_sub(1);
+                }
+            }
+        },
     ));
     handles
 }
@@ -452,6 +647,176 @@ pub(crate) fn start_log_listener(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// `Runtime.exceptionThrown` of an error `text` with remote object
+    /// `object_id`.
+    fn thrown(text: &str, object_id: Option<&str>, subtype: &str) -> Value {
+        let mut exception = json!({"type": "object", "subtype": subtype, "description": text});
+        if let Some(id) = object_id {
+            exception["objectId"] = json!(id);
+        }
+        json!({"timestamp": 7.0, "exceptionDetails": {"text": "Uncaught", "exception": exception}})
+    }
+
+    /// #192: the cause chain is read for an uncaught error Chrome gave a
+    /// remote object for; not for a thrown value that is not an error, an
+    /// error without an object, a console message, nor a text already cut.
+    #[test]
+    fn the_causes_of_uncaught_errors_are_looked_up() {
+        let message = |params: &Value| console_message("Runtime.exceptionThrown", params).unwrap();
+        let error = thrown("Error: outer\n    at f (a.js:1:1)", Some("o-1"), "error");
+        let lookup = cause_lookup("Runtime.exceptionThrown", &error, &message(&error));
+        assert_eq!(
+            lookup,
+            Some(CauseLookup {
+                object_id: "o-1".into(),
+                text: "Error: outer\n    at f (a.js:1:1)".into(),
+                timestamp: 7.0
+            })
+        );
+        let long = thrown(&"x".repeat(CONSOLE_TEXT_MAX + 1), Some("o-2"), "error");
+        for params in [
+            thrown("str", Some("o-3"), "string"),
+            thrown("Error: e", None, "error"),
+            long,
+        ] {
+            assert_eq!(
+                cause_lookup("Runtime.exceptionThrown", &params, &message(&params)),
+                None
+            );
+        }
+        let logged = json!({"type": "error", "timestamp": 1.0, "args": [{"type": "object", "subtype": "error", "objectId": "o-4"}]});
+        let call = console_message("Runtime.consoleAPICalled", &logged).unwrap();
+        assert_eq!(
+            cause_lookup("Runtime.consoleAPICalled", &logged, &call),
+            None
+        );
+    }
+
+    /// #192: the causes read are added to the error they were read for,
+    /// one `Caused by:` line each, once; an error the buffer no longer has
+    /// (a navigation to another site cleared it) gets none, and a second
+    /// error with the same text gets its own.
+    #[test]
+    fn causes_are_added_to_their_own_error() {
+        let mut state = LogState::default();
+        state.on_document_committed("https://a.test/", None);
+        let error = thrown("Error: outer", Some("o-1"), "error");
+        for _ in 0..2 {
+            state.push_message(console_message("Runtime.exceptionThrown", &error).unwrap());
+        }
+        let message = console_message("Runtime.exceptionThrown", &error).unwrap();
+        let lookup = cause_lookup("Runtime.exceptionThrown", &error, &message).unwrap();
+        // When the causes of each come
+        state.add_causes(
+            &lookup,
+            &["TypeError: inner\n    at g".into(), "'why'".into()],
+        );
+        state.add_causes(&lookup, &["RangeError: other".into()]);
+        // Then each error has its own
+        let texts: Vec<&str> = state.messages.iter().map(|m| m.text.as_str()).collect();
+        assert_eq!(
+            texts,
+            [
+                "Error: outer\nCaused by: RangeError: other",
+                "Error: outer\nCaused by: TypeError: inner\n    at g\nCaused by: 'why'"
+            ]
+        );
+        // And causes for an error cleared by a navigation are dropped
+        state.on_document_committed("https://b.test/", None);
+        state.push_message(console_message("Runtime.exceptionThrown", &error).unwrap());
+        state.on_document_committed("https://c.test/", None);
+        state.add_causes(&lookup, &["late".into()]);
+        assert!(state.messages.iter().all(|m| !m.text.contains("late")));
+        // And a long chain is cut with the message
+        state.push_message(console_message("Runtime.exceptionThrown", &error).unwrap());
+        state.add_causes(&lookup, &["y".repeat(2 * CONSOLE_TEXT_MAX)]);
+        let last = &state.messages.back().unwrap().text;
+        assert!(
+            last.starts_with("Error: outer\nCaused by: yyy") && last.contains("[cut: the first")
+        );
+    }
+
+    /// #192: the listener reads an uncaught error's cause chain from the
+    /// page (`Runtime.callFunctionOn` on the error, by value, silent, with
+    /// the chain's cap) without holding up its stream, and the error shows
+    /// it; a reader waits for it, bounded.
+    #[tokio::test]
+    async fn the_listener_reads_the_cause_chain() {
+        use crate::handler::cdp_domains::tests::spawn_recording_mock;
+        // Given a page whose error has a cause
+        let mock = spawn_recording_mock().await;
+        mock.respond_with("Runtime.callFunctionOn", |_| {
+            json!({"result": {"result": {"type": "object", "value": ["TypeError: inner\n    at g (b.js:2:2)"]}}})
+        });
+        let address = format!("127.0.0.1:{}", mock.http_port);
+        let browser =
+            cdp_browser_lite::BrowserClient::connect(&address, std::time::Duration::from_secs(2))
+                .await
+                .unwrap();
+        let tab = browser.attach("T-page-1").await.unwrap();
+        let target = crate::handler::cdp_domains::cdp_target::CdpTarget::tab(tab.clone());
+        let state = Arc::new(Mutex::new(LogState::default()));
+        let _listening = start_log_listener(&target, state.clone());
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        // When the page throws it uncaught
+        let error = thrown("Error: outer\n    at f (a.js:1:1)", Some("o-9"), "error");
+        mock.emit("Runtime.exceptionThrown", error, Some(tab.session_id()));
+        for _ in 0..100 {
+            if !state.lock().await.messages.is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        causes_read(&state, std::time::Duration::from_secs(2)).await;
+        // Then its entry ends with its cause, read as asked
+        let text = state.lock().await.messages[0].text.clone();
+        assert_eq!(
+            text,
+            "Error: outer\n    at f (a.js:1:1)\nCaused by: TypeError: inner\n    at g (b.js:2:2)"
+        );
+        let call = &mock.commands_named("Runtime.callFunctionOn")[0].params;
+        assert_eq!(
+            (
+                &call["objectId"],
+                &call["returnByValue"],
+                &call["silent"],
+                &call["arguments"]
+            ),
+            (
+                &json!("o-9"),
+                &json!(true),
+                &json!(true),
+                &json!([{"value": MAX_CAUSES}])
+            )
+        );
+        assert_eq!(call["functionDeclaration"], CAUSE_CHAIN);
+        assert_eq!(state.lock().await.causes_pending, 0);
+    }
+
+    /// #192: a reader waits for the cause chains being read, and no longer
+    /// than it was told.
+    #[tokio::test]
+    async fn readers_wait_for_causes_a_bounded_time() {
+        let state = Arc::new(Mutex::new(LogState::default()));
+        state.lock().await.causes_pending = 1;
+        let reader = state.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+            reader.lock().await.causes_pending = 0;
+        });
+        let started = std::time::Instant::now();
+        causes_read(&state, std::time::Duration::from_secs(2)).await;
+        assert!(started.elapsed() >= std::time::Duration::from_millis(40));
+        state.lock().await.causes_pending = 1;
+        let started = std::time::Instant::now();
+        causes_read(&state, std::time::Duration::from_millis(60)).await;
+        let waited = started.elapsed();
+        assert!(
+            waited >= std::time::Duration::from_millis(60)
+                && waited < std::time::Duration::from_secs(1)
+        );
+    }
 
     /// ISSUE-75 (Chrome): a watched worker's console comes from its own
     /// session (with its real level); the tab's `Log` copy of it (`source:

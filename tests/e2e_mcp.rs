@@ -2568,6 +2568,38 @@ mod e2e {
         ]
     }
 
+    /// The worker steps, then the error cause steps.
+    fn worker_and_cause_steps(instance: &str, chrome: bool) -> Vec<Step> {
+        [worker_steps(instance), error_cause_steps(instance, chrome)].concat()
+    }
+
+    /// #192: an uncaught error's `cause` chain shows in get_console_logs on
+    /// Chrome; Firefox reports the error without it (documented).
+    fn error_cause_steps(instance: &str, chrome: bool) -> Vec<Step> {
+        let i = json!(instance);
+        let throw = "setTimeout(() => { throw new Error('outer192', {cause: new TypeError('inner192')}) }); 1";
+        let expected = if chrome {
+            "Caused by: TypeError: inner192"
+        } else {
+            "Uncaught Error: outer192"
+        };
+        vec![
+            (
+                "#192 throw an error with a cause",
+                "evaluate_js",
+                json!({"instance_id": i, "expression": throw}),
+                "",
+            ),
+            ("#192 wait for the error", "sleep", json!({}), ""),
+            (
+                "#192 the error and its cause",
+                "get_console_logs",
+                json!({"instance_id": i}),
+                expected,
+            ),
+        ]
+    }
+
     /// ISSUE-78: a redirected request is found by its first URL and says
     /// it was redirected; a request body is kept (Firefox lost it); a CORS
     /// block names its reason (Chrome said only net::ERR_FAILED, Firefox
@@ -4053,7 +4085,7 @@ mod e2e {
             observation_steps("e2e"),
             memory_steps("e2e"),
             network_steps("e2e", browser == "chrome"),
-            worker_steps("e2e"),
+            worker_and_cause_steps("e2e", browser == "chrome"),
             request_detail_steps("e2e"),
             websocket_steps("e2e", &base),
             other_page_steps("e2e", &base),

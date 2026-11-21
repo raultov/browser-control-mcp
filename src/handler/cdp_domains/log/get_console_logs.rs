@@ -6,7 +6,7 @@ use rust_mcp_sdk::{
 
 #[macros::mcp_tool(
     name = "get_console_logs",
-    description = "Lists the tab's console messages and uncaught exceptions, oldest first, one line each: [level] text @ url:line (lines from 1; objects previewed, repeats folded, stacks indented); include_details gives {messages, total, truncated, notes?} as JSON. Keeps the last 1000 (10000 characters each); cleared when the tab moves to another site. For problems the browser diagnosed (blocked cookies, CORS, CSP) use get_issues."
+    description = "Lists the tab's console messages and uncaught exceptions, oldest first, one line each: [level] text @ url:line (lines from 1; objects previewed, repeats folded, stacks indented); on Chrome an uncaught error's cause chain follows it (Caused by: lines); include_details gives {messages, total, truncated, notes?} as JSON. Keeps the last 1000 (10000 characters each); cleared when the tab moves to another site. For problems the browser diagnosed (blocked cookies, CORS, CSP) use get_issues."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct GetConsoleLogsTool {
@@ -48,6 +48,7 @@ impl GetConsoleLogsTool {
                 .clamp(1, crate::handler::MAX_CONSOLE_MESSAGES)
         });
         let level = self.level_filter.as_deref().map(super::canonical_level);
+        super::causes_read(log_state, super::CAUSES_WAIT).await;
         let mut st = log_state.lock().await;
         let matching: Vec<usize> = (0..st.messages.len())
             .filter(|&i| {
@@ -171,17 +172,36 @@ fn message_lines(message: &super::ConsoleMessage, repeats: usize) -> String {
     let first = cut(first, LINE_MAX_CHARS);
     let mut out = format!("[{level}] {uncaught}{first}{at}{times}");
     let more: Vec<&str> = text.collect();
-    for line in more.iter().take(STACK_LINES) {
-        out.push_str("\n    ");
-        out.push_str(&cut(line.trim_start(), LINE_MAX_CHARS));
-    }
-    if more.len() > STACK_LINES {
-        let hidden = more.len() - STACK_LINES;
-        out.push_str(&format!(
-            "\n    … {hidden} more line(s) (include_details: true shows them)"
-        ));
-    }
+    continuation(&mut out, &more);
     out
+}
+
+/// Appends a message's continuation `lines`, indented: its stack, then
+/// each `Caused by:` line of an uncaught error's cause chain (always
+/// shown) and the stack after it, at most [`STACK_LINES`] lines of each
+/// stack.
+fn continuation(out: &mut String, lines: &[&str]) {
+    let mut rest = lines;
+    loop {
+        let is_cause = |line: &&str| line.trim_start().starts_with(super::CAUSED_BY);
+        let (stack, next) = rest.split_at(rest.iter().position(is_cause).unwrap_or(rest.len()));
+        for line in stack.iter().take(STACK_LINES) {
+            out.push_str("\n    ");
+            out.push_str(&cut(line.trim_start(), LINE_MAX_CHARS));
+        }
+        if stack.len() > STACK_LINES {
+            let hidden = stack.len() - STACK_LINES;
+            out.push_str(&format!(
+                "\n    … {hidden} more line(s) (include_details: true shows them)"
+            ));
+        }
+        let Some((cause, after)) = next.split_first() else {
+            return;
+        };
+        out.push_str("\n    ");
+        out.push_str(&cut(cause.trim_start(), LINE_MAX_CHARS));
+        rest = after;
+    }
 }
 
 /// `text` cut at `max` characters with an ellipsis.
@@ -210,6 +230,43 @@ mod tests {
             channel: Default::default(),
         };
         assert_eq!(message_lines(&thrown, 1), "[error] uncaught exception: str");
+    }
+
+    /// #192: the `Caused by:` lines of an uncaught error's cause chain are
+    /// always shown; each stack, the error's and each cause's, at most
+    /// [`STACK_LINES`] lines.
+    #[test]
+    fn every_cause_is_shown_with_its_stack_bounded() {
+        let stack = |name: &str| {
+            (1..=7)
+                .map(|i| format!("\n    at {name}{i} (a.js:{i}:1)"))
+                .collect::<String>()
+        };
+        let text = format!(
+            "Error: outer{}\nCaused by: TypeError: inner{}\nCaused by: 'why'",
+            stack("f"),
+            stack("g")
+        );
+        let thrown = super::super::ConsoleMessage {
+            source: "exception".into(),
+            level: "error".into(),
+            text,
+            timestamp: 0.0,
+            url: None,
+            line_number: None,
+            channel: Default::default(),
+        };
+        let lines = message_lines(&thrown, 1);
+        let shown: Vec<&str> = lines.lines().collect();
+        assert_eq!(shown.len(), 1 + 5 + 1 + 1 + 5 + 1 + 1, "{lines}");
+        assert_eq!(shown[0], "[error] Uncaught Error: outer");
+        assert_eq!(shown[7], "    Caused by: TypeError: inner");
+        assert_eq!(shown[8], "    at g1 (a.js:1:1)");
+        assert_eq!(
+            shown[6],
+            "    … 2 more line(s) (include_details: true shows them)"
+        );
+        assert_eq!(shown[14], "    Caused by: 'why'");
     }
 
     /// AUD-OB-30: get_console_logs and get_network_logs connect first, so

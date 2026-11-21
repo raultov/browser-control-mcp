@@ -10,6 +10,17 @@ from a copy of its code: entries describe the differences from that release.
 
 ## [Unreleased]
 
+### Added
+
+- `get_console_logs` on Chrome shows an uncaught error's `cause` chain
+  (`new Error('save failed', {cause: err})`), one `Caused by: …` line per
+  link after the error: V8's description of an error leaves it out, and
+  the error object cannot be reached afterwards (#192). The chain is read
+  from the page as the error comes, without running a `cause` getter, at
+  most 10 links (a loop ends with `[Circular]`); `get_console_logs` waits
+  up to 1 s for one still being read. Firefox, and `console.error(error)`,
+  show the error without its causes.
+
 ### Fixed
 
 - `open_tab` on Chrome no longer takes the tab it created as the
