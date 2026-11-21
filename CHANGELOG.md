@@ -19,6 +19,12 @@ from a copy of its code: entries describe the differences from that release.
   (#184). A part of a value (a result cut by a size limit, a window the
   caller chose, `slice()`) is not masked, as the agent can ask for any
   part of a value anyway.
+- `evaluate_js` runs code over 64 KB, or code that is not JavaScript, once
+  as written: the browser's error is the answer, for long code with a
+  note on the limit and how to await in it. It no longer runs the code a
+  second time, as an async function, when the error says `await is only
+  valid` (#188; doing the same for `await is not defined`, a runtime
+  error, would have run the code before the `await` twice).
 
 ### Fixed
 

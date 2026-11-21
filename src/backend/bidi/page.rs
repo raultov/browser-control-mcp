@@ -304,8 +304,8 @@ pub(crate) async fn evaluate(tab: &Tab, expression: &str) -> Result<Value, Backe
 /// `evaluate_js`: [`evaluate_once`], as an async function
 /// ([`crate::util::js::async_form`]) when the expression uses `await` at
 /// its top level, which `script.evaluate` refuses or reads as a call (#135;
-/// Chrome does the same), and run again so when the code was not parsed
-/// (too long) and Firefox says so. With `user_gesture`, both run with user
+/// Chrome does the same). Code not parsed (too long, or not JavaScript)
+/// runs once, as written (#188). With `user_gesture`, it runs with user
 /// activation (#121).
 pub(crate) async fn evaluate_js(
     tab: &Tab,
@@ -313,20 +313,15 @@ pub(crate) async fn evaluate_js(
     user_gesture: bool,
 ) -> Result<Evaluation, BackendError> {
     let form = crate::util::js::async_form(expression);
-    let (wrapped, at_once) = (form.wrapped, form.awaits);
-    let first = if at_once { &wrapped } else { expression };
-    let outcome = match evaluate_once(tab, first, user_gesture).await {
-        Err(BackendError::InvalidArgument(error))
-            if !at_once && error.contains("await is only valid") =>
-        {
-            evaluate_once(tab, &wrapped, user_gesture).await
-        }
-        outcome => outcome,
+    let code = match form.awaits {
+        true => form.wrapped.as_str(),
+        false => expression,
     };
+    let outcome = evaluate_once(tab, code, user_gesture).await;
     // A position past the expression is Firefox's wrapper's (ISSUE-88).
     outcome.map_err(|error| match error {
         BackendError::InvalidArgument(text) => {
-            BackendError::InvalidArgument(evaluation::within_expression(&text, expression))
+            BackendError::InvalidArgument(evaluation::error_text(&text, expression))
         }
         other => other,
     })
@@ -887,7 +882,9 @@ mod tests {
 
     /// ISSUE-43 (Firefox): a symbol is described (`this` of a function
     /// boxed it into an object, read as `{}`); an expression awaiting at
-    /// its top level runs again as an async function.
+    /// its top level runs as an async function. #188: one too long to be
+    /// parsed runs once, as written, and Firefox's error comes back with a
+    /// note on the limit.
     #[tokio::test]
     async fn symbols_and_top_level_await() {
         use super::super::test_support::{self as ts, evaluate_success};
@@ -926,6 +923,15 @@ mod tests {
         let awaited: Value =
             serde_json::from_str(&ts::text(&evaluate("await f()").await.unwrap())).unwrap();
         assert_eq!(awaited["value"], 42);
+        let padding = " ".repeat(crate::util::top_level_await::MAX_PARSED_LEN);
+        let before = calls.load(std::sync::atomic::Ordering::SeqCst);
+        let error = evaluate(&format!("{padding} await f()")).await.unwrap_err();
+        let error = error.to_string();
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst) - before, 1);
+        assert!(
+            error.contains("await is only valid") && error.contains("over 64 KB"),
+            "{error}"
+        );
         ts::stop(&handler).await;
     }
 

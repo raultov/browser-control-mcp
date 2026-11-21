@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 
 #[macros::mcp_tool(
     name = "evaluate_js",
-    description = "Evaluates JavaScript in the page and returns its value (promises awaited; top-level await works, the last statement giving the value): {value, type, subtype?, description?, preview?}. value is the JSON form; a Map, Set, typed array, Error, cycle or throwing getter gets a bounded preview (preview: true; a Map as [key, value] pairs, a Set or typed array as items, an Error as {name, message, stack}, '[Circular]', '[Thrown: message]') that description names (Map(2), TypeError: bad); functions, nodes and symbols give null, described (a function's source). Cut over 100000 characters (truncated: true). An exception fails with its message, and its 1-based line and column when they are in the expression. user_gesture: true lets the expression call APIs that need a user action (requestFullscreen, clipboard writes, window.open past the popup blocker); off by default, as the page then gets that power. In a paused frame use evaluate_on_call_frame (--tool-groups debug). Chrome stops a script after 8 s; Firefox cannot (close a frozen tab with close_tab)."
+    description = "Evaluates JavaScript in the page and returns its value (promises awaited; top-level await works in code up to 64 KB that parses, the last statement giving the value; other code runs as written): {value, type, subtype?, description?, preview?}. value is the JSON form; a Map, Set, typed array, Error, cycle or throwing getter gets a bounded preview (preview: true; a Map as [key, value] pairs, a Set or typed array as items, an Error as {name, message, stack}, '[Circular]', '[Thrown: message]') that description names (Map(2), TypeError: bad); functions, nodes and symbols give null, described (a function's source). Cut over 100000 characters (truncated: true). An exception fails with its message, and its 1-based line and column when they are in the expression. user_gesture: true lets the expression call APIs that need a user action (requestFullscreen, clipboard writes, window.open past the popup blocker); off by default, as the page then gets that power. In a paused frame use evaluate_on_call_frame (--tool-groups debug). Chrome stops a script after 8 s; Firefox cannot (close a frozen tab with close_tab)."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct EvaluateJsTool {
@@ -56,21 +56,17 @@ impl EvaluateJsTool {
         };
         // `await` at the top level is refused by a script, or read as a
         // call (#135): it runs as an async function, as on Firefox (not
-        // `replMode`, whose `const`s outlive the call); code not parsed
-        // (too long) runs again so on the browser's error.
+        // `replMode`, whose `const`s outlive the call). Code not parsed
+        // (too long, or not JavaScript) runs once, as written (#188).
         let form = crate::util::js::async_form(&args.expression);
-        let wrapped = form.wrapped;
-        let at_once = !paused && form.awaits;
-        let first = if at_once { &wrapped } else { &args.expression };
-        let evaluated = match evaluate(first).await {
-            Err(error) if !paused && !at_once && error.contains("await is only valid") => {
-                evaluate(&wrapped).await
-            }
-            outcome => outcome,
+        let code = match !paused && form.awaits {
+            true => form.wrapped.as_str(),
+            false => args.expression.as_str(),
         };
-        evaluated.map(|evaluation| evaluation.reply()).map_err(|e| {
-            CallToolError::from_message(evaluation::within_expression(&e, &args.expression))
-        })
+        let evaluated = evaluate(code).await;
+        evaluated
+            .map(|evaluation| evaluation.reply())
+            .map_err(|e| CallToolError::from_message(evaluation::error_text(&e, &args.expression)))
     }
 }
 
@@ -305,7 +301,9 @@ mod tests {
 
     /// ISSUE-43, #135: an expression awaiting at its top level, which a
     /// script refuses or reads as a call, runs as an async function (as on
-    /// Firefox); one not parsed runs again so on the browser's error.
+    /// Firefox). #188: one too long to be parsed runs once, as written, and
+    /// the browser's error comes back with a note on the limit: it is never
+    /// run a second time on what an error says.
     #[tokio::test]
     async fn top_level_await_runs_as_an_async_function() {
         // Given a page that refuses top-level await
@@ -340,14 +338,30 @@ mod tests {
             assert_eq!(body["value"], 7);
             assert_eq!(expressions(sent), [wrapped(expression)]);
         }
-        // And one too long to be parsed runs as is first, then wrapped on
-        // the browser's error
+        // And one too long to be parsed runs once, as written: the
+        // browser's error is returned, with a note on the limit
         let padding = " ".repeat(crate::util::top_level_await::MAX_PARSED_LEN);
         let missed = format!("if (s) /'/.test(s);{padding} await f()");
         let missed = missed.as_str();
         let sent = mock.commands_named("Runtime.evaluate").len();
-        evaluate(missed).await.unwrap();
-        assert_eq!(expressions(sent), [json!(missed), wrapped(missed)]);
+        let error = evaluate(missed).await.unwrap_err().to_string();
+        assert_eq!(expressions(sent), [json!(missed)]);
+        assert!(error.contains("await is only valid"), "{error}");
+        assert!(
+            error.contains("over 64 KB") && error.contains("(async () => {"),
+            "{error}"
+        );
+        // And a short expression's error carries no such note
+        mock.respond_with("Runtime.evaluate", |_| {
+            json!({"result": {"result": {"type": "object"}, "exceptionDetails": {"text": "Uncaught",
+                "lineNumber": 0, "columnNumber": 0, "exception": {"type": "object", "subtype": "error",
+                "description": "ReferenceError: nope is not defined"}}}})
+        });
+        let error = evaluate("nope").await.unwrap_err().to_string();
+        assert!(
+            error.contains("nope is not defined") && !error.contains("64 KB"),
+            "{error}"
+        );
     }
 
     /// #121: `user_gesture: true` runs the expression as if the user had

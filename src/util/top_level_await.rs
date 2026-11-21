@@ -6,11 +6,14 @@
 //! The code is parsed by a JavaScript parser (oxc) as the body of an async
 //! function, so statements, regular expressions, templates, labels and
 //! automatic semicolons are read as the browser reads them: the scanner it
-//! replaces missed one construct after another (#135-#179). Code the parser
-//! refuses, or longer than [`MAX_PARSED_LEN`], is taken to have no
-//! top-level `await` and wrapped without returning a value: `evaluate_js`
-//! runs it as is first, and wrapped only when the browser says `await` is
-//! not valid there.
+//! replaces missed one construct after another (#135-#179).
+//!
+//! This is a convenience with a stated limit, not a repair of the agent's
+//! code: code the parser refuses, or longer than [`MAX_PARSED_LEN`], is
+//! taken to have no top-level `await` and `evaluate_js` runs it once, as
+//! written; the browser's error is the answer ([`over_limit_note`] says why
+//! for long code). It is never run a second time on what an error says
+//! (#188: a runtime error means part of the code already ran).
 //!
 //! The parser is recursive, and a stack overflow aborts the whole server:
 //! it runs in a thread of its own whose stack grows with the code's length
@@ -26,10 +29,19 @@ use oxc_parser::Parser;
 use oxc_span::{GetSpan, SourceType, Span};
 use oxc_syntax::scope::ScopeFlags;
 
-/// Longest code parsed (bytes). Longer code is run as is, and wrapped
-/// without returning a value when the browser refuses its `await`: the
-/// stack the parser may need grows with the length.
+/// Longest code parsed (bytes). Longer code is run as written, without
+/// top-level `await`: the stack the parser may need grows with the length.
 pub const MAX_PARSED_LEN: usize = 64 * 1024;
+
+/// What an error of code longer than [`MAX_PARSED_LEN`] is told with: the
+/// code ran as a plain script, and how to await in it. `None` for code
+/// within the limit. It goes with any error of such code, whatever the
+/// error says.
+pub fn over_limit_note(code: &str) -> Option<&'static str> {
+    (code.len() > MAX_PARSED_LEN).then_some(
+        "Note: the expression is over 64 KB, so it ran as a plain script. If it uses await at its top level, wrap it in an async function: (async () => { ...; return value })()",
+    )
+}
 
 /// Stack of the parse thread for empty code.
 const STACK_BASE: usize = 8 << 20;
@@ -60,7 +72,9 @@ pub struct AsyncForm {
     pub awaits: bool,
     /// The code as an async function called at once, returning its last
     /// expression statement's value (none when the last statement is a
-    /// declaration or a control statement).
+    /// declaration or a control statement). What runs when [`Self::awaits`]
+    /// (but on a page paused in Chrome's debugger, where nothing can be
+    /// awaited).
     pub wrapped: String,
 }
 

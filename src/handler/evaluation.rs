@@ -279,6 +279,18 @@ pub(crate) fn within_expression(message: &str, expression: &str) -> String {
     }
 }
 
+/// The error `evaluate_js` answers with for the exception text `message`
+/// of `expression`: [`within_expression`], and for code too long to look
+/// for a top-level `await` in, why and what to do
+/// ([`crate::util::top_level_await::over_limit_note`]).
+pub(crate) fn error_text(message: &str, expression: &str) -> String {
+    let message = within_expression(message, expression);
+    match crate::util::top_level_await::over_limit_note(expression) {
+        Some(note) => format!("{}. {note}", message.trim_end_matches('.')),
+        None => message,
+    }
+}
+
 /// Whether a CDP remote object is one [`PREVIEW`] reads (it has no JSON
 /// form, but a preview says more than its description): a Map, a Set, a
 /// typed array or an Error.
