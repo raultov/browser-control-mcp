@@ -20,6 +20,17 @@ from a copy of its code: entries describe the differences from that release.
   most 10 links (a loop ends with `[Circular]`); `get_console_logs` waits
   up to 1 s for one still being read. Firefox, and `console.error(error)`,
   show the error without its causes.
+- `mock_route` with `upstream: true` lets the matching requests reach the
+  server and changes its response instead of mocking it (#193): `status`,
+  `content_type` and `headers` replace the server's, `remove_headers`
+  removes some, and the body and every other header (a repeated
+  `Set-Cookie` too) are kept, so a page can be tested against a real
+  backend answering 503 or without a CORS header. A redirect is followed
+  and the response at its end changed, on both browsers. Chrome pauses
+  the matching responses (`Fetch` at the response stage); Firefox, while
+  a route is upstream, every response of the tab (`responseStarted`
+  intercept). A normal mock on the same tab works as before;
+  `list_routes` marks the upstream routes.
 
 ### Fixed
 

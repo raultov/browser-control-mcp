@@ -2679,7 +2679,36 @@ mod e2e {
         let at = steps.len() - 1;
         steps.splice(at..at, offline_route_steps(&i, chrome));
         steps.extend(offline_steps(&i));
+        steps.extend(upstream_steps(&i));
         steps
+    }
+
+    /// #193: an upstream route lets the request reach the server and
+    /// changes its response; a redirect is followed, and the response at
+    /// its end changed (both browsers).
+    fn upstream_steps(i: &Value) -> Vec<Step> {
+        let read = "fetch('/hop78?' + Date.now()).then(r => [r.status, r.redirected, r.headers.get('x-up')].join(' '))";
+        vec![
+            (
+                "#193 an upstream route",
+                "mock_route",
+                json!({"instance_id": i, "url_pattern": "*hop78*", "upstream": true, "status": 503,
+                    "headers": [{"name": "X-Up", "value": "yes"}]}),
+                "reach the server",
+            ),
+            (
+                "#193 the response after the redirect is changed",
+                "evaluate_js",
+                json!({"instance_id": i, "expression": read}),
+                "503 true yes",
+            ),
+            (
+                "#193 remove the upstream route",
+                "remove_route",
+                json!({"instance_id": i}),
+                "0 left",
+            ),
+        ]
     }
 
     /// ISSUE-108: Chrome answers a mocked route while offline; Firefox

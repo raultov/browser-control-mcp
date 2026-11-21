@@ -1,7 +1,10 @@
 //! Mocked routes (`mock_route`, `list_routes`, `remove_route`): the table
 //! each tab keeps, shared by both browsers. Chrome answers the requests it
 //! pauses (`Fetch`) from it, Firefox the ones its intercept blocks
-//! (`network.addIntercept`).
+//! (`network.addIntercept`). A route either answers a request itself
+//! ([`RouteAction::Mock`]) or lets it reach the server and changes the
+//! status and headers of the server's response ([`RouteAction::Upstream`],
+//! #193): the browsers pause such a response before the page gets it.
 
 use crate::handler::cdp_domains::event_pump::ListenerHandles;
 use serde_json::{Value, json};
@@ -9,8 +12,14 @@ use serde_json::{Value, json};
 /// Most routes one tab keeps.
 pub(crate) const MAX_ROUTES: usize = 50;
 
+/// Most requests answered by a mock remembered (see `RouteState::provided`).
+pub(crate) const MAX_PROVIDED: usize = 256;
+
 /// Largest mocked body, in bytes: a route is held in memory for the tab's life.
 pub(crate) const MAX_BODY: usize = 1_000_000;
+
+/// HTTP headers, `(name, value)`, in order.
+pub(crate) type Headers = Vec<(String, String)>;
 
 /// The response a route answers with.
 #[derive(Debug, Clone, PartialEq)]
@@ -18,16 +27,62 @@ pub(crate) struct MockResponse {
     /// HTTP status, 100 to 599.
     pub(crate) status: u16,
     /// Response headers, in order.
-    pub(crate) headers: Vec<(String, String)>,
+    pub(crate) headers: Headers,
     /// Response body (text).
     pub(crate) body: String,
+}
+
+/// What a route does with the requests it matches.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum RouteAction {
+    /// Answers them with this response, without reaching the network.
+    Mock(MockResponse),
+    /// Lets them reach the server, and changes its response so.
+    Upstream(ResponseOverride),
+}
+
+/// The changes an upstream route makes to the server's response: its body,
+/// and every header it does not name, are kept.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub(crate) struct ResponseOverride {
+    /// The status the page gets instead of the server's.
+    pub(crate) status: Option<u16>,
+    /// Headers set: each replaces every header of its name (any case).
+    pub(crate) headers: Headers,
+    /// Names of the headers removed (any case).
+    pub(crate) remove: Vec<String>,
+}
+
+impl ResponseOverride {
+    /// Whether it changes the headers (else the server's go as they are).
+    pub(crate) fn changes_headers(&self) -> bool {
+        !(self.headers.is_empty() && self.remove.is_empty())
+    }
+
+    /// The server's response `headers` with the changes made: the headers
+    /// removed or set are dropped, the ones set appended, the others kept
+    /// in order, repeated ones (`Set-Cookie`) too.
+    pub(crate) fn merged(&self, headers: Headers) -> Headers {
+        let kept = headers.into_iter().filter(|(name, _)| !self.names(name));
+        kept.chain(self.headers.iter().cloned()).collect()
+    }
+
+    /// Whether it sets or removes the header `name` (any case): the
+    /// server's headers of that name go.
+    pub(crate) fn names(&self, name: &str) -> bool {
+        let set = self.headers.iter().map(|(n, _)| n);
+        self.remove
+            .iter()
+            .chain(set)
+            .any(|n| n.eq_ignore_ascii_case(name))
+    }
 }
 
 /// One mocked route.
 struct Route {
     id: String,
     url_pattern: String,
-    response: MockResponse,
+    action: RouteAction,
     hits: u64,
 }
 
@@ -41,6 +96,12 @@ pub(crate) struct RouteState {
     pub(crate) listener: ListenerHandles,
     /// Firefox: the `network.addIntercept` id blocking the tab's requests.
     pub(crate) intercept: Option<String>,
+    /// Firefox: the one blocking its responses, while a route is upstream.
+    pub(crate) response_intercept: Option<String>,
+    /// Firefox: the requests a mock answered, newest last (at most
+    /// [`MAX_PROVIDED`]): Firefox reports their response blocked too, but
+    /// it is not, and continuing it fails.
+    pub(crate) provided: std::collections::VecDeque<String>,
     /// Firefox: the tab is offline (`set_offline`), which fails the mocked
     /// requests too (#108).
     pub(crate) offline: bool,
@@ -48,11 +109,7 @@ pub(crate) struct RouteState {
 
 impl RouteState {
     /// Adds a route; its id (`route-N`, never reused).
-    pub(crate) fn add(
-        &mut self,
-        url_pattern: &str,
-        response: MockResponse,
-    ) -> Result<String, String> {
+    pub(crate) fn add(&mut self, url_pattern: &str, action: RouteAction) -> Result<String, String> {
         if self.routes.len() >= MAX_ROUTES {
             return Err(format!(
                 "the tab already has {MAX_ROUTES} routes: remove some with remove_route first"
@@ -63,7 +120,7 @@ impl RouteState {
         self.routes.push(Route {
             id: id.clone(),
             url_pattern: url_pattern.to_string(),
-            response,
+            action,
             hits: 0,
         });
         Ok(id)
@@ -87,21 +144,51 @@ impl RouteState {
         }
     }
 
-    /// The response for a request to `url`: the latest route whose pattern
-    /// matches it (counted as a hit), or `None` to let it through.
+    /// The response for a request to `url`, when the latest route whose
+    /// pattern matches it is a mock (counted as a hit); `None` lets the
+    /// request through (no route matches, or the latest is upstream).
     pub(crate) fn answer(&mut self, url: &str) -> Option<MockResponse> {
-        let route = self
-            .routes
-            .iter_mut()
-            .rev()
-            .find(|r| glob_matches(&r.url_pattern, url))?;
+        let route = self.latest(url)?;
+        let RouteAction::Mock(response) = &route.action else {
+            return None;
+        };
         route.hits += 1;
-        Some(route.response.clone())
+        Some(response.clone())
     }
 
-    /// The routes' URL patterns, oldest first.
-    pub(crate) fn patterns(&self) -> Vec<String> {
-        self.routes.iter().map(|r| r.url_pattern.clone()).collect()
+    /// The changes to the server's response to `url`, when the latest
+    /// route whose pattern matches it is upstream (counted as a hit);
+    /// `None` lets the response through as it is.
+    pub(crate) fn changes(&mut self, url: &str) -> Option<ResponseOverride> {
+        let route = self.latest(url)?;
+        let RouteAction::Upstream(changes) = &route.action else {
+            return None;
+        };
+        route.hits += 1;
+        Some(changes.clone())
+    }
+
+    /// The latest route whose pattern matches `url`.
+    fn latest(&mut self, url: &str) -> Option<&mut Route> {
+        self.routes
+            .iter_mut()
+            .rev()
+            .find(|r| glob_matches(&r.url_pattern, url))
+    }
+
+    /// The routes' URL patterns, oldest first, each with whether its route
+    /// is upstream (its responses are paused, not its requests).
+    pub(crate) fn patterns(&self) -> Vec<(String, bool)> {
+        let upstream = |r: &Route| matches!(r.action, RouteAction::Upstream(_));
+        self.routes
+            .iter()
+            .map(|r| (r.url_pattern.clone(), upstream(r)))
+            .collect()
+    }
+
+    /// Whether a route is upstream: the tab's responses must be paused.
+    pub(crate) fn has_upstream(&self) -> bool {
+        self.patterns().iter().any(|(_, upstream)| *upstream)
     }
 
     /// Whether the tab has no route.
@@ -109,19 +196,108 @@ impl RouteState {
         self.routes.is_empty()
     }
 
-    /// `{routes: [{route_id, url_pattern, status, hits}]}`, oldest first.
+    /// `{routes: [{route_id, url_pattern, status, hits, upstream?}]}`,
+    /// oldest first; an upstream route's status is the one it sets, or
+    /// null (the server's).
     pub(crate) fn to_json(&self) -> Value {
         let routes: Vec<Value> = self
             .routes
             .iter()
-            .map(|r| {
-                json!({"route_id": r.id, "url_pattern": r.url_pattern,
-                       "status": r.response.status, "hits": r.hits})
+            .map(|r| match &r.action {
+                RouteAction::Mock(response) => json!({"route_id": r.id,
+                    "url_pattern": r.url_pattern, "status": response.status, "hits": r.hits}),
+                RouteAction::Upstream(changes) => json!({"route_id": r.id,
+                    "url_pattern": r.url_pattern, "status": changes.status, "hits": r.hits,
+                    "upstream": true}),
             })
             .collect();
         json!({ "routes": routes })
     }
 }
+
+/// Whether a response with `status` and a `Location` header (`located`)
+/// is a redirect the browser follows: an upstream route leaves it alone
+/// and changes the response at the end of the redirects, on both browsers
+/// (Chrome follows a redirect whatever status it is given; Firefox gave
+/// the page the changed redirect).
+pub(crate) fn is_redirect(status: u64, located: bool) -> bool {
+    located && matches!(status, 301 | 302 | 303 | 307 | 308)
+}
+
+/// The standard reason phrase of HTTP status `status` (RFC 9110 and the
+/// IANA registry), or an empty one: Chrome writes it for a status an
+/// upstream route sets, and Firefox needs it given (it kept the server's,
+/// `503 OK`).
+pub(crate) fn reason_phrase(status: u16) -> &'static str {
+    REASONS
+        .iter()
+        .find(|(code, _)| *code == status)
+        .map_or("", |(_, phrase)| phrase)
+}
+
+/// The registered HTTP statuses and their reason phrases.
+const REASONS: &[(u16, &str)] = &[
+    (100, "Continue"),
+    (101, "Switching Protocols"),
+    (102, "Processing"),
+    (103, "Early Hints"),
+    (200, "OK"),
+    (201, "Created"),
+    (202, "Accepted"),
+    (203, "Non-Authoritative Information"),
+    (204, "No Content"),
+    (205, "Reset Content"),
+    (206, "Partial Content"),
+    (207, "Multi-Status"),
+    (208, "Already Reported"),
+    (226, "IM Used"),
+    (300, "Multiple Choices"),
+    (301, "Moved Permanently"),
+    (302, "Found"),
+    (303, "See Other"),
+    (304, "Not Modified"),
+    (305, "Use Proxy"),
+    (307, "Temporary Redirect"),
+    (308, "Permanent Redirect"),
+    (400, "Bad Request"),
+    (401, "Unauthorized"),
+    (402, "Payment Required"),
+    (403, "Forbidden"),
+    (404, "Not Found"),
+    (405, "Method Not Allowed"),
+    (406, "Not Acceptable"),
+    (407, "Proxy Authentication Required"),
+    (408, "Request Timeout"),
+    (409, "Conflict"),
+    (410, "Gone"),
+    (411, "Length Required"),
+    (412, "Precondition Failed"),
+    (413, "Content Too Large"),
+    (414, "URI Too Long"),
+    (415, "Unsupported Media Type"),
+    (416, "Range Not Satisfiable"),
+    (417, "Expectation Failed"),
+    (421, "Misdirected Request"),
+    (422, "Unprocessable Content"),
+    (423, "Locked"),
+    (424, "Failed Dependency"),
+    (425, "Too Early"),
+    (426, "Upgrade Required"),
+    (428, "Precondition Required"),
+    (429, "Too Many Requests"),
+    (431, "Request Header Fields Too Large"),
+    (451, "Unavailable For Legal Reasons"),
+    (500, "Internal Server Error"),
+    (501, "Not Implemented"),
+    (502, "Bad Gateway"),
+    (503, "Service Unavailable"),
+    (504, "Gateway Timeout"),
+    (505, "HTTP Version Not Supported"),
+    (506, "Variant Also Negotiates"),
+    (507, "Insufficient Storage"),
+    (508, "Loop Detected"),
+    (511, "Network Authentication Required"),
+];
 
 /// Whether `url` matches the glob `pattern`, as Chrome's `Fetch` patterns
 /// do: `*` is any run of characters, `?` exactly one, `\` escapes the next.
@@ -180,12 +356,12 @@ fn glob_tokens(pattern: &str) -> Vec<Glob> {
 mod tests {
     use super::*;
 
-    fn ok(body: &str) -> MockResponse {
-        MockResponse {
+    fn ok(body: &str) -> RouteAction {
+        RouteAction::Mock(MockResponse {
             status: 200,
             headers: vec![],
             body: body.into(),
-        }
+        })
     }
 
     /// NET-01: route patterns are globs, as Chrome's Fetch patterns.
@@ -227,7 +403,8 @@ mod tests {
             ("narrow", "broad")
         );
         assert_eq!(routes.answer("http://a/index.html"), None);
-        assert_eq!(routes.patterns(), vec!["*/api/*", "*/api/users*"]);
+        let patterns: Vec<String> = routes.patterns().into_iter().map(|(p, _)| p).collect();
+        assert_eq!(patterns, vec!["*/api/*", "*/api/users*"]);
         let listed = routes.to_json();
         assert_eq!(
             listed,
@@ -236,6 +413,83 @@ mod tests {
                 {"route_id": "route-2", "url_pattern": "*/api/users*", "status": 200, "hits": 1},
             ]})
         );
+    }
+
+    /// #193: an upstream route changes the server's response instead of
+    /// answering: a request it is the latest match for goes through (no
+    /// hit), and its response gets the changes (a hit); a mock added later
+    /// for the same URLs answers them instead; the routes say which is
+    /// which.
+    #[test]
+    fn upstream_routes_change_responses() {
+        // Given an upstream route turning */api/* into a 503
+        let mut routes = RouteState::default();
+        let changes = ResponseOverride {
+            status: Some(503),
+            ..Default::default()
+        };
+        routes
+            .add("*/api/*", RouteAction::Upstream(changes.clone()))
+            .unwrap();
+        assert!(routes.has_upstream());
+        // When a request and its response come
+        assert_eq!(routes.answer("http://a/api/x"), None);
+        assert_eq!(routes.changes("http://a/api/x"), Some(changes));
+        assert_eq!(routes.changes("http://a/page"), None);
+        // And a mock route for some of them is added
+        routes.add("*/api/mock*", ok("mocked")).unwrap();
+        // Then the mock answers its requests, and their responses are left
+        assert!(routes.answer("http://a/api/mock1").is_some());
+        assert_eq!(routes.changes("http://a/api/mock1"), None);
+        assert_eq!(
+            routes.patterns(),
+            vec![
+                ("*/api/*".to_string(), true),
+                ("*/api/mock*".to_string(), false)
+            ]
+        );
+        assert_eq!(
+            routes.to_json(),
+            json!({"routes": [
+                {"route_id": "route-1", "url_pattern": "*/api/*", "status": 503, "hits": 1, "upstream": true},
+                {"route_id": "route-2", "url_pattern": "*/api/mock*", "status": 200, "hits": 1},
+            ]})
+        );
+    }
+
+    /// #193: the headers an upstream route sets replace every header of
+    /// their name, in any case; the ones it removes go; the others, a
+    /// repeated `Set-Cookie` included, stay in order.
+    #[test]
+    fn upstream_header_changes_merge_with_the_servers() {
+        let changes = ResponseOverride {
+            status: None,
+            headers: vec![("cache-control".into(), "no-store".into())],
+            remove: vec!["ACCESS-CONTROL-ALLOW-ORIGIN".into()],
+        };
+        let server = vec![
+            ("Content-Type".into(), "text/html".into()),
+            ("Cache-Control".into(), "max-age=60".into()),
+            ("Set-Cookie".into(), "a=1".into()),
+            ("Access-Control-Allow-Origin".into(), "*".into()),
+            ("Set-Cookie".into(), "b=2".into()),
+        ];
+        let pairs = |list: &[(&str, &str)]| -> Vec<(String, String)> {
+            list.iter()
+                .map(|(n, v)| (n.to_string(), v.to_string()))
+                .collect()
+        };
+        assert_eq!(
+            changes.merged(server),
+            pairs(&[
+                ("Content-Type", "text/html"),
+                ("Set-Cookie", "a=1"),
+                ("Set-Cookie", "b=2"),
+                ("cache-control", "no-store"),
+            ])
+        );
+        assert!(changes.changes_headers());
+        assert!(!ResponseOverride::default().changes_headers());
     }
 
     /// NET-03: routes are removed by id or all at once; ids are not

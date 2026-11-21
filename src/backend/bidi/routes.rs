@@ -1,7 +1,11 @@
 //! `mock_route`, `list_routes`, `remove_route` and `set_offline` on Firefox:
 //! a `beforeRequestSent` intercept on the tab blocks its requests while it
 //! has routes; a blocked request gets `network.provideResponse` from the
-//! latest matching route, or `network.continueRequest`. Offline is
+//! latest matching route, or `network.continueRequest`. While a route is
+//! upstream (#193), a `responseStarted` intercept blocks the tab's
+//! responses too (BiDi patterns are not globs: every response); a blocked
+//! response gets `network.continueResponse` with the latest matching
+//! route's changes, or as it is. Offline is
 //! `emulation.setNetworkConditions`, which fails the mocked requests too:
 //! Firefox accepts the `provideResponse`, then the page gets a network
 //! error (#108). The tools say so instead of answering as on Chrome.
@@ -13,7 +17,10 @@ use crate::handler::cdp_domains::fetch::mock_route::{
     ListRoutesTool, MockRouteTool, RemoveRouteTool, listed, removed,
 };
 use crate::handler::cdp_domains::network::set_offline::{self, SetOfflineTool};
-use crate::handler::routes::{MockResponse, RouteState};
+use crate::handler::routes::{
+    MAX_PROVIDED, MockResponse, ResponseOverride, RouteAction, RouteState, is_redirect,
+    reason_phrase,
+};
 use crate::handler::{McpHandler, parse_args};
 use bidi_browser_lite::{BidiClient, WsResponse};
 use rust_mcp_sdk::schema::{CallToolError, CallToolRequestParams, CallToolResult};
@@ -27,12 +34,12 @@ type ToolResult = Result<CallToolResult, CallToolError>;
 /// `mock_route`.
 pub(crate) async fn mock_route(params: CallToolRequestParams, handler: &McpHandler) -> ToolResult {
     let args: MockRouteTool = parse_args(params)?;
-    let response = args.response()?;
+    let action = args.action()?;
     let (_, _, tab) = target(handler, &ids(&args.instance_id, &args.tab_id)).await?;
-    let added = add_route(&tab, &args.url_pattern, response.clone()).await;
+    let added = add_route(&tab, &args.url_pattern, action.clone()).await;
     let id = added.map_err(CallToolError::from_message)?;
     let offline = tab.routes.lock().await.offline;
-    Ok(noted(args.reply(&id, &response), offline))
+    Ok(noted(args.reply(&id, &action), offline))
 }
 
 /// `list_routes`.
@@ -55,6 +62,8 @@ pub(crate) async fn remove_route(
         .map_err(CallToolError::from_message)?;
     if routes.is_empty() {
         stop_intercepting(&tab, &mut routes).await;
+    } else if !routes.has_upstream() {
+        remove_intercept(&tab, routes.response_intercept.take()).await;
     }
     Ok(removed(&ids, &routes))
 }
@@ -101,66 +110,78 @@ fn noted(mut reply: CallToolResult, offline_with_routes: bool) -> CallToolResult
     reply
 }
 
-/// Adds a route to the tab's table; the first one adds the intercept and
-/// starts the task answering the requests it blocks. Errors are text: the
-/// tool error type is not `Send`.
+/// Adds a route to the tab's table; the first one adds the request
+/// intercept and starts the task answering what it blocks, the first
+/// upstream one the response intercept. Errors are text: the tool error
+/// type is not `Send`.
 async fn add_route(
     tab: &FirefoxTab,
     url_pattern: &str,
-    response: MockResponse,
+    action: RouteAction,
 ) -> Result<String, String> {
+    let upstream = matches!(action, RouteAction::Upstream(_));
     let mut routes = tab.routes.lock().await;
-    let id = routes.add(url_pattern, response)?;
-    if routes.intercept.is_some() {
-        return Ok(id);
+    let id = routes.add(url_pattern, action)?;
+    if routes.intercept.is_none() {
+        let client = tab.tab.client().clone();
+        // Subscribed before the intercept: a request blocked in between
+        // would otherwise wait for nobody.
+        let events = client.subscribe();
+        let Some(intercept) = add_intercept(tab, "beforeRequestSent").await else {
+            let _ = routes.remove(Some(&id));
+            return Err("Firefox refused network.addIntercept".into());
+        };
+        let answering = answer_requests(client, events, Arc::downgrade(&tab.routes));
+        routes.listener = Default::default();
+        routes.listener.push(tokio::spawn(answering));
+        routes.intercept = Some(intercept);
     }
-    let client = tab.tab.client().clone();
-    // Subscribed before the intercept: a request blocked in between would
-    // otherwise wait for nobody.
-    let events = client.subscribe();
-    let added = page::command(&tab.tab, "network.addIntercept", intercept_params(tab)).await;
-    let intercept = added
-        .ok()
-        .and_then(|reply| reply.get("intercept")?.as_str().map(str::to_string));
-    let Some(intercept) = intercept else {
-        let _ = routes.remove(Some(&id));
-        return Err("Firefox refused network.addIntercept".into());
-    };
-    let answering = answer_requests(
-        client,
-        events,
-        intercept.clone(),
-        Arc::downgrade(&tab.routes),
-    );
-    routes.listener = Default::default();
-    routes.listener.push(tokio::spawn(answering));
-    routes.intercept = Some(intercept);
+    if upstream && routes.response_intercept.is_none() {
+        let Some(intercept) = add_intercept(tab, "responseStarted").await else {
+            let _ = routes.remove(Some(&id));
+            if routes.is_empty() {
+                stop_intercepting(tab, &mut routes).await;
+            }
+            return Err("Firefox refused network.addIntercept for responses".into());
+        };
+        routes.response_intercept = Some(intercept);
+    }
     Ok(id)
 }
 
-/// The tab's intercept: every request of the tab (and its iframes) is
-/// blocked; the routes' globs are matched here, as BiDi patterns are not
-/// globs.
-fn intercept_params(tab: &FirefoxTab) -> Value {
-    json!({"phases": ["beforeRequestSent"], "contexts": [tab.tab.context_id()]})
+/// Adds an intercept of `phase` on the tab: every request of the tab (and
+/// its iframes) is blocked at it; the routes' globs are matched here, as
+/// BiDi patterns are not globs. Its id.
+async fn add_intercept(tab: &FirefoxTab, phase: &str) -> Option<String> {
+    let params = json!({"phases": [phase], "contexts": [tab.tab.context_id()]});
+    let added = page::command(&tab.tab, "network.addIntercept", params).await;
+    added
+        .ok()
+        .and_then(|reply| reply.get("intercept")?.as_str().map(str::to_string))
 }
 
-/// Removes the tab's intercept and stops answering.
-async fn stop_intercepting(tab: &FirefoxTab, routes: &mut RouteState) {
-    if let Some(intercept) = routes.intercept.take() {
+/// Removes the intercept `intercept`, if any.
+async fn remove_intercept(tab: &FirefoxTab, intercept: Option<String>) {
+    if let Some(intercept) = intercept {
         let params = json!({"intercept": intercept});
         let _ = page::command(&tab.tab, "network.removeIntercept", params).await;
     }
+}
+
+/// Removes the tab's intercepts and stops answering.
+async fn stop_intercepting(tab: &FirefoxTab, routes: &mut RouteState) {
+    remove_intercept(tab, routes.intercept.take()).await;
+    remove_intercept(tab, routes.response_intercept.take()).await;
     routes.listener = Default::default();
 }
 
-/// Answers the requests the intercept `intercept` blocks: a response from
-/// the latest matching route, or let through. Holds the routes weakly:
-/// they own this task.
+/// Answers what the tab's intercepts block: a request gets a response
+/// from the latest matching route, or is let through; a response (while a
+/// route is upstream) gets the latest matching route's changes, or is let
+/// through as it is. Holds the routes weakly: they own this task.
 async fn answer_requests(
     client: BidiClient,
     mut events: tokio::sync::broadcast::Receiver<WsResponse>,
-    intercept: String,
     routes: Weak<Mutex<RouteState>>,
 ) {
     loop {
@@ -173,16 +194,14 @@ async fn answer_requests(
             }
             Err(RecvError::Closed) => break,
         };
-        let Some((request, url)) = blocked_request(&event, &intercept) else {
+        let Some(blocked) = blocked(&event) else {
             continue;
         };
         let Some(routes) = routes.upgrade() else {
             break;
         };
-        let answer = routes.lock().await.answer(&url);
-        let (method, params) = match answer {
-            Some(response) => ("network.provideResponse", provide(&request, &response)),
-            None => ("network.continueRequest", json!({"request": request})),
+        let Some((method, params)) = answered(&blocked, &mut *routes.lock().await) else {
+            continue;
         };
         if client.send_raw_command(method, params).await.is_err() {
             tracing::warn!(method, "Firefox mocked route answer failed");
@@ -190,33 +209,137 @@ async fn answer_requests(
     }
 }
 
-/// The request id and URL of a `network.beforeRequestSent` event that
-/// `intercept` blocked.
-fn blocked_request(event: &WsResponse, intercept: &str) -> Option<(String, String)> {
-    if event.method.as_deref() != Some("network.beforeRequestSent") {
-        return None;
-    }
+/// A request or a response an intercept blocked.
+struct Blocked<'a> {
+    request: String,
+    url: String,
+    /// The intercepts that blocked it.
+    intercepts: &'a [Value],
+    /// A response's headers (`network.responseStarted`); `None` for a
+    /// request (`network.beforeRequestSent`).
+    response_headers: Option<&'a [Value]>,
+    /// A response's status.
+    status: u64,
+}
+
+/// What a blocked `network.beforeRequestSent` or `network.responseStarted`
+/// event blocked.
+fn blocked(event: &WsResponse) -> Option<Blocked<'_>> {
+    let response = match event.method.as_deref()? {
+        "network.beforeRequestSent" => false,
+        "network.responseStarted" => true,
+        _ => return None,
+    };
     let params = event.params.as_ref()?;
-    let ours = params
-        .get("intercepts")?
-        .as_array()?
-        .iter()
-        .any(|i| i == intercept);
-    if params.get("isBlocked") != Some(&Value::Bool(true)) || !ours {
+    if params.get("isBlocked") != Some(&Value::Bool(true)) {
         return None;
     }
-    let request = params.pointer("/request/request")?.as_str()?.to_string();
-    let url = params.pointer("/request/url")?.as_str()?.to_string();
-    Some((request, url))
+    let headers = params
+        .pointer("/response/headers")
+        .and_then(Value::as_array);
+    Some(Blocked {
+        request: params.pointer("/request/request")?.as_str()?.to_string(),
+        url: params.pointer("/request/url")?.as_str()?.to_string(),
+        intercepts: params.get("intercepts")?.as_array()?,
+        response_headers: response.then(|| headers.map_or(&[][..], Vec::as_slice)),
+        status: params
+            .pointer("/response/status")
+            .and_then(Value::as_u64)
+            .unwrap_or_default(),
+    })
+}
+
+/// The command answering `blocked`, when one of the tab's intercepts
+/// blocked it: a request gets a mock's response or goes on; a response
+/// gets an upstream route's changes or goes on as it is.
+fn answered(blocked: &Blocked<'_>, routes: &mut RouteState) -> Option<(&'static str, Value)> {
+    let ours = |intercept: &Option<String>| {
+        intercept
+            .as_deref()
+            .is_some_and(|id| blocked.intercepts.iter().any(|i| i == id))
+    };
+    let request = &blocked.request;
+    let Some(headers) = blocked.response_headers else {
+        ours(&routes.intercept).then_some(())?;
+        let Some(response) = routes.answer(&blocked.url) else {
+            return Some(("network.continueRequest", json!({"request": request})));
+        };
+        if routes.provided.len() == MAX_PROVIDED {
+            routes.provided.pop_front();
+        }
+        routes.provided.push_back(request.clone());
+        return Some(("network.provideResponse", provide(request, &response)));
+    };
+    ours(&routes.response_intercept).then_some(())?;
+    // A mock's response: reported blocked, but not.
+    if let Some(at) = routes.provided.iter().position(|id| id == request) {
+        routes.provided.remove(at);
+        return None;
+    }
+    let mut params = json!({"request": request});
+    let located = headers.iter().any(|h| {
+        let name = h.get("name").and_then(Value::as_str).unwrap_or_default();
+        name.eq_ignore_ascii_case("location")
+    });
+    if is_redirect(blocked.status, located) {
+        return Some(("network.continueResponse", params));
+    }
+    if let Some(changes) = routes.changes(&blocked.url) {
+        if let Some(status) = changes.status {
+            params["statusCode"] = json!(status);
+            params["reasonPhrase"] = json!(reason_phrase(status));
+        }
+        if changes.changes_headers() {
+            params["headers"] = Value::Array(merged(headers, &changes));
+        }
+    }
+    Some(("network.continueResponse", params))
+}
+
+/// A response's BiDi `headers` with `changes` made: the headers it sets or
+/// removes dropped (any value type kept for the others), the ones it sets
+/// appended. A string value Firefox joined with line breaks (a repeated
+/// `Set-Cookie`) goes back as one header per line: Firefox refuses a line
+/// break in a header value it is given.
+fn merged(headers: &[Value], changes: &ResponseOverride) -> Vec<Value> {
+    let named = |header: &&Value| {
+        let name = header
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        changes.names(name)
+    };
+    let kept = headers.iter().filter(|h| !named(h)).flat_map(one_per_line);
+    kept.chain(bidi_headers(&changes.headers)).collect()
+}
+
+/// `header`, or one header per line of its string value.
+fn one_per_line(header: &Value) -> Vec<Value> {
+    let string = header.pointer("/value/type") == Some(&json!("string"));
+    let value = header.pointer("/value/value").and_then(Value::as_str);
+    match (
+        value.filter(|v| string && v.contains('\n')),
+        header.get("name"),
+    ) {
+        (Some(value), Some(name)) => value
+            .split('\n')
+            .map(|line| json!({"name": name, "value": {"type": "string", "value": line}}))
+            .collect(),
+        _ => vec![header.clone()],
+    }
+}
+
+/// BiDi's `[{name, value: {type: "string", value}}]` of `headers`.
+fn bidi_headers(headers: &[(String, String)]) -> Vec<Value> {
+    headers
+        .iter()
+        .map(|(name, value)| json!({"name": name, "value": {"type": "string", "value": value}}))
+        .collect()
 }
 
 /// `network.provideResponse`'s params for `response`.
 fn provide(request: &str, response: &MockResponse) -> Value {
-    let headers: Vec<Value> = response
-        .headers
-        .iter()
-        .map(|(name, value)| json!({"name": name, "value": {"type": "string", "value": value}}))
-        .collect();
+    let headers = bidi_headers(&response.headers);
     json!({"request": request, "statusCode": response.status, "headers": headers,
            "body": {"type": "string", "value": response.body}})
 }
@@ -284,6 +407,142 @@ mod tests {
         let removed = &mock.bidi().commands_named("network.removeIntercept")[0].params;
         assert_eq!(*removed, json!({"intercept": "i1"}));
         ts::stop(&handler).await;
+    }
+
+    /// #193 (Firefox): an upstream route adds a responseStarted intercept;
+    /// a response it blocks gets the latest matching route's status and
+    /// merged headers (a header of another value type kept, a value Firefox
+    /// joined with a line break split again), any other one goes on as it
+    /// is, but a mock's (reported blocked, though it is not); once no route
+    /// is upstream, the response intercept
+    /// goes and the request one stays for the mock route.
+    #[tokio::test]
+    async fn firefox_changes_blocked_responses_of_upstream_routes() {
+        // Given a tab with a mock route, then an upstream route
+        let mock = bidi_browser_lite::test_support::MockFirefox::start(false)
+            .await
+            .unwrap();
+        let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let next = count.clone();
+        mock.bidi().respond_with("network.addIntercept", move |_| {
+            let n = next.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+            json!({"intercept": format!("i{n}")})
+        });
+        let handler = ts::handler(&mock);
+        let routes = [
+            json!({"url_pattern": "*/mock/*", "body": "m"}),
+            json!({"url_pattern": "*/api/*", "upstream": true, "status": 503,
+                "headers": [{"name": "Cache-Control", "value": "no-store"}], "remove_headers": ["etag"]}),
+        ];
+        for args in routes {
+            mock_route(ts::call("mock_route", args), &handler)
+                .await
+                .unwrap();
+        }
+        let phases: Vec<Value> = mock
+            .bidi()
+            .commands_named("network.addIntercept")
+            .iter()
+            .map(|c| c.params["phases"].clone())
+            .collect();
+        assert_eq!(
+            phases,
+            [json!(["beforeRequestSent"]), json!(["responseStarted"])]
+        );
+        // When Firefox blocks a response the upstream route matches, and another one
+        let blocked = |id: &str, url: &str| {
+            json!({"context": "ctx-0", "isBlocked": true, "intercepts": ["i2"], "navigation": null,
+                "redirectCount": 0, "timestamp": 0,
+                "request": {"request": id, "url": url, "method": "GET", "headers": [], "cookies": [],
+                    "headersSize": 0, "bodySize": 0, "timings": {}},
+                "response": {"url": url, "status": 200, "headers": [
+                    {"name": "ETag", "value": {"type": "string", "value": "v1"}},
+                    {"name": "X-Bin", "value": {"type": "base64", "value": "AAE="}},
+                    {"name": "Set-Cookie", "value": {"type": "string", "value": "a=1\nb=2"}},
+                    {"name": "cache-control", "value": {"type": "string", "value": "max-age=9"}}]}})
+        };
+        // (and the response of a request the mock answered, which is not)
+        let request = |id: &str, url: &str| {
+            let mut event = blocked(id, url);
+            event["intercepts"] = json!(["i1"]);
+            event.as_object_mut().unwrap().remove("response");
+            event
+        };
+        let events = [
+            (
+                "network.beforeRequestSent",
+                request("R0", "http://a/mock/1"),
+            ),
+            ("network.responseStarted", blocked("R0", "http://a/mock/1")),
+            ("network.responseStarted", blocked("R1", "http://a/api/x")),
+            ("network.responseStarted", blocked("R2", "http://a/page")),
+        ];
+        for (method, event) in events {
+            mock.bidi().emit(method, event);
+        }
+        for _ in 0..100 {
+            if mock.bidi().count("network.continueResponse") > 1 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        // Then the first gets the route's changes, the second goes on as it is
+        let continued = mock.bidi().commands_named("network.continueResponse");
+        assert_eq!(continued.len(), 2);
+        let provided = mock.bidi().commands_named("network.provideResponse");
+        assert_eq!(provided[0].params["request"], "R0");
+        assert_eq!(
+            continued[0].params,
+            json!({"request": "R1", "statusCode": 503, "reasonPhrase": "Service Unavailable", "headers": [
+                {"name": "X-Bin", "value": {"type": "base64", "value": "AAE="}},
+                {"name": "Set-Cookie", "value": {"type": "string", "value": "a=1"}},
+                {"name": "Set-Cookie", "value": {"type": "string", "value": "b=2"}},
+                {"name": "Cache-Control", "value": {"type": "string", "value": "no-store"}}]})
+        );
+        assert_eq!(continued[1].params, json!({"request": "R2"}));
+        // When the upstream route goes, its intercept goes, the other stays
+        remove_route(
+            ts::call("remove_route", json!({"route_id": "route-2"})),
+            &handler,
+        )
+        .await
+        .unwrap();
+        let removed = mock.bidi().commands_named("network.removeIntercept");
+        assert_eq!(removed.len(), 1);
+        assert_eq!(removed[0].params, json!({"intercept": "i2"}));
+        ts::stop(&handler).await;
+    }
+
+    /// #193 (Firefox): a redirect an upstream route matches goes on as it
+    /// is (no hit): the changes go to the response at its end, as on
+    /// Chrome.
+    #[test]
+    fn firefox_leaves_redirects_alone() {
+        let mut routes = RouteState::default();
+        let changes = ResponseOverride {
+            status: Some(418),
+            ..Default::default()
+        };
+        routes.add("*", RouteAction::Upstream(changes)).unwrap();
+        routes.response_intercept = Some("i2".into());
+        let event = |status: u16| -> WsResponse {
+            serde_json::from_value(json!({"method": "network.responseStarted", "params": {
+                "isBlocked": true, "intercepts": ["i2"], "request": {"request": "R1", "url": "http://a/r"},
+                "response": {"status": status, "headers": [
+                    {"name": "Location", "value": {"type": "string", "value": "/next"}}]}}}))
+            .unwrap()
+        };
+        let answer = |status: u16, routes: &mut RouteState| {
+            let event = event(status);
+            answered(&blocked(&event).unwrap(), routes)
+        };
+        assert_eq!(
+            answer(302, &mut routes),
+            Some(("network.continueResponse", json!({"request": "R1"})))
+        );
+        assert_eq!(routes.to_json()["routes"][0]["hits"], 0);
+        let (_, params) = answer(200, &mut routes).unwrap();
+        assert_eq!(params["statusCode"], 418);
     }
 
     /// NET-07 (Firefox): set_offline sets the tab's network conditions,
