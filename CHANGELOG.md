@@ -31,7 +31,8 @@ from a copy of its code: entries describe the differences from that release.
 - The Windows installer (MSI) replaces an installed release candidate of
   the same version (`1.0.0-rc.2` over `1.0.0-rc.1`, `1.0.0` over either):
   the candidate's number is a fourth version field, which Windows Installer
-  does not compare.
+  does not compare. For the same reason, an older candidate installed over
+  the final release replaces it too.
 
 ### Fixed
 
