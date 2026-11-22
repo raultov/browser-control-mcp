@@ -20,6 +20,15 @@ from a copy of its code: entries describe the differences from that release.
   `Content-Type` change (#196), and Chrome's network log kept the headers
   the route removed (#197). To change a response, mock it whole.
 
+### Changed
+
+- README: mocked routes join the "Scope of the convenience features"
+  (what a route promises and what it does not), and a new "Reporting
+  issues" section says how to rate an issue's severity: High for a
+  security boundary, a crash, a hang of the server or lost data; Medium
+  for a broken promise or a wrong report in ordinary use; Low otherwise.
+  The comparison now lists chrome-devtools-mcp 1.13.0's mocks.
+
 ### Fixed
 
 - `mock_route` on Chrome answers with a status that has no registered

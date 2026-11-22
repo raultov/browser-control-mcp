@@ -30,10 +30,11 @@ the current sources, `@playwright/mcp` 0.0.84 and `chrome-devtools-mcp`
 outcome was checked in the page, not taken from the reply. Tokens are
 estimated as characters / 4 for every server. The HTTP authentication row
 comes from the `tests/compare` scenarios. The rows on secrets, top-level
-`await`, credential headers and WebSockets were checked on 2026-11-21, in
-the sources and by running them, against `@playwright/mcp` 0.0.86 and
-`chrome-devtools-mcp` 1.13.0; what browser-control promises there, and
-what it does not, is in [Scope of the convenience features](#scope-of-the-convenience-features).
+`await`, credential headers and WebSockets were checked on 2026-11-21, and
+the mocks row on 2026-11-22, in the sources and by running them, against
+`@playwright/mcp` 0.0.86 and `chrome-devtools-mcp` 1.13.0; what
+browser-control promises there, and what it does not, is in
+[Scope of the convenience features](#scope-of-the-convenience-features).
 
 **What each one can do**
 
@@ -48,7 +49,7 @@ what it does not, is in [Scope of the convenience features](#scope-of-the-conven
 | Waits for the page to react after an action | ✓ ~50 ms when nothing reacts | ✓ ~500 ms | ✓ ~200 ms |
 | Clicking a covered or hidden element | **fails at once, naming the overlay** | fails after a 5 s timeout | reports success (the overlay gets the click) |
 | Page behind HTTP authentication (401) | **fails at once naming its scheme and realm and how to log in** (credentials in the URL), on Chrome and Firefox | fails with `net::ERR_INVALID_AUTH_CREDENTIALS` | reports success, with `net::ERR_INVALID_AUTH_CREDENTIALS` in the text |
-| Mock requests, offline mode | ✓ | ✓ | offline only |
+| Mock requests, offline mode | ✓ | ✓ | ✓ with `--categoryNetworkMocks`: a local file (status 200) or another URL's response; offline |
 | PDF | ✓ file or inline | ✓ file | ✗ |
 | Cookies and web storage | ✓ values hidden unless asked | ✓ values shown | ✗ |
 | Secrets masked in output (`--secrets`) | **✓ a whole value, as written and JSON-, HTML- or URL-encoded** (up to six layers) | ✓ the literal text only: a value with `"` or `&` shows once the reply is JSON-, HTML- or URL-encoded | ✗ |
@@ -653,10 +654,10 @@ incompatible:
 
 ## Scope of the convenience features
 
-Four things this server does go beyond passing the agent's request to the
-browser (see the [comparison](#comparison-with-playwright-mcp-and-chrome-devtools-mcp):
-the other servers do not do them, or do less). Each is a convenience with
-a stated scope. Inside it, a failure is a bug; outside it, it is not.
+Five things this server does go beyond passing the agent's request to the
+browser (see the [comparison](#comparison-with-playwright-mcp-and-chrome-devtools-mcp)).
+Each is a convenience with a stated scope. Inside it, a failure is a bug;
+outside it, it is not.
 
 - **`evaluate_js` runs the agent's code.** A syntax error, a runtime error
   or a rejected promise is returned as the browser reports it, with its
@@ -691,6 +692,38 @@ a stated scope. Inside it, a failure is a bug; outside it, it is not.
   socket opened at once, a handshake refused at once): Firefox cannot
   pause a new tab. A socket still open by then is listed closed when it
   ends.
+- **Mocked routes answer requests.** A route (`mock_route`) answers the
+  requests its glob matches, before they reach the network; it does not
+  change a response the server sent. Every request the browser holds for
+  a route is answered: with the route's response, let through, or failed
+  when the browser refuses the response (`list_routes` then shows the
+  browser's error); removing a route lets through what it held.
+  `get_network_logs` shows what the browser reported. Not promised: a
+  request the page starts while a route is being added or removed may or
+  may not be matched.
+
+## Reporting issues
+
+Please report problems in the
+[issues](https://github.com/raultov/browser-control-mcp/issues), with the
+version and a reproduction. Severity:
+
+- **High**: a security boundary fails (`--local`, the file path
+  restrictions, the tool-group and cookie-import gates, a secret written to
+  the logs), the server panics, exits or deadlocks, a tool does not answer
+  within its documented timeout, or the server loses data it had recorded.
+- **Medium**: in ordinary use (a tool's main purpose, with arguments an
+  agent would send, on a normal page), a sentence of this README or of a
+  tool's description is broken, or a tool reports something that did not
+  happen. An opt-in tool group is ordinary use too.
+- **Low**: anything else, including what needs a rare input value, a race,
+  load (tens of concurrent requests), an input at a documented limit, or a
+  secondary option on one browser.
+
+A page request a tool leaves pending is a bug, but not a hang of the
+server while every tool still answers: rate it by how often an agent meets
+it. For the five convenience features, what is outside their stated
+[scope](#scope-of-the-convenience-features) is not a bug.
 
 ## Limitations and TODO
 
