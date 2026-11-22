@@ -2679,7 +2679,34 @@ mod e2e {
         let at = steps.len() - 1;
         steps.splice(at..at, offline_route_steps(&i, chrome));
         steps.extend(offline_steps(&i));
+        steps.extend(route_answer_steps(&i));
         steps
+    }
+
+    /// #194: a mocked status without a registered reason phrase (299)
+    /// reaches the page on both browsers (Chrome left the request paused).
+    fn route_answer_steps(i: &Value) -> Vec<Step> {
+        let read = "fetch('/api/status194?' + Date.now()).then(r => 'status ' + r.status, e => 'failed: ' + e)";
+        vec![
+            (
+                "#194 a mocked 299",
+                "mock_route",
+                json!({"instance_id": i, "url_pattern": "*/api/status194*", "status": 299, "body": "odd"}),
+                "get 299",
+            ),
+            (
+                "#194 the page gets the 299",
+                "evaluate_js",
+                json!({"instance_id": i, "expression": read}),
+                "status 299",
+            ),
+            (
+                "#194 remove the route",
+                "remove_route",
+                json!({"instance_id": i}),
+                "0 left",
+            ),
+        ]
     }
 
     /// ISSUE-108: Chrome answers a mocked route while offline; Firefox

@@ -1,11 +1,12 @@
 //! `mock_route`, `list_routes` and `remove_route`: the shared arguments and
 //! replies, and the Chrome implementation (`Fetch` domain: a paused request
-//! is fulfilled from the tab's routes or continued).
+//! is fulfilled from the tab's routes or continued; failed when Chrome
+//! refuses the route's response).
 
 use crate::handler::McpHandler;
 use crate::handler::cdp_domains::cdp_target::CdpTarget;
 use crate::handler::cdp_domains::event_pump::error_kind;
-use crate::handler::routes::{MAX_BODY, MockResponse, RouteState};
+use crate::handler::routes::{MAX_BODY, MockResponse, RouteState, reason_phrase};
 use base64::Engine;
 use cdp_browser_lite::NoParams;
 use rust_mcp_sdk::{
@@ -19,7 +20,7 @@ use tokio_stream::StreamExt;
 
 #[macros::mcp_tool(
     name = "mock_route",
-    description = "Answers the tab's requests whose URL matches the 'url_pattern' glob (* any characters, ? one, \\ escapes) with a mocked response instead of the network; the latest matching route wins, until remove_route or the tab closes. Returns the route id. On Chrome it cannot run while enable_proxy_auth is active.",
+    description = "Answers the tab's requests whose URL matches the 'url_pattern' glob (* any characters, ? one, \\ escapes) with a mocked response instead of the network; the latest matching route wins, until remove_route or the tab closes. A response the browser refuses fails the request (list_routes shows the browser's error). Returns the route id. On Chrome it cannot run while enable_proxy_auth is active.",
     destructive_hint = false
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
@@ -51,7 +52,7 @@ pub struct Header {
 
 #[macros::mcp_tool(
     name = "list_routes",
-    description = "Lists the tab's mocked routes: {routes: [{route_id, url_pattern, status, hits}]}, oldest first; hits counts the requests each answered.",
+    description = "Lists the tab's mocked routes: {routes: [{route_id, url_pattern, status, hits, errors?, last_error?}]}, oldest first; hits counts the requests each answered; errors and last_error appear once the browser refused a route's response (the request then failed).",
     read_only_hint = true
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
@@ -248,8 +249,8 @@ async fn intercept(target: &CdpTarget, routes: &mut RouteState) -> Result<(), St
         .map_err(|e| format!("Chrome refused Fetch.enable: {}", error_kind(&e)))
 }
 
-/// Answers the requests Chrome pauses: fulfilled from the latest matching
-/// route, or continued. Holds the routes weakly: they own this task.
+/// Answers the requests Chrome pauses (see [`answer`]). Holds the routes
+/// weakly: they own this task.
 async fn answer_requests(
     target: CdpTarget,
     mut events: cdp_browser_lite::EventFilter,
@@ -279,15 +280,44 @@ async fn answer_requests(
                 .await;
             break;
         };
-        let answer = routes.lock().await.answer(&url);
-        let (method, params) = match answer {
-            Some(response) => ("Fetch.fulfillRequest", fulfill(&request, &response)),
-            None => ("Fetch.continueRequest", json!({"requestId": request})),
-        };
-        if let Err(e) = target.send_raw_command(method, params).await {
-            tracing::warn!(method, error = error_kind(&e), "mocked route answer failed");
-        }
+        answer(&target, &routes, &request, &url).await;
     }
+}
+
+/// Answers `request` to `url`, which Chrome paused: fulfilled from the
+/// latest matching route, or continued. A response Chrome refuses fails
+/// the request instead of leaving it paused (#194), and the route keeps
+/// Chrome's error for `list_routes` (never for the log).
+async fn answer(target: &CdpTarget, routes: &Mutex<RouteState>, request: &str, url: &str) {
+    let answer = routes.lock().await.answer(url);
+    let Some((route, response)) = answer else {
+        let params = json!({"requestId": request});
+        if let Err(e) = target
+            .send_raw_command("Fetch.continueRequest", params)
+            .await
+        {
+            tracing::warn!(
+                error = error_kind(&e),
+                "mocked routes: continuing a request failed"
+            );
+        }
+        return;
+    };
+    let fulfilled = target.send_raw_command("Fetch.fulfillRequest", fulfill(request, &response));
+    let Err(error) = fulfilled.await else {
+        return;
+    };
+    tracing::warn!(
+        error = error_kind(&error),
+        "Chrome refused a mocked response"
+    );
+    let said = match &error {
+        cdp_browser_lite::CdpError::ProtocolError { message, .. } => message.as_str(),
+        other => error_kind(other),
+    };
+    routes.lock().await.note_error(&route, said);
+    let failed = json!({"requestId": request, "errorReason": "Failed"});
+    let _ = target.send_raw_command("Fetch.failRequest", failed).await;
 }
 
 /// The request id and URL of a `Fetch.requestPaused` event.
@@ -301,7 +331,8 @@ fn paused_request(event: &cdp_browser_lite::WsResponse) -> Option<(String, Strin
     Some((request, url))
 }
 
-/// `Fetch.fulfillRequest`'s params for `response` (the body in base64).
+/// `Fetch.fulfillRequest`'s params for `response` (the body in base64),
+/// with the status's reason phrase, which Chrome needs.
 fn fulfill(request: &str, response: &MockResponse) -> Value {
     let headers: Vec<Value> = response
         .headers
@@ -310,6 +341,7 @@ fn fulfill(request: &str, response: &MockResponse) -> Value {
         .collect();
     let body = base64::engine::general_purpose::STANDARD.encode(&response.body);
     json!({"requestId": request, "responseCode": response.status,
+           "responsePhrase": reason_phrase(response.status),
            "responseHeaders": headers, "body": body})
 }
 
@@ -386,7 +418,8 @@ mod tests {
         let fulfilled = &mock.commands_named("Fetch.fulfillRequest")[0].params;
         assert_eq!(
             *fulfilled,
-            json!({"requestId": "R1", "responseCode": 201, "body": "eyJvayI6MX0=",
+            json!({"requestId": "R1", "responseCode": 201, "responsePhrase": "Created",
+                "body": "eyJvayI6MX0=",
                 "responseHeaders": [{"name": "Content-Type", "value": "application/json"}]})
         );
         let continued = &mock.commands_named("Fetch.continueRequest")[0].params;
@@ -406,6 +439,43 @@ mod tests {
             .unwrap();
         assert!(reply_text(&reply).contains("Removed 1 route(s); 0 left"));
         assert_eq!(mock.commands_named("Fetch.disable").len(), 1);
+    }
+
+    /// #194 (Chrome): a mocked response Chrome refuses fails the request
+    /// instead of leaving it paused, and list_routes shows Chrome's error
+    /// on the route.
+    #[tokio::test]
+    async fn chrome_fails_a_request_whose_mocked_response_it_refuses() {
+        // Given a route whose response Chrome refuses
+        let mock = spawn_recording_mock().await;
+        mock.respond_with(
+            "Fetch.fulfillRequest",
+            |_| json!({"error": {"code": -32602, "message": "Invalid http status code or phrase"}}),
+        );
+        let handler = mock_handler(mock.http_port);
+        let args = json!({"url_pattern": "*/api/*", "status": 299, "body": "x"});
+        MockRouteTool::handle(call("mock_route", args), &handler)
+            .await
+            .unwrap();
+        // When Chrome pauses a request it matches
+        let paused = json!({"requestId": "R1", "request": {"url": "http://a/api/x", "method": "GET"},
+            "resourceType": "Fetch"});
+        mock.emit("Fetch.requestPaused", paused, None);
+        until_sent(mock, "Fetch.failRequest").await;
+        // Then the request fails, and the route says why
+        let failed = mock.commands_named("Fetch.failRequest");
+        assert_eq!(
+            failed[0].params,
+            json!({"requestId": "R1", "errorReason": "Failed"})
+        );
+        let reply = ListRoutesTool::handle(call("list_routes", json!({})), &handler)
+            .await
+            .unwrap();
+        let text = reply_text(&reply);
+        let listed: Value = serde_json::from_str(text.split_once('\n').unwrap().1).unwrap();
+        let route = &listed["routes"][0];
+        assert_eq!(route["errors"], 1, "{text}");
+        assert_eq!(route["last_error"], "Invalid http status code or phrase");
     }
 
     /// A request Chrome paused after the tab's routes went (its connection

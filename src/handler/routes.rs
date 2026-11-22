@@ -1,13 +1,18 @@
 //! Mocked routes (`mock_route`, `list_routes`, `remove_route`): the table
 //! each tab keeps, shared by both browsers. Chrome answers the requests it
 //! pauses (`Fetch`) from it, Firefox the ones its intercept blocks
-//! (`network.addIntercept`).
+//! (`network.addIntercept`). Every request the browser holds for a route is
+//! answered: with the route's response, let through, or failed when the
+//! browser refuses the response (#194), whose error the route then keeps.
 
 use crate::handler::cdp_domains::event_pump::ListenerHandles;
 use serde_json::{Value, json};
 
 /// Most routes one tab keeps.
 pub(crate) const MAX_ROUTES: usize = 50;
+
+/// Most characters of a browser error a route keeps (see `RouteState::note_error`).
+const MAX_ERROR_CHARS: usize = 300;
 
 /// Largest mocked body, in bytes: a route is held in memory for the tab's life.
 pub(crate) const MAX_BODY: usize = 1_000_000;
@@ -29,6 +34,10 @@ struct Route {
     url_pattern: String,
     response: MockResponse,
     hits: u64,
+    /// Requests failed because the browser refused the route's response.
+    errors: u64,
+    /// The browser's error for the last of them, cut.
+    last_error: Option<String>,
 }
 
 /// The routes of one tab, and what answers its intercepted requests while
@@ -65,6 +74,8 @@ impl RouteState {
             url_pattern: url_pattern.to_string(),
             response,
             hits: 0,
+            errors: 0,
+            last_error: None,
         });
         Ok(id)
     }
@@ -87,16 +98,27 @@ impl RouteState {
         }
     }
 
-    /// The response for a request to `url`: the latest route whose pattern
-    /// matches it (counted as a hit), or `None` to let it through.
-    pub(crate) fn answer(&mut self, url: &str) -> Option<MockResponse> {
+    /// The response for a request to `url`, with the id of the route that
+    /// gives it: the latest route whose pattern matches it (counted as a
+    /// hit), or `None` to let it through.
+    pub(crate) fn answer(&mut self, url: &str) -> Option<(String, MockResponse)> {
         let route = self
             .routes
             .iter_mut()
             .rev()
             .find(|r| glob_matches(&r.url_pattern, url))?;
         route.hits += 1;
-        Some(route.response.clone())
+        Some((route.id.clone(), route.response.clone()))
+    }
+
+    /// Notes that the browser refused route `id`'s response with `error`
+    /// (its own words, cut): `list_routes` shows it, since the request then
+    /// fails. A route removed meanwhile is left alone.
+    pub(crate) fn note_error(&mut self, id: &str, error: &str) {
+        if let Some(route) = self.routes.iter_mut().find(|r| r.id == id) {
+            route.errors += 1;
+            route.last_error = Some(crate::util::text::capped(error, MAX_ERROR_CHARS));
+        }
     }
 
     /// The routes' URL patterns, oldest first.
@@ -109,19 +131,101 @@ impl RouteState {
         self.routes.is_empty()
     }
 
-    /// `{routes: [{route_id, url_pattern, status, hits}]}`, oldest first.
+    /// `{routes: [{route_id, url_pattern, status, hits, errors?,
+    /// last_error?}]}`, oldest first; `errors` and `last_error` once the
+    /// browser refused a route's response.
     pub(crate) fn to_json(&self) -> Value {
         let routes: Vec<Value> = self
             .routes
             .iter()
             .map(|r| {
-                json!({"route_id": r.id, "url_pattern": r.url_pattern,
-                       "status": r.response.status, "hits": r.hits})
+                let mut route = json!({"route_id": r.id, "url_pattern": r.url_pattern,
+                       "status": r.response.status, "hits": r.hits});
+                if r.errors > 0 {
+                    route["errors"] = json!(r.errors);
+                    route["last_error"] = json!(r.last_error);
+                }
+                route
             })
             .collect();
         json!({ "routes": routes })
     }
 }
+
+/// The standard reason phrase of HTTP status `status` (RFC 9110 and the
+/// IANA registry), or `Unknown`: Chrome refuses a mocked response without
+/// one (#194: a mocked 299 left the request paused), and gives none itself
+/// for a status it does not know.
+pub(crate) fn reason_phrase(status: u16) -> &'static str {
+    REASONS
+        .iter()
+        .find(|(code, _)| *code == status)
+        .map_or("Unknown", |(_, phrase)| phrase)
+}
+
+/// The registered HTTP statuses and their reason phrases.
+const REASONS: &[(u16, &str)] = &[
+    (100, "Continue"),
+    (101, "Switching Protocols"),
+    (102, "Processing"),
+    (103, "Early Hints"),
+    (200, "OK"),
+    (201, "Created"),
+    (202, "Accepted"),
+    (203, "Non-Authoritative Information"),
+    (204, "No Content"),
+    (205, "Reset Content"),
+    (206, "Partial Content"),
+    (207, "Multi-Status"),
+    (208, "Already Reported"),
+    (226, "IM Used"),
+    (300, "Multiple Choices"),
+    (301, "Moved Permanently"),
+    (302, "Found"),
+    (303, "See Other"),
+    (304, "Not Modified"),
+    (305, "Use Proxy"),
+    (307, "Temporary Redirect"),
+    (308, "Permanent Redirect"),
+    (400, "Bad Request"),
+    (401, "Unauthorized"),
+    (402, "Payment Required"),
+    (403, "Forbidden"),
+    (404, "Not Found"),
+    (405, "Method Not Allowed"),
+    (406, "Not Acceptable"),
+    (407, "Proxy Authentication Required"),
+    (408, "Request Timeout"),
+    (409, "Conflict"),
+    (410, "Gone"),
+    (411, "Length Required"),
+    (412, "Precondition Failed"),
+    (413, "Content Too Large"),
+    (414, "URI Too Long"),
+    (415, "Unsupported Media Type"),
+    (416, "Range Not Satisfiable"),
+    (417, "Expectation Failed"),
+    (421, "Misdirected Request"),
+    (422, "Unprocessable Content"),
+    (423, "Locked"),
+    (424, "Failed Dependency"),
+    (425, "Too Early"),
+    (426, "Upgrade Required"),
+    (428, "Precondition Required"),
+    (429, "Too Many Requests"),
+    (431, "Request Header Fields Too Large"),
+    (451, "Unavailable For Legal Reasons"),
+    (500, "Internal Server Error"),
+    (501, "Not Implemented"),
+    (502, "Bad Gateway"),
+    (503, "Service Unavailable"),
+    (504, "Gateway Timeout"),
+    (505, "HTTP Version Not Supported"),
+    (506, "Variant Also Negotiates"),
+    (507, "Insufficient Storage"),
+    (508, "Loop Detected"),
+    (511, "Network Authentication Required"),
+];
 
 /// Whether `url` matches the glob `pattern`, as Chrome's `Fetch` patterns
 /// do: `*` is any run of characters, `?` exactly one, `\` escapes the next.
@@ -219,8 +323,9 @@ mod tests {
         let narrow = routes.add("*/api/users*", ok("narrow")).unwrap();
         assert_eq!((broad.as_str(), narrow.as_str()), ("route-1", "route-2"));
         // When requests come
-        let users = routes.answer("http://a/api/users?id=1").unwrap();
-        let other = routes.answer("http://a/api/items").unwrap();
+        let (users_route, users) = routes.answer("http://a/api/users?id=1").unwrap();
+        let (_, other) = routes.answer("http://a/api/items").unwrap();
+        assert_eq!(users_route, "route-2");
         // Then the latest matching route answers each, and others go through
         assert_eq!(
             (users.body.as_str(), other.body.as_str()),
@@ -235,6 +340,48 @@ mod tests {
                 {"route_id": "route-1", "url_pattern": "*/api/*", "status": 200, "hits": 1},
                 {"route_id": "route-2", "url_pattern": "*/api/users*", "status": 200, "hits": 1},
             ]})
+        );
+    }
+
+    /// #194: a route keeps how many of its responses the browser refused,
+    /// and the browser's last error, cut; list_routes shows them only
+    /// then. An error for a route removed meanwhile is dropped.
+    #[test]
+    fn refused_responses_are_listed_on_their_route() {
+        let mut routes = RouteState::default();
+        let id = routes.add("*/api/*", ok("")).unwrap();
+        routes.note_error(&id, "Invalid http status code or phrase");
+        routes.note_error(&id, &"e".repeat(MAX_ERROR_CHARS + 10));
+        routes.note_error("route-9", "gone");
+        let listed = &routes.to_json()["routes"][0];
+        assert_eq!(listed["errors"], 2);
+        let last = listed["last_error"].as_str().unwrap();
+        assert!(last.starts_with(&"e".repeat(MAX_ERROR_CHARS)), "{last}");
+        assert!(last.contains("[cut: the first 300"), "{last}");
+        routes.add("*/b", ok("")).unwrap();
+        let quiet = &routes.to_json()["routes"][1];
+        assert!(quiet.get("errors").is_none() && quiet.get("last_error").is_none());
+    }
+
+    /// #194: every status gets a reason phrase: its registered one, or
+    /// `Unknown` (which Chrome needs for a mocked 299).
+    #[test]
+    fn every_status_has_a_reason_phrase() {
+        let phrases: Vec<&str> = [200, 201, 418, 503, 299, 250, 599]
+            .into_iter()
+            .map(reason_phrase)
+            .collect();
+        assert_eq!(
+            phrases,
+            [
+                "OK",
+                "Created",
+                "Unknown",
+                "Service Unavailable",
+                "Unknown",
+                "Unknown",
+                "Unknown"
+            ]
         );
     }
 

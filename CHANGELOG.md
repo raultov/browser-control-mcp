@@ -20,6 +20,17 @@ from a copy of its code: entries describe the differences from that release.
   `Content-Type` change (#196), and Chrome's network log kept the headers
   the route removed (#197). To change a response, mock it whole.
 
+### Fixed
+
+- `mock_route` on Chrome answers with a status that has no registered
+  reason phrase (299, 250, 599): the mocked response now carries one
+  (`Unknown` when the status has none), which Chrome requires; the request
+  stayed pending for ever (#194). Firefox gets the same reason phrase
+  (`statusText` was empty). On both browsers, a mocked response the
+  browser still refuses fails the request instead of leaving it pending,
+  and `list_routes` shows the route's `errors` and the browser's
+  `last_error`.
+
 ## [0.25.0-beta.39] - 2026-11-21
 
 Public **BETA**. Two features and two fixes. `mock_route` with
