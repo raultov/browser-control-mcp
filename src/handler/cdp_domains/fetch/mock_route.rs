@@ -52,7 +52,7 @@ pub struct Header {
 
 #[macros::mcp_tool(
     name = "list_routes",
-    description = "Lists the tab's mocked routes: {routes: [{route_id, url_pattern, status, hits, errors?, last_error?}]}, oldest first; hits counts the requests each answered; errors and last_error appear once the browser refused a route's response (the request then failed).",
+    description = "Lists the tab's mocked routes: {routes: [{route_id, url_pattern, status, hits, errors?, last_error?}]}, oldest first; hits counts the requests each matched; errors (how many of them failed because the browser refused the route's response) and last_error appear once that happened.",
     read_only_hint = true
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
@@ -204,8 +204,10 @@ impl RemoveRouteTool {
 }
 
 /// Adds a route to the tab's table and has Chrome pause the requests of
-/// every route; the first route starts the task answering them. Errors
-/// are text: the tool error type is not `Send`.
+/// every route; a route starts the task answering them unless one runs
+/// (a task that ended by itself is replaced: Chrome would otherwise pause
+/// requests nobody answers). Errors are text: the tool error type is not
+/// `Send`.
 async fn add_route(
     target: &CdpTarget,
     state: &Arc<Mutex<RouteState>>,
@@ -214,11 +216,12 @@ async fn add_route(
 ) -> Result<String, String> {
     let mut routes = state.lock().await;
     let id = routes.add(url_pattern, response)?;
-    if routes.listener.is_empty() {
+    if !routes.listener.is_running() {
         // Subscribed before Fetch.enable: a request paused in between
         // would otherwise wait for nobody.
         let events = target.on_domain("Fetch");
         let answering = answer_requests(target.clone(), events, Arc::downgrade(state));
+        routes.listener = Default::default();
         routes.listener.push(tokio::spawn(answering));
     }
     if let Err(e) = intercept(target, &mut routes).await {
@@ -476,6 +479,35 @@ mod tests {
         let route = &listed["routes"][0];
         assert_eq!(route["errors"], 1, "{text}");
         assert_eq!(route["last_error"], "Invalid http status code or phrase");
+    }
+
+    /// A route added once the answering task ended by itself (the tab's
+    /// Fetch events stopped) starts a new one: the requests Chrome then
+    /// pauses are answered, not left paused because a finished task was
+    /// still listed.
+    #[tokio::test]
+    async fn chrome_restarts_an_answering_task_that_ended() {
+        // Given a tab whose answering task has ended
+        let mock = spawn_recording_mock().await;
+        let handler = mock_handler(mock.http_port);
+        let session = handler.session(None).await.unwrap();
+        session.target(None).await.unwrap();
+        let state = session.route_state(None).unwrap();
+        state.lock().await.listener.push(tokio::spawn(async {}));
+        while state.lock().await.listener.is_running() {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        // When a route is added and Chrome pauses a request it matches
+        let args = json!({"url_pattern": "*/api/*", "body": "m"});
+        MockRouteTool::handle(call("mock_route", args), &handler)
+            .await
+            .unwrap();
+        let paused = json!({"requestId": "R1", "request": {"url": "http://a/api/x", "method": "GET"},
+            "resourceType": "Fetch"});
+        mock.emit("Fetch.requestPaused", paused, None);
+        until_sent(mock, "Fetch.fulfillRequest").await;
+        // Then a new task answers it
+        assert_eq!(mock.commands_named("Fetch.fulfillRequest").len(), 1);
     }
 
     /// A request Chrome paused after the tab's routes went (its connection

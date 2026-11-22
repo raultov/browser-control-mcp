@@ -48,6 +48,10 @@ from a copy of its code: entries describe the differences from that release.
   and the task that answered them stopped with it, so of 50 requests in
   flight, up to 47 never settled (#195). The task now outlives the
   intercept and lets through what a removed one blocked.
+- A route added after the task answering a tab's mocked requests had
+  ended by itself starts a new one, on both browsers: the browser kept
+  pausing the matching requests (Firefox: every request of the tab), and
+  nobody answered them.
 
 ## [0.25.0-beta.39] - 2026-11-21
 

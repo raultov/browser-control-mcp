@@ -104,10 +104,11 @@ fn noted(mut reply: CallToolResult, offline_with_routes: bool) -> CallToolResult
     reply
 }
 
-/// Adds a route to the tab's table; the first one adds the intercept, and
-/// starts the task answering the requests it blocks unless it runs already
-/// (it outlives the intercepts, see [`answer_requests`]). Errors are text:
-/// the tool error type is not `Send`.
+/// Adds a route to the tab's table; the first one adds the intercept. A
+/// route starts the task answering the requests it blocks unless one runs
+/// (it outlives the intercepts, see [`answer_requests`]; one that ended by
+/// itself is replaced, or the intercept would block requests nobody
+/// answers). Errors are text: the tool error type is not `Send`.
 async fn add_route(
     tab: &FirefoxTab,
     url_pattern: &str,
@@ -115,27 +116,26 @@ async fn add_route(
 ) -> Result<String, String> {
     let mut routes = tab.routes.lock().await;
     let id = routes.add(url_pattern, response)?;
-    if routes.intercept.is_some() {
-        return Ok(id);
-    }
     let client = tab.tab.client().clone();
     // Subscribed before the intercept: a request blocked in between would
     // otherwise wait for nobody.
     let events = (!routes.listener.is_running()).then(|| client.subscribe());
-    let added = page::command(&tab.tab, "network.addIntercept", intercept_params(tab)).await;
-    let intercept = added
-        .ok()
-        .and_then(|reply| reply.get("intercept")?.as_str().map(str::to_string));
-    let Some(intercept) = intercept else {
-        let _ = routes.remove(Some(&id));
-        return Err("Firefox refused network.addIntercept".into());
-    };
+    if routes.intercept.is_none() {
+        let added = page::command(&tab.tab, "network.addIntercept", intercept_params(tab)).await;
+        let intercept = added
+            .ok()
+            .and_then(|reply| reply.get("intercept")?.as_str().map(str::to_string));
+        let Some(intercept) = intercept else {
+            let _ = routes.remove(Some(&id));
+            return Err("Firefox refused network.addIntercept".into());
+        };
+        routes.intercept = Some(intercept);
+    }
     if let Some(events) = events {
         let answering = answer_requests(client, events, Arc::downgrade(&tab.routes));
         routes.listener = Default::default();
         routes.listener.push(tokio::spawn(answering));
     }
-    routes.intercept = Some(intercept);
     Ok(id)
 }
 
@@ -440,6 +440,43 @@ mod tests {
         // Then the route answers its request once, and the other is left
         assert_eq!(mock.bidi().count("network.provideResponse"), 1);
         assert_eq!(mock.bidi().count("network.continueRequest"), 1);
+        ts::stop(&handler).await;
+    }
+
+    /// A route added while the intercept stays but its answering task
+    /// ended starts a new task: the requests the intercept blocks are
+    /// answered, not left blocked.
+    #[tokio::test]
+    async fn firefox_restarts_an_answering_task_that_ended() {
+        // Given a tab with a route whose answering task has ended
+        let mock = bidi_browser_lite::test_support::MockFirefox::start(false)
+            .await
+            .unwrap();
+        mock.bidi()
+            .respond_with("network.addIntercept", |_| json!({"intercept": "i1"}));
+        let handler = ts::handler(&mock);
+        let route = |glob: &str| {
+            let args = json!({"url_pattern": glob, "body": "m"});
+            mock_route(ts::call("mock_route", args), &handler)
+        };
+        route("*/a/*").await.unwrap();
+        let (_, _, tab) = target(&handler, &ids(&None, &None)).await.unwrap();
+        {
+            let mut routes = tab.routes.lock().await;
+            routes.listener = Default::default();
+            routes.listener.push(tokio::spawn(async {}));
+        }
+        while tab.routes.lock().await.listener.is_running() {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        // When another route is added and the intercept blocks a request
+        route("*/api/*").await.unwrap();
+        let event = blocked("R1", "http://a/api/x", "i1");
+        mock.bidi().emit("network.beforeRequestSent", event);
+        until_sent(&mock, "network.provideResponse").await;
+        // Then a new task answers it, through the same intercept
+        assert_eq!(mock.bidi().count("network.provideResponse"), 1);
+        assert_eq!(mock.bidi().count("network.addIntercept"), 1);
         ts::stop(&handler).await;
     }
 
