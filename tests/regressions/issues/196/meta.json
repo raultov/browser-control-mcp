@@ -1,0 +1,11 @@
+{
+ "number": 196,
+ "title": "mock_route upstream: content_type (and a Content-Type header) is not applied on Firefox",
+ "family": "other",
+ "command": [
+  "repro_upstream_ctype.py",
+  "firefox"
+ ],
+ "bug_regex": "BUG: upstream route's content_type not applied",
+ "exit_on_bug": true
+}

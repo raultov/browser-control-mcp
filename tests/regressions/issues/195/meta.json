@@ -1,0 +1,11 @@
+{
+ "number": 195,
+ "title": "remove_route on Firefox leaves an upstream route's in-flight responses paused for ever",
+ "family": "other",
+ "command": [
+  "repro_upstream_remove_stall.py",
+  "firefox"
+ ],
+ "bug_regex": "BUG: \\d round\\(s\\) left fetches paused after remove_route",
+ "exit_on_bug": true
+}

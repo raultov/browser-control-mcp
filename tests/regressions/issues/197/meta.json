@@ -1,0 +1,11 @@
+{
+ "number": 197,
+ "title": "get_network_logs on Chrome lists a response header that a mock_route upstream route removed",
+ "family": "other",
+ "command": [
+  "repro_upstream_removed_header_logged.py",
+  "chrome"
+ ],
+ "bug_regex": "BUG: get_network_logs lists the ETag the upstream route removed",
+ "exit_on_bug": true
+}

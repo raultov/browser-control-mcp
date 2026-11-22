@@ -1,0 +1,10 @@
+{
+ "number": 194,
+ "title": "mock_route upstream on Chrome: status 299, 250 or 599 leaves the request pending for ever",
+ "family": "other",
+ "command": [
+  "repro_upstream_status_hang.py"
+ ],
+ "bug_regex": "BUG: the request through an upstream route with status 299 never got a response",
+ "exit_on_bug": true
+}
