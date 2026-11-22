@@ -46,6 +46,13 @@ CHANGED_BY_DESIGN = {
     108: "Firefox's offline emulation fails mocked routes; documented, and set_offline and mock_route say so",
     116: "CDP cannot drop one history entry: Chrome's history.length still counts the blank creation page "
          "when the page pushState()s while loading (documented), which the script checks",
+    # mock_route upstream was removed in 1.0.0-rc.1. #194 and #195 also
+    # happened with a plain mock: make e2e checks those (status 299, and
+    # remove_route with 50 requests in flight).
+    194: "its script uses mock_route upstream, removed in 1.0.0-rc.1 (make e2e checks a plain mock with status 299)",
+    195: "its script uses mock_route upstream, removed in 1.0.0-rc.1 (make e2e checks remove_route with 50 requests in flight)",
+    196: "its script uses mock_route upstream, removed in 1.0.0-rc.1",
+    197: "its script uses mock_route upstream, removed in 1.0.0-rc.1",
 }
 
 

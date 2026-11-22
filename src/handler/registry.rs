@@ -1784,6 +1784,22 @@ The page reacted (the DOM changed) and settled after ",
         assert!(error.contains("it takes no arguments"), "{error}");
     }
 
+    /// #196, #197: mock_route no longer takes `upstream` nor
+    /// `remove_headers` (removed in 1.0.0-rc.1): a route answers requests
+    /// itself, and an agent that still sends them is told so.
+    #[tokio::test]
+    async fn mock_route_refuses_the_removed_upstream_arguments() {
+        let mut handler = McpHandler::new_test();
+        handler.tool_groups = vec![ToolGroup::Network];
+        for removed in ["upstream", "remove_headers"] {
+            let mut arguments = serde_json::json!({"url_pattern": "*/api/*"});
+            arguments[removed] = serde_json::json!(true);
+            let error = error_of(&handler, "mock_route", arguments).await;
+            let expected = format!("Unknown argument `{removed}` for `mock_route`");
+            assert!(error.contains(&expected), "{error}");
+        }
+    }
+
     /// AUD-RW-13 (#111): without --allow-cookie-import the hint lists the
     /// arguments tools/list shows, not the hidden cookie-import ones; one
     /// of those still reaches the tool, whose error names the flag.

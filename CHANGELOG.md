@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 `browser-control-mcp` is the successor of `chrome-debug-mcp` 1.5.6 and starts
 from a copy of its code: entries describe the differences from that release.
 
+## [Unreleased]
+
+### Removed
+
+- `mock_route` no longer takes `upstream` and `remove_headers` (added in
+  0.25.0-beta.39): a route answers a request itself, as in Playwright MCP
+  and chrome-devtools-mcp, and an agent that sends them is told they are
+  unknown arguments. Rewriting the server's real response behaved
+  differently in each browser: Firefox does not let a response's
+  `Content-Type` change (#196), and Chrome's network log kept the headers
+  the route removed (#197). To change a response, mock it whole.
+
 ## [0.25.0-beta.39] - 2026-11-21
 
 Public **BETA**. Two features and two fixes. `mock_route` with
