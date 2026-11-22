@@ -50,7 +50,7 @@ browser-control promises there, and what it does not, is in
 | Snapshot of a long page | **bounded at 50 000 characters**, `find_in_snapshot` searches the rest | unbounded | unbounded |
 | Waits for the page to react after an action | ✓ ~50 ms when nothing reacts | ✓ ~500 ms | ✓ ~200 ms |
 | Clicking a covered or hidden element | **fails at once, naming the overlay** | fails after a 5 s timeout | reports success (the overlay gets the click) |
-| Page behind HTTP authentication (401) | **fails at once naming its scheme and realm and how to log in** (credentials in the URL), on Chrome and Firefox | fails with `net::ERR_INVALID_AUTH_CREDENTIALS` | reports success, with `net::ERR_INVALID_AUTH_CREDENTIALS` in the text |
+| Page behind HTTP authentication (401) | **fails at once naming its scheme and realm and how to log in** (credentials in the URL), on Chrome and Firefox | fails with Chrome's invalid-credentials network error | reports success, with the same error in the text |
 | Mock requests, offline mode | ✓ | ✓ | ✓ with `--categoryNetworkMocks`: a local file (status 200) or another URL's response; offline |
 | PDF | ✓ file or inline | ✓ file | ✗ |
 | Cookies and web storage | ✓ values hidden unless asked | ✓ values shown | ✗ |
@@ -83,6 +83,54 @@ browser-control promises there, and what it does not, is in
 | Navigation to an unknown host | error | error | success with the error in the text |
 | Navigate, then read the console (log, warning, errors) | 218 tokens (keeps the same site's earlier messages, here a favicon 404) | 190 tokens | 97 tokens |
 | Navigate, then read the network log (3 requests) | 193 tokens (also lists the documents of the 2 pages before) | 115 tokens | 87 tokens |
+
+## Advantages of a native Rust binary
+
+browser-control-mcp is one compiled program; Playwright MCP and
+chrome-devtools-mcp run on Node.js. Measured on 2026-11-22 with
+`tests/compare/footprint.py` (median of 5 runs, Linux, Chrome headless):
+browser-control-mcp 1.0.0-rc.1, `@playwright/mcp` 0.0.86 and
+`chrome-devtools-mcp` 1.13.0, each started with `npx` as its README shows,
+and with `node` directly.
+
+| | browser-control-mcp | Playwright MCP | chrome-devtools-mcp |
+| --- | --- | --- | --- |
+| Needs at run time | **nothing else** | Node.js | Node.js |
+| Installed | **one 30 MB file** (a 6.7 MB download on Linux x64) | 19 MB of npm packages, plus Node.js | 18 MB of npm packages, plus Node.js |
+| Start, until it answers MCP `initialize` | **4 ms** | 178 ms; 455 ms with `npx` | 280 ms; 542 ms with `npx` |
+| Memory of the server, idle (browser left out) | **13 MB** | 117 MB | 164 MB |
+| Memory of the server after 4 navigations | **23 MB** | 133 MB | 167 MB |
+| Extra process when started with `npx` | none | npm, 109 MB | npm, 108 MB |
+
+- **It starts at once.** A client that starts a server for each session or
+  each subagent waits 4 ms instead of about 0.2 to 0.5 s. The
+  `npx ...@latest` command the other READMEs give also asks the npm
+  registry for the latest version each time it starts (checked with
+  `npx --loglevel=http`), and downloads it when there is a new one;
+  browser-control runs what was installed, also offline.
+- **It uses 6 to 12 times less memory.** 13 to 23 MB against 117 to 167
+  MB (plus about 108 MB for npm under `npx`), so many agents, each with its
+  own server, fit on one machine. The browsers themselves use the same
+  memory whatever drives them.
+- **Nothing else to install.** No Node.js (its `node` binary alone is
+  150 MB in v26.13.0 on Linux), npm or `node_modules`, and no clash with
+  the Node.js version a project pins: one file from Homebrew, npm (which
+  downloads the binary), the GitHub release, the MSI or `cargo install`.
+- **Work on each reply is cheap.** `--secrets` masks a 100 000-character
+  reply with 100 overlapping secrets in about 10 ms, and top-level `await`
+  is found by a native JavaScript parser, in the server's own process.
+- **A bug fails one call, not the session.** `unsafe` code is denied, and
+  `unwrap`, `expect` and `panic!` are lint errors outside tests: an
+  unexpected case comes back as a tool error, and the agent's session goes
+  on.
+
+What it does not change: the browser's own work. Launching Chrome and
+loading a page take the same time whatever drives it (the first
+navigation, which launches Chrome, took 195 to 267 ms with the three
+servers). The faster clicks and evaluations in [Measured](#comparison-with-playwright-mcp-and-chrome-devtools-mcp)
+come mostly from how long each server waits after an action for the page
+to react (about 50 ms here when nothing reacts, 500 ms and 200 ms in the
+others), not from the language.
 
 ## Supported browsers
 

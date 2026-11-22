@@ -23,6 +23,15 @@ snapshots of live pages, a login, latencies, edge cases) on `bc`, `pw` and
 make build && python3 -I tests/compare/bench.py [--servers bc,pw] [--runs 10]
 ```
 
+`footprint.py` measures the README's "Advantages of a native Rust binary":
+how long each server takes to answer `initialize`, the memory of its own
+processes (browsers left out; npm's apart when `npx` starts it) and the
+first navigation, for `bc`, `pw` and `cd` (with `npx`, then with `node`):
+
+```sh
+make build && python3 -I tests/compare/footprint.py [--servers bc,pw] [--runs 10]
+```
+
 ## Servers
 
 | Key | Server | How it runs |
@@ -52,6 +61,7 @@ deliberate change, and its effect shows against the baseline.
 - `scenarios.py`: the tasks, from level 1 (what every agent does) to level 4
   (rare), each with its check.
 - `bench.py`: the README's comparison table (see above).
+- `footprint.py`: start time and memory of each server (see above).
 - `run.py`: runs them and writes `results/<time>/` (`report.md`,
   `results.json`, `run.log`; git-ignored); with `baseline.json`, the report
   lists the scenarios whose status changed.

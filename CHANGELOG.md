@@ -8,6 +8,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 `browser-control-mcp` is the successor of `chrome-debug-mcp` 1.5.6 and starts
 from a copy of its code: entries describe the differences from that release.
 
+## [Unreleased]
+
+### Changed
+
+- README: a new section, "Advantages of a native Rust binary", measured
+  with the new `tests/compare/footprint.py` against Playwright MCP 0.0.86
+  and chrome-devtools-mcp 1.13.0: 4 ms to answer `initialize` (178 to
+  542 ms), 13 to 23 MB for the server process (117 to 167 MB, plus npm
+  under `npx`), no Node.js; and what it does not change (the browser's own
+  work). The comparison table fits GitHub's page width again: an
+  unbreakable `net::ERR_INVALID_AUTH_CREDENTIALS` in two of its cells made
+  it scroll sideways.
+
 ## [1.0.0-rc.1] - 2026-11-22
 
 First **release candidate** for 1.0: from here to 1.0.0 only bugs are
