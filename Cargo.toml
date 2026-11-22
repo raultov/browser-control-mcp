@@ -1,6 +1,6 @@
 [package]
 name = "browser-control-mcp"
-version = "0.25.0-beta.39"
+version = "1.0.0-rc.1"
 edition = "2024"
 rust-version = "1.98"
 authors = ["raultov <raultov@protonmail.com>"]

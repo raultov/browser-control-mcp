@@ -8,7 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 `browser-control-mcp` is the successor of `chrome-debug-mcp` 1.5.6 and starts
 from a copy of its code: entries describe the differences from that release.
 
-## [Unreleased]
+## [1.0.0-rc.1] - 2026-11-22
+
+First **release candidate** for 1.0: from here to 1.0.0 only bugs are
+fixed, and tools, arguments and replies change only when a fix needs it.
+`mock_route` goes back to answering requests itself: `upstream` is
+removed (#196, #197). A mocked response the browser refuses no longer
+leaves the request pending (#194), and `remove_route` on Firefox no
+longer strands the requests in flight (#195).
 
 ### Removed
 
