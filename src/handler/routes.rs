@@ -14,6 +14,9 @@ pub(crate) const MAX_ROUTES: usize = 50;
 /// Most characters of a browser error a route keeps (see `RouteState::note_error`).
 const MAX_ERROR_CHARS: usize = 300;
 
+/// Most former Firefox intercepts remembered (see `RouteState::retired`).
+pub(crate) const MAX_RETIRED: usize = 8;
+
 /// Largest mocked body, in bytes: a route is held in memory for the tab's life.
 pub(crate) const MAX_BODY: usize = 1_000_000;
 
@@ -50,6 +53,10 @@ pub(crate) struct RouteState {
     pub(crate) listener: ListenerHandles,
     /// Firefox: the `network.addIntercept` id blocking the tab's requests.
     pub(crate) intercept: Option<String>,
+    /// Firefox: the tab's former intercepts, newest last (at most
+    /// [`MAX_RETIRED`]). Firefox keeps a request blocked when its intercept
+    /// is removed, so what they blocked is still let through (#195).
+    pub(crate) retired: std::collections::VecDeque<String>,
     /// Firefox: the tab is offline (`set_offline`), which fails the mocked
     /// requests too (#108).
     pub(crate) offline: bool,

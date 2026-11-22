@@ -30,6 +30,11 @@ from a copy of its code: entries describe the differences from that release.
   browser still refuses fails the request instead of leaving it pending,
   and `list_routes` shows the route's `errors` and the browser's
   `last_error`.
+- `remove_route` on Firefox no longer leaves requests pending: Firefox
+  keeps a request blocked when the intercept that blocked it is removed,
+  and the task that answered them stopped with it, so of 50 requests in
+  flight, up to 47 never settled (#195). The task now outlives the
+  intercept and lets through what a removed one blocked.
 
 ## [0.25.0-beta.39] - 2026-11-21
 

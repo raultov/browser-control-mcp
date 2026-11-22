@@ -220,6 +220,10 @@ mod e2e {
         let n = socket.read(&mut buf).await.unwrap_or(0);
         let request = String::from_utf8_lossy(&buf[..n]).to_string();
         let path = request.split_whitespace().nth(1).unwrap_or("/").to_string();
+        // `/slow…` answers after 300 ms: requests stay in flight (#195).
+        if path.starts_with("/slow") {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+        }
         let (kind, body) = page(&path, &ws);
         let status = status_line(&path, &request);
         let reply = format!(
@@ -2685,9 +2689,37 @@ mod e2e {
 
     /// #194: a mocked status without a registered reason phrase (299)
     /// reaches the page on both browsers (Chrome left the request paused).
+    /// #195: removing a route with 50 requests in flight leaves none
+    /// pending (Firefox kept those its intercept had blocked).
     fn route_answer_steps(i: &Value) -> Vec<Step> {
         let read = "fetch('/api/status194?' + Date.now()).then(r => 'status ' + r.status, e => 'failed: ' + e)";
+        let start = "window.__settled195 = null; Promise.allSettled([...Array(50)].map((_, n) => fetch('/slow195?' + n + '-' + Date.now()))).then(all => { window.__settled195 = all.filter(r => r.status === 'fulfilled').length }); 'started'";
+        let settled = "await new Promise(done => { const until = Date.now() + 8000; const check = () => window.__settled195 !== null || Date.now() > until ? done('settled ' + window.__settled195) : setTimeout(check, 100); check(); })";
         vec![
+            (
+                "#195 a route that matches nothing",
+                "mock_route",
+                json!({"instance_id": i, "url_pattern": "*/never-requested195*", "body": "m"}),
+                "Route route-",
+            ),
+            (
+                "#195 50 slow requests in flight",
+                "evaluate_js",
+                json!({"instance_id": i, "expression": start}),
+                "started",
+            ),
+            (
+                "#195 remove_route at once",
+                "remove_route",
+                json!({"instance_id": i}),
+                "0 left",
+            ),
+            (
+                "#195 every request settles",
+                "evaluate_js",
+                json!({"instance_id": i, "expression": settled}),
+                "settled 50",
+            ),
             (
                 "#194 a mocked 299",
                 "mock_route",
