@@ -931,11 +931,16 @@ baseline. See [AGENTS.md](AGENTS.md) for the conventions.
 
 ## Releasing
 
-For the maintainer: bump the version in `Cargo.toml` and `package.json`,
-close the `[Unreleased]` section of `CHANGELOG.md`, run `make check-all`,
-tag `vX.Y.Z` and push the tag (the release workflow builds the installers and
-publishes npm and Homebrew; it needs the `NPM_TOKEN` and
-`HOMEBREW_TAP_TOKEN` secrets), then `cargo publish` by hand.
+For the maintainer: a version is `X.Y.Z`, or `X.Y.Z-rc.N` for a release
+candidate (with the dot: the MSI installer turns `N` into its fourth
+version field, and `wix/main.wxs` lets a candidate replace the one before
+it). Bump it in `Cargo.toml`, `package.json` and `Cargo.lock` (`cargo
+check`), and in this README's status line and `cargo install --version`
+lines; close the `[Unreleased]` section of `CHANGELOG.md`, run
+`make check-all`, tag `vX.Y.Z` (or `vX.Y.Z-rc.N`) and push the tag (the
+release workflow builds the installers and publishes npm and Homebrew; it
+needs the `NPM_TOKEN` and `HOMEBREW_TAP_TOKEN` secrets), then
+`cargo publish` by hand.
 
 ## License
 

@@ -78,8 +78,14 @@
             SummaryCodepage='1252'
             />
 
+        <!-- Hand-edited (kept by allow-dirty = ["msi"]): Windows Installer
+             compares only the first three fields of a version, and cargo-wix
+             puts a release candidate's number in the fourth (1.0.0-rc.2 is
+             1.0.0.2), so without this the next candidate would not replace
+             the one installed. -->
         <MajorUpgrade
             Schedule='afterInstallInitialize'
+            AllowSameVersionUpgrades='yes'
             DowngradeErrorMessage='A newer version of [ProductName] is already installed. Setup will now exit.'/>
 
         <Media Id='1' Cabinet='media1.cab' EmbedCab='yes' DiskPrompt='CD-ROM #1'/>

@@ -28,6 +28,10 @@ from a copy of its code: entries describe the differences from that release.
   security boundary, a crash, a hang of the server or lost data; Medium
   for a broken promise or a wrong report in ordinary use; Low otherwise.
   The comparison now lists chrome-devtools-mcp 1.13.0's mocks.
+- The Windows installer (MSI) replaces an installed release candidate of
+  the same version (`1.0.0-rc.2` over `1.0.0-rc.1`, `1.0.0` over either):
+  the candidate's number is a fourth version field, which Windows Installer
+  does not compare.
 
 ### Fixed
 

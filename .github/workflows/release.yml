@@ -306,9 +306,9 @@ jobs:
           # Write and read notes from a file to avoid quoting breaking things
           echo "$ANNOUNCEMENT_BODY" > $RUNNER_TEMP/notes.txt
 
-          # Hand-edited (kept by allow-dirty = ["ci"]): beta versions are published as
-          # the latest release, not as a GitHub prerelease, so the installers under
-          # releases/latest/download keep working.
+          # Hand-edited (kept by allow-dirty = ["ci"]): prereleases (rc, and the betas
+          # before them) are published as the latest release, not as a GitHub
+          # prerelease, so the installers under releases/latest/download keep working.
           gh release create "${{ needs.plan.outputs.tag }}" --target "$RELEASE_COMMIT" --latest --title "$ANNOUNCEMENT_TITLE" --notes-file "$RUNNER_TEMP/notes.txt" artifacts/*
 
   publish-homebrew-formula:
@@ -380,7 +380,7 @@ jobs:
       - run: |
           for release in $(echo "$PLAN" | jq --compact-output '.releases[] | select([.artifacts[] | endswith("-npm-package.tar.gz")] | any)'); do
             pkg=$(echo "$release" | jq '.artifacts[] | select(endswith("-npm-package.tar.gz"))' --raw-output)
-            # Hand-edited: `--tag latest` so a beta version is what `npm install` gets.
+            # Hand-edited: `--tag latest` so a prerelease (rc) is what `npm install` gets.
             npm publish --access public --tag latest "./npm/${pkg}"
           done
         env:
