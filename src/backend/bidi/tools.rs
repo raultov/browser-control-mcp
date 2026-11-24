@@ -3286,14 +3286,22 @@ mod tests {
         mock.bidi().emit("log.entryAdded", bidi);
         let errors = fixture_resources(RDP_RESOURCES_ERROR_MESSAGE);
         rdp.emit_resources("error-message", errors);
-        // Then it is listed once, as a javascript error, next to the cookie warning
+        // Then it is listed once, as a javascript error with its stack
+        // (#204), next to the cookie warning
         let details = json!({"include_details": true});
         let reply = until_contains(&handler, "get_console_logs", details, "security").await;
         let body: Value = serde_json::from_str(&reply).unwrap();
         let messages = body["messages"].as_array().unwrap();
-        let script: Vec<&Value> = messages.iter().filter(|m| m["text"] == text).collect();
+        let first_line =
+            |m: &&Value| m["text"].as_str().unwrap_or_default().lines().next() == Some(text);
+        let script: Vec<&Value> = messages.iter().filter(first_line).collect();
         assert_eq!(script.len(), 1, "{reply}");
         assert_eq!(script[0]["source"], "javascript");
+        let stack = "\n    at https://example.com/test.html:43:7";
+        assert!(
+            script[0]["text"].as_str().unwrap().ends_with(stack),
+            "{reply}"
+        );
         assert!(
             messages.iter().any(|m| m["source"] == "security"),
             "{reply}"

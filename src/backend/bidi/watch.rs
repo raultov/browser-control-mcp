@@ -630,15 +630,58 @@ pub(crate) fn console_message(kind: &str, resource: &Value) -> Option<ConsoleMes
     })
 }
 
+/// Most stack frames kept with an uncaught error (`get_console_logs`
+/// shows the first 5; `include_details` all of them).
+const MAX_STACK_FRAMES: usize = 20;
+
 /// A page error's text; an unhandled rejection's starts with
-/// `Uncaught (in promise)`, as on Chrome (ISSUE-80).
+/// `Uncaught (in promise)`, as on Chrome (ISSUE-80). An uncaught error (or
+/// rejection) is followed by its stack, as Chrome gives it (#204: Firefox
+/// lists it apart, in `stacktrace`), without Firefox's own frames (its
+/// Remote Agent running `evaluate_js`), as Chrome leaves out its own.
 fn error_text(error: &Value) -> Option<String> {
     let text = error.get("errorMessage")?.as_str()?;
-    let rejection = error.get("isPromiseRejection").and_then(Value::as_bool) == Some(true);
-    Some(match rejection {
+    let flag = |key: &str| error.get(key).and_then(Value::as_bool) == Some(true);
+    let rejection = flag("isPromiseRejection");
+    let mut out = match rejection {
         true => format!("{}{text}", crate::handler::cdp_domains::log::IN_PROMISE),
         false => text.to_string(),
-    })
+    };
+    if flag("hasException") || rejection {
+        let frames = error.get("stacktrace").and_then(Value::as_array);
+        let page = |frame: &&Value| {
+            let file = frame
+                .get("filename")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            !(file.starts_with("chrome://") || file.starts_with("resource://"))
+        };
+        let frames = frames.into_iter().flatten().filter(page);
+        for frame in frames.take(MAX_STACK_FRAMES) {
+            out.push_str(&stack_line(frame));
+        }
+    }
+    Some(out)
+}
+
+/// One frame of a Firefox `stacktrace` as V8 writes it in a stack:
+/// `\n    at function (url:line:column)`, or `\n    at url:line:column`
+/// for a frame without a name (lines and columns count from 1 on both).
+fn stack_line(frame: &Value) -> String {
+    let number = |key: &str| frame.get(key).and_then(Value::as_u64).unwrap_or(0);
+    let file = frame
+        .get("filename")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let place = format!("{file}:{}:{}", number("lineNumber"), number("columnNumber"));
+    match frame
+        .get("functionName")
+        .and_then(Value::as_str)
+        .filter(|n| !n.is_empty())
+    {
+        Some(name) => format!("\n    at {name} ({place})"),
+        None => format!("\n    at {place}"),
+    }
 }
 
 /// What a Firefox console category is about: `javascript` (script errors),
@@ -1333,14 +1376,17 @@ mod tests {
     }
 
     /// ISSUE-80 (Firefox): an unhandled rejection the watcher reports says
-    /// `Uncaught (in promise)`, as on Chrome, and replaces BiDi's copy.
+    /// `Uncaught (in promise)`, as on Chrome, and replaces BiDi's copy;
+    /// #204: with its stack, which BiDi's copy has not.
     #[test]
     fn promise_rejections_say_so() {
         let mut errors = resources(fixtures::RDP_RESOURCES_ERROR_MESSAGE);
         errors[0]["pageError"]["isPromiseRejection"] = json!(true);
         errors[0]["pageError"]["errorMessage"] = json!("Error: rej");
         let rejected = console_message("error-message", &errors[0]).unwrap();
-        assert_eq!(rejected.text, "Uncaught (in promise) Error: rej");
+        let expected =
+            "Uncaught (in promise) Error: rej\n    at https://example.com/test.html:43:7";
+        assert_eq!(rejected.text, expected);
         let mut log = crate::handler::cdp_domains::log::LogState::default();
         let mut bidi = rejected.clone();
         (bidi.text, bidi.source, bidi.channel) =
@@ -1348,7 +1394,36 @@ mod tests {
         log.push_deduplicated(bidi);
         log.push_deduplicated(rejected);
         let texts: Vec<&str> = log.messages.iter().map(|m| m.text.as_str()).collect();
-        assert_eq!(texts, ["Uncaught (in promise) Error: rej"]);
+        assert_eq!(texts, [expected]);
+    }
+
+    /// #204 (Firefox): an uncaught error carries its stack, one line per
+    /// frame in Chrome's form (`at function (url:line:column)`, or
+    /// `at url:line:column` for a frame without a name), at most
+    /// [`MAX_STACK_FRAMES`], Firefox's own frames left out; a message
+    /// without an exception (a cookie warning) has none.
+    #[test]
+    fn uncaught_errors_carry_their_stack() {
+        let mut errors = resources(fixtures::RDP_RESOURCES_ERROR_MESSAGE);
+        let frame = |name: Value, line: u64| json!({"functionName": name, "filename": "http://a/index.html", "lineNumber": line, "columnNumber": 25, "sourceId": null});
+        let frames: Vec<Value> = std::iter::once(frame(json!("boom"), 3))
+            .chain((0..MAX_STACK_FRAMES + 5).map(|_| frame(Value::Null, 9)))
+            .collect();
+        let mut frames = frames;
+        let internal = json!({"functionName": "executeInRealm", "filename": "chrome://remote/content/shared/Realm.sys.mjs", "lineNumber": 306, "columnNumber": 40});
+        frames.insert(1, internal);
+        errors[0]["pageError"]["stacktrace"] = Value::Array(frames);
+        let thrown = console_message("error-message", &errors[0]).unwrap();
+        let lines: Vec<&str> = thrown.text.lines().collect();
+        assert_eq!(lines.len(), 1 + MAX_STACK_FRAMES, "{}", thrown.text);
+        assert_eq!(
+            lines[0],
+            "ReferenceError: nonExistentFunctionCallHere is not defined"
+        );
+        assert_eq!(lines[1], "    at boom (http://a/index.html:3:25)");
+        assert_eq!(lines[2], "    at http://a/index.html:9:25");
+        let cookie = console_message("error-message", &errors[1]).unwrap();
+        assert!(!cookie.text.contains('\n'));
     }
 
     /// FWS-03 (F-04): page errors and CSS warnings become console messages
@@ -1367,7 +1442,7 @@ mod tests {
         );
         assert_eq!(
             script.text,
-            "ReferenceError: nonExistentFunctionCallHere is not defined"
+            "ReferenceError: nonExistentFunctionCallHere is not defined\n    at https://example.com/test.html:43:7"
         );
         let cookie = console_message("error-message", &errors[1]).unwrap();
         assert_eq!(cookie.source, "security");

@@ -128,8 +128,9 @@ impl LogState {
     }
 
     /// Pushes a message that another feed may report too (Firefox): a copy
-    /// already pushed by the other feed (same text, close timestamps) is
-    /// kept once, with the watcher's labels, which say more.
+    /// already pushed by the other feed (same first line, close
+    /// timestamps) is kept once, with the watcher's labels and stack, which
+    /// say more.
     pub(crate) fn push_deduplicated(&mut self, msg: ConsoleMessage) {
         if self
             .cleared_before
@@ -145,7 +146,7 @@ impl LogState {
             .take(DUPLICATE_LOOKBACK)
             .find(|m| {
                 m.channel != msg.channel
-                    && without_in_promise(&m.text) == without_in_promise(&msg.text)
+                    && twin_key(&m.text) == twin_key(&msg.text)
                     && (m.timestamp - msg.timestamp).abs() <= DUPLICATE_WINDOW_MS
             });
         match twin {
@@ -607,10 +608,12 @@ fn arg_text(arg: &Value) -> Option<String> {
 /// (Chrome's `exceptionDetails.text`; Firefox's watcher flags it).
 pub(crate) const IN_PROMISE: &str = "Uncaught (in promise) ";
 
-/// `text` without [`IN_PROMISE`]: Firefox reports a rejection twice, only
-/// its watcher knowing it is one.
-fn without_in_promise(text: &str) -> &str {
-    text.strip_prefix(IN_PROMISE).unwrap_or(text)
+/// What two copies of one Firefox message share: its first line without
+/// [`IN_PROMISE`]. Firefox reports an uncaught error twice, only its
+/// watcher knowing it is a rejection and giving its stack (#204).
+fn twin_key(text: &str) -> &str {
+    let text = text.strip_prefix(IN_PROMISE).unwrap_or(text);
+    text.split('\n').next().unwrap_or(text)
 }
 
 fn exception(params: &Value, details: &Value) -> ConsoleMessage {

@@ -387,6 +387,9 @@ async fn on_navigation(method: &str, params: &Value, state: &PumpState) {
 pub(crate) fn console_message(params: &Value) -> ConsoleMessage {
     let javascript = str_field(params, "type") == Some("javascript");
     let frame = params.pointer("/stackTrace/callFrames/0");
+    // Code the debugger runs (a logpoint's console.log, #205) is in no
+    // page script: no location, as on Chrome.
+    let located = frame.filter(|f| str_field(f, "url") != Some(DEBUGGER_EVAL));
     // A script error always has the stack of the script that threw;
     // Firefox's own messages (a cookie rejected, a CSP report) have none
     // and are not uncaught exceptions (ISSUE-80).
@@ -408,13 +411,17 @@ pub(crate) fn console_message(params: &Value) -> ConsoleMessage {
             .get("timestamp")
             .and_then(Value::as_f64)
             .unwrap_or(0.0),
-        url: frame.and_then(|f| opt_string(f, "url")),
-        line_number: frame
+        url: located.and_then(|f| opt_string(f, "url")),
+        line_number: located
             .and_then(|f| f.get("lineNumber"))
             .and_then(Value::as_i64),
         channel: Default::default(),
     }
 }
+
+/// The URL Firefox gives code its debugger evaluates (a breakpoint's
+/// condition, so a logpoint's `console.log`).
+const DEBUGGER_EVAL: &str = "debugger eval code";
 
 /// The console arguments printed as Chrome previews them (Firefox's own
 /// text says `Object(3)`), or `None` when one is a value BiDi does not
@@ -775,6 +782,18 @@ mod tests {
         let thrown = json!({"type": "javascript", "level": "error", "text": "Error: x", "source": {"realm": "r", "context": "c"}, "timestamp": 1,
             "stackTrace": {"callFrames": [{"url": "http://a/", "lineNumber": 1, "columnNumber": 0, "functionName": ""}]}});
         assert_eq!(console_message(&thrown).source, "exception");
+    }
+
+    /// #205 (Firefox): a logpoint's message, which Firefox writes from the
+    /// debugger's own code (`debugger eval code`), has no location, as on
+    /// Chrome: that place is in no page script.
+    #[test]
+    fn logpoint_messages_have_no_location() {
+        let logged = json!({"type": "console", "method": "log", "level": "info", "text": "logpoint http://a/app2.js:1: i=0",
+            "args": [{"type": "string", "value": "logpoint http://a/app2.js:1:"}, {"type": "string", "value": "i=0"}],
+            "timestamp": 1, "stackTrace": {"callFrames": [{"url": "debugger eval code", "lineNumber": 0, "columnNumber": 0, "functionName": ""}]}});
+        let message = console_message(&logged);
+        assert_eq!((message.url, message.line_number), (None, None));
     }
 
     /// AUD-OB-02: `console.warn` is level `warning`, as on Chrome and as

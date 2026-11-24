@@ -38,6 +38,15 @@ from a copy of its code: entries describe the differences from that release.
 - `get_network_logs` on Firefox gives a mocked redirect's hop its
   `status` and `location` (#198): Firefox reports no response for a
   response a route gave, so the hop now takes them from the route.
+- `get_console_logs` on Firefox shows an uncaught error's stack (#204): the
+  debugger port's watcher gives it apart from the message, and only the
+  message was kept. Its frames now follow the error in Chrome's form
+  (`at boom (url:3:25)`), without Firefox's own frames; BiDi's copy of the
+  error, without a stack, is still dropped for the watcher's.
+- A Firefox logpoint's console line no longer ends with
+  `@ debugger eval code:1` (#205): that is where Firefox runs a
+  breakpoint's condition, in no page script; the line has no location, as
+  on Chrome.
 
 ## [1.0.0-rc.1] - 2026-11-22
 

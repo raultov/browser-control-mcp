@@ -1,0 +1,10 @@
+{
+ "number": 205,
+ "title": "set_breakpoint log: Firefox logpoint console lines carry a bogus '@ debugger eval code:1' location",
+ "family": "other",
+ "command": [
+  "repro_logpoint_location.py"
+ ],
+ "bug_regex": "BUG: the logpoint console lines differ",
+ "exit_on_bug": true
+}
