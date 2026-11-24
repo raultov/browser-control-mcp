@@ -2122,13 +2122,13 @@ mod e2e {
                 "#203 fill a month",
                 "fill_input",
                 fill("#month203", "2026-10"),
-                "Successfully filled",
+                "Successfully set the value of '#month203'.",
             ),
             (
                 "#203 fill a week",
                 "fill_input",
                 fill("#week203", "2026-W43"),
-                "Successfully filled",
+                "Successfully set the value of '#week203'.",
             ),
             (
                 "#203 a malformed month is refused",
