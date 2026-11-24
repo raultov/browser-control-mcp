@@ -21,6 +21,24 @@ from a copy of its code: entries describe the differences from that release.
   unbreakable `net::ERR_INVALID_AUTH_CREDENTIALS` in two of its cells made
   it scroll sideways.
 
+### Fixed
+
+- `mock_route` on Chrome answers the requests of the tab's frames of
+  another origin too (#199, #200): such a frame runs in a process of its
+  own and pauses its requests in its own session, which the tab's `Fetch`
+  does not see, so they reached the network. The frame watcher that
+  already gave those frames' console, network and debugger to the tab now
+  enables the routes there before the frame runs, and for routes added
+  later; Firefox, Playwright MCP and chrome-devtools-mcp mocked them.
+- `mock_route` on Firefox matches a URL with a `#fragment` as Chrome does
+  (#201): Firefox reports the fragment in the request's URL, Chrome
+  leaves it out (it is never sent), so `*/frag.txt` let
+  `/frag.txt#part` reach the network. The fragment is no longer part of
+  what a route matches, on both browsers.
+- `get_network_logs` on Firefox gives a mocked redirect's hop its
+  `status` and `location` (#198): Firefox reports no response for a
+  response a route gave, so the hop now takes them from the route.
+
 ## [1.0.0-rc.1] - 2026-11-22
 
 First **release candidate** for 1.0: from here to 1.0.0 only bugs are

@@ -966,6 +966,36 @@ mod tests {
         assert_eq!((entry.response_status, entry.finished), (None, false));
     }
 
+    /// #198 (Firefox): a redirect a mocked route gave keeps its status and
+    /// `Location` in its hop: Firefox reports no response for a mocked
+    /// one, so the hop takes what the route answered with.
+    #[test]
+    fn mocked_redirect_hops_keep_status_and_location() {
+        let mut network = crate::handler::NetworkState::default();
+        let request = |url: &str| json!({"request": "R1", "url": url, "method": "GET", "headers": [], "destination": "", "initiatorType": "fetch"});
+        let sent = |url: &str, count: u64| json!({"request": request(url), "redirectCount": count});
+        // (the route may note its response before the request is logged)
+        let headers = [("location".to_string(), "/api/echo?via=r1".to_string())];
+        network.note_mocked_response("R1", 302, &headers);
+        on_network(
+            "network.beforeRequestSent",
+            &sent("http://a/r1", 0),
+            &mut network,
+        );
+        on_network(
+            "network.beforeRequestSent",
+            &sent("http://a/api/echo?via=r1", 1),
+            &mut network,
+        );
+        let entry = network.find_request_mut("R1").unwrap().clone();
+        let expected = crate::handler::RedirectHop {
+            url: "http://a/r1".into(),
+            status: Some(302),
+            location: Some("/api/echo?via=r1".into()),
+        };
+        assert_eq!(entry.redirects, [expected]);
+    }
+
     /// ISSUE-78 (Firefox): a fetch or XHR has a resource type (its
     /// `initiatorType`; `destination` is empty), and a request with a body
     /// says so (`bodySize`), so the body is asked for.

@@ -292,13 +292,14 @@ pub(crate) fn start_tab_listeners(
         tracing: trace,
         webmcp,
         dialog,
+        routes,
     } = states;
     handles.push(debugger::start_debugger_listener(&target, dbg.clone()));
     for handle in page::start_dialog_listener(&target, dialog) {
         handles.push(handle);
     }
     handles.push(network::start_network_listener(&target, net.clone()));
-    let sinks = frame_watch::FrameSinks::new(log.clone(), net.clone(), dbg);
+    let sinks = frame_watch::FrameSinks::new(log.clone(), net.clone(), dbg, routes);
     handles.push(frame_watch::start_frame_watcher(tab, sinks));
     handles.push(page::start_page_listener(
         &target,

@@ -1,0 +1,11 @@
+{
+ "number": 201,
+ "title": "mock_route on Firefox: a request URL with a #fragment does not match the route's glob",
+ "family": "other",
+ "command": [
+  "repro_ff_route_fragment.py",
+  "firefox"
+ ],
+ "bug_regex": "BUG: a request whose URL has a #fragment is not matched",
+ "exit_on_bug": true
+}

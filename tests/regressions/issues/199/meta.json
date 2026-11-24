@@ -1,0 +1,11 @@
+{
+ "number": 199,
+ "title": "mock_route on Chrome: requests of a cross-origin iframe are not mocked (Firefox mocks them)",
+ "family": "other",
+ "command": [
+  "repro_chrome_route_oopif.py",
+  "chrome"
+ ],
+ "bug_regex": "BUG: the cross-origin iframe's request was not mocked",
+ "exit_on_bug": true
+}

@@ -132,7 +132,8 @@ async fn add_route(
         routes.intercept = Some(intercept);
     }
     if let Some(events) = events {
-        let answering = answer_requests(client, events, Arc::downgrade(&tab.routes));
+        let network = tab.network.clone();
+        let answering = answer_requests(client, events, Arc::downgrade(&tab.routes), network);
         routes.listener = Default::default();
         routes.listener.push(tokio::spawn(answering));
     }
@@ -165,11 +166,12 @@ async fn stop_intercepting(tab: &FirefoxTab, routes: &mut RouteState) {
 /// Answers the requests the tab's intercepts block (see [`answer`]), as
 /// long as the tab's routes live: what its current intercept blocked from
 /// the routes, what a retired one blocked let through. Holds the routes
-/// weakly: they own this task.
+/// weakly: they own this task. `network` is the tab's request log.
 async fn answer_requests(
     client: BidiClient,
     mut events: tokio::sync::broadcast::Receiver<WsResponse>,
     routes: Weak<Mutex<RouteState>>,
+    network: Arc<Mutex<crate::handler::NetworkState>>,
 ) {
     loop {
         let event = match events.recv().await {
@@ -189,9 +191,7 @@ async fn answer_requests(
         };
         let blocker = blocker(&*routes.lock().await, &blocked.intercepts);
         match blocker {
-            Some(Blocker::Current) => {
-                answer(&client, &routes, &blocked.request, &blocked.url).await
-            }
+            Some(Blocker::Current) => answer(&client, &routes, &network, &blocked).await,
             Some(Blocker::Retired) => {
                 let params = json!({"request": blocked.request});
                 if client
@@ -230,11 +230,19 @@ fn blocker(routes: &RouteState, intercepts: &[String]) -> Option<Blocker> {
         .then_some(Blocker::Retired)
 }
 
-/// Answers `request` to `url`, which an intercept blocked: a response from
-/// the latest matching route, or let through. A response Firefox refuses
-/// fails the request instead of leaving it blocked (#194), and the route
-/// keeps Firefox's error for `list_routes` (never for the log).
-async fn answer(client: &BidiClient, routes: &Mutex<RouteState>, request: &str, url: &str) {
+/// Answers a request an intercept `blocked`: a response from the latest
+/// matching route, or let through. The response given is noted in the
+/// tab's request log `network`, as Firefox reports none for it (#198: a
+/// mocked redirect's hop had no status). A response Firefox refuses fails
+/// the request instead of leaving it blocked (#194), and the route keeps
+/// Firefox's error for `list_routes` (never for the log).
+async fn answer(
+    client: &BidiClient,
+    routes: &Mutex<RouteState>,
+    network: &Mutex<crate::handler::NetworkState>,
+    blocked: &Blocked,
+) {
+    let (request, url) = (blocked.request.as_str(), blocked.url.as_str());
     let answer = routes.lock().await.answer(url);
     let Some((route, response)) = answer else {
         let params = json!({"request": request});
@@ -247,6 +255,11 @@ async fn answer(client: &BidiClient, routes: &Mutex<RouteState>, request: &str, 
         }
         return;
     };
+    let noted = &response.headers;
+    network
+        .lock()
+        .await
+        .note_mocked_response(request, response.status, noted);
     let provided = client.send_raw_command("network.provideResponse", provide(request, &response));
     let Err(error) = provided.await else {
         return;

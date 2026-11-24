@@ -19,6 +19,7 @@ pub(crate) struct TabDomainStates {
     pub(crate) tracing: Arc<Mutex<TracingState>>,
     pub(crate) webmcp: Arc<Mutex<WebmcpState>>,
     pub(crate) dialog: Arc<Mutex<DialogState>>,
+    pub(crate) routes: Arc<Mutex<crate::handler::routes::RouteState>>,
 }
 
 pub(crate) struct TabEntry {
@@ -47,6 +48,7 @@ impl TabEntry {
             tracing: self.tracing_state.clone(),
             webmcp: self.webmcp_state.clone(),
             dialog: self.dialog_state.clone(),
+            routes: self.route_state.clone(),
         }
     }
 }

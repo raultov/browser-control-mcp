@@ -349,6 +349,10 @@ pub(crate) struct NetworkState {
     /// `network.authRequired`), and the request of the last one.
     auth_asked: u64,
     last_auth: Option<String>,
+    /// Firefox: the status and `Location` of the responses its mocked
+    /// routes gave, by request id: Firefox reports no response for one, so
+    /// a mocked redirect's hop takes them from here (#198).
+    mocked: crate::util::bounded::BoundedMap<String, (i64, Option<String>), MAX_EXTRA_HEADERS>,
 }
 
 /// URL schemes of the browser's own requests (the new-tab page, DevTools,
@@ -416,6 +420,7 @@ impl Default for NetworkState {
             downloads: Default::default(),
             auth_asked: 0,
             last_auth: None,
+            mocked: Default::default(),
         }
     }
 }
@@ -423,11 +428,23 @@ impl Default for NetworkState {
 impl NetworkState {
     pub(crate) fn insert_request(&mut self, id: String, req: NetworkRequest) {
         // A redirect reuses the request id: keep one entry, remember the hop.
+        // Taken only by a hop: the route may note its response before the
+        // request it answered is logged.
+        let hop = self.find_request_mut(&id).is_some();
+        let mocked = hop.then(|| self.mocked.remove(&id)).flatten();
         if let Some(existing) = self.find_request_mut(&id) {
             let previous = std::mem::replace(existing, req);
+            let reported = previous.response_status.is_some();
+            let (status, location) = match mocked {
+                Some((status, location)) if !reported => (Some(status), location),
+                _ => (
+                    previous.response_status,
+                    previous.response_header("location").map(str::to_string),
+                ),
+            };
             let hop = RedirectHop {
-                location: previous.response_header("location").map(str::to_string),
-                status: previous.response_status,
+                location,
+                status,
                 url: previous.url,
             };
             existing.redirects = previous.redirects;
@@ -449,6 +466,23 @@ impl NetworkState {
                 bucket.requests.remove(&oldest_id);
             }
         }
+    }
+
+    /// Notes the response a mocked route gave request `id` (`status`,
+    /// `headers`), which Firefox does not report: a redirect hop takes its
+    /// status and `Location` from it (#198).
+    pub(crate) fn note_mocked_response(
+        &mut self,
+        id: &str,
+        status: u16,
+        headers: &[(String, String)],
+    ) {
+        let location = headers
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case("location"))
+            .map(|(_, value)| value.clone());
+        self.mocked
+            .insert(id.to_string(), (i64::from(status), location));
     }
 
     /// Notes that navigation `navigation` became a download of `url`.

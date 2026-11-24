@@ -1,0 +1,10 @@
+{
+ "number": 198,
+ "title": "get_network_logs on Firefox: a mocked redirect's hop has no status or location",
+ "family": "other",
+ "command": [
+  "repro_ff_mock_redirect_hop.py"
+ ],
+ "bug_regex": "BUG: mocked redirect hop has no status/location",
+ "exit_on_bug": true
+}

@@ -1,11 +1,13 @@
 //! `mock_route`, `list_routes` and `remove_route`: the shared arguments and
 //! replies, and the Chrome implementation (`Fetch` domain: a paused request
 //! is fulfilled from the tab's routes or continued; failed when Chrome
-//! refuses the route's response).
+//! refuses the route's response). A frame of another origin pauses its
+//! requests in its own session, so `Fetch` is enabled there too, and each
+//! session has its own answering task (#199).
 
 use crate::handler::McpHandler;
 use crate::handler::cdp_domains::cdp_target::CdpTarget;
-use crate::handler::cdp_domains::event_pump::error_kind;
+use crate::handler::cdp_domains::event_pump::{ListenerHandles, error_kind};
 use crate::handler::routes::{MAX_BODY, MockResponse, RouteState, reason_phrase};
 use base64::Engine;
 use cdp_browser_lite::NoParams;
@@ -197,17 +199,15 @@ impl RemoveRouteTool {
         let ids = routes
             .remove(args.route_id.as_deref())
             .map_err(CallToolError::from_message)?;
-        let updated = intercept(&target, &mut routes).await;
+        let updated = intercept(&target, &state, &mut routes).await;
         updated.map_err(CallToolError::from_message)?;
         Ok(removed(&ids, &routes))
     }
 }
 
 /// Adds a route to the tab's table and has Chrome pause the requests of
-/// every route; a route starts the task answering them unless one runs
-/// (a task that ended by itself is replaced: Chrome would otherwise pause
-/// requests nobody answers). Errors are text: the tool error type is not
-/// `Send`.
+/// every route (see [`intercept`]). Errors are text: the tool error type
+/// is not `Send`.
 async fn add_route(
     target: &CdpTarget,
     state: &Arc<Mutex<RouteState>>,
@@ -216,40 +216,100 @@ async fn add_route(
 ) -> Result<String, String> {
     let mut routes = state.lock().await;
     let id = routes.add(url_pattern, response)?;
-    if !routes.listener.is_running() {
-        // Subscribed before Fetch.enable: a request paused in between
-        // would otherwise wait for nobody.
-        let events = target.on_domain("Fetch");
-        let answering = answer_requests(target.clone(), events, Arc::downgrade(state));
-        routes.listener = Default::default();
-        routes.listener.push(tokio::spawn(answering));
-    }
-    if let Err(e) = intercept(target, &mut routes).await {
+    if let Err(e) = intercept(target, state, &mut routes).await {
         let _ = routes.remove(Some(&id));
-        intercept(target, &mut routes).await?;
+        intercept(target, state, &mut routes).await?;
         return Err(e);
     }
     Ok(id)
 }
 
-/// Has Chrome pause the requests the tab's routes match, or stops
-/// pausing (and answering) once no route is left.
-async fn intercept(target: &CdpTarget, routes: &mut RouteState) -> Result<(), String> {
+/// A frame of another origin the tab's routes also answer (Chrome): its
+/// session, and the task answering what it pauses.
+pub(crate) struct FrameRoutes {
+    target: CdpTarget,
+    listener: ListenerHandles,
+}
+
+/// Has the frame of another origin `target_id` (its session `frame`)
+/// answer the tab's routes too, from now on and for the routes added
+/// later: called by the frame watcher before the frame runs, so its first
+/// requests are paused (#199: the tab's `Fetch` does not see them).
+pub(crate) async fn watch_frame(state: &Arc<Mutex<RouteState>>, target_id: &str, frame: CdpTarget) {
+    let mut routes = state.lock().await;
+    let mut watched = FrameRoutes {
+        target: frame,
+        listener: ListenerHandles::default(),
+    };
+    if !routes.is_empty() {
+        let patterns = fetch_patterns(&routes);
+        let _ = pause_in(&watched.target, &mut watched.listener, state, patterns).await;
+    }
+    routes.frames.insert(target_id.to_string(), watched);
+}
+
+/// Has Chrome pause the requests the tab's routes match, in the tab and
+/// in its watched frames of another origin, or stops pausing (and
+/// answering) once no route is left. The tab's refusal is the call's
+/// error; a frame's is not (it may be going away).
+async fn intercept(
+    target: &CdpTarget,
+    state: &Arc<Mutex<RouteState>>,
+    routes: &mut RouteState,
+) -> Result<(), String> {
     if routes.is_empty() {
         let _ = target.send_raw_command("Fetch.disable", NoParams).await;
         routes.listener = Default::default();
+        for frame in routes.frames.values_mut() {
+            let _ = frame
+                .target
+                .send_raw_command("Fetch.disable", NoParams)
+                .await;
+            frame.listener = Default::default();
+        }
         return Ok(());
     }
+    let patterns = fetch_patterns(routes);
+    pause_in(target, &mut routes.listener, state, patterns.clone())
+        .await
+        .map_err(|e| format!("Chrome refused Fetch.enable: {}", error_kind(&e)))?;
+    for frame in routes.frames.values_mut() {
+        let _ = pause_in(&frame.target, &mut frame.listener, state, patterns.clone()).await;
+    }
+    Ok(())
+}
+
+/// `Fetch.enable`'s params for the routes' patterns, at the request stage.
+fn fetch_patterns(routes: &RouteState) -> Value {
     let patterns: Vec<Value> = routes
         .patterns()
         .iter()
         .map(|p| json!({"urlPattern": p, "requestStage": "Request"}))
         .collect();
+    json!({ "patterns": patterns })
+}
+
+/// Has the session `target` pause the requests `params` names, with a
+/// task answering them in `listener` unless one runs (a task that ended by
+/// itself is replaced: Chrome would otherwise pause requests nobody
+/// answers). The task is started first: a request paused in between
+/// would otherwise wait for nobody.
+async fn pause_in(
+    target: &CdpTarget,
+    listener: &mut ListenerHandles,
+    state: &Arc<Mutex<RouteState>>,
+    params: Value,
+) -> Result<(), cdp_browser_lite::CdpError> {
+    if !listener.is_running() {
+        let events = target.on_domain("Fetch");
+        let answering = answer_requests(target.clone(), events, Arc::downgrade(state));
+        *listener = ListenerHandles::default();
+        listener.push(tokio::spawn(answering));
+    }
     target
-        .send_raw_command("Fetch.enable", json!({ "patterns": patterns }))
+        .send_raw_command("Fetch.enable", params)
         .await
-        .map(|_| ())
-        .map_err(|e| format!("Chrome refused Fetch.enable: {}", error_kind(&e)))
+        .map(drop)
 }
 
 /// Answers the requests Chrome pauses (see [`answer`]). Holds the routes
@@ -508,6 +568,48 @@ mod tests {
         until_sent(mock, "Fetch.fulfillRequest").await;
         // Then a new task answers it
         assert_eq!(mock.commands_named("Fetch.fulfillRequest").len(), 1);
+    }
+
+    /// #199: a route added while a frame of another origin is watched
+    /// pauses its requests too, in its own session; removing the last
+    /// route stops pausing there as on the tab.
+    #[tokio::test]
+    async fn routes_reach_the_watched_frames_of_another_origin() {
+        // Given a tab with a watched frame of another origin
+        let mock = spawn_recording_mock().await;
+        let handler = mock_handler(mock.http_port);
+        let session = handler.session(None).await.unwrap();
+        session.target(None).await.unwrap();
+        let state = session.route_state(None).unwrap();
+        let address = format!("127.0.0.1:{}", mock.http_port);
+        let timeout = std::time::Duration::from_secs(2);
+        let browser = cdp_browser_lite::BrowserClient::connect(&address, timeout)
+            .await
+            .unwrap();
+        let frame = browser.attach("T-page-1").await.unwrap();
+        let frame_session = frame.session_id().to_string();
+        watch_frame(&state, "T-frame", CdpTarget::tab(frame)).await;
+        assert!(mock.commands_named("Fetch.enable").is_empty());
+        // When a route is added, then removed
+        let args = json!({"url_pattern": "*/api/*", "body": "m"});
+        MockRouteTool::handle(call("mock_route", args), &handler)
+            .await
+            .unwrap();
+        RemoveRouteTool::handle(call("remove_route", json!({})), &handler)
+            .await
+            .unwrap();
+        // Then the frame's session paused, then stopped pausing
+        let in_frame = |method: &str| {
+            mock.commands_named(method)
+                .into_iter()
+                .filter(|c| c.session_id.as_deref() == Some(frame_session.as_str()))
+                .count()
+        };
+        assert_eq!(
+            (in_frame("Fetch.enable"), in_frame("Fetch.disable")),
+            (1, 1)
+        );
+        assert_eq!(mock.commands_named("Fetch.enable").len(), 2);
     }
 
     /// A request Chrome paused after the tab's routes went (its connection

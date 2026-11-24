@@ -7,8 +7,10 @@
 //! session of its own, enables `Runtime`, `Log`, `Network`, `Debugger` and
 //! `Audits` (its issues, ISSUE-60)
 //! there, feeds the tab's buffers and debugger state from it (see
-//! `debugger::frames`: its breakpoints set before it runs) and
-//! auto-attaches to its own frames, then releases the frame. A frame is
+//! `debugger::frames`: its breakpoints set before it runs), has it pause
+//! the requests of the tab's mocked routes (#199: the tab's `Fetch` does
+//! not see them) and auto-attaches to its own frames, then releases the
+//! frame. A frame is
 //! released on every path, errors included: one left waiting would never
 //! run.
 
@@ -17,6 +19,7 @@ use crate::handler::cdp_domains::debugger;
 use crate::handler::cdp_domains::event_pump::ListenerHandles;
 use crate::handler::cdp_domains::log::LogState;
 use crate::handler::cdp_domains::network::FRAME_GONE;
+use crate::handler::routes::RouteState;
 use crate::handler::{DebuggerState, NetworkState};
 use cdp_browser_lite::{BrowserClient, NoParams, Tab, WsResponse};
 use serde_json::{Value, json};
@@ -60,6 +63,8 @@ pub(crate) struct FrameSinks {
     pub(crate) log: Arc<Mutex<LogState>>,
     pub(crate) network: Arc<Mutex<NetworkState>>,
     pub(crate) debugger: Arc<Mutex<DebuggerState>>,
+    /// The tab's mocked routes, which its frames answer too.
+    pub(crate) routes: Arc<Mutex<RouteState>>,
     watched: Arc<AtomicUsize>,
     /// The targets of the watched frames the session lives in, outermost
     /// first (none for the tab): the frames its sockets go with (#167).
@@ -67,17 +72,19 @@ pub(crate) struct FrameSinks {
 }
 
 impl FrameSinks {
-    /// The sinks of a tab whose buffers are `log` and `network`, and whose
-    /// debugger state is `debugger`.
+    /// The sinks of a tab whose buffers are `log` and `network`, whose
+    /// debugger state is `debugger` and whose mocked routes are `routes`.
     pub(crate) fn new(
         log: Arc<Mutex<LogState>>,
         network: Arc<Mutex<NetworkState>>,
         debugger: Arc<Mutex<DebuggerState>>,
+        routes: Arc<Mutex<RouteState>>,
     ) -> Self {
         Self {
             log,
             network,
             debugger,
+            routes,
             watched: Arc::default(),
             frames: Vec::new(),
         }
@@ -137,6 +144,7 @@ async fn watch(session: Tab, mut events: cdp_browser_lite::EventFilter, sinks: F
                 }
                 if let Some(target_id) = params["targetId"].as_str() {
                     sinks.debugger.lock().await.forget_frame_target(target_id);
+                    sinks.routes.lock().await.frames.remove(target_id);
                     let mut network = sinks.network.lock().await;
                     network.close_ws_connections_in(target_id, FRAME_GONE);
                 }
@@ -264,6 +272,8 @@ async fn watch_frame(session: &Tab, target_id: &str, sinks: FrameSinks) -> Liste
             .await;
     }
     debugger::frames::prepare_frame(&frame, &sinks.debugger).await;
+    let routes = crate::handler::cdp_domains::fetch::mock_route::watch_frame;
+    routes(&sinks.routes, target_id, target).await;
     listeners.push(start_frame_watcher(&frame, sinks));
     listeners
 }
@@ -351,7 +361,12 @@ mod tests {
             .await
             .unwrap();
         let tab = browser.attach("T-tab-1").await.unwrap();
-        let sinks = FrameSinks::new(Arc::default(), Arc::default(), Arc::default());
+        let sinks = FrameSinks::new(
+            Arc::default(),
+            Arc::default(),
+            Arc::default(),
+            Arc::default(),
+        );
         let _watcher = start_frame_watcher(&tab, sinks.clone());
         eventually(|| !mock.commands_named("Target.setAutoAttach").is_empty()).await;
         Watched {
@@ -508,6 +523,77 @@ mod tests {
         })
         .await;
         assert!(sinks.network.lock().await.known_ids().contains("W1"));
+    }
+
+    /// #199, #200: a frame of another origin pauses the requests the tab's
+    /// routes match in its own session (the tab's does not see them),
+    /// before it runs; a request it pauses is fulfilled there, and the
+    /// frame is forgotten once it detaches.
+    #[tokio::test]
+    async fn frames_of_another_origin_answer_the_tabs_routes() {
+        // Given a tab with a route, watching its frames
+        let watched = watched_tab().await;
+        let (mock, sinks) = (watched.mock, &watched.sinks);
+        let response = crate::handler::routes::MockResponse {
+            status: 200,
+            headers: vec![],
+            body: "MOCKED".into(),
+        };
+        sinks.routes.lock().await.add("*/api/*", response).unwrap();
+        // When an iframe attaches
+        attach(&watched, "AUTO-F", "iframe");
+        let frame = frame_session(&watched).await;
+        eventually(|| {
+            !mock
+                .commands_named("Runtime.runIfWaitingForDebugger")
+                .is_empty()
+        })
+        .await;
+        // Then its session pauses the route's requests before it runs
+        let order: Vec<(String, Option<String>)> = mock
+            .commands()
+            .into_iter()
+            .filter(|c| c.method == "Fetch.enable" || c.method == "Runtime.runIfWaitingForDebugger")
+            .map(|c| (c.method, c.session_id))
+            .collect();
+        assert_eq!(
+            order,
+            [
+                ("Fetch.enable".to_string(), Some(frame.clone())),
+                (
+                    "Runtime.runIfWaitingForDebugger".to_string(),
+                    Some("AUTO-F".to_string())
+                ),
+            ]
+        );
+        let enabled = &mock.commands_named("Fetch.enable")[0].params;
+        assert_eq!(
+            enabled["patterns"],
+            json!([{"urlPattern": "*/api/*", "requestStage": "Request"}])
+        );
+        // And a request it pauses is fulfilled in its session
+        let paused = json!({"requestId": "F1", "request": {"url": "http://b/api/x", "method": "GET"},
+            "resourceType": "Fetch"});
+        mock.emit("Fetch.requestPaused", paused, Some(&frame));
+        eventually(|| !mock.commands_named("Fetch.fulfillRequest").is_empty()).await;
+        let fulfilled = mock.commands_named("Fetch.fulfillRequest");
+        assert_eq!(fulfilled[0].session_id.as_deref(), Some(frame.as_str()));
+        assert_eq!(fulfilled[0].params["requestId"], "F1");
+        // When it detaches, it is forgotten
+        let gone = json!({"sessionId": "AUTO-F", "targetId": "T-iframe"});
+        mock.emit(
+            "Target.detachedFromTarget",
+            gone,
+            Some(watched.tab.session_id()),
+        );
+        eventually(|| {
+            sinks
+                .routes
+                .try_lock()
+                .is_ok_and(|routes| routes.frames.is_empty())
+        })
+        .await;
+        assert!(sinks.routes.lock().await.frames.is_empty());
     }
 
     /// ISSUE-75: once a worker detaches, the tab's log reports its URL's

@@ -60,6 +60,13 @@ pub(crate) struct RouteState {
     /// Firefox: the tab is offline (`set_offline`), which fails the mocked
     /// requests too (#108).
     pub(crate) offline: bool,
+    /// Chrome: the tab's watched frames of another origin, by target id
+    /// (at most `frame_watch::MAX_WATCHED`): each pauses its own requests
+    /// in its own session, which the tab's `Fetch` does not see (#199).
+    pub(crate) frames: std::collections::HashMap<
+        String,
+        crate::handler::cdp_domains::fetch::mock_route::FrameRoutes,
+    >,
 }
 
 impl RouteState {
@@ -107,8 +114,10 @@ impl RouteState {
 
     /// The response for a request to `url`, with the id of the route that
     /// gives it: the latest route whose pattern matches it (counted as a
-    /// hit), or `None` to let it through.
+    /// hit), or `None` to let it through. The URL's `#fragment` is left
+    /// out, as Chrome's paused URL leaves it out (#201: Firefox's keeps it).
     pub(crate) fn answer(&mut self, url: &str) -> Option<(String, MockResponse)> {
+        let url = url.split_once('#').map_or(url, |(sent, _)| sent);
         let route = self
             .routes
             .iter_mut()
@@ -348,6 +357,21 @@ mod tests {
                 {"route_id": "route-2", "url_pattern": "*/api/users*", "status": 200, "hits": 1},
             ]})
         );
+    }
+
+    /// #201: a request's `#fragment` is not part of what a route matches:
+    /// the fragment is never sent, Chrome's paused URL leaves it out and
+    /// Firefox's keeps it, so the same glob matches the same requests on
+    /// both browsers.
+    #[test]
+    fn fragments_are_not_matched() {
+        let mut routes = RouteState::default();
+        routes.add("*/frag.txt", ok("G")).unwrap();
+        assert!(routes.answer("http://a/frag.txt#part").is_some());
+        assert!(routes.answer("http://a/frag.txt?q=1#x").is_none());
+        routes.add("*?q=1", ok("Q")).unwrap();
+        let (_, response) = routes.answer("http://a/frag.txt?q=1#x").unwrap();
+        assert_eq!(response.body, "Q");
     }
 
     /// #194: a route keeps how many of its responses the browser refused,
