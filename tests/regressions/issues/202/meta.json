@@ -1,0 +1,10 @@
+{
+ "number": 202,
+ "title": "click_element / list_tabs: after an open_tab + close_tab, a window.open popup is often not reported",
+ "family": "other",
+ "command": [
+  "repro_popup_after_close_tab.py"
+ ],
+ "bug_regex": "BUG: after open_tab \\+ close_tab, the popup the page opened was missing from list_tabs",
+ "exit_on_bug": true
+}

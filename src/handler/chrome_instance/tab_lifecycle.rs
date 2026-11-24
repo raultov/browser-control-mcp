@@ -198,15 +198,55 @@ async fn on_page_created(
         return;
     };
     let info = super::tab_registry::NewTab::new(None, url);
-    if register_and_listen(tabs, &tab, info, enable_webmcp)
-        .await
-        .is_err()
-    {
+    // Enabled in the background: a page that does not answer (closed while
+    // its domains are enabled) would hold up every target event after it,
+    // a popup it opened among them (#202).
+    let setup = Setup {
+        enable_webmcp,
+        enabling: Enabling::InBackground,
+    };
+    let registered = register(tabs, &tab, info, setup);
+    if registered.await.is_err() {
         // At the cap (no label to refuse): counted for the action that
         // opened it to say so (ISSUE-95), and its session released.
         crate::util::sync::write(tabs).note_untracked(target_id);
         let _ = tab.detach().await;
     }
+}
+
+/// How [`register`] sets a tab up.
+#[derive(Clone, Copy)]
+struct Setup {
+    /// Whether WebMCP is on (`--enable-webmcp`).
+    enable_webmcp: bool,
+    enabling: Enabling,
+}
+
+/// How [`register`] enables a tab's domains.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Enabling {
+    /// Before it returns: the caller acts on the tab next (`open_tab`
+    /// navigates it, and its requests must be recorded).
+    Awaited,
+    /// In a task owned by the tab's listeners (aborted when the tab goes):
+    /// a page the browser opened, which the target listener must not wait
+    /// for (#202).
+    InBackground,
+}
+
+/// Registers `tab` and enables its domains before returning (see
+/// [`register`]).
+pub(crate) async fn register_and_listen(
+    tabs: &Arc<RwLock<TabRegistry>>,
+    tab: &cdp_browser_lite::Tab,
+    info: super::tab_registry::NewTab,
+    enable_webmcp: bool,
+) -> Result<String, String> {
+    let setup = Setup {
+        enable_webmcp,
+        enabling: Enabling::Awaited,
+    };
+    register(tabs, tab, info, setup).await
 }
 
 /// Registers `tab`, then starts its listeners **before** enabling its
@@ -217,12 +257,16 @@ async fn on_page_created(
 /// nothing re-triggers them once the page is loaded. Attaching to an
 /// already-loaded page is even more exposed: the replay is the only way to
 /// learn about tools it registered before we arrived.
-pub(crate) async fn register_and_listen(
+async fn register(
     tabs: &Arc<RwLock<TabRegistry>>,
     tab: &cdp_browser_lite::Tab,
     info: super::tab_registry::NewTab,
-    enable_webmcp: bool,
+    setup: Setup,
 ) -> Result<String, String> {
+    let Setup {
+        enable_webmcp,
+        enabling,
+    } = setup;
     let (tab_id, states) = {
         let mut registry = crate::util::sync::write(tabs);
         let tab_id = registry.register_tab(tab.clone(), info, enable_webmcp)?;
@@ -238,7 +282,15 @@ pub(crate) async fn register_and_listen(
     };
     if let Some(states) = states {
         let webmcp_state = states.webmcp.clone();
-        let handles = cdp_domains::start_tab_listeners(tab, states);
+        let mut handles = cdp_domains::start_tab_listeners(tab, states);
+        if enabling == Enabling::InBackground {
+            let tab = tab.clone();
+            handles.push(tokio::spawn(async move {
+                cdp_domains::enable_tab_domains(&tab, &webmcp_state).await;
+            }));
+            crate::util::sync::write(tabs).attach_listeners(&tab_id, handles);
+            return Ok(tab_id);
+        }
         crate::util::sync::write(tabs).attach_listeners(&tab_id, handles);
         cdp_domains::enable_tab_domains(tab, &webmcp_state).await;
     }
@@ -287,6 +339,43 @@ mod tests {
         assert!(winners.iter().all(|h| !h.is_finished()));
         let registry = crate::util::sync::read(&tabs);
         assert_eq!(registry.tabs[&id].tab.session_id(), first.session_id());
+    }
+
+    /// #202: a page the browser opened is registered without waiting for
+    /// its domains to be enabled: a page that does not answer (closed while
+    /// they are enabled, here `Debugger.enable` held for 1.5 s) no longer
+    /// holds up the target events after it, and a popup opened meanwhile
+    /// is named by the action that opened it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_page_slow_to_enable_does_not_hold_up_the_next() {
+        // Given a page whose debugger answers late
+        let mock = crate::handler::cdp_domains::tests::spawn_recording_mock().await;
+        mock.respond_with("Debugger.enable", |_| {
+            std::thread::sleep(Duration::from_millis(1500));
+            serde_json::json!({})
+        });
+        let addr = format!("127.0.0.1:{}", mock.http_port);
+        let browser = BrowserClient::connect(&addr, Duration::from_secs(5))
+            .await
+            .unwrap();
+        let tabs = Arc::new(RwLock::new(TabRegistry::new(8)));
+        // When the browser announces it
+        let started = std::time::Instant::now();
+        on_page_created(&browser, &tabs, ("T-page-1", "about:blank"), false).await;
+        // Then it is registered at once, its domains enabled meanwhile
+        assert!(
+            started.elapsed() < Duration::from_millis(1000),
+            "{:?}",
+            started.elapsed()
+        );
+        assert_eq!(crate::util::sync::read(&tabs).tabs.len(), 1);
+        for _ in 0..300 {
+            if !mock.commands_named("Audits.enable").is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(mock.commands_named("Audits.enable").len(), 1);
     }
 
     type Mock = &'static cdp_browser_lite::test_support::mock_devtools::MockDevTools;

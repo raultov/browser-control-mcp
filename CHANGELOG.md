@@ -43,6 +43,13 @@ from a copy of its code: entries describe the differences from that release.
   message was kept. Its frames now follow the error in Chrome's form
   (`at boom (url:3:25)`), without Firefox's own frames; BiDi's copy of the
   error, without a stack, is still dropped for the watcher's.
+- A popup a page opens on Chrome is named by the action that opened it
+  and listed by `list_tabs` again after an `open_tab` and `close_tab`
+  (#202): the listener of the browser's targets enabled each page's
+  domains before reading the next event, and a page closed meanwhile
+  (the tab `open_tab` made) never answered `Debugger.enable`, holding up
+  every target event for 10 s. A page the browser opens is now
+  registered at once and its domains enabled in the background.
 - `fill_input` and `fill_form` on Firefox set a `month` or `week` input
   as on Chrome (#203): Firefox has no such inputs (they are text fields
   there), so the text was typed key by key, with no `change` and no check
