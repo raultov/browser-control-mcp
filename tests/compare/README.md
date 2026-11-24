@@ -16,8 +16,8 @@ python3 -I tests/compare/run.py --save-baseline   # keep a run you trust
 ```
 
 `bench.py` measures the README's comparison table ("Measured": tool lists,
-snapshots of live pages, a login, latencies, edge cases) on `bc`, `pw` and
-`cd`, and saves the numbers as JSON:
+snapshots of live pages, a login, latencies, edge cases) on `bc`, `pw`, `cd`
+and `se`, and saves the numbers as JSON:
 
 ```sh
 make build && python3 -I tests/compare/bench.py [--servers bc,pw] [--runs 10]
@@ -25,8 +25,9 @@ make build && python3 -I tests/compare/bench.py [--servers bc,pw] [--runs 10]
 
 `footprint.py` measures the README's "Advantages of a native Rust binary":
 how long each server takes to answer `initialize`, the memory of its own
-processes (browsers left out; npm's apart when `npx` starts it) and the
-first navigation, for `bc`, `pw` and `cd` (with `npx`, then with `node`):
+processes (browsers left out; npm's and Selenium's `chromedriver` apart)
+and the first navigation, for `bc`, `pw`, `cd` (with `npx`, then with
+`node`) and `se`:
 
 ```sh
 make build && python3 -I tests/compare/footprint.py [--servers bc,pw] [--runs 10]
@@ -41,9 +42,26 @@ make build && python3 -I tests/compare/footprint.py [--servers bc,pw] [--runs 10
 | `pw` | Playwright MCP | `npx -y @playwright/mcp@<pinned>` with every capability |
 | `cd` | chrome-devtools-mcp | `npx -y chrome-devtools-mcp@<pinned>` |
 | `pp` | Puppeteer MCP | `npx -y @hisma/server-puppeteer@<pinned>`, Chrome from `--chrome` or `PATH` |
+| `se` | Selenium MCP (the official one, SeleniumHQ/mcp) | `node <checkout>/bin/selenium-mcp.js --headless --allow-evaluate --caps pdf,storage,vision` (`--selenium-bin` for another checkout) |
 
 The versions of the other servers are pinned in `run.py`: raising one is a
 deliberate change, and its effect shows against the baseline.
+
+The Selenium MCP server is not on npm yet (0.1.0, "v1 in progress"), and
+its `package.json` takes `selenium-webdriver` from GitHub Packages, which
+needs a token. A checkout at the pinned commit (`SELENIUM_COMMIT` in
+`run.py`), with `selenium-webdriver` 4.54 from npm:
+
+```sh
+git clone https://github.com/SeleniumHQ/mcp ~/.local/share/selenium-mcp/mcp
+cd ~/.local/share/selenium-mcp/mcp && git checkout de8899c && rm .npmrc
+npm pkg set dependencies.selenium-webdriver=^4.54.0 && npm install --omit=dev
+```
+
+`run.py` skips `se` when there is no checkout. Selenium Manager downloads
+the `chromedriver` of the installed Chrome on the first start, and sends
+usage statistics to plausible.io once a day unless `SE_AVOID_STATS=true`,
+which the Selenium adapter sets.
 
 ## Layout
 

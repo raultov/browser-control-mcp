@@ -4,7 +4,7 @@ server takes to answer MCP `initialize`, how much memory its own processes
 use (the browsers they start are left out), and how long the first
 navigation takes (it launches Chrome). Chrome, headless; median of the runs.
 
-    make build && python3 -I tests/compare/footprint.py              # bc, pw, cd
+    make build && python3 -I tests/compare/footprint.py              # bc, pw, cd, se
     python3 -I tests/compare/footprint.py --servers bc --runs 10
 
 `pw` and `cd` are started with `npx`, as their READMEs show (npm stays
@@ -25,13 +25,11 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
-from adapters import BrowserControl, DevTools, Playwright  # noqa: E402
-from run import free_port  # noqa: E402
+from adapters import BrowserControl, DevTools, Playwright, Selenium  # noqa: E402
+from run import DEVTOOLS, PLAYWRIGHT, SELENIUM_BIN, free_port  # noqa: E402
 from siteserver import Site  # noqa: E402
 
 REPO = os.path.dirname(os.path.dirname(HERE))
-PLAYWRIGHT = "@playwright/mcp@0.0.86"
-DEVTOOLS = "chrome-devtools-mcp@1.13.0"
 
 # Browser processes: left out of a server's memory.
 BROWSERS = ("chrome", "chromium", "headless_shell", "crashpad", "firefox")
@@ -61,6 +59,8 @@ def commands(bin_path, output):
         "bc": (BrowserControl, [bin_path, "--headless", "--port", str(free_port())], None),
         "pw": (Playwright, [npx, "-y", PLAYWRIGHT] + pw, (PLAYWRIGHT, "playwright-mcp", pw)),
         "cd": (DevTools, [npx, "-y", DEVTOOLS] + cd, (DEVTOOLS, "chrome-devtools-mcp", cd)),
+        # Not on npm yet: a checkout, started with node (see README.md).
+        "se": (Selenium, ["node", SELENIUM_BIN, "--headless"], None),
     }
 
 
@@ -83,27 +83,38 @@ def session_processes(sid):
     return found
 
 
+# The WebDriver programs Selenium starts next to the browser: the server's
+# cost, reported apart.
+DRIVERS = ("chromedriver", "geckodriver", "msedgedriver", "selenium-manager")
+
+
 def memory(sid):
-    """MB of the server's own process, and of npm when npx started it."""
+    """MB of the server's own process, of npm when npx started it, and of
+    the WebDriver program Selenium runs."""
     def program(cmd):
         return os.path.basename(cmd.split(" ")[0]).lower()
 
+    def is_driver(cmd):
+        return program(cmd) in DRIVERS
+
     def is_browser(cmd):
         # chrome-devtools-mcp names its process after itself.
-        return program(cmd) != "chrome-devtools-mcp" and any(b in program(cmd) for b in BROWSERS)
+        named = program(cmd) != "chrome-devtools-mcp" and any(b in program(cmd) for b in BROWSERS)
+        return named and not is_driver(cmd)
 
     def is_npm(cmd):
         return "npm exec" in cmd or "/npx-cli.js" in cmd or program(cmd) == "npx"
 
     own = [(cmd, rss) for cmd, rss in session_processes(sid) if not is_browser(cmd)]
-    server = max((rss for cmd, rss in own if not is_npm(cmd)), default=0)
+    server = max((rss for cmd, rss in own if not is_npm(cmd) and not is_driver(cmd)), default=0)
     npm = sum(rss for cmd, rss in own if is_npm(cmd))
-    return server / 1024, npm / 1024
+    driver = sum(rss for cmd, rss in own if is_driver(cmd))
+    return server / 1024, npm / 1024, driver / 1024
 
 
 def measure(adapter_class, command, url, runs):
     """Medians: start (ms), first navigation (ms), memory idle and after
-    four navigations (MB), npm's memory (MB)."""
+    four navigations (MB), npm's and the WebDriver program's memory (MB)."""
     adapter_class(command, dict(os.environ)).close()  # npx fetches the package once
     rows = []
     for _ in range(runs):
@@ -113,30 +124,30 @@ def measure(adapter_class, command, url, runs):
         session = adapter.server.proc.pid  # its own session (mcp_client)
         try:
             time.sleep(0.5)
-            idle, _ = memory(session)
+            idle, _, _ = memory(session)
             started = time.time()
             adapter.goto(url)
             first = (time.time() - started) * 1000
             for _ in range(3):
                 adapter.goto(url)
             time.sleep(0.5)
-            busy, npm = memory(session)
+            busy, npm, driver = memory(session)
         finally:
             adapter.close()
-        rows.append((start, first, idle, busy, npm))
+        rows.append((start, first, idle, busy, npm, driver))
     return [statistics.median(column) for column in zip(*rows)]
 
 
 def report(label, medians):
-    start, first, idle, busy, npm = medians
+    start, first, idle, busy, npm, driver = medians
     print(f"{label}: initialize {start:.0f} ms | first navigation {first:.0f} ms | "
           f"server memory {idle:.0f} MB idle, {busy:.0f} MB after 4 navigations | "
-          f"npm {npm:.0f} MB", flush=True)
+          f"npm {npm:.0f} MB | WebDriver {driver:.0f} MB", flush=True)
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--servers", default="bc,pw,cd")
+    parser.add_argument("--servers", default="bc,pw,cd,se")
     parser.add_argument("--runs", type=int, default=5)
     parser.add_argument("--bc-bin", default=os.path.join(REPO, "target", "release", "browser-control-mcp"))
     args = parser.parse_args()

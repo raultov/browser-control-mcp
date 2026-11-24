@@ -24,7 +24,7 @@ import traceback
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
-from adapters import Adapter, BrowserControl, DevTools, Fail, Playwright, Puppeteer, Unsupported  # noqa: E402
+from adapters import Adapter, BrowserControl, DevTools, Fail, Playwright, Puppeteer, Selenium, Unsupported  # noqa: E402
 from scenarios import SCENARIOS  # noqa: E402
 from siteserver import Site  # noqa: E402
 
@@ -33,9 +33,19 @@ RESULTS = os.path.join(HERE, "results")
 BASELINE = os.path.join(HERE, "baseline.json")
 
 # The other servers, pinned: a new version is a deliberate change here.
-PLAYWRIGHT = "@playwright/mcp@0.0.84"
-DEVTOOLS = "chrome-devtools-mcp@1.12.0"
+PLAYWRIGHT = "@playwright/mcp@0.0.86"
+DEVTOOLS = "chrome-devtools-mcp@1.14.0"
 PUPPETEER = "@hisma/server-puppeteer@0.6.5"
+# The official Selenium MCP server is not on npm yet: a checkout of
+# SeleniumHQ/mcp at this commit (see README.md), started with node.
+SELENIUM_COMMIT = "de8899c"
+SELENIUM_BIN = os.path.expanduser("~/.local/share/selenium-mcp/mcp/bin/selenium-mcp.js")
+
+
+def selenium_command(path):
+    """The Selenium MCP server at `path` with every tool group, and the
+    evaluation the harness reads the page with."""
+    return ["node", path, "--headless", "--allow-evaluate", "--caps", "pdf,storage,vision"]
 
 MARK = {"pass": "✓", "fail": "✗", "unsupported": "–", "error": "E", None: " "}
 
@@ -65,6 +75,7 @@ def servers(args, output):
         "cd": (DevTools, [npx, "-y", DEVTOOLS, "--headless", "--isolated",
                           "--usageStatistics=false", "--performanceCrux=false"], env, {}),
         "pp": (Puppeteer, [npx, "-y", PUPPETEER], puppeteer_env, {}),
+        "se": (Selenium, selenium_command(args.selenium_bin), env, {}),
     }
 
 
@@ -198,11 +209,12 @@ def report(run, baseline):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--servers", default="bc,bc-ff,pw,cd,pp", help="comma-separated: bc, bc-ff, pw, cd, pp")
+    parser.add_argument("--servers", default="bc,bc-ff,pw,cd,pp,se", help="comma-separated: bc, bc-ff, pw, cd, pp, se")
     parser.add_argument("--only", help="regex on scenario ids")
     parser.add_argument("--level", type=int, default=4, help="run levels up to this one (1 = most common)")
     parser.add_argument("--bc-bin", default=os.path.join(REPO, "target", "release", "browser-control-mcp"))
     parser.add_argument("--chrome", help="Chrome for Puppeteer (default: google-chrome on PATH)")
+    parser.add_argument("--selenium-bin", default=SELENIUM_BIN, help="bin/selenium-mcp.js of a SeleniumHQ/mcp checkout")
     parser.add_argument("--save-baseline", action="store_true", help="keep this run as the baseline")
     args = parser.parse_args()
 
@@ -224,6 +236,9 @@ def main():
     run = {"started": started, "scenarios": [{k: s[k] for k in ("id", "level", "title")} for s in chosen], "servers": {}}
     try:
         for name in args.servers.split(","):
+            if name == "se" and not os.path.exists(args.selenium_bin):
+                log(f"se: skipped, no checkout of SeleniumHQ/mcp {SELENIUM_COMMIT} at {args.selenium_bin} (see README.md)")
+                continue
             run["servers"][name] = run_server(name, specs[name], chosen, context, log)
     finally:
         site.stop()

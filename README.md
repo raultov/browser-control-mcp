@@ -23,99 +23,105 @@ chrome-devtools-mcp with runtime JavaScript debugging on both browsers.
 
 💬 Questions, ideas or feedback: join us on [Discord](https://discord.gg/JDfcmD73A), where every release is announced in #announcements.
 
-## Comparison with Playwright MCP and chrome-devtools-mcp
+## Comparison with Playwright MCP, chrome-devtools-mcp and Selenium MCP
 
-Measured on 2026-11-08 with browser-control-mcp 0.13.0-beta.23 built from
-the current sources, `@playwright/mcp` 0.0.84 and `chrome-devtools-mcp`
-1.12.0, driven by the same stdio client through the same tasks on Chrome
-156.0.8078.47 (headless, Linux) with `tests/compare/bench.py`. Every
-outcome was checked in the page, not taken from the reply. Tokens are
-estimated as characters / 4 for every server. The HTTP authentication row
-comes from the `tests/compare` scenarios. The rows on secrets, top-level
-`await`, credential headers and WebSockets were checked on 2026-11-21, and
-the mocks row on 2026-11-22, in the sources and by running them, against
-`@playwright/mcp` 0.0.86 and `chrome-devtools-mcp` 1.13.0; what
+Measured on 2026-11-24 with browser-control-mcp 1.0.0-rc.1 built from the
+current sources, `@playwright/mcp` 0.0.86, `chrome-devtools-mcp` 1.14.0
+and the official Selenium MCP server (`SeleniumHQ/mcp` 0.1.0, "v1 in
+progress", not on npm yet: a checkout of commit `de8899c`), driven by the
+same stdio client through the same tasks on Chrome 158.0.8127.88
+(headless, Linux) with `tests/compare/bench.py`. Every outcome was checked
+in the page, not taken from the reply. Tokens are estimated as characters
+/ 4 for every server. The HTTP authentication row comes from the
+`tests/compare` scenarios. The rows on secrets, top-level `await`,
+credential headers and WebSockets were checked on 2026-11-21, and the
+mocks row on 2026-11-22, in the sources and by running them, against
+`@playwright/mcp` 0.0.86 and `chrome-devtools-mcp` 1.13.0 (the mocks row
+again against 1.14.0, and every Selenium MCP cell on 2026-11-24); what
 browser-control promises there, and what it does not, is in
 [Scope of the convenience features](#scope-of-the-convenience-features).
 
 **What each one can do**
 
-| | browser-control-mcp | Playwright MCP | chrome-devtools-mcp |
-| --- | --- | --- | --- |
-| JavaScript debugger (breakpoints, call frames, stepping, script search) | **✓ Chrome and Firefox** (pause on load: Chrome; `--tool-groups debug`) | ✗ | ✗ |
-| Firefox | **✓ next to Chrome, same tools** | ✓ one browser per server | ✗ |
-| Several browsers and instances at once | **✓** | ✗ | ✗ |
-| Selectors | CSS, snapshot refs, `host >>> inner` into shadow roots and iframes | CSS, snapshot refs | snapshot refs only |
-| Frames of another origin (payment forms, embedded editors) | ✓ in the snapshot, refs `f2e5` for every input tool, their console and network in the tab's logs | ✓ refs `f1e5` | ✗ |
-| Snapshot of a long page | **bounded at 50 000 characters**, `find_in_snapshot` searches the rest | unbounded | unbounded |
-| Waits for the page to react after an action | ✓ ~50 ms when nothing reacts | ✓ ~500 ms | ✓ ~200 ms |
-| Clicking a covered or hidden element | **fails at once, naming the overlay** | fails after a 5 s timeout | reports success (the overlay gets the click) |
-| Page behind HTTP authentication (401) | **fails at once naming its scheme and realm and how to log in** (credentials in the URL), on Chrome and Firefox | fails with Chrome's invalid-credentials network error | reports success, with the same error in the text |
-| Mock requests, offline mode | ✓ | ✓ | ✓ with `--categoryNetworkMocks`: a local file (status 200) or another URL's response; offline |
-| PDF | ✓ file or inline | ✓ file | ✗ |
-| Cookies and web storage | ✓ values hidden unless asked | ✓ values shown | ✗ |
-| Secrets masked in output (`--secrets`) | **✓ a whole value, as written and JSON-, HTML- or URL-encoded** (up to six layers) | ✓ the literal text only: a value with `"` or `&` shows once the reply is JSON-, HTML- or URL-encoded | ✗ |
-| `await` at the top level of evaluated code | **✓ statements as in a console** (`const r = await fetch(u); r.status`), the last expression's value returned | ✗ takes a function (`async () => { ... }`) | ✗ takes a function; `format: "script"` runs statements, without `await` |
-| Credential headers in a request's details (`Authorization`, `Cookie`, `X-Api-Key`...) | **hidden by default**: only the standard headers on an allowlist of exact names show their value | shown | shown; `--redactNetworkHeaders` (off by default) hides them the same way |
-| WebSocket frames and closes | **✓ per connection**: the document's, its frames', its workers' and its popups' (a Firefox popup's from when the debugger attaches) | ✗ not listed | ✗ not listed |
-| Performance | vitals + insights (INP, LCP breakdown and discovery, layout shifts, render-blocking, long scripts, DOM size, images, third parties; on Chrome: forced reflows, unused JS/CSS, trace export `.json`/`.gz`, DOM/listener counters after GC); CPU and network throttling on Chrome | trace file | trace + insights; CPU and network throttling |
-| Page audit (accessibility, SEO, best practices) | ✓ `audit_page`, on Chrome and Firefox: failing elements with snapshot refs, no bundle; `lighthouse_report`: Lighthouse-style 0-100 scores of a cold mobile or desktop load (performance from a trace, with Speed Index, on Chrome) and the points each failing check costs | ✗ | Lighthouse, Chrome only: scores, failing elements with selectors, reports saved to disk |
-| Heap snapshots, CSS styles, screencast | ✗ | video, tracing | ✓ |
-| Generates Playwright test code | ✗ | ✓ | ✗ |
-| Telemetry | **none** | none found | usage statistics on by default; traced URLs sent to CrUX |
-| Single native binary (no Node.js) | **✓** | ✗ | ✗ |
+| | browser-control-mcp | Playwright MCP | chrome-devtools-mcp | Selenium MCP |
+| --- | --- | --- | --- | --- |
+| JavaScript debugger (breakpoints, call frames, stepping, script search) | **✓ Chrome and Firefox** (pause on load: Chrome; `--tool-groups debug`) | ✗ | ✗ | ✗ |
+| Firefox | **✓ next to Chrome, same tools** | ✓ one browser per server | ✗ | `--browser firefox`, "not yet tested" (its README) |
+| Several browsers and instances at once | **✓** | ✗ | ✗ | ✗ |
+| Selectors | CSS, snapshot refs, `host >>> inner` into shadow roots and iframes | CSS, snapshot refs | snapshot refs only | snapshot refs only |
+| Frames of another origin (payment forms, embedded editors) | ✓ in the snapshot, refs `f2e5` for every input tool, their console and network in the tab's logs | ✓ refs `f1e5` | ✗ | ✓ refs `f5e1` |
+| Snapshot of a long page | **bounded at 50 000 characters**, `find_in_snapshot` searches the rest | unbounded | unbounded | unbounded; controls and headings only unless `all: true` |
+| Waits for the page to react after an action | ✓ ~50 ms when nothing reacts | ✓ ~500 ms | ✓ ~200 ms | ✗ answers at once: a request the click starts is not waited for |
+| Clicking a covered or hidden element | **fails at once, naming the overlay** | fails after a 5 s timeout | reports success (the overlay gets the click) | fails after about 1 s, naming the overlay |
+| Page behind HTTP authentication (401) | **fails at once naming its scheme and realm and how to log in** (credentials in the URL), on Chrome and Firefox | fails with Chrome's invalid-credentials network error | reports success, with the same error and the console's 401 in the text | reports success, with an empty page |
+| Mock requests, offline mode | ✓ | ✓ | ✓ with `--categoryNetworkMocks`: a local file (status 200), another URL's response or an abort; offline | ✗ |
+| PDF | ✓ file or inline | ✓ file | ✗ | ✓ file (`--caps pdf`) |
+| Cookies and web storage | ✓ values hidden unless asked | ✓ values shown | ✗ | ✓ values shown (`--caps storage`) |
+| Secrets masked in output (`--secrets`) | **✓ a whole value, as written and JSON-, HTML- or URL-encoded** (up to six layers) | ✓ the literal text only: a value with `"` or `&` shows once the reply is JSON-, HTML- or URL-encoded | ✗ | ✗ (password fields' values are never shown) |
+| `await` at the top level of evaluated code | **✓ statements as in a console** (`const r = await fetch(u); r.status`), the last expression's value returned | ✗ takes a function (`async () => { ... }`) | ✗ takes a function; `format: "script"` runs statements, without `await` | ✗ takes a function, only with `--allow-evaluate` |
+| Credential headers in a request's details (`Authorization`, `Cookie`, `X-Api-Key`...) | **hidden by default**: only the standard headers on an allowlist of exact names show their value | shown | shown; `--redactNetworkHeaders` (off by default) hides them the same way | no request details: method, URL and status only |
+| WebSocket frames and closes | **✓ per connection**: the document's, its frames', its workers' and its popups' (a Firefox popup's from when the debugger attaches) | ✗ not listed | ✗ not listed | ✗ not listed |
+| Performance | vitals + insights (INP, LCP breakdown and discovery, layout shifts, render-blocking, long scripts, DOM size, images, third parties; on Chrome: forced reflows, unused JS/CSS, trace export `.json`/`.gz`, DOM/listener counters after GC); CPU and network throttling on Chrome | trace file | trace + insights; CPU and network throttling | ✗ |
+| Page audit (accessibility, SEO, best practices) | ✓ `audit_page`, on Chrome and Firefox: failing elements with snapshot refs, no bundle; `lighthouse_report`: Lighthouse-style 0-100 scores of a cold mobile or desktop load (performance from a trace, with Speed Index, on Chrome) and the points each failing check costs | ✗ | Lighthouse, Chrome only: scores, failing elements with selectors, reports saved to disk | ✗ |
+| Heap snapshots, CSS styles, screencast | ✗ | video, tracing | ✓ | ✗ |
+| Generates Playwright test code | ✗ | ✓ | ✗ | ✗ |
+| Telemetry | **none** | none found | usage statistics on by default; traced URLs sent to CrUX | Selenium Manager's usage statistics, daily, on by default (`SE_AVOID_STATS`) |
+| Single native binary (no Node.js) | **✓** | ✗ | ✗ | ✗ (Node.js, plus a `chromedriver` it downloads) |
 
 **Measured**
 
-| Task | browser-control-mcp | Playwright MCP | chrome-devtools-mcp |
-| --- | --- | --- | --- |
-| Tool list in context, default tools | 6 668 tokens (8 495 with the debugger, `--tool-groups debug`) | 5 530 tokens | 7 774 tokens |
-| Tool list in context, every opt-in tool on | 13 447 tokens | 12 291 tokens | not measured (optional categories) |
-| Snapshot of Hacker News | **4 584 tokens** | 12 112 tokens | 6 918 tokens |
-| Snapshot of Wikipedia "Web browser" | **12 569 tokens** (cut, searchable) | 34 316 tokens | 27 648 tokens |
-| Snapshot of MDN `<input>` | **12 565 tokens** (cut, searchable) | 158 037 tokens | 77 206 tokens |
-| Log in step by step (8 calls) | **296 tokens, 0.6 s** | 626 tokens, 1.2 s | 345 tokens, 1.4 s |
-| Log in with `fill_form` (5 calls) | **319 tokens, 0.5 s** | 433 tokens, 0.7 s | 326 tokens, 0.8 s |
-| Click, median | **56 ms** | 516 ms | 235 ms |
-| Evaluate JavaScript, median | **0 ms** | 504 ms | 204 ms |
-| Navigate (local page), median | **46 ms** | 62 ms | 117 ms |
-| Full-page screenshot of a 31 700 px page | cut at 16 384 px, with a note | 0.6 MB image in the reply, also saved to a file | saved to a file, with a warning that content past 16 384 px may repeat or be corrupted |
-| Navigation to an unknown host | error | error | success with the error in the text |
-| Navigate, then read the console (log, warning, errors) | 218 tokens (keeps the same site's earlier messages, here a favicon 404) | 190 tokens | 97 tokens |
-| Navigate, then read the network log (3 requests) | 193 tokens (also lists the documents of the 2 pages before) | 115 tokens | 87 tokens |
+| Task | browser-control-mcp | Playwright MCP | chrome-devtools-mcp | Selenium MCP |
+| --- | --- | --- | --- | --- |
+| Tool list in context, default tools | 6 854 tokens (8 681 with the debugger, `--tool-groups debug`) | 5 565 tokens | 8 672 tokens | 1 672 tokens |
+| Tool list in context, every opt-in tool on | 13 691 tokens | 12 326 tokens | 16 940 tokens | 3 459 tokens |
+| Snapshot of Hacker News | **4 471 tokens** | 11 901 tokens | 6 711 tokens | 1 634 tokens, controls and headings only; 6 794 with the text (`all: true`) |
+| Snapshot of Wikipedia "Web browser" | **12 547 tokens** (cut, searchable) | 34 460 tokens | 27 648 tokens | 3 620 tokens, controls and headings only; 14 677 with the text |
+| Snapshot of MDN `<input>` | **12 561 tokens** (cut, searchable) | 158 431 tokens | 75 978 tokens | 18 986 tokens, controls and headings only; 73 419 with the text. Its navigation there fails ("Cannot find context"), though the page loads |
+| Log in step by step (8 calls) | **296 tokens, 0.6 s** | 626 tokens, 1.2 s | 411 tokens, 1.4 s | 686 tokens, 0.7 s |
+| Log in with `fill_form` (5 calls) | **319 tokens, 0.4 s** | 433 tokens, 0.6 s | 355 tokens, 0.8 s | 429 tokens, 0.6 s |
+| Click, median | 52 ms | 516 ms | 232 ms | **34 ms** (it does not wait for the page to react) |
+| Evaluate JavaScript, median | **0 ms** | 502 ms | 202 ms | 1 ms |
+| Navigate (local page), median | **46 ms** | 59 ms | 112 ms | 66 ms |
+| Full-page screenshot of a 31 700 px page | cut at 16 384 px, with a note | 0.6 MB image in the reply, also saved to a file | saved to a file, with a warning that content past 16 384 px may repeat or be corrupted | ✗ the viewport only |
+| Navigation to an unknown host | error | error | success with the error in the text | error |
+| Navigate, then read the console (log, warning, errors) | 218 tokens (keeps the same site's earlier messages, here a favicon 404) | 190 tokens | 160 tokens | 70 tokens: no locations or stack, the logged object as `Object(1)` |
+| Navigate, then read the network log (3 requests) | 193 tokens (also lists the documents of the 2 pages before) | 115 tokens | 116 tokens | 81 tokens: the 2 requests the page fetched stay `pending` |
 
 ## Advantages of a native Rust binary
 
-browser-control-mcp is one compiled program; Playwright MCP and
-chrome-devtools-mcp run on Node.js. Measured on 2026-11-22 with
-`tests/compare/footprint.py` (median of 5 runs, Linux, Chrome headless):
-browser-control-mcp 1.0.0-rc.1, `@playwright/mcp` 0.0.86 and
-`chrome-devtools-mcp` 1.13.0, each started with `npx` as its README shows,
-and with `node` directly.
+browser-control-mcp is one compiled program; Playwright MCP,
+chrome-devtools-mcp and Selenium MCP run on Node.js. Measured on
+2026-11-24 with `tests/compare/footprint.py` (median of 5 runs, Linux,
+Chrome 158 headless): browser-control-mcp 1.0.0-rc.1, `@playwright/mcp`
+0.0.86 and `chrome-devtools-mcp` 1.14.0, each started with `npx` as its
+README shows, and with `node` directly; Selenium MCP 0.1.0 with `node`
+from a checkout, since it is not on npm yet.
 
-| | browser-control-mcp | Playwright MCP | chrome-devtools-mcp |
-| --- | --- | --- | --- |
-| Needs at run time | **nothing else** | Node.js | Node.js |
-| Installed | **one 30 MB file** (a 6.7 MB download on Linux x64) | 19 MB of npm packages, plus Node.js | 18 MB of npm packages, plus Node.js |
-| Start, until it answers MCP `initialize` | **4 ms** | 178 ms; 455 ms with `npx` | 280 ms; 542 ms with `npx` |
-| Memory of the server, idle (browser left out) | **13 MB** | 117 MB | 164 MB |
-| Memory of the server after 4 navigations | **23 MB** | 133 MB | 167 MB |
-| Extra process when started with `npx` | none | npm, 109 MB | npm, 108 MB |
+| | browser-control-mcp | Playwright MCP | chrome-devtools-mcp | Selenium MCP |
+| --- | --- | --- | --- | --- |
+| Needs at run time | **nothing else** | Node.js | Node.js | Node.js and `chromedriver` |
+| Installed | **one 30 MB file** (a 6.7 MB download on Linux x64) | 19 MB of npm packages, plus Node.js | 13 MB of npm packages, plus Node.js | 55 MB of npm packages, plus Node.js and a 28 MB `chromedriver` |
+| Start, until it answers MCP `initialize` | **4 ms** | 195 ms; 492 ms with `npx` | 291 ms; 587 ms with `npx` | 129 ms |
+| Memory of the server, idle (browser left out) | **13 MB** | 117 MB | 148 MB | 85 MB |
+| Memory of the server after 4 navigations | **23 MB** | 133 MB | 155 MB | 90 MB |
+| Extra process | none | npm under `npx`, 108 MB | npm under `npx`, 108 MB | `chromedriver`, 22 MB |
 
 - **It starts at once.** A client that starts a server for each session or
-  each subagent waits 4 ms instead of about 0.2 to 0.5 s. The
+  each subagent waits 4 ms instead of about 0.1 to 0.6 s. The
   `npx ...@latest` command the other READMEs give also asks the npm
   registry for the latest version each time it starts (checked with
   `npx --loglevel=http`), and downloads it when there is a new one;
   browser-control runs what was installed, also offline.
-- **It uses 6 to 12 times less memory.** 13 to 23 MB against 117 to 167
-  MB (plus about 108 MB for npm under `npx`), so many agents, each with its
-  own server, fit on one machine. The browsers themselves use the same
-  memory whatever drives them.
+- **It uses 4 to 11 times less memory.** 13 to 23 MB against 85 to 155
+  MB (plus 22 MB for Selenium's `chromedriver`, or about 108 MB for npm
+  under `npx`), so many agents, each with its own server, fit on one
+  machine. The browsers themselves use the same memory whatever drives
+  them.
 - **Nothing else to install.** No Node.js (its `node` binary alone is
-  150 MB in v26.13.0 on Linux), npm or `node_modules`, and no clash with
-  the Node.js version a project pins: one file from Homebrew, npm (which
-  downloads the binary), the GitHub release, the MSI or `cargo install`.
+  150 MB in v26.13.0 on Linux), npm, `node_modules` or WebDriver driver,
+  and no clash with the Node.js version a project pins: one file from
+  Homebrew, npm (which downloads the binary), the GitHub release, the MSI
+  or `cargo install`.
 - **Work on each reply is cheap.** `--secrets` masks a 100 000-character
   reply with 100 overlapping secrets in about 10 ms, and top-level `await`
   is found by a native JavaScript parser, in the server's own process.
@@ -126,18 +132,20 @@ and with `node` directly.
 
 What it does not change: the browser's own work. Launching Chrome and
 loading a page take the same time whatever drives it (the first
-navigation, which launches Chrome, took 195 to 267 ms with the three
-servers). The faster clicks and evaluations in [Measured](#comparison-with-playwright-mcp-and-chrome-devtools-mcp)
+navigation, which launches Chrome, took 215 to 329 ms with the four
+servers; Selenium MCP also starts `chromedriver` then). The faster clicks
+and evaluations in [Measured](#comparison-with-playwright-mcp-chrome-devtools-mcp-and-selenium-mcp)
 come mostly from how long each server waits after an action for the page
-to react (about 50 ms here when nothing reacts, 500 ms and 200 ms in the
-others), not from the language.
+to react (about 50 ms here when nothing reacts, 500 ms in Playwright MCP,
+200 ms in chrome-devtools-mcp, none in Selenium MCP), not from the
+language.
 
 ## Supported browsers
 
 | Browser | Protocol | Validated with |
 | --- | --- | --- |
-| Chrome / Chromium | Chrome DevTools Protocol | Google Chrome 156.0.8078.47 (Linux) |
-| Firefox | WebDriver BiDi, plus the Firefox Remote Debugging Protocol (RDP) for the JavaScript debugger | Firefox 159.0 (Linux, snap) |
+| Chrome / Chromium | Chrome DevTools Protocol | Google Chrome 158.0.8127.88 (Linux) |
+| Firefox | WebDriver BiDi, plus the Firefox Remote Debugging Protocol (RDP) for the JavaScript debugger | Firefox 160.0.1 (Linux, snap) |
 
 The default browser is Chrome. Every instance runs one browser for its whole
 life: start the server with `--browser firefox`, or pass
@@ -197,7 +205,7 @@ see the note.
 | `wait_for` | ✓ | ✓ | waits (checking every 100 ms, at most 30 s) until a visible text appears or is gone, a selector is `visible` / `hidden` / `attached` / `detached`, or the URL contains a text; a dialog or debugger pause ends the wait at once, as does the tab closing (on Firefox also the instance closing) |
 | `inspect_dom` | ✓ | ✓ | includes open shadow roots and same-origin iframes (cross-origin ones are noted); at most 100 000 characters without `query` (cut in the page) |
 | `get_css_styles` | ✓ | ✓ | why an element looks as it does: the rules that match it, highest priority first (the `style` attribute as `element.style`, then the rules), each with `selector`, `origin` (`author`, `inline-style`, `user-agent`), `stylesheet` (the sheet's URL; the page's for an inline `<style>`), 0-based `line_number` and `column_number` in that stylesheet, `at_rules` (`@media`, `@container` with its container's name, `@layer`, `@supports`) and its declarations marked `important`, `invalid` or `overridden`; `pseudo_elements`; with `include_inherited` the ancestors' rules (`distance` 1 is the parent); `computed` values of the declared properties (or of `properties`, which also limits the declarations; a shorthand matches its longhands); user-agent rules only with `include_user_agent`; at most `max_rules` rules (30). Chrome: the `CSS` domain, in the frame the selector names. Firefox: its inspector over the debugger port (refs, open shadow roots and same-origin frames work); Firefox names a rule's sheet only by an id, so the page finds the sheet holding a rule with the same selector and declarations (the page's URL when none is found) |
-| `snapshot` | ✓ | ✓ | outline of the page: role, name, states, value and a ref (`e12`) per element, through open shadow roots and same-origin iframes, and on Chrome closed shadow roots too (pages up to 20 000 elements; their elements are reached by ref, not by `>>>`); frames of another origin are read too (at most 20, 5 deep), their iframe marked `[frame=f2]` and their refs prefixed (`f2e5`), and `selector: "f2"` outlines one; tables without headers (`th`, `thead`, `caption`) are layout and leave only their content, and a cell is named by its text only when it holds nothing else; comboboxes, spinbuttons and sliders built with ARIA show their value (the field's text, `aria-valuetext` or `aria-valuenow`, the option a button-like combobox shows), progress bars and meters theirs (`40/100`), and a `<details>` summary `[expanded=true|false]`; `<video>` and `<audio>` are listed with their playback state (`[playing]`, `[paused]` or `[ended]`, `[muted]`, `[seeking]`, `[controls]`, `[buffering]`, `[stalled]`), `[time=12.3/60.0]` while paused or ended, and named by their label or their file (no query; none for `data:` and `blob:`), but a decorative video (autoplay, muted, loop, no controls, no label) is left out; a field's placeholder shows as `[placeholder="…"]` when it is not already its name; a tree item is named by its own text (not its nested items'), the cells of a `grid` are `gridcell`, and elements show `[description="…"]` (`aria-describedby`, `aria-description`), `[pressed=true|false|mixed]`, `[current=page|…]` and `[live=polite|assertive]` (an `aria-live` element without a role is `generic`; `alert`, `status` and `log` are live regions); a field the page rejects (`aria-invalid`) or the browser does (`:user-invalid`, once the user changed it or tried to submit) is `[invalid]`, with `[error="..."]` from its `aria-errormessage`, `aria-describedby` or the browser's validation message; a native `<select>` lists its options under its combobox (`[selected]`, `[disabled]`, optgroups as groups; no refs: `fill_input` picks one), the first 25 and how many more, all of them for `find_in_snapshot`; what the page made inert is left out: `inert` subtrees and, while a modal `<dialog>` is open (marked `[modal]`), everything outside it; an element that is only clickable (a handler or a pointer cursor), draggable (`draggable="true"`, marked `[draggable]`) or a drop zone (`ondrop`/`ondragover`) is one named line with a ref for `drag`, unless it holds links, buttons or fields, which are listed under it; at most 50 000 characters (`selector` and `depth` narrow it); the same JavaScript on both browsers |
+| `snapshot` | ✓ | ✓ | outline of the page: role, name, states, value and a ref (`e12`) per element, through open shadow roots and same-origin iframes, and on Chrome closed shadow roots too (pages up to 20 000 elements; their elements are reached by ref, not by `>>>`); frames of another origin are read too (at most 20, 5 deep), their iframe marked `[frame=f2]` and their refs prefixed (`f2e5`), and `selector: "f2"` outlines one; tables without headers (`th`, `thead`, `caption`) are layout and leave only their content, and a cell is named by its text only when it holds nothing else; comboboxes, spinbuttons and sliders built with ARIA show their value (the field's text, `aria-valuetext` or `aria-valuenow`, the option a button-like combobox shows), progress bars and meters theirs (`40/100`), and a `<details>` summary `[expanded=true\|false]`; `<video>` and `<audio>` are listed with their playback state (`[playing]`, `[paused]` or `[ended]`, `[muted]`, `[seeking]`, `[controls]`, `[buffering]`, `[stalled]`), `[time=12.3/60.0]` while paused or ended, and named by their label or their file (no query; none for `data:` and `blob:`), but a decorative video (autoplay, muted, loop, no controls, no label) is left out; a field's placeholder shows as `[placeholder="…"]` when it is not already its name; a tree item is named by its own text (not its nested items'), the cells of a `grid` are `gridcell`, and elements show `[description="…"]` (`aria-describedby`, `aria-description`), `[pressed=true\|false\|mixed]`, `[current=page\|…]` and `[live=polite\|assertive]` (an `aria-live` element without a role is `generic`; `alert`, `status` and `log` are live regions); a field the page rejects (`aria-invalid`) or the browser does (`:user-invalid`, once the user changed it or tried to submit) is `[invalid]`, with `[error="..."]` from its `aria-errormessage`, `aria-describedby` or the browser's validation message; a native `<select>` lists its options under its combobox (`[selected]`, `[disabled]`, optgroups as groups; no refs: `fill_input` picks one), the first 25 and how many more, all of them for `find_in_snapshot`; what the page made inert is left out: `inert` subtrees and, while a modal `<dialog>` is open (marked `[modal]`), everything outside it; an element that is only clickable (a handler or a pointer cursor), draggable (`draggable="true"`, marked `[draggable]`) or a drop zone (`ondrop`/`ondragover`) is one named line with a ref for `drag`, unless it holds links, buttons or fields, which are listed under it; at most 50 000 characters (`selector` and `depth` narrow it); the same JavaScript on both browsers |
 | `find_in_snapshot` | ✓ | ✓ | `text` (case-insensitive) or `regex` over the whole outline; matching lines under their ancestors, at most 20 |
 | `record_video` | ✓ | ✗ | `files` group; Chrome 156 or later (`Page.startScreenRecording`; WebDriver BiDi has no video recording); `action: "start"` (optional `frame_rate` 1–60, `max_width`, `max_height`), then `action: "stop"` writes an MP4 (AV1) to `path` (an absolute `.mp4` under the upload roots) or to a new file in the temp directory and returns `{path, bytes, duration_s}`; at most 256 MB; a hidden tab draws no frames |
 | `save_pdf` | ✓ | ✓ | `files` group; prints the tab as the browser's print does (`landscape`, `print_background`, `scale` 0.1–2, `page_ranges` like `1-3, 5`); with `path` (an absolute `.pdf` under the upload roots) writes the file and answers `{path, bytes, pages}`, else returns the PDF as an embedded `application/pdf` resource (at most 5 MB); Chrome `Page.printToPDF`, Firefox `browsingContext.print` |
@@ -705,7 +713,7 @@ incompatible:
 ## Scope of the convenience features
 
 Five things this server does go beyond passing the agent's request to the
-browser (see the [comparison](#comparison-with-playwright-mcp-and-chrome-devtools-mcp)).
+browser (see the [comparison](#comparison-with-playwright-mcp-chrome-devtools-mcp-and-selenium-mcp)).
 Each is a convenience with a stated scope. Inside it, a failure is a bug;
 outside it, it is not.
 

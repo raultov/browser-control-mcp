@@ -12,14 +12,22 @@ from a copy of its code: entries describe the differences from that release.
 
 ### Changed
 
+- README: the comparison adds the official Selenium MCP server
+  (`SeleniumHQ/mcp` 0.1.0, not on npm yet) as a fourth contender, and
+  every number is measured again on Chrome 158 with Playwright MCP 0.0.86
+  and chrome-devtools-mcp 1.14.0. Validated with Chrome 158.0.8127.88 and
+  Firefox 160.0.1.
 - README: a new section, "Advantages of a native Rust binary", measured
-  with the new `tests/compare/footprint.py` against Playwright MCP 0.0.86
-  and chrome-devtools-mcp 1.13.0: 4 ms to answer `initialize` (178 to
-  542 ms), 13 to 23 MB for the server process (117 to 167 MB, plus npm
-  under `npx`), no Node.js; and what it does not change (the browser's own
-  work). The comparison table fits GitHub's page width again: an
-  unbreakable `net::ERR_INVALID_AUTH_CREDENTIALS` in two of its cells made
-  it scroll sideways.
+  with the new `tests/compare/footprint.py`: 4 ms to answer `initialize`
+  (129 to 587 ms for the others), 13 to 23 MB for the server process (85
+  to 155 MB, plus npm under `npx` or Selenium's `chromedriver`), no
+  Node.js; and what it does not change (the browser's own work). The
+  comparison table fits GitHub's page width again: an unbreakable
+  `net::ERR_INVALID_AUTH_CREDENTIALS` in two of its cells made it scroll
+  sideways.
+- README: the feature matrix's `snapshot` row is no longer cut short on
+  GitHub at `[expanded=true`: the `|` inside its code spans ended the
+  cell, and are escaped now.
 
 ### Development
 
@@ -30,6 +38,12 @@ from a copy of its code: entries describe the differences from that release.
   worker, a worker of a cross-origin iframe, a popup) must reach the tab's
   tools. Most network-log and route issues were cells of this table found
   one by one; it found the Firefox frame and worker stacks above.
+- `tests/compare` runs the official Selenium MCP server as `se`
+  (`run.py`, `bench.py`, `footprint.py`) from a checkout, with its usage
+  statistics off; `footprint.py` reports the memory of the WebDriver
+  driver it starts apart. Playwright MCP is pinned to 0.0.86 and
+  chrome-devtools-mcp to 1.14.0, and `bench.py` measures the latter with
+  every optional category on.
 
 ### Fixed
 

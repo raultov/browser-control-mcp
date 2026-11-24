@@ -9,6 +9,7 @@ server has no tool for raises `Unsupported`; one that does not work raises
 """
 
 import json
+import os
 import re
 
 from mcp_client import Server
@@ -371,6 +372,92 @@ class Playwright(Adapter):
 
     def offline(self, on):
         return self.ok(self.call("browser_network_state_set", {"state": "offline" if on else "online"}), "network state")
+    def eval_raw(self, expression): return self.call("browser_evaluate", {"function": f"() => ({expression})"})
+
+
+class Selenium(Adapter):
+    """The official Selenium MCP server (SeleniumHQ/mcp): Playwright MCP's
+    tool names, an element by its `ref`."""
+
+    name = "selenium"
+    snapshot_pattern = r'\[(\w+)\] {role} "{name}"'
+
+    def __init__(self, command, env=None):
+        # Selenium Manager sends daily usage statistics unless told not to.
+        super().__init__(command, {**(os.environ if env is None else env), "SE_AVOID_STATS": "true"})
+
+    @staticmethod
+    def r(handle, **more):
+        return {"ref": handle, "element": handle, **more}
+
+    def goto(self, url): return self.ok(self.call("browser_navigate", {"url": url}), "navigate")
+    def back(self): return self.ok(self.call("browser_navigate_back"), "back")
+    def snap(self): return self.ok(self.call("browser_snapshot"), "snapshot")
+
+    def click(self, handle, double=False, right=False):
+        args = self.r(handle)
+        if double:
+            args["doubleClick"] = True
+        if right:
+            args["button"] = "right"
+        return self.ok(self.call("browser_click", args), "click")
+
+    def fill(self, handle, text): return self.ok(self.call("browser_type", self.r(handle, text=text)), "fill")
+
+    def select(self, handle, label, value):
+        return self.ok(self.call("browser_select_option", self.r(handle, values=[label])), "select")
+
+    def select_many(self, handle, labels):
+        return self.ok(self.call("browser_select_option", self.r(handle, values=labels)), "select")
+
+    def hover(self, handle): return self.ok(self.call("browser_hover", self.r(handle)), "hover")
+
+    def press(self, key, handle=None):
+        if handle:
+            self.click(handle)
+        return self.ok(self.call("browser_press_key", {"key": key}), "press")
+
+    def drag(self, source, destination):
+        args = {"startRef": source, "startElement": source, "endRef": destination, "endElement": destination}
+        return self.ok(self.call("browser_drag", args), "drag")
+
+    def upload(self, handle, paths):
+        return self.ok(self.call("browser_file_upload", self.r(handle, paths=paths)), "upload")
+
+    def dialog(self, accept, text=None):
+        args = {"accept": accept}
+        if text is not None:
+            args["promptText"] = text
+        return self.ok(self.call("browser_handle_dialog", args), "dialog")
+
+    def wait_text(self, text): return self.ok(self.call("browser_wait_for", {"text": text}), "wait")
+    def wait_gone(self, text): return self.ok(self.call("browser_wait_for", {"textGone": text}), "wait gone")
+
+    def shot(self, full=False, handle=None):
+        if full:
+            raise Unsupported("full-page screenshot")
+        return self.ok(self.call("browser_take_screenshot", self.r(handle) if handle else {}), "screenshot")
+
+    def console(self): return self.ok(self.call("browser_console_messages", {"level": "debug"}), "console")
+    def network(self): return self.ok(self.call("browser_network_requests", {"includeStatic": True}), "network")
+    def tabs(self): return self.ok(self.call("browser_tabs", {"action": "list"}), "tabs")
+
+    def switch_tab(self, url_part):
+        for line in self.tabs().text.splitlines():
+            found = re.match(r"\s*- (\d+)", line)
+            if found and url_part in line:
+                return self.ok(self.call("browser_tabs", {"action": "select", "index": int(found.group(1))}), "switch tab")
+        raise Fail(f"no tab shows {url_part}")
+
+    def cookies(self): return self.ok(self.call("browser_cookie_list"), "cookies")
+
+    def form(self, fields):
+        listed = [{"ref": handle, "name": handle, "type": kind, "value": value} for handle, value, kind in fields]
+        return self.ok(self.call("browser_fill_form", {"fields": listed}), "fill_form")
+
+    def storage_get(self, key): return self.ok(self.call("browser_localstorage_get", {"key": key}), "localStorage")
+    def resize(self, width, height): return self.ok(self.call("browser_resize", {"width": width, "height": height}), "resize")
+    def pdf(self, path): return self.ok(self.call("browser_pdf_save", {"filename": path}), "pdf")
     def eval_raw(self, expression): return self.call("browser_evaluate", {"function": f"() => ({expression})"})
 
 

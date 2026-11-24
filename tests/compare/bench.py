@@ -5,11 +5,12 @@ one form call, the latency of a click, an evaluation and a navigation, and
 how each server handles a very long page, an unknown host, the console and
 the network log. Chrome, headless; tokens as `mcp_client` counts them.
 
-    python3 -I tests/compare/bench.py                     # bc, pw, cd
+    python3 -I tests/compare/bench.py                     # bc, pw, cd, se
     python3 -I tests/compare/bench.py --servers bc --runs 5
 
-Not a gate: it starts real browsers, fetches the other servers with npx and
-reads live pages (Hacker News, Wikipedia, MDN), whose size changes.
+Not a gate: it starts real browsers, fetches the other servers with npx (the
+Selenium MCP server from a checkout: see README.md) and reads live pages
+(Hacker News, Wikipedia, MDN), whose size changes.
 """
 
 import argparse
@@ -25,8 +26,8 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
-from adapters import BrowserControl, DevTools, Playwright, T  # noqa: E402
-from run import DEVTOOLS, PLAYWRIGHT, free_port  # noqa: E402
+from adapters import BrowserControl, DevTools, Fail, Playwright, Selenium, T  # noqa: E402
+from run import DEVTOOLS, PLAYWRIGHT, SELENIUM_BIN, free_port, selenium_command  # noqa: E402
 from siteserver import Site  # noqa: E402
 
 REPO = os.path.dirname(os.path.dirname(HERE))
@@ -38,17 +39,22 @@ REAL_PAGES = [
 ]
 
 
-def commands(bin_path, output):
+def commands(bin_path, output, selenium_bin=SELENIUM_BIN):
     """name -> (adapter class, default command, command with every opt-in tool)."""
     npx = shutil.which("npx") or "npx"
     bc = [bin_path, "--headless", "--port", str(free_port())]
     pw = [npx, "-y", PLAYWRIGHT, "--headless", "--isolated", "--browser", "chrome",
           "--output-dir", os.path.join(output, "playwright")]
     cd = [npx, "-y", DEVTOOLS, "--headless", "--isolated", "--usageStatistics=false", "--performanceCrux=false"]
+    cd_all = ["--categoryNetworkMocks", "--categoryExtensions", "--categoryExperimentalThirdParty",
+              "--categoryExperimentalWebmcp", "--categoryPwa", "--categoryWebauthn", "--experimentalVision",
+              "--memoryDebugging"]
     return {
         "bc": (BrowserControl, bc, bc + ["--tool-groups", "all"]),
         "pw": (Playwright, pw, pw + ["--caps", "network,storage,devtools,vision,pdf,testing,config"]),
-        "cd": (DevTools, cd, None),
+        "cd": (DevTools, cd, cd + cd_all),
+        # Its evaluation is opt-in too, and the harness reads the page with it.
+        "se": (Selenium, ["node", selenium_bin, "--headless"], selenium_command(selenium_bin)),
     }
 
 
@@ -128,6 +134,9 @@ def full_shot(adapter, name, site):
         return raw_call(adapter, "capture_screenshot", {"full_page": True})
     if name == "pw":
         return raw_call(adapter, "browser_take_screenshot", {"type": "png", "fullPage": True})
+    if name == "se":
+        # It has no full-page screenshot: what it gives instead.
+        return raw_call(adapter, "browser_take_screenshot", {})
     return raw_call(adapter, "take_screenshot", {"pageId": adapter.page, "fullPage": True})
 
 
@@ -135,7 +144,7 @@ def unknown_host(adapter, name):
     url = "http://nonexistent-host.invalid/"
     if name == "bc":
         return raw_call(adapter, "navigate", {"url": url})
-    if name == "pw":
+    if name in ("pw", "se"):
         return raw_call(adapter, "browser_navigate", {"url": url})
     return raw_call(adapter, "navigate_page", {"pageId": adapter.page, "type": "url", "url": url})
 
@@ -144,7 +153,12 @@ def measure(name, adapter, site, runs):
     """Every row for one server, as a dict."""
     out = {}
     for label, url in REAL_PAGES:
-        adapter.goto(url)
+        try:
+            adapter.goto(url)
+        except Fail as error:
+            # A navigation the server reports failed (Selenium on MDN): the
+            # page may have loaded all the same, and the snapshot says.
+            out[f"navigate {label}"] = str(error)[:200]
         time.sleep(1)
         out[f"snapshot {label}"] = adapter.snap().tokens
     for key, steps in (("login steps", login_steps(site)), ("login form", login_form(site))):
@@ -179,16 +193,17 @@ def measure(name, adapter, site, runs):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--servers", default="bc,pw,cd")
+    parser.add_argument("--servers", default="bc,pw,cd,se")
     parser.add_argument("--runs", type=int, default=10, help="calls per latency median")
     parser.add_argument("--bc-bin", default=os.path.join(REPO, "target", "release", "browser-control-mcp"))
+    parser.add_argument("--selenium-bin", default=SELENIUM_BIN)
     args = parser.parse_args()
     output = tempfile.mkdtemp(prefix="bench-")
     site = Site()
     results = {}
     try:
         for name in args.servers.split(","):
-            adapter_class, default, every = commands(args.bc_bin, output)[name]
+            adapter_class, default, every = commands(args.bc_bin, output, args.selenium_bin)[name]
             row = {"tools default": tool_tokens(adapter_class, default)}
             if every:
                 row["tools all"] = tool_tokens(adapter_class, every)
