@@ -43,6 +43,12 @@ from a copy of its code: entries describe the differences from that release.
   message was kept. Its frames now follow the error in Chrome's form
   (`at boom (url:3:25)`), without Firefox's own frames; BiDi's copy of the
   error, without a stack, is still dropped for the watcher's.
+- `fill_input` and `fill_form` on Firefox set a `month` or `week` input
+  as on Chrome (#203): Firefox has no such inputs (they are text fields
+  there), so the text was typed key by key, with no `change` and no check
+  of its format. A field declared `type=month` or `type=week` now gets the
+  value at once, with one `input` and one `change`, and a malformed one
+  (not `YYYY-MM` or `YYYY-Www`) is refused, changing nothing.
 - A Firefox logpoint's console line no longer ends with
   `@ debugger eval code:1` (#205): that is where Firefox runs a
   breakpoint's condition, in no page script; the line has no location, as

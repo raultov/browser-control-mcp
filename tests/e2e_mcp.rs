@@ -2099,6 +2099,56 @@ mod e2e {
                 "formedtrueframed-form",
             ),
         ]
+        .into_iter()
+        .chain(month_week_steps(&i))
+        .collect()
+    }
+
+    /// #203: month and week inputs take a value in their format with one
+    /// `input` and one `change` and refuse a malformed one, also on
+    /// Firefox, which has no such inputs (they are text fields there).
+    fn month_week_steps(i: &Value) -> Vec<Step> {
+        let add = "for (const t of ['month', 'week']) { const e = document.createElement('input'); e.id = t + '203'; e.type = t; window['ev' + t] = []; for (const k of ['input', 'change']) e.addEventListener(k, () => window['ev' + t].push(k)); document.body.append(e); } 'added'";
+        let read = "['month', 'week'].map(t => document.getElementById(t + '203').value + ':' + window['ev' + t].join('+')).join(' ')";
+        let fill = |selector: &str, text: &str| json!({"instance_id": i, "selector": selector, "text": text});
+        vec![
+            (
+                "#203 month and week inputs",
+                "evaluate_js",
+                json!({"instance_id": i, "expression": add}),
+                "added",
+            ),
+            (
+                "#203 fill a month",
+                "fill_input",
+                fill("#month203", "2026-10"),
+                "Successfully filled",
+            ),
+            (
+                "#203 fill a week",
+                "fill_input",
+                fill("#week203", "2026-W43"),
+                "Successfully filled",
+            ),
+            (
+                "#203 a malformed month is refused",
+                "fill_input",
+                fill("#month203", "not-a-month"),
+                "!expects YYYY-MM",
+            ),
+            (
+                "#203 a malformed week is refused",
+                "fill_input",
+                fill("#week203", "2026-43"),
+                "!expects YYYY-Www",
+            ),
+            (
+                "#203 values and events",
+                "evaluate_js",
+                json!({"instance_id": i, "expression": read}),
+                "2026-10:input+change 2026-W43:input+change",
+            ),
+        ]
     }
 
     /// ISSUE-6: upload_file hands the file input a file of the repository

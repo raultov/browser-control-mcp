@@ -1,0 +1,10 @@
+{
+ "number": 203,
+ "title": "fill_input: on Firefox, <input type=month|week> is typed as text: no change event, malformed value accepted",
+ "family": "other",
+ "command": [
+  "repro_ff_month_input.py"
+ ],
+ "bug_regex": "BUG: fill_input on <input type=month> breaks its promise on \\['firefox'\\]",
+ "exit_on_bug": true
+}

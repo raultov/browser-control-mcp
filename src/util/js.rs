@@ -545,11 +545,14 @@ const PREPARE_FILL: &str = "const W = el.ownerDocument.defaultView; \
         return { status: 'selected', count: el.multiple ? el.selectedOptions.length : null }; \
     } \
     const VALUED = { date: 'YYYY-MM-DD', time: 'HH:MM or HH:MM:SS', 'datetime-local': 'YYYY-MM-DDTHH:MM', month: 'YYYY-MM', week: 'YYYY-Www', range: 'a number', color: '#rrggbb' }; \
-    if (el instanceof W.HTMLInputElement && VALUED[el.type]) { \
+    const OWN = { month: /^\\d{4,}-(0[1-9]|1[0-2])$/, week: /^\\d{4,}-W(0[1-9]|[1-4]\\d|5[0-3])$/ }; \
+    const declared = (el.getAttribute('type') || '').toLowerCase(); \
+    const kind = !(el instanceof W.HTMLInputElement) ? null : VALUED[el.type] ? el.type : el.type === 'text' && OWN[declared] ? declared : null; \
+    if (kind) { \
         if (el.matches(':disabled')) return { status: 'not_editable', reason: 'disabled' }; \
         if (el.readOnly) return { status: 'not_editable', reason: 'read-only' }; \
-        const format = VALUED[el.type]; \
-        const valid = el.type === 'range' ? text.trim() !== '' && !isNaN(Number(text)) : el.type === 'color' ? /^#[0-9a-f]{6}$/i.test(text) : true; \
+        const format = VALUED[kind]; \
+        const valid = kind === 'range' ? text.trim() !== '' && !isNaN(Number(text)) : kind === 'color' ? /^#[0-9a-f]{6}$/i.test(text) : kind !== el.type ? text === '' || OWN[kind].test(text) : true; \
         if (!valid) return { status: 'rejected', format }; \
         el.focus(); \
         const before = el.value, setValue = Object.getOwnPropertyDescriptor(W.HTMLInputElement.prototype, 'value').set; \
@@ -557,7 +560,7 @@ const PREPARE_FILL: &str = "const W = el.ownerDocument.defaultView; \
         if (text !== '' && el.value === '') { setValue.call(el, before); return { status: 'rejected', format }; } \
         el.dispatchEvent(new Event('input', { bubbles: true })); \
         el.dispatchEvent(new Event('change', { bubbles: true })); \
-        const matches = el.type === 'color' ? el.value === text.toLowerCase() : el.type === 'range' ? Number(el.value) === Number(text) : el.value === text; \
+        const matches = kind === 'color' ? el.value === text.toLowerCase() : kind === 'range' ? Number(el.value) === Number(text) : el.value === text; \
         return { status: 'set', matches, value: matches ? null : el.value }; \
     } \
     const field = el instanceof W.HTMLInputElement || el instanceof W.HTMLTextAreaElement; \
