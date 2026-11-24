@@ -1,0 +1,39 @@
+<!doctype html>
+<html>
+<head><title>Probe</title></head>
+<body>
+<p>A page that does what the messages it gets ask (log, throw, fetch), and an iframe of its <code>child</code> parameter or a worker with <code>worker=1</code>; used by tests/differential/target_matrix.py.</p>
+<script>
+const params = new URLSearchParams(location.search);
+// A popup answers its opener, a frame the top page.
+const say = text => (window.opener || top).postMessage(text, '*');
+if (params.get('child')) {
+  const frame = document.createElement('iframe');
+  frame.src = params.get('child');
+  document.body.append(frame);
+}
+if (params.get('worker')) {
+  window.wk = new Worker('/probe-worker.js');
+  wk.onmessage = event => say(event.data);
+}
+// The commands: `log:<token>`, `throw:<token>`, `fetch:<token>:<path>`;
+// each answers `done:<token>:<result>`. With a child or a worker, they go
+// to it instead.
+addEventListener('message', event => {
+  const text = String(event.data);
+  if (text.startsWith('done:')) return;
+  if (window.wk) return wk.postMessage(text);
+  if (params.get('child')) return document.querySelector('iframe').contentWindow.postMessage(text, '*');
+  const [command, token, ...rest] = text.split(':');
+  if (command === 'log') { console.log('probe-log ' + token); say('done:' + token + ':logged'); }
+  else if (command === 'throw') {
+    setTimeout(function probeThrower() { throw new Error('probe-throw ' + token); });
+    say('done:' + token + ':thrown');
+  } else if (command === 'fetch') {
+    fetch(rest.join(':')).then(async r => say('done:' + token + ':' + r.status + ' ' + (await r.text()).slice(0, 40)),
+      e => say('done:' + token + ':failed ' + e));
+  }
+});
+</script>
+</body>
+</html>

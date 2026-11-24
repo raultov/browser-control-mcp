@@ -21,6 +21,16 @@ from a copy of its code: entries describe the differences from that release.
   unbreakable `net::ERR_INVALID_AUTH_CREDENTIALS` in two of its cells made
   it scroll sideways.
 
+### Development
+
+- `tests/differential/target_matrix.py`, run by `make e2e` on both
+  browsers: a console message, an uncaught error with its stack, a
+  request, a redirect hop and a mocked request in each kind of target a
+  tab has (the document, a same- or cross-origin iframe, a nested one, a
+  worker, a worker of a cross-origin iframe, a popup) must reach the tab's
+  tools. Most network-log and route issues were cells of this table found
+  one by one; it found the Firefox frame and worker stacks above.
+
 ### Fixed
 
 - `mock_route` on Chrome answers the requests of the tab's frames of
@@ -43,6 +53,12 @@ from a copy of its code: entries describe the differences from that release.
   message was kept. Its frames now follow the error in Chrome's form
   (`at boom (url:3:25)`), without Firefox's own frames; BiDi's copy of the
   error, without a stack, is still dropped for the watcher's.
+- `get_console_logs` on Firefox shows the stack of an uncaught error of a
+  frame (of the page's origin or another) and of a dedicated worker too,
+  and marks a worker's error uncaught (#204): the watcher of the debugger
+  port does not see a frame's errors, so their stack now comes from the
+  copy BiDi reports, and a worker's error, whose category says nothing of
+  JavaScript, was taken for a browser message without its stack.
 - A popup a page opens on Chrome is named by the action that opened it
   and listed by `list_tabs` again after an `open_tab` and `close_tab`
   (#202): the listener of the browser's targets enabled each page's

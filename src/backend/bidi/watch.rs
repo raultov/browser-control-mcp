@@ -636,9 +636,8 @@ const MAX_STACK_FRAMES: usize = 20;
 
 /// A page error's text; an unhandled rejection's starts with
 /// `Uncaught (in promise)`, as on Chrome (ISSUE-80). An uncaught error (or
-/// rejection) is followed by its stack, as Chrome gives it (#204: Firefox
-/// lists it apart, in `stacktrace`), without Firefox's own frames (its
-/// Remote Agent running `evaluate_js`), as Chrome leaves out its own.
+/// rejection, or a worker's error) is followed by its stack, as Chrome
+/// gives it (#204: Firefox lists it apart, in `stacktrace`).
 fn error_text(error: &Value) -> Option<String> {
     let text = error.get("errorMessage")?.as_str()?;
     let flag = |key: &str| error.get(key).and_then(Value::as_bool) == Some(true);
@@ -647,51 +646,68 @@ fn error_text(error: &Value) -> Option<String> {
         true => format!("{}{text}", crate::handler::cdp_domains::log::IN_PROMISE),
         false => text.to_string(),
     };
-    if flag("hasException") || rejection {
+    let worker = error.get("category").and_then(Value::as_str) == Some(WORKER_CATEGORY);
+    if flag("hasException") || rejection || worker {
         let frames = error.get("stacktrace").and_then(Value::as_array);
-        let page = |frame: &&Value| {
-            let file = frame
-                .get("filename")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            !(file.starts_with("chrome://") || file.starts_with("resource://"))
-        };
-        let frames = frames.into_iter().flatten().filter(page);
-        for frame in frames.take(MAX_STACK_FRAMES) {
-            out.push_str(&stack_line(frame));
-        }
+        let frames = frames.into_iter().flatten().map(|frame| StackFrame {
+            function: str_of(frame, "functionName"),
+            url: str_of(frame, "filename"),
+            line: frame.get("lineNumber").and_then(Value::as_u64).unwrap_or(0),
+            column: frame
+                .get("columnNumber")
+                .and_then(Value::as_u64)
+                .unwrap_or(0),
+        });
+        out.push_str(&v8_stack(frames));
     }
     Some(out)
 }
 
-/// One frame of a Firefox `stacktrace` as V8 writes it in a stack:
-/// `\n    at function (url:line:column)`, or `\n    at url:line:column`
-/// for a frame without a name (lines and columns count from 1 on both).
-fn stack_line(frame: &Value) -> String {
-    let number = |key: &str| frame.get(key).and_then(Value::as_u64).unwrap_or(0);
-    let file = frame
-        .get("filename")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    let place = format!("{file}:{}:{}", number("lineNumber"), number("columnNumber"));
-    match frame
-        .get("functionName")
-        .and_then(Value::as_str)
-        .filter(|n| !n.is_empty())
-    {
-        Some(name) => format!("\n    at {name} ({place})"),
-        None => format!("\n    at {place}"),
-    }
+/// The category of a dedicated worker's script errors (it says nothing of
+/// JavaScript, and they carry no `hasException`).
+const WORKER_CATEGORY: &str = "Web Worker";
+
+/// The string `key` of `value`, or an empty one.
+fn str_of<'a>(value: &'a Value, key: &str) -> &'a str {
+    value.get(key).and_then(Value::as_str).unwrap_or_default()
+}
+
+/// One frame of a stack, its line and column counted from 1.
+pub(crate) struct StackFrame<'a> {
+    pub(crate) function: &'a str,
+    pub(crate) url: &'a str,
+    pub(crate) line: u64,
+    pub(crate) column: u64,
+}
+
+/// A stack as V8 writes it after an error's message, one
+/// `\n    at function (url:line:column)` per frame (`at url:line:column`
+/// for one without a name), at most [`MAX_STACK_FRAMES`], without
+/// Firefox's own frames (`chrome://`, `resource://`: its Remote Agent
+/// running `evaluate_js`), as Chrome leaves out its own.
+pub(crate) fn v8_stack<'a>(frames: impl Iterator<Item = StackFrame<'a>>) -> String {
+    let page = |frame: &StackFrame<'_>| {
+        !(frame.url.starts_with("chrome://") || frame.url.starts_with("resource://"))
+    };
+    let lines = frames.filter(page).take(MAX_STACK_FRAMES).map(|frame| {
+        let place = format!("{}:{}:{}", frame.url, frame.line, frame.column);
+        match frame.function {
+            "" => format!("\n    at {place}"),
+            name => format!("\n    at {name} ({place})"),
+        }
+    });
+    lines.collect()
 }
 
 /// What a Firefox console category is about: `javascript` (script errors),
 /// `css`, `security` (cookies, mixed content, CSP...), `network`, else
 /// `other`.
 fn source_label(kind: &str, category: &str) -> &'static str {
+    let worker = category == WORKER_CATEGORY;
     let category = category.to_ascii_lowercase();
     if kind == "css-message" || category.starts_with("css") {
         "css"
-    } else if category.contains("javascript") {
+    } else if category.contains("javascript") || worker {
         "javascript"
     } else if [
         "cookie",
@@ -1424,6 +1440,26 @@ mod tests {
         assert_eq!(lines[2], "    at http://a/index.html:9:25");
         let cookie = console_message("error-message", &errors[1]).unwrap();
         assert!(!cookie.text.contains('\n'));
+    }
+
+    /// #204 (Firefox): a worker's uncaught error (category `Web Worker`,
+    /// without `hasException`) is a script error with its stack, as the
+    /// copy BiDi reports, which it replaces.
+    #[test]
+    fn worker_errors_are_script_errors_with_their_stack() {
+        let mut errors = resources(fixtures::RDP_RESOURCES_ERROR_MESSAGE);
+        let error = &mut errors[0]["pageError"];
+        error["category"] = json!("Web Worker");
+        error["hasException"] = Value::Null;
+        error["errorMessage"] = json!("Error: probe-throw WORKER");
+        error["stacktrace"] = json!([{"columnNumber": 48, "filename": "http://a/probe-worker.js",
+            "functionName": "probeThrower", "lineNumber": 7, "sourceId": null}]);
+        let thrown = console_message("error-message", &errors[0]).unwrap();
+        assert_eq!(thrown.source, "javascript");
+        assert_eq!(
+            thrown.text,
+            "Error: probe-throw WORKER\n    at probeThrower (http://a/probe-worker.js:7:48)"
+        );
     }
 
     /// FWS-03 (F-04): page errors and CSS warnings become console messages

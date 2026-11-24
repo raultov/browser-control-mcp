@@ -964,7 +964,11 @@ all of them), and `ws_matrix.py`: a WebSocket of the document, a same- or
 cross-origin iframe, a nested iframe, a worker and a popup, ended by the
 page, the server, a dropped connection, a navigation, a reload, a removal
 or `terminate()`, or refused, unanswered or dropped at the handshake,
-must get exactly one close line in `get_network_logs`, and `headers.py`:
+must get exactly one close line in `get_network_logs`, and
+`target_matrix.py`: a console message, an uncaught error with its stack,
+a request, a redirect hop and a mocked request in the document, a same-
+or cross-origin iframe, a nested iframe, a worker, a worker of a
+cross-origin iframe and a popup must each reach the tab's tools, and `headers.py`:
 credential request, response and cookie headers are hidden and standard
 ones shown, by default and in one request's details, and `secrets.py`:
 a secret the page writes through its encoders into 34 places a tool reads

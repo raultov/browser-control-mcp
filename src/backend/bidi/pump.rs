@@ -406,7 +406,10 @@ pub(crate) fn console_message(params: &Value) -> ConsoleMessage {
             let method = str_field(params, "method").or_else(|| str_field(params, "level"));
             crate::handler::cdp_domains::log::canonical_level(method.unwrap_or_default())
         },
-        text: console_text(params),
+        text: match source {
+            "exception" => format!("{}{}", console_text(params), bidi_stack(params)),
+            _ => console_text(params),
+        },
         timestamp: params
             .get("timestamp")
             .and_then(Value::as_f64)
@@ -417,6 +420,26 @@ pub(crate) fn console_message(params: &Value) -> ConsoleMessage {
             .and_then(Value::as_i64),
         channel: Default::default(),
     }
+}
+
+/// The stack of a script error BiDi reports, as Chrome writes it (#204:
+/// the debugger port's watcher, which gives it otherwise, does not see a
+/// frame's errors); BiDi counts lines and columns from 0.
+fn bidi_stack(params: &Value) -> String {
+    let frames = params
+        .pointer("/stackTrace/callFrames")
+        .and_then(Value::as_array);
+    let number = |frame: &Value, key: &str| frame.get(key).and_then(Value::as_u64).unwrap_or(0) + 1;
+    let frames = frames
+        .into_iter()
+        .flatten()
+        .map(|frame| super::watch::StackFrame {
+            function: str_field(frame, "functionName").unwrap_or_default(),
+            url: str_field(frame, "url").unwrap_or_default(),
+            line: number(frame, "lineNumber"),
+            column: number(frame, "columnNumber"),
+        });
+    super::watch::v8_stack(frames)
 }
 
 /// The URL Firefox gives code its debugger evaluates (a breakpoint's
@@ -782,6 +805,29 @@ mod tests {
         let thrown = json!({"type": "javascript", "level": "error", "text": "Error: x", "source": {"realm": "r", "context": "c"}, "timestamp": 1,
             "stackTrace": {"callFrames": [{"url": "http://a/", "lineNumber": 1, "columnNumber": 0, "functionName": ""}]}});
         assert_eq!(console_message(&thrown).source, "exception");
+    }
+
+    /// #204 (Firefox): a script error BiDi reports (a frame's, which the
+    /// debugger port's watcher does not see) carries its stack as Chrome
+    /// writes it, BiDi's 0-based lines and columns counted from 1, without
+    /// Firefox's own frames.
+    #[test]
+    fn bidi_script_errors_carry_their_stack() {
+        let frames = json!([
+            {"functionName": "probeThrower", "url": "http://b/probe.html", "lineNumber": 29, "columnNumber": 47},
+            {"functionName": "executeInRealm", "url": "chrome://remote/content/shared/Realm.sys.mjs", "lineNumber": 305, "columnNumber": 39},
+            {"functionName": "", "url": "http://b/probe.html", "lineNumber": 21, "columnNumber": 16}]);
+        let thrown = json!({"type": "javascript", "level": "error", "text": "Error: probe-throw FRAME",
+            "timestamp": 1, "stackTrace": {"callFrames": frames}});
+        let message = console_message(&thrown);
+        assert_eq!(
+            message.text,
+            "Error: probe-throw FRAME\n    at probeThrower (http://b/probe.html:30:48)\n    at http://b/probe.html:22:17"
+        );
+        assert_eq!(
+            (message.source.as_str(), message.line_number),
+            ("exception", Some(29))
+        );
     }
 
     /// #205 (Firefox): a logpoint's message, which Firefox writes from the
