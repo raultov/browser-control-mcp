@@ -13,7 +13,7 @@ It is the successor of
 from a copy of its code) and complements Playwright MCP or
 chrome-devtools-mcp with runtime JavaScript debugging on both browsers.
 
-> **Status: release candidate (1.0.0-rc.1).** Feature-complete for 1.0:
+> **Status: release candidate (1.0.0-rc.2).** Feature-complete for 1.0:
 > until 1.0.0 only bugs are fixed, and tools, arguments and replies do not
 > change unless a fix needs it. Differences between Chrome and Firefox are
 > in [Limitations and TODO](#limitations-and-todo); what has not been
@@ -25,7 +25,7 @@ chrome-devtools-mcp with runtime JavaScript debugging on both browsers.
 
 ## Comparison with Playwright MCP, chrome-devtools-mcp and Selenium MCP
 
-Measured on 2026-11-24 with browser-control-mcp 1.0.0-rc.1 built from the
+Measured on 2026-11-24 with browser-control-mcp 1.0.0-rc.2 built from the
 current sources, `@playwright/mcp` 0.0.86, `chrome-devtools-mcp` 1.14.0
 and the official Selenium MCP server (`SeleniumHQ/mcp` 0.1.0, "v1 in
 progress", not on npm yet: a checkout of commit `de8899c`), driven by the
@@ -92,7 +92,7 @@ browser-control promises there, and what it does not, is in
 browser-control-mcp is one compiled program; Playwright MCP,
 chrome-devtools-mcp and Selenium MCP run on Node.js. Measured on
 2026-11-24 with `tests/compare/footprint.py` (median of 5 runs, Linux,
-Chrome 158 headless): browser-control-mcp 1.0.0-rc.1, `@playwright/mcp`
+Chrome 158 headless): browser-control-mcp 1.0.0-rc.2, `@playwright/mcp`
 0.0.86 and `chrome-devtools-mcp` 1.14.0, each started with `npx` as its
 README shows, and with `node` directly; Selenium MCP 0.1.0 with `node`
 from a checkout, since it is not on npm yet.
@@ -355,7 +355,7 @@ curl --proto '=https' --tlsv1.2 -LsSf https://github.com/raultov/browser-control
 
 **4. Cargo**, if you already have Rust:
 ```bash
-cargo install browser-control-mcp --version 1.0.0-rc.1   # compiles from crates.io
+cargo install browser-control-mcp --version 1.0.0-rc.2   # compiles from crates.io
 cargo binstall browser-control-mcp    # with cargo-binstall: fetches the pre-compiled binary, no compile
 ```
 
@@ -384,7 +384,7 @@ brew install raultov/tap/browser-control-mcp
 
 **4. Cargo**, if you already have Rust:
 ```bash
-cargo install browser-control-mcp --version 1.0.0-rc.1   # compiles from crates.io
+cargo install browser-control-mcp --version 1.0.0-rc.2   # compiles from crates.io
 cargo binstall browser-control-mcp    # with cargo-binstall: fetches the pre-compiled binary, no compile
 ```
 
@@ -410,7 +410,7 @@ powershell -ExecutionPolicy Bypass -c "irm https://github.com/raultov/browser-co
 
 **4. Cargo**, if you already have Rust:
 ```powershell
-cargo install browser-control-mcp --version 1.0.0-rc.1   # compiles from crates.io
+cargo install browser-control-mcp --version 1.0.0-rc.2   # compiles from crates.io
 cargo binstall browser-control-mcp    # with cargo-binstall: fetches the pre-compiled binary, no compile
 ```
 

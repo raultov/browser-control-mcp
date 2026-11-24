@@ -8,7 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 `browser-control-mcp` is the successor of `chrome-debug-mcp` 1.5.6 and starts
 from a copy of its code: entries describe the differences from that release.
 
-## [Unreleased]
+## [1.0.0-rc.2] - 2026-11-24
+
+Second release candidate: bug fixes only. Mocked routes on Chrome reach
+the tab's frames of another origin (#199, #200) and match a URL with a
+`#fragment` on both browsers (#201); Firefox gives a mocked redirect's
+hop its status (#198), keeps the stack of uncaught errors in the page,
+its frames and its workers (#204), sets `month` and `week` inputs as
+Chrome does (#203) and drops a logpoint's bogus location (#205); a popup
+opened after an `open_tab` and `close_tab` is reported again (#202). The
+README compares the official Selenium MCP server too, measured again on
+Chrome 158.
 
 ### Changed
 
