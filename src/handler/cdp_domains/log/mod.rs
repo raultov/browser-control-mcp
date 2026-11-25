@@ -37,8 +37,17 @@ pub(crate) enum Channel {
     Watcher,
 }
 
-/// How close (ms) two copies of one message from different feeds arrive.
-const DUPLICATE_WINDOW_MS: f64 = 2000.0;
+/// Whether two copies of one message from Firefox's two feeds can be
+/// stamped `a` and `b` (ms since the epoch): both stamp it with the time of
+/// the error it reports, BiDi to the millisecond and the watcher with its
+/// fraction (measured on Firefox 160: page and worker errors, rejected
+/// cookies, CORS and CSP reports). A millisecond apart at most, which
+/// rounding could make: two messages with the same text stamped further
+/// apart are two, and stay so (a window of 2 s paired a page's repeated
+/// error with another occurrence's copy, and could drop one).
+fn same_instant(a: f64, b: f64) -> bool {
+    (a.floor() - b.floor()).abs() <= 1.0
+}
 
 /// How many recent messages are compared for duplicates.
 const DUPLICATE_LOOKBACK: usize = 64;
@@ -145,9 +154,9 @@ impl LogState {
     }
 
     /// Pushes a message that another feed may report too (Firefox): a copy
-    /// already pushed by the other feed (same first line, close
-    /// timestamps) is kept once, with the watcher's labels and stack, which
-    /// say more.
+    /// already pushed by the other feed (same first line, same stamp, see
+    /// [`same_instant`]) is kept once, with the watcher's labels and stack,
+    /// which say more.
     pub(crate) fn push_deduplicated(&mut self, msg: ConsoleMessage) {
         let before = self
             .cleared_before
@@ -168,7 +177,7 @@ impl LogState {
             .find(|m| {
                 m.channel != msg.channel
                     && twin_key(&m.text) == twin_key(&msg.text)
-                    && (m.timestamp - msg.timestamp).abs() <= DUPLICATE_WINDOW_MS
+                    && same_instant(m.timestamp, msg.timestamp)
             });
         match twin {
             Some(existing) if msg.channel == Channel::Watcher => *existing = msg,
@@ -1223,7 +1232,11 @@ mod tests {
     }
 
     /// FWS-04: a message both Firefox feeds report is kept once (the
-    /// watcher's copy); repeats within one feed are all kept.
+    /// watcher's copy), the two copies stamped the same millisecond (BiDi
+    /// without the watcher's fraction); repeats within one feed are all
+    /// kept, and so are copies of the same text stamped apart: a page's
+    /// error repeated 300 ms later, its four copies arriving out of order,
+    /// is two errors, each with its own copy and stamp.
     #[test]
     fn duplicates_across_feeds_are_kept_once() {
         let at = |text: &str, ms: f64, channel: Channel| ConsoleMessage {
@@ -1239,28 +1252,33 @@ mod tests {
         };
         let mut state = LogState::default();
         // Watcher first, then BiDi's copy: the copy is dropped
-        state.push_deduplicated(at("cookie rejected", 1000.0, Channel::Watcher));
-        state.push_deduplicated(at("cookie rejected", 1500.0, Channel::Primary));
+        state.push_deduplicated(at("cookie rejected", 1000.4, Channel::Watcher));
+        state.push_deduplicated(at("cookie rejected", 1000.0, Channel::Primary));
         // BiDi first, then the watcher's copy: replaced in place
         state.push_deduplicated(at("boom", 2000.0, Channel::Primary));
-        state.push_deduplicated(at("boom", 2100.0, Channel::Watcher));
-        // The same text twice from one feed, and long after: all kept
+        state.push_deduplicated(at("boom", 2000.7, Channel::Watcher));
+        // The same text twice from one feed: both kept
         state.push_deduplicated(at("tick", 3000.0, Channel::Primary));
         state.push_deduplicated(at("tick", 3001.0, Channel::Primary));
-        state.push_deduplicated(at("boom", 9000.0, Channel::Watcher));
-        let kept: Vec<(&str, &str)> = state
+        // An error and its repeat 300 ms later: both BiDi copies first
+        state.push_deduplicated(at("again", 4000.0, Channel::Primary));
+        state.push_deduplicated(at("again", 4300.0, Channel::Primary));
+        state.push_deduplicated(at("again", 4000.2, Channel::Watcher));
+        state.push_deduplicated(at("again", 4300.9, Channel::Watcher));
+        let kept: Vec<(&str, &str, f64)> = state
             .messages
             .iter()
-            .map(|m| (m.text.as_str(), m.source.as_str()))
+            .map(|m| (m.text.as_str(), m.source.as_str(), m.timestamp))
             .collect();
         assert_eq!(
             kept,
             [
-                ("cookie rejected", "security"),
-                ("boom", "security"),
-                ("tick", "console-api"),
-                ("tick", "console-api"),
-                ("boom", "security"),
+                ("cookie rejected", "security", 1000.4),
+                ("boom", "security", 2000.7),
+                ("tick", "console-api", 3000.0),
+                ("tick", "console-api", 3001.0),
+                ("again", "security", 4000.2),
+                ("again", "security", 4300.9),
             ]
         );
     }

@@ -12,6 +12,13 @@ from a copy of its code: entries describe the differences from that release.
 
 ### Fixed
 
+- `get_console_logs` on Firefox pairs the two copies of a message (BiDi's
+  and the debugger port's) by their stamp: both carry the time of the
+  error they report, to the millisecond. They were paired by text within
+  2 s, so a copy could take the place of another occurrence of the same
+  error: a page throwing it every few milliseconds had its errors listed
+  newest first.
+
 - Chrome: the session-level connection to the browser's first page, which
   serves the calls made before that page is registered as a tab, no
   longer listens to it once it is one: every console message, request and
