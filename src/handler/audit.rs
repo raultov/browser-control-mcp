@@ -517,6 +517,7 @@ mod tests {
             channel: Default::default(),
             document: None,
             uncaught: false,
+            target_type: None,
         }
     }
 

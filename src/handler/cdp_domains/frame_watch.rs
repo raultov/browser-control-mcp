@@ -10,7 +10,9 @@
 //! `debugger::frames`: its breakpoints set before it runs), has it pause
 //! the requests of the tab's mocked routes (#199: the tab's `Fetch` does
 //! not see them) and auto-attaches to its own frames, then releases the
-//! frame. A frame is
+//! frame. A dedicated worker reports its console and requests the same
+//! way (ISSUE-75), and so does the tab's service worker (#211), released
+//! before its domains are enabled. A frame is
 //! released on every path, errors included: one left waiting would never
 //! run.
 
@@ -49,6 +51,11 @@ enum Watch {
     /// A dedicated worker: its console and requests (ISSUE-75), and the
     /// workers it starts (#207).
     Worker,
+    /// The service worker of the tab's scope: its console and its own
+    /// requests (#211). It serves every tab of its scope, each of which
+    /// lists them; Chrome stops it when idle and attaches it again when it
+    /// restarts, paused, so its first messages are kept.
+    ServiceWorker,
     /// Not watched (another kind, or past [`MAX_WATCHED`]): only released.
     Released,
 }
@@ -182,6 +189,7 @@ fn watch_kind(attached: &Value, sinks: &FrameSinks) -> Watch {
     let kind = match attached["targetInfo"]["type"].as_str() {
         Some("iframe") => Watch::Frame,
         Some("worker") => Watch::Worker,
+        Some("service_worker") => Watch::ServiceWorker,
         _ => return Watch::Released,
     };
     match sinks.take_place() {
@@ -221,14 +229,21 @@ async fn frame_setup(session: Tab, attached: Value, kind: Watch, sinks: FrameSin
         .unwrap_or_default()
         .to_string();
     let mut listeners = ListenerHandles::default();
+    let mut released = false;
     if let Some(target_id) = attached["targetInfo"]["targetId"].as_str() {
         listeners = match kind {
             Watch::Frame => watch_frame(&session, target_id, sinks).await,
             Watch::Worker => watch_worker(&session, target_id, sinks).await,
+            Watch::ServiceWorker => {
+                released = true;
+                watch_service_worker(&session, target_id, sinks, &auto).await
+            }
             Watch::Released => listeners,
         };
     }
-    release(&session, &auto).await;
+    if !released {
+        release(&session, &auto).await;
+    }
     // Held until the frame detaches (the task is aborted then).
     let _listeners = listeners;
     std::future::pending::<()>().await;
@@ -311,6 +326,39 @@ async fn watch_worker(session: &Tab, target_id: &str, sinks: FrameSinks) -> List
     // its own id, dropped as its own (#207), so they report in their own
     // sessions (one past `MAX_WATCHED` is not heard).
     listeners.push(start_frame_watcher(&worker, sinks));
+    listeners
+}
+
+/// Attaches a session of its own to the service worker `target_id` and
+/// starts its console and network listeners (#211: the tab's sessions see
+/// neither). Its `Network` is enabled without waiting for the reply, then
+/// it is let run (it waits in the tab's auto-attached session `auto`),
+/// then its `Runtime` is enabled, which replays the messages it logged
+/// meanwhile. Measured on Chrome 158: a service worker whose second session
+/// had a command answered while it waited never ran, and one whose
+/// `Network` was enabled after it ran had its first requests (its install
+/// handler's) unseen. Released on every path.
+async fn watch_service_worker(
+    session: &Tab,
+    target_id: &str,
+    sinks: FrameSinks,
+    auto: &str,
+) -> ListenerHandles {
+    let mut listeners = ListenerHandles::default();
+    let browser = BrowserClient::from_client(session.client().clone());
+    let Ok(worker) = browser.attach(target_id).await else {
+        release(session, auto).await;
+        return listeners;
+    };
+    let target = CdpTarget::tab(worker.clone());
+    let log = crate::handler::cdp_domains::log::start_service_worker_log_listener;
+    listeners.absorb(log(&target, sinks.log.clone()));
+    let network = crate::handler::cdp_domains::network::start_service_worker_network_listener;
+    let worker_session = worker.session_id().to_string();
+    listeners.push(network(&target, sinks.network.clone(), worker_session));
+    let _ = worker.send_raw_command_no_reply("Network.enable", NoParams);
+    release(session, auto).await;
+    let _ = worker.send_raw_command("Runtime.enable", NoParams).await;
     listeners
 }
 
@@ -535,6 +583,85 @@ mod tests {
         })
         .await;
         assert!(sinks.network.lock().await.known_ids().contains("W1"));
+    }
+
+    /// A service worker attached to the watched tab, once readied: its
+    /// session.
+    async fn attached_service_worker(watched: &Watched) -> String {
+        attach(watched, "AUTO-S", "service_worker");
+        let mock = watched.mock;
+        eventually(|| !mock.commands_named("Runtime.enable").is_empty()).await;
+        frame_session(watched).await
+    }
+
+    /// #211: the tab's service worker is attached in a session of its own,
+    /// its `Network` enabled before it is released (its first requests are
+    /// seen) and its `Runtime` after (a command answered while it waits
+    /// kept it from running); it holds a place among the watched targets.
+    #[tokio::test]
+    async fn service_workers_are_readied_then_released() {
+        // Given a tab watching its targets, When its service worker attaches
+        let watched = watched_tab().await;
+        let worker = attached_service_worker(&watched).await;
+        // Then its network was enabled, it was released, then its runtime
+        let order: Vec<(String, Option<String>)> = watched
+            .mock
+            .commands()
+            .into_iter()
+            .filter(|c| {
+                c.method == "Runtime.runIfWaitingForDebugger"
+                    || c.session_id.as_deref() == Some(worker.as_str())
+            })
+            .map(|c| (c.method, c.session_id))
+            .collect();
+        let step = |method: &str, session: &str| (method.to_string(), Some(session.to_string()));
+        assert_eq!(
+            order,
+            [
+                step("Network.enable", &worker),
+                step("Runtime.runIfWaitingForDebugger", "AUTO-S"),
+                step("Runtime.enable", &worker),
+            ]
+        );
+        assert_eq!(watched.sinks.watched.load(Ordering::Relaxed), 1);
+    }
+
+    /// #211: the service worker's console messages and its own requests
+    /// reach the tab's buffers, marked as its, but not the request of its
+    /// own script, which its session never sees answered.
+    #[tokio::test]
+    async fn service_workers_feed_the_tab() {
+        // Given a tab watching its service worker
+        let watched = watched_tab().await;
+        let worker = attached_service_worker(&watched).await;
+        let (mock, sinks) = (watched.mock, &watched.sinks);
+        // When it logs, requests its script (its target id) and an API
+        let logged = json!({"type": "error", "args": [{"type": "string", "value": "install failed"}], "timestamp": 1.0});
+        mock.emit("Runtime.consoleAPICalled", logged, Some(&worker));
+        let sent = |id: &str| json!({"requestId": id, "request": {"url": "http://b/x", "method": "GET", "headers": {}}, "type": "Other"});
+        for id in ["T-service_worker", "S1"] {
+            mock.emit("Network.requestWillBeSent", sent(id), Some(&worker));
+        }
+        // Then the message and the API request are the tab's, marked
+        let ours = |kind: Option<&str>| kind == Some(crate::handler::SERVICE_WORKER);
+        let message = |m: &crate::handler::cdp_domains::log::ConsoleMessage| {
+            ours(m.target_type.as_deref()) && m.text == "install failed"
+        };
+        let marked = || {
+            let log = sinks.log.try_lock();
+            let log = log.is_ok_and(|log| log.messages.front().is_some_and(message));
+            let mut network = sinks.network.try_lock();
+            let request = network.as_mut().ok().and_then(|n| {
+                let found = n.find_request_mut("S1")?;
+                Some(ours(found.target_type.as_deref()))
+            });
+            log && request == Some(true)
+        };
+        eventually(marked).await;
+        assert!(marked());
+        // And its script's request is not listed
+        let known = sinks.network.lock().await.known_ids();
+        assert!(!known.contains("T-service_worker"), "{known:?}");
     }
 
     /// #199, #200: a frame of another origin pauses the requests the tab's

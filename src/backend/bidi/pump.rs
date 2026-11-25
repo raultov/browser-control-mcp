@@ -433,6 +433,7 @@ pub(crate) fn console_message(params: &Value) -> ConsoleMessage {
             .and_then(Value::as_str)
             .map(str::to_string),
         uncaught: source == "exception",
+        target_type: None,
     }
 }
 

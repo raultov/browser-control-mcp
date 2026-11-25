@@ -47,6 +47,9 @@ pub(crate) const MAX_TABS: usize = 16;
 /// Most ids of pause_on_load's script remembered per tab (one per document
 /// of the tab that runs it: the page and its same-origin frames).
 pub(crate) const MAX_PAUSE_ON_LOAD_SOURCES: usize = 64;
+/// The `target_type` of what the tab's service worker logged or requested
+/// (Chrome's name for its target, #211).
+pub(crate) const SERVICE_WORKER: &str = "service_worker";
 /// The domains the session-level page connection enables while it feeds
 /// the fallback states (`Debugger` after its listener starts).
 const FALLBACK_DOMAINS: [&str; 7] = [
@@ -159,6 +162,11 @@ pub struct NetworkRequest {
     /// The hops this request was redirected through, oldest first.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub redirects: Vec<RedirectHop>,
+    /// The kind of target that made it, when not the tab's page, its
+    /// frames or dedicated workers: `service_worker` (Chrome, #211); its
+    /// line says so.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_type: Option<String>,
     /// The request carries a body the browser can be asked for (Firefox:
     /// `bodySize`; Chrome reports the body itself).
     #[serde(skip)]

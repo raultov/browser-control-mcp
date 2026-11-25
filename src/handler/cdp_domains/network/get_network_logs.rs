@@ -371,6 +371,10 @@ fn summary_line(id: &str, request: &NetworkRequest) -> String {
         .as_deref()
         .map(|kind| format!(" [{kind}]"))
         .unwrap_or_default();
+    let kind = match request.target_type.as_deref() {
+        Some(crate::handler::SERVICE_WORKER) => format!("{kind} [service worker]"),
+        _ => kind,
+    };
     let url = one_line(&request.url, URL_MAX_CHARS);
     let redirected = redirected_from(request);
     format!(
@@ -954,6 +958,23 @@ mod tests {
         let st = handler.default_session.network_state.lock().await;
         assert!(st.ws_connections.is_empty(), "{:?}", st.ws_connections);
         assert!(st.ws_frames.is_empty());
+    }
+
+    /// #211 (Chrome): a request of the tab's service worker says so.
+    #[test]
+    fn service_worker_requests_say_so() {
+        let worker = NetworkRequest {
+            url: "http://a/api".into(),
+            method: "GET".into(),
+            response_status: Some(200),
+            resource_type: Some("Fetch".into()),
+            target_type: Some(crate::handler::SERVICE_WORKER.into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            summary_line("r9", &worker),
+            "r9 GET http://a/api => 200 [Fetch] [service worker]"
+        );
     }
 
     /// ISSUE-18: a failed or unanswered request says so; a long URL is cut.

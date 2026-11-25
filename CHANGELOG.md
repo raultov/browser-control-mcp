@@ -10,6 +10,22 @@ from a copy of its code: entries describe the differences from that release.
 
 ## [Unreleased]
 
+### Added
+
+- Chrome: `get_console_logs` lists the console messages of the tab's
+  service worker, those it logs while it installs included, marked
+  `(service worker)`, and `get_network_logs` its own requests, marked
+  `[service worker]` (#211). The tab attaches to its service worker as
+  to its frames and dedicated workers, while it waits to start: its
+  network is watched before it runs, and its console right after
+  (`Runtime.enable` replays what it logged meanwhile); measured on Chrome
+  158, a service worker whose second session had a command answered while
+  it waited never ran. A page request the worker answers stays the page's,
+  listed once; the worker's own request to answer it is listed apart; the
+  request of its own script, which the browser fetches, is not listed. Firefox reports none of a service worker's messages or requests
+  to the tab (neither BiDi nor the tab's debugger watcher delivers them);
+  the README says so.
+
 ### Development
 
 - `tests/differential/target_matrix.py` checks that each cell is listed

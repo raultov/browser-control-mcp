@@ -623,6 +623,7 @@ pub(crate) fn console_message(kind: &str, resource: &Value) -> Option<ConsoleMes
             .and_then(Value::as_u64)
             .map(|id| format!("window-{id}")),
         uncaught: thrown(error),
+        target_type: None,
     })
 }
 

@@ -152,12 +152,17 @@ mod e2e {
     const CSS86: &str = ".wrap86 { container: box86 / inline-size; width: 200px; }\n@container box86 (min-width: 10px) { .k86 { color: rgb(1, 2, 3); } }\n";
 
     /// The scripts served (by path prefix).
-    const SCRIPTS: [(&str, &str); 3] = [
+    const SCRIPTS: [(&str, &str); 4] = [
         ("/app.js", APP_JS),
         ("/xo-inner.js", XO_INNER_JS),
         (
             "/worker75.js",
             "console.log('worker75-log'); fetch('/api?from=worker75').then(() => postMessage('done'));",
+        ),
+        (
+            "/sw211.js",
+            "self.addEventListener('install', e => { console.error('sw211-install-error'); \
+             e.waitUntil(fetch('/api?from=sw211')); self.skipWaiting(); });",
         ),
     ];
 
@@ -2629,9 +2634,63 @@ mod e2e {
         ]
     }
 
-    /// The worker steps, then the error cause steps.
+    /// The worker steps (Chrome: the service worker's too), then the error
+    /// cause steps.
     fn worker_and_cause_steps(instance: &str, chrome: bool) -> Vec<Step> {
-        [worker_steps(instance), error_cause_steps(instance, chrome)].concat()
+        let service = if chrome {
+            service_worker_steps(instance)
+        } else {
+            Vec::new()
+        };
+        [
+            worker_steps(instance),
+            service,
+            error_cause_steps(instance, chrome),
+        ]
+        .concat()
+    }
+
+    /// #211 (Chrome): the tab's service worker's console messages, from
+    /// its install too, and its own requests reach the tab's logs, marked
+    /// as its; it is unregistered after.
+    fn service_worker_steps(instance: &str) -> Vec<Step> {
+        let i = json!(instance);
+        let register = "await navigator.serviceWorker.register('/sw211.js').then(r => new Promise(done => { \
+            const w = r.installing || r.waiting || r.active; if (w.state === 'activated') return done('sw active'); \
+            w.onstatechange = () => w.state === 'activated' && done('sw active'); }))";
+        let unregister = "await navigator.serviceWorker.getRegistrations().then(all => Promise.all(all.map(r => r.unregister()))).then(() => 'unregistered')";
+        vec![
+            (
+                "#211 register a service worker",
+                "evaluate_js",
+                json!({"instance_id": i, "expression": register}),
+                "sw active",
+            ),
+            (
+                "#211 its install error is logged as its",
+                "get_console_logs",
+                json!({"instance_id": i}),
+                "sw211-install-error @ ",
+            ),
+            (
+                "#211 marked (service worker)",
+                "get_console_logs",
+                json!({"instance_id": i}),
+                "sw211.js:1 (service worker)",
+            ),
+            (
+                "#211 its request is listed as its",
+                "get_network_logs",
+                json!({"instance_id": i, "url_filter": "from=sw211"}),
+                "=> 200 OK [Fetch] [service worker]",
+            ),
+            (
+                "#211 unregister it",
+                "evaluate_js",
+                json!({"instance_id": i, "expression": unregister}),
+                "unregistered",
+            ),
+        ]
     }
 
     /// #192: an uncaught error's `cause` chain shows in get_console_logs on

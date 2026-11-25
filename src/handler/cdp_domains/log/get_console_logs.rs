@@ -159,6 +159,10 @@ fn message_lines(message: &super::ConsoleMessage, repeats: usize) -> String {
         (Some(url), None) => format!(" @ {url}"),
         _ => String::new(),
     };
+    let at = match message.target_type.as_deref() {
+        Some(crate::handler::SERVICE_WORKER) => format!("{at} (service worker)"),
+        _ => at,
+    };
     let times = if repeats > 1 {
         format!(" [x{repeats}]")
     } else {
@@ -243,13 +247,39 @@ mod tests {
             channel: Default::default(),
             document: None,
             uncaught: false,
+            target_type: None,
         };
         assert_eq!(message_lines(&thrown, 1), "[error] uncaught exception: str");
     }
 
-    /// #192: the `Caused by:` lines of an uncaught error's cause chain are
-    /// always shown; each stack, the error's and each cause's, at most
-    /// [`STACK_LINES`] lines.
+    /// #211 (Chrome): a message of the tab's service worker says so after
+    /// its location; its details carry `target_type`, others nothing.
+    #[test]
+    fn service_worker_messages_say_so() {
+        let logged = super::super::ConsoleMessage {
+            source: "console-api".into(),
+            level: "error".into(),
+            text: "install failed".into(),
+            url: Some("http://a/sw.js".into()),
+            line_number: Some(2),
+            target_type: Some(crate::handler::SERVICE_WORKER.into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            message_lines(&logged, 1),
+            "[error] install failed @ http://a/sw.js:3 (service worker)"
+        );
+        let details = serde_json::to_value(&logged).unwrap();
+        assert_eq!(details["target_type"], "service_worker");
+        let page = super::super::ConsoleMessage::default();
+        assert!(
+            serde_json::to_value(&page)
+                .unwrap()
+                .get("target_type")
+                .is_none()
+        );
+    }
+
     #[test]
     fn every_cause_is_shown_with_its_stack_bounded() {
         let stack = |name: &str| {
@@ -272,6 +302,7 @@ mod tests {
             channel: Default::default(),
             document: None,
             uncaught: false,
+            target_type: None,
         };
         let lines = message_lines(&thrown, 1);
         let shown: Vec<&str> = lines.lines().collect();
@@ -330,6 +361,7 @@ mod tests {
                 channel: Default::default(),
                 document: None,
                 uncaught: false,
+                target_type: None,
             });
         }
         Arc::new(Mutex::new(state))
@@ -367,6 +399,7 @@ mod tests {
             channel: Default::default(),
             document: None,
             uncaught: false,
+            target_type: None,
         }
     }
 
@@ -479,6 +512,7 @@ mod tests {
                 channel: Default::default(),
                 document: None,
                 uncaught: false,
+                target_type: None,
             });
         }
         let state = Arc::new(Mutex::new(state));

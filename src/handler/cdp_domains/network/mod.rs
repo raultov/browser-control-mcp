@@ -198,6 +198,46 @@ pub(crate) fn start_frame_network_listener(
     crate::handler::cdp_domains::event_pump::spawn_state_listener(target, "", state, process)
 }
 
+/// Feeds the tab's request log `state` from the session `session` of its
+/// service worker (`target`): its requests are marked so (#211). They are
+/// its own: a request of the page it answers is the page's, a request id
+/// of the page's session, listed once there. The request of its own
+/// script, which has the worker's target id and which its session never
+/// sees answered (the browser fetches it), is left out.
+pub(crate) fn start_service_worker_network_listener(
+    target: &crate::handler::cdp_domains::cdp_target::CdpTarget,
+    state: Arc<Mutex<NetworkState>>,
+    session: String,
+) -> tokio::task::JoinHandle<()> {
+    let script = target.page_tab().map(|tab| tab.target_id().to_string());
+    let process = move |event, state| marked_event(event, state, (session.clone(), script.clone()));
+    crate::handler::cdp_domains::event_pump::spawn_state_listener(target, "Network", state, process)
+}
+
+/// [`process_frame_event`] for an event of the service worker's session
+/// `session`, its request marked as the worker's; nothing for the request
+/// `script` of the worker's own script.
+async fn marked_event(
+    event: WsResponse,
+    state: Arc<Mutex<NetworkState>>,
+    (session, script): (String, Option<String>),
+) {
+    let id = event
+        .params
+        .as_ref()
+        .and_then(|p| str_field(p, "requestId"))
+        .map(str::to_string);
+    if id.is_some() && id == script {
+        return;
+    }
+    process_frame_event(event, Arc::clone(&state), session).await;
+    if let Some(id) = id
+        && let Some(request) = state.lock().await.find_request_mut(&id)
+    {
+        request.target_type = Some(crate::handler::SERVICE_WORKER.to_string());
+    }
+}
+
 /// The id of the frame a `Page.frameNavigated` committed a new document
 /// in (`None` for another event).
 fn navigated_frame<'a>(method: &str, params: &'a serde_json::Value) -> Option<&'a str> {

@@ -29,6 +29,11 @@ pub struct ConsoleMessage {
     /// says it: counted for the input actions that ran meanwhile (#210).
     #[serde(skip)]
     pub(crate) uncaught: bool,
+    /// The kind of target that logged it, when not the tab's page, its
+    /// frames or dedicated workers: `service_worker` (Chrome, #211); its
+    /// line says so.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_type: Option<String>,
 }
 
 /// The feed a console message came from. Firefox reports some messages
@@ -492,12 +497,23 @@ pub(crate) async fn causes_read(state: &Arc<Mutex<LogState>>, wait: std::time::D
     }
 }
 
-/// Applies one event of the tab's ordered stream to its console state.
-/// Returns the lookup of an uncaught error's cause chain to read, if any
-/// (see [`CauseLookup`]).
+/// [`process_event`] for an event of a tab, a frame or a dedicated worker.
+#[cfg(test)]
 pub(crate) async fn process_log_event(
     event: &WsResponse,
     state: &Arc<Mutex<LogState>>,
+) -> Option<CauseLookup> {
+    process_event(event, state, false).await
+}
+
+/// Applies one event of the tab's ordered stream to its console state
+/// (an event of its service worker's session when `service_worker`: its
+/// messages say so, #211). Returns the lookup of an uncaught error's cause
+/// chain to read, if any (see [`CauseLookup`]).
+async fn process_event(
+    event: &WsResponse,
+    state: &Arc<Mutex<LogState>>,
+    service_worker: bool,
 ) -> Option<CauseLookup> {
     let (Some(method), Some(params)) = (event.method.as_deref(), &event.params) else {
         return None;
@@ -519,7 +535,8 @@ pub(crate) async fn process_log_event(
         if let (true, Some(url)) = (main, params["url"].as_str()) {
             state.note_same_document(url);
         }
-    } else if let Some(message) = console_message(method, params) {
+    } else if let Some(mut message) = console_message(method, params) {
+        message.target_type = service_worker.then(|| crate::handler::SERVICE_WORKER.to_string());
         let lookup = cause_lookup(method, params, &message);
         let mut state = state.lock().await;
         if !state.is_watched_worker_copy(method, params) {
@@ -586,6 +603,7 @@ fn log_entry(entry: &Value) -> ConsoleMessage {
         channel: Channel::Primary,
         document: None,
         uncaught: false,
+        target_type: None,
     }
 }
 
@@ -694,6 +712,7 @@ fn console_api_call(params: &Value) -> ConsoleMessage {
         channel: Channel::Primary,
         document: None,
         uncaught: false,
+        target_type: None,
     }
 }
 
@@ -750,15 +769,37 @@ fn exception(params: &Value, details: &Value) -> ConsoleMessage {
         channel: Channel::Primary,
         document: None,
         uncaught: true,
+        target_type: None,
     }
 }
 
+/// Feeds `state` from the console of `target`: a tab, a frame of another
+/// origin or a dedicated worker.
 pub(crate) fn start_log_listener(
     target: &crate::handler::cdp_domains::cdp_target::CdpTarget,
     state: Arc<Mutex<LogState>>,
 ) -> crate::handler::cdp_domains::event_pump::ListenerHandles {
+    start_listener(target, state, false)
+}
+
+/// Feeds `state` from the console of `target`, the tab's service worker:
+/// its messages say so (#211).
+pub(crate) fn start_service_worker_log_listener(
+    target: &crate::handler::cdp_domains::cdp_target::CdpTarget,
+    state: Arc<Mutex<LogState>>,
+) -> crate::handler::cdp_domains::event_pump::ListenerHandles {
+    start_listener(target, state, true)
+}
+
+/// Feeds `state` from the console of `target` (a service worker's when
+/// `service_worker`).
+fn start_listener(
+    target: &crate::handler::cdp_domains::cdp_target::CdpTarget,
+    state: Arc<Mutex<LogState>>,
+    service_worker: bool,
+) -> crate::handler::cdp_domains::event_pump::ListenerHandles {
     use crate::handler::cdp_domains::event_pump::{ListenerHandles, spawn_state_listener};
-    // One ordered stream of every domain (filtered in `process_log_event`):
+    // One ordered stream of every domain (filtered in `process_event`):
     // a navigation must clear the buffer before the new page's first
     // messages, which separate per-domain tasks would not guarantee.
     let mut handles = ListenerHandles::default();
@@ -775,7 +816,7 @@ pub(crate) fn start_log_listener(
         move |event, state| {
             let lookups = lookups.clone();
             async move {
-                let Some(lookup) = process_log_event(&event, &state).await else {
+                let Some(lookup) = process_event(&event, &state, service_worker).await else {
                     return;
                 };
                 let count = state.lock().await.causes_pending.clone();
@@ -1216,6 +1257,7 @@ mod tests {
             channel: Channel::Primary,
             document: None,
             uncaught: false,
+            target_type: None,
         }
     }
 

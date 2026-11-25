@@ -654,6 +654,7 @@ mod tests {
             channel: Channel::Watcher,
             document: None,
             uncaught: false,
+            target_type: None,
         }
     }
 
@@ -737,6 +738,7 @@ mod tests {
                 channel: Channel::Watcher,
                 document: None,
                 uncaught: false,
+                target_type: None,
             });
         };
         push("Cookie “a” rejected", 1.0);
