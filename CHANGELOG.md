@@ -8,7 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 `browser-control-mcp` is the successor of `chrome-debug-mcp` 1.5.6 and starts
 from a copy of its code: entries describe the differences from that release.
 
-## [Unreleased]
+## [1.0.0-rc.3] - 2026-11-25
+
+Third release candidate. Firefox keeps the console messages a page logs
+while it loads after a move to another site (#206) and pairs its two
+copies of a message by their stamp; Chrome lists a worker's message from
+an imported script once (#207), watches the workers a worker starts, and
+no longer processes the first tab's events twice; `save_pdf` refuses
+page ranges past the last page alike on both browsers (#208), and
+`wait_for` on a popup that closes ends at once on Chrome (#209). Three
+additions: the input actions say the uncaught errors the page raised
+while they ran (#210), Chrome lists the console and the requests of the
+tab's service worker (#211), and `mock_route` can fail requests with a
+network error (#212). The target matrix of `make e2e` checks each cell
+is listed once.
 
 ### Added
 
