@@ -12,6 +12,17 @@ from a copy of its code: entries describe the differences from that release.
 
 ### Added
 
+- `mock_route` can fail the requests it matches with a network error
+  instead of answering them (#212): `abort: true`, with an
+  `error_reason` on Chrome (`failed`, the default, `connection_refused`
+  or `blocked_by_client`). `fetch()` rejects, as in an outage, which a
+  mocked status never makes it do; `get_network_logs` lists the request
+  `failed: net::ERR_CONNECTION_REFUSED` (Chrome) or
+  `failed: NS_ERROR_ABORT` (Firefox, whose `network.failRequest` takes no
+  reason: another `error_reason` is refused there), and `list_routes`
+  shows the route's `error` in place of a status. It reaches the same
+  requests as a mocked response (frames of another origin, workers).
+
 - The input actions (`click_element`, `hover`, `drag`, `fill_input`,
   `fill_form`, `press_key`) say how many uncaught errors and unhandled
   rejections the page raised while they ran, in the page, its frames or

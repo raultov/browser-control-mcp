@@ -2,8 +2,9 @@
 //! each tab keeps, shared by both browsers. Chrome answers the requests it
 //! pauses (`Fetch`) from it, Firefox the ones its intercept blocks
 //! (`network.addIntercept`). Every request the browser holds for a route is
-//! answered: with the route's response, let through, or failed when the
-//! browser refuses the response (#194), whose error the route then keeps.
+//! answered: with the route's response, failed as the route asks (#212),
+//! let through, or failed when the browser refuses the response (#194),
+//! whose error the route then keeps.
 
 use crate::handler::cdp_domains::event_pump::ListenerHandles;
 use serde_json::{Value, json};
@@ -31,11 +32,81 @@ pub(crate) struct MockResponse {
     pub(crate) body: String,
 }
 
+/// Why a route fails the requests it matches (`mock_route` with `abort`),
+/// as the page sees it.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    Default,
+    PartialEq,
+    Eq,
+    ::serde::Deserialize,
+    ::serde::Serialize,
+    rust_mcp_sdk::macros::JsonSchema,
+)]
+pub enum AbortReason {
+    /// A generic network error (net::ERR_FAILED).
+    #[default]
+    #[serde(rename = "failed")]
+    Failed,
+    /// The server refused the connection (net::ERR_CONNECTION_REFUSED).
+    #[serde(rename = "connection_refused")]
+    ConnectionRefused,
+    /// A blocker refused the request (net::ERR_BLOCKED_BY_CLIENT).
+    #[serde(rename = "blocked_by_client")]
+    BlockedByClient,
+}
+
+impl AbortReason {
+    /// Its name in the tools' arguments and replies.
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::Failed => "failed",
+            Self::ConnectionRefused => "connection_refused",
+            Self::BlockedByClient => "blocked_by_client",
+        }
+    }
+
+    /// Chrome's `Network.ErrorReason` for it (`Fetch.failRequest`).
+    pub(crate) fn cdp(self) -> &'static str {
+        match self {
+            Self::Failed => "Failed",
+            Self::ConnectionRefused => "ConnectionRefused",
+            Self::BlockedByClient => "BlockedByClient",
+        }
+    }
+
+    /// The network error Chrome gives the page for it.
+    pub(crate) fn net_error(self) -> &'static str {
+        match self {
+            Self::Failed => "net::ERR_FAILED",
+            Self::ConnectionRefused => "net::ERR_CONNECTION_REFUSED",
+            Self::BlockedByClient => "net::ERR_BLOCKED_BY_CLIENT",
+        }
+    }
+}
+
+/// What a route does with the requests it matches.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum RouteAction {
+    /// Answers them with a mocked response.
+    Respond(MockResponse),
+    /// Fails them with a network error, as an outage would (#212).
+    Abort(AbortReason),
+}
+
+impl From<MockResponse> for RouteAction {
+    fn from(response: MockResponse) -> Self {
+        Self::Respond(response)
+    }
+}
+
 /// One mocked route.
 struct Route {
     id: String,
     url_pattern: String,
-    response: MockResponse,
+    action: RouteAction,
     hits: u64,
     /// Requests failed because the browser refused the route's response.
     errors: u64,
@@ -74,7 +145,7 @@ impl RouteState {
     pub(crate) fn add(
         &mut self,
         url_pattern: &str,
-        response: MockResponse,
+        action: impl Into<RouteAction>,
     ) -> Result<String, String> {
         if self.routes.len() >= MAX_ROUTES {
             return Err(format!(
@@ -86,7 +157,7 @@ impl RouteState {
         self.routes.push(Route {
             id: id.clone(),
             url_pattern: url_pattern.to_string(),
-            response,
+            action: action.into(),
             hits: 0,
             errors: 0,
             last_error: None,
@@ -112,11 +183,11 @@ impl RouteState {
         }
     }
 
-    /// The response for a request to `url`, with the id of the route that
-    /// gives it: the latest route whose pattern matches it (counted as a
+    /// What to do with a request to `url`, with the id of the route that
+    /// says it: the latest route whose pattern matches it (counted as a
     /// hit), or `None` to let it through. The URL's `#fragment` is left
     /// out, as Chrome's paused URL leaves it out (#201: Firefox's keeps it).
-    pub(crate) fn answer(&mut self, url: &str) -> Option<(String, MockResponse)> {
+    pub(crate) fn answer(&mut self, url: &str) -> Option<(String, RouteAction)> {
         let url = url.split_once('#').map_or(url, |(sent, _)| sent);
         let route = self
             .routes
@@ -124,7 +195,7 @@ impl RouteState {
             .rev()
             .find(|r| glob_matches(&r.url_pattern, url))?;
         route.hits += 1;
-        Some((route.id.clone(), route.response.clone()))
+        Some((route.id.clone(), route.action.clone()))
     }
 
     /// Notes that the browser refused route `id`'s response with `error`
@@ -147,16 +218,21 @@ impl RouteState {
         self.routes.is_empty()
     }
 
-    /// `{routes: [{route_id, url_pattern, status, hits, errors?,
-    /// last_error?}]}`, oldest first; `errors` and `last_error` once the
+    /// `{routes: [{route_id, url_pattern, status (or error), hits,
+    /// errors?, last_error?}]}`, oldest first; `error` names how a route
+    /// that aborts fails its requests; `errors` and `last_error` once the
     /// browser refused a route's response.
     pub(crate) fn to_json(&self) -> Value {
         let routes: Vec<Value> = self
             .routes
             .iter()
             .map(|r| {
-                let mut route = json!({"route_id": r.id, "url_pattern": r.url_pattern,
-                       "status": r.response.status, "hits": r.hits});
+                let mut route = json!({"route_id": r.id, "url_pattern": r.url_pattern});
+                match &r.action {
+                    RouteAction::Respond(response) => route["status"] = json!(response.status),
+                    RouteAction::Abort(reason) => route["error"] = json!(reason.name()),
+                }
+                route["hits"] = json!(r.hits);
                 if r.errors > 0 {
                     route["errors"] = json!(r.errors);
                     route["last_error"] = json!(r.last_error);
@@ -343,10 +419,7 @@ mod tests {
         let (_, other) = routes.answer("http://a/api/items").unwrap();
         assert_eq!(users_route, "route-2");
         // Then the latest matching route answers each, and others go through
-        assert_eq!(
-            (users.body.as_str(), other.body.as_str()),
-            ("narrow", "broad")
-        );
+        assert_eq!((users, other), (ok("narrow").into(), ok("broad").into()));
         assert_eq!(routes.answer("http://a/index.html"), None);
         assert_eq!(routes.patterns(), vec!["*/api/*", "*/api/users*"]);
         let listed = routes.to_json();
@@ -371,7 +444,52 @@ mod tests {
         assert!(routes.answer("http://a/frag.txt?q=1#x").is_none());
         routes.add("*?q=1", ok("Q")).unwrap();
         let (_, response) = routes.answer("http://a/frag.txt?q=1#x").unwrap();
-        assert_eq!(response.body, "Q");
+        assert_eq!(response, ok("Q").into());
+    }
+
+    /// #212: a route can fail its requests instead of answering them:
+    /// list_routes names how, in place of a status.
+    #[test]
+    fn aborting_routes_fail_their_requests() {
+        let mut routes = RouteState::default();
+        routes
+            .add(
+                "*/api/*",
+                RouteAction::Abort(AbortReason::ConnectionRefused),
+            )
+            .unwrap();
+        let (_, action) = routes.answer("http://a/api/x").unwrap();
+        assert_eq!(action, RouteAction::Abort(AbortReason::ConnectionRefused));
+        assert_eq!(
+            routes.to_json(),
+            json!({"routes": [{"route_id": "route-1", "url_pattern": "*/api/*",
+                "error": "connection_refused", "hits": 1}]})
+        );
+        let reasons = [
+            AbortReason::Failed,
+            AbortReason::ConnectionRefused,
+            AbortReason::BlockedByClient,
+        ];
+        let named: Vec<(&str, &str, &str)> = reasons
+            .iter()
+            .map(|r| (r.name(), r.cdp(), r.net_error()))
+            .collect();
+        assert_eq!(
+            named,
+            [
+                ("failed", "Failed", "net::ERR_FAILED"),
+                (
+                    "connection_refused",
+                    "ConnectionRefused",
+                    "net::ERR_CONNECTION_REFUSED"
+                ),
+                (
+                    "blocked_by_client",
+                    "BlockedByClient",
+                    "net::ERR_BLOCKED_BY_CLIENT"
+                ),
+            ]
+        );
     }
 
     /// #194: a route keeps how many of its responses the browser refused,

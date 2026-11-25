@@ -2741,7 +2741,64 @@ mod e2e {
         steps.splice(at..at, offline_route_steps(&i, chrome));
         steps.extend(offline_steps(&i));
         steps.extend(route_answer_steps(&i));
+        steps.extend(abort_route_steps(&i, chrome));
         steps
+    }
+
+    /// #212: a route that aborts fails its requests with a network error:
+    /// `fetch()` rejects and the network log says how, Chrome with the
+    /// reason asked; Firefox refuses a reason it cannot give.
+    fn abort_route_steps(i: &Value, chrome: bool) -> Vec<Step> {
+        let read = "fetch('/api/abort212?' + Date.now()).then(r => 'status ' + r.status, e => 'rejected ' + e.name)";
+        let (reason, added, logged, other) = match chrome {
+            true => (
+                "connection_refused",
+                "fail with net::ERR_CONNECTION_REFUSED",
+                "=> failed: net::ERR_CONNECTION_REFUSED",
+                "fail with net::ERR_BLOCKED_BY_CLIENT",
+            ),
+            false => (
+                "failed",
+                "fail with a network error (NS_ERROR_ABORT)",
+                "=> failed: NS_ERROR_ABORT",
+                "!cannot choose why a request fails",
+            ),
+        };
+        let route = |pattern: &str, reason: &str| json!({"instance_id": i, "url_pattern": pattern, "abort": true, "error_reason": reason});
+        let on = json!({"instance_id": i});
+        vec![
+            (
+                "#212 a route that aborts",
+                "mock_route",
+                route("*/api/abort212*", reason),
+                added,
+            ),
+            (
+                "#212 fetch() rejects",
+                "evaluate_js",
+                json!({"instance_id": i, "expression": read}),
+                "rejected TypeError",
+            ),
+            (
+                "#212 the log says how it failed",
+                "get_network_logs",
+                json!({"instance_id": i, "url_filter": "abort212"}),
+                logged,
+            ),
+            (
+                "#212 list_routes names the error",
+                "list_routes",
+                on.clone(),
+                "\"error\": ",
+            ),
+            (
+                "#212 a reason Firefox cannot give",
+                "mock_route",
+                route("*/x212*", "blocked_by_client"),
+                other,
+            ),
+            ("#212 remove the routes", "remove_route", on, "0 left"),
+        ]
     }
 
     /// #194: a mocked status without a registered reason phrase (299)

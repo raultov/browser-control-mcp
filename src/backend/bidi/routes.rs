@@ -2,7 +2,7 @@
 //! a `beforeRequestSent` intercept on the tab blocks its requests while it
 //! has routes; a blocked request gets `network.provideResponse` from the
 //! latest matching route (`network.failRequest` when Firefox refuses that
-//! response), or `network.continueRequest`. The answering task outlives
+//! response, or when the route aborts, #212), or `network.continueRequest`. The answering task outlives
 //! the intercept: a request blocked just before `remove_route` took it away
 //! is still let through (#195). Offline is
 //! `emulation.setNetworkConditions`, which fails the mocked requests too:
@@ -16,7 +16,9 @@ use crate::handler::cdp_domains::fetch::mock_route::{
     ListRoutesTool, MockRouteTool, RemoveRouteTool, listed, removed,
 };
 use crate::handler::cdp_domains::network::set_offline::{self, SetOfflineTool};
-use crate::handler::routes::{MAX_RETIRED, MockResponse, RouteState, reason_phrase};
+use crate::handler::routes::{
+    AbortReason, MAX_RETIRED, MockResponse, RouteAction, RouteState, reason_phrase,
+};
 use crate::handler::{McpHandler, parse_args};
 use bidi_browser_lite::{BidiClient, WsResponse};
 use rust_mcp_sdk::schema::{CallToolError, CallToolRequestParams, CallToolResult};
@@ -30,13 +32,23 @@ type ToolResult = Result<CallToolResult, CallToolError>;
 /// `mock_route`.
 pub(crate) async fn mock_route(params: CallToolRequestParams, handler: &McpHandler) -> ToolResult {
     let args: MockRouteTool = parse_args(params)?;
-    let response = args.response()?;
+    let action = args.action()?;
+    if args.error_reason.is_some_and(|r| r != AbortReason::Failed) {
+        return Err(CallToolError::from_message(NO_ERROR_REASON));
+    }
     let (_, _, tab) = target(handler, &ids(&args.instance_id, &args.tab_id)).await?;
-    let added = add_route(&tab, &args.url_pattern, response.clone()).await;
+    let added = add_route(&tab, &args.url_pattern, action.clone()).await;
     let id = added.map_err(CallToolError::from_message)?;
     let offline = tab.routes.lock().await.offline;
-    Ok(noted(args.reply(&id, &response), offline))
+    Ok(noted(args.reply(&id, &action, FAILURE), offline))
 }
+
+/// Why `error_reason` is refused on Firefox (#212).
+const NO_ERROR_REASON: &str = "Firefox cannot choose why a request fails (BiDi's network.failRequest takes no reason): omit 'error_reason' (or give 'failed'); the page then sees a network error, which get_network_logs lists as failed: NS_ERROR_ABORT.";
+
+/// How a request a route fails ends on Firefox (measured on Firefox 160:
+/// `fetch()` rejects with a `NetworkError`).
+const FAILURE: &str = "a network error (NS_ERROR_ABORT)";
 
 /// `list_routes`.
 pub(crate) async fn list_routes(params: CallToolRequestParams, handler: &McpHandler) -> ToolResult {
@@ -112,10 +124,10 @@ fn noted(mut reply: CallToolResult, offline_with_routes: bool) -> CallToolResult
 async fn add_route(
     tab: &FirefoxTab,
     url_pattern: &str,
-    response: MockResponse,
+    action: RouteAction,
 ) -> Result<String, String> {
     let mut routes = tab.routes.lock().await;
-    let id = routes.add(url_pattern, response)?;
+    let id = routes.add(url_pattern, action)?;
     let client = tab.tab.client().clone();
     // Subscribed before the intercept: a request blocked in between would
     // otherwise wait for nobody.
@@ -231,11 +243,12 @@ fn blocker(routes: &RouteState, intercepts: &[String]) -> Option<Blocker> {
 }
 
 /// Answers a request an intercept `blocked`: a response from the latest
-/// matching route, or let through. The response given is noted in the
-/// tab's request log `network`, as Firefox reports none for it (#198: a
-/// mocked redirect's hop had no status). A response Firefox refuses fails
-/// the request instead of leaving it blocked (#194), and the route keeps
-/// Firefox's error for `list_routes` (never for the log).
+/// matching route, failed as it asks (#212), or let through. The response
+/// given is noted in the tab's request log `network`, as Firefox reports
+/// none for it (#198: a mocked redirect's hop had no status); a failed
+/// request has none. A response Firefox refuses fails the request instead
+/// of leaving it blocked (#194), and the route keeps Firefox's error for
+/// `list_routes` (never for the log).
 async fn answer(
     client: &BidiClient,
     routes: &Mutex<RouteState>,
@@ -244,16 +257,12 @@ async fn answer(
 ) {
     let (request, url) = (blocked.request.as_str(), blocked.url.as_str());
     let answer = routes.lock().await.answer(url);
-    let Some((route, response)) = answer else {
-        let params = json!({"request": request});
-        if client
-            .send_raw_command("network.continueRequest", params)
-            .await
-            .is_err()
-        {
-            tracing::warn!("Firefox mocked routes: continuing a request failed");
+    let (route, response) = match answer {
+        None => return settle(client, "network.continueRequest", request).await,
+        Some((_, RouteAction::Abort(_))) => {
+            return settle(client, "network.failRequest", request).await;
         }
-        return;
+        Some((route, RouteAction::Respond(response))) => (route, response),
     };
     let noted = &response.headers;
     network
@@ -274,6 +283,15 @@ async fn answer(
     routes.lock().await.note_error(&route, &said);
     let failed = json!({"request": request});
     let _ = client.send_raw_command("network.failRequest", failed).await;
+}
+
+/// Lets a blocked `request` go on or fails it (`method`); a refusal is
+/// only logged.
+async fn settle(client: &BidiClient, method: &str, request: &str) {
+    let params = json!({"request": request});
+    if client.send_raw_command(method, params).await.is_err() {
+        tracing::warn!(method, "Firefox mocked routes: a blocked request");
+    }
 }
 
 /// A request an intercept blocked (`network.beforeRequestSent`).
@@ -359,6 +377,40 @@ mod tests {
         );
         let continued = &mock.bidi().commands_named("network.continueRequest")[0].params;
         assert_eq!(*continued, json!({"request": "R2"}));
+        // #212: When a route that aborts blocks a request
+        let args = json!({"url_pattern": "*/gone/*", "abort": true});
+        let reply = mock_route(ts::call("mock_route", args), &handler)
+            .await
+            .unwrap();
+        assert!(
+            ts::text(&reply).contains("fail with a network error (NS_ERROR_ABORT)"),
+            "{}",
+            ts::text(&reply)
+        );
+        let event = blocked("R3", "http://a/gone/x", "i1");
+        mock.bidi().emit("network.beforeRequestSent", event);
+        until_sent(&mock, "network.failRequest").await;
+        // Then Firefox fails it, and the request log has no status for it
+        let failed = &mock.bidi().commands_named("network.failRequest")[0].params;
+        assert_eq!(*failed, json!({"request": "R3"}));
+        let (_, _, tab) = super::super::tools::target(&handler, &Default::default())
+            .await
+            .unwrap();
+        let network = tab.network.lock().await;
+        assert!(network.was_mocked("R1") && !network.was_mocked("R3"));
+        drop(network);
+        // And a reason other than 'failed' is refused, naming the limit
+        let args = json!({"url_pattern": "*", "abort": true, "error_reason": "blocked_by_client"});
+        let refused = mock_route(ts::call("mock_route", args), &handler)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(refused.contains("cannot choose why"), "{refused}");
+        let _ = remove_route(
+            ts::call("remove_route", json!({"route_id": "route-2"})),
+            &handler,
+        )
+        .await;
         // When the last route is removed, the intercept goes
         let reply = remove_route(
             ts::call("remove_route", json!({"route_id": "route-1"})),

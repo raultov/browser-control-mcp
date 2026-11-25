@@ -1,14 +1,16 @@
 //! `mock_route`, `list_routes` and `remove_route`: the shared arguments and
 //! replies, and the Chrome implementation (`Fetch` domain: a paused request
-//! is fulfilled from the tab's routes or continued; failed when Chrome
-//! refuses the route's response). A frame of another origin pauses its
+//! is fulfilled from the tab's routes, failed as a route asks (#212), or
+//! continued; failed when Chrome refuses the route's response). A frame of another origin pauses its
 //! requests in its own session, so `Fetch` is enabled there too, and each
 //! session has its own answering task (#199).
 
 use crate::handler::McpHandler;
 use crate::handler::cdp_domains::cdp_target::CdpTarget;
 use crate::handler::cdp_domains::event_pump::{ListenerHandles, error_kind};
-use crate::handler::routes::{MAX_BODY, MockResponse, RouteState, reason_phrase};
+use crate::handler::routes::{
+    AbortReason, MAX_BODY, MockResponse, RouteAction, RouteState, reason_phrase,
+};
 use base64::Engine;
 use cdp_browser_lite::NoParams;
 use rust_mcp_sdk::{
@@ -22,7 +24,7 @@ use tokio_stream::StreamExt;
 
 #[macros::mcp_tool(
     name = "mock_route",
-    description = "Answers the tab's requests whose URL matches the 'url_pattern' glob (* any characters, ? one, \\ escapes) with a mocked response instead of the network; the latest matching route wins, until remove_route or the tab closes. A response the browser refuses fails the request (list_routes shows the browser's error). Returns the route id. On Chrome it cannot run while enable_proxy_auth is active.",
+    description = "Answers the tab's requests whose URL matches the 'url_pattern' glob (* any characters, ? one, \\ escapes) with a mocked response instead of the network, or with 'abort' fails them with a network error (fetch() rejects; get_network_logs says failed); the latest matching route wins, until remove_route or the tab closes. A response the browser refuses fails the request (list_routes shows the browser's error). Returns the route id. On Chrome it cannot run while enable_proxy_auth is active; Firefox cannot choose 'error_reason' (only 'failed').",
     destructive_hint = false
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
@@ -41,6 +43,12 @@ pub struct MockRouteTool {
     pub content_type: Option<String>,
     /// Other response headers, in order.
     pub headers: Option<Vec<Header>>,
+    /// Fail the requests with a network error instead of answering them
+    /// (no status, body or headers then). Default: false.
+    pub abort: Option<bool>,
+    /// With 'abort': 'failed' (default), 'connection_refused' or
+    /// 'blocked_by_client' (Chrome only).
+    pub error_reason: Option<AbortReason>,
 }
 
 /// One response header of `mock_route`.
@@ -54,7 +62,7 @@ pub struct Header {
 
 #[macros::mcp_tool(
     name = "list_routes",
-    description = "Lists the tab's mocked routes: {routes: [{route_id, url_pattern, status, hits, errors?, last_error?}]}, oldest first; hits counts the requests each matched; errors (how many of them failed because the browser refused the route's response) and last_error appear once that happened.",
+    description = "Lists the tab's mocked routes: {routes: [{route_id, url_pattern, status (or error, for a route that aborts), hits, errors?, last_error?}]}, oldest first; hits counts the requests each matched; errors (how many of them failed because the browser refused the route's response) and last_error appear once that happened.",
     read_only_hint = true
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
@@ -81,12 +89,31 @@ pub struct RemoveRouteTool {
 }
 
 impl MockRouteTool {
-    /// The checked response (before any browser work).
-    pub(crate) fn response(&self) -> Result<MockResponse, CallToolError> {
+    /// The checked route (before any browser work): a response, or a
+    /// failure with `abort`, which takes no response's arguments.
+    pub(crate) fn action(&self) -> Result<RouteAction, CallToolError> {
         let fail = |message: String| Err(CallToolError::from_message(message));
         if self.url_pattern.is_empty() {
             return fail("'url_pattern' is empty: use '*' to match every request".into());
         }
+        let responds = self.status.is_some()
+            || self.body.is_some()
+            || self.content_type.is_some()
+            || self.headers.is_some();
+        match (self.abort == Some(true), self.error_reason) {
+            (true, _) if responds => fail(
+                "'abort' fails the requests: it takes no 'status', 'body', 'content_type' or 'headers'"
+                    .into(),
+            ),
+            (true, reason) => Ok(RouteAction::Abort(reason.unwrap_or_default())),
+            (false, Some(_)) => fail("'error_reason' needs 'abort': true".into()),
+            (false, None) => self.response().map(RouteAction::Respond),
+        }
+    }
+
+    /// The checked response.
+    fn response(&self) -> Result<MockResponse, CallToolError> {
+        let fail = |message: String| Err(CallToolError::from_message(message));
         let status = self.status.unwrap_or(200);
         if !(100..=599).contains(&status) {
             return fail(format!("'status' must be 100 to 599, got {status}"));
@@ -119,16 +146,26 @@ impl MockRouteTool {
         })
     }
 
-    /// The reply once route `id` answers with `response`.
-    pub(crate) fn reply(&self, id: &str, response: &MockResponse) -> CallToolResult {
-        let first = format!(
-            "Route {id} added: requests matching '{}' get {} with {} bytes, without reaching the network.",
-            self.url_pattern,
-            response.status,
-            response.body.len()
-        );
-        let body =
-            json!({"route_id": id, "url_pattern": self.url_pattern, "status": response.status});
+    /// The reply once route `id` does `action`; `failure` says how the
+    /// page sees a request it fails (the browser's words).
+    pub(crate) fn reply(&self, id: &str, action: &RouteAction, failure: &str) -> CallToolResult {
+        let pattern = &self.url_pattern;
+        let (first, body) = match action {
+            RouteAction::Respond(response) => (
+                format!(
+                    "Route {id} added: requests matching '{pattern}' get {} with {} bytes, without reaching the network.",
+                    response.status,
+                    response.body.len()
+                ),
+                json!({"route_id": id, "url_pattern": pattern, "status": response.status}),
+            ),
+            RouteAction::Abort(reason) => (
+                format!(
+                    "Route {id} added: requests matching '{pattern}' fail with {failure} without reaching the network."
+                ),
+                json!({"route_id": id, "url_pattern": pattern, "error": reason.name()}),
+            ),
+        };
         text(&first, &body)
     }
 }
@@ -161,16 +198,17 @@ impl MockRouteTool {
         handler: &McpHandler,
     ) -> Result<CallToolResult, CallToolError> {
         let args: MockRouteTool = crate::handler::parse_args(params)?;
-        let response = args.response()?;
+        let action = args.action()?;
         let session = handler.session(args.instance_id.clone()).await?;
         if session.proxy_auth_running().await {
             return Err(CallToolError::from_message(PROXY_AUTH_ACTIVE));
         }
         let target = session.target(args.tab_id.clone()).await?;
         let state = session.route_state(args.tab_id.clone())?;
-        let added = add_route(&target, &state, &args.url_pattern, response.clone()).await;
+        let added = add_route(&target, &state, &args.url_pattern, action.clone()).await;
         let id = added.map_err(CallToolError::from_message)?;
-        Ok(args.reply(&id, &response))
+        let failure = args.error_reason.unwrap_or_default().net_error();
+        Ok(args.reply(&id, &action, failure))
     }
 }
 
@@ -212,10 +250,10 @@ async fn add_route(
     target: &CdpTarget,
     state: &Arc<Mutex<RouteState>>,
     url_pattern: &str,
-    response: MockResponse,
+    action: RouteAction,
 ) -> Result<String, String> {
     let mut routes = state.lock().await;
-    let id = routes.add(url_pattern, response)?;
+    let id = routes.add(url_pattern, action)?;
     if let Err(e) = intercept(target, state, &mut routes).await {
         let _ = routes.remove(Some(&id));
         intercept(target, state, &mut routes).await?;
@@ -348,23 +386,22 @@ async fn answer_requests(
 }
 
 /// Answers `request` to `url`, which Chrome paused: fulfilled from the
-/// latest matching route, or continued. A response Chrome refuses fails
-/// the request instead of leaving it paused (#194), and the route keeps
-/// Chrome's error for `list_routes` (never for the log).
+/// latest matching route, failed as it asks (#212), or continued. A
+/// response Chrome refuses fails the request instead of leaving it paused
+/// (#194), and the route keeps Chrome's error for `list_routes` (never for
+/// the log).
 async fn answer(target: &CdpTarget, routes: &Mutex<RouteState>, request: &str, url: &str) {
     let answer = routes.lock().await.answer(url);
-    let Some((route, response)) = answer else {
-        let params = json!({"requestId": request});
-        if let Err(e) = target
-            .send_raw_command("Fetch.continueRequest", params)
-            .await
-        {
-            tracing::warn!(
-                error = error_kind(&e),
-                "mocked routes: continuing a request failed"
-            );
+    let (route, response) = match answer {
+        None => {
+            let params = json!({"requestId": request});
+            return settle(target, "Fetch.continueRequest", params).await;
         }
-        return;
+        Some((_, RouteAction::Abort(reason))) => {
+            let failed = json!({"requestId": request, "errorReason": reason.cdp()});
+            return settle(target, "Fetch.failRequest", failed).await;
+        }
+        Some((route, RouteAction::Respond(response))) => (route, response),
     };
     let fulfilled = target.send_raw_command("Fetch.fulfillRequest", fulfill(request, &response));
     let Err(error) = fulfilled.await else {
@@ -381,6 +418,18 @@ async fn answer(target: &CdpTarget, routes: &Mutex<RouteState>, request: &str, u
     routes.lock().await.note_error(&route, said);
     let failed = json!({"requestId": request, "errorReason": "Failed"});
     let _ = target.send_raw_command("Fetch.failRequest", failed).await;
+}
+
+/// Lets a paused request go on or fails it (`method`); a refusal is only
+/// logged: Chrome then no longer holds the request.
+async fn settle(target: &CdpTarget, method: &str, params: Value) {
+    if let Err(e) = target.send_raw_command(method, params).await {
+        tracing::warn!(
+            error = error_kind(&e),
+            method,
+            "mocked routes: a paused request"
+        );
+    }
 }
 
 /// The request id and URL of a `Fetch.requestPaused` event.
@@ -420,7 +469,7 @@ mod tests {
     #[test]
     fn arguments_are_checked() {
         let tool = |args: Value| -> MockRouteTool { serde_json::from_value(args).unwrap() };
-        let fails = |args: Value| tool(args).response().unwrap_err().to_string();
+        let fails = |args: Value| tool(args).action().unwrap_err().to_string();
         assert!(fails(json!({"url_pattern": ""})).contains("'*'"));
         assert!(fails(json!({"url_pattern": "*", "status": 99})).contains("100 to 599"));
         let huge = "x".repeat(MAX_BODY + 1);
@@ -432,18 +481,41 @@ mod tests {
             json!({"url_pattern": "*", "content_type": "application/json",
             "headers": [{"name": "content-type", "value": "text/html"}, {"name": "X-Mock", "value": "1"}]}),
         )
-        .response()
+        .action()
         .unwrap();
         assert_eq!(
             response,
-            MockResponse {
+            RouteAction::Respond(MockResponse {
                 status: 200,
                 headers: vec![
                     ("Content-Type".into(), "application/json".into()),
                     ("X-Mock".into(), "1".into())
                 ],
                 body: String::new(),
-            }
+            })
+        );
+        // #212: 'abort' fails the requests, with no response's arguments
+        let abort = |args: Value| tool(args).action();
+        assert_eq!(
+            abort(json!({"url_pattern": "*", "abort": true})).unwrap(),
+            RouteAction::Abort(AbortReason::Failed)
+        );
+        assert_eq!(
+            abort(json!({"url_pattern": "*", "abort": true, "error_reason": "connection_refused"}))
+                .unwrap(),
+            RouteAction::Abort(AbortReason::ConnectionRefused)
+        );
+        assert!(
+            fails(json!({"url_pattern": "*", "abort": true, "status": 500}))
+                .contains("takes no 'status'")
+        );
+        assert!(
+            fails(json!({"url_pattern": "*", "error_reason": "failed"}))
+                .contains("needs 'abort': true")
+        );
+        assert!(
+            fails(json!({"url_pattern": "*", "abort": false, "error_reason": "failed"}))
+                .contains("needs 'abort': true")
         );
     }
 
@@ -487,6 +559,30 @@ mod tests {
         );
         let continued = &mock.commands_named("Fetch.continueRequest")[0].params;
         assert_eq!(*continued, json!({"requestId": "R2"}));
+        // #212: When a route that aborts pauses a request
+        let args =
+            json!({"url_pattern": "*/gone/*", "abort": true, "error_reason": "connection_refused"});
+        let reply = MockRouteTool::handle(call("mock_route", args), &handler)
+            .await
+            .unwrap();
+        assert!(
+            reply_text(&reply).contains("fail with net::ERR_CONNECTION_REFUSED"),
+            "{}",
+            reply_text(&reply)
+        );
+        mock.emit("Fetch.requestPaused", paused("R3", "http://a/gone/x"), None);
+        until_sent(mock, "Fetch.failRequest").await;
+        // Then Chrome fails it with the reason asked
+        let failed = &mock.commands_named("Fetch.failRequest")[0].params;
+        assert_eq!(
+            *failed,
+            json!({"requestId": "R3", "errorReason": "ConnectionRefused"})
+        );
+        let _ = RemoveRouteTool::handle(
+            call("remove_route", json!({"route_id": "route-2"})),
+            &handler,
+        )
+        .await;
         // And the route counted its hit
         let reply = ListRoutesTool::handle(call("list_routes", json!({})), &handler)
             .await

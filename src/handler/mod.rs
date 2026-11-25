@@ -496,6 +496,12 @@ impl NetworkState {
             .insert(id.to_string(), (i64::from(status), location));
     }
 
+    /// Whether a mocked response was noted for request `id`.
+    #[cfg(test)]
+    pub(crate) fn was_mocked(&self, id: &str) -> bool {
+        self.mocked.get(id).is_some()
+    }
+
     /// Notes that navigation `navigation` became a download of `url`.
     pub(crate) fn note_download(&mut self, navigation: &str, url: &str) {
         self.downloads
