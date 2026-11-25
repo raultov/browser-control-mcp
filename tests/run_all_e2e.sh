@@ -51,9 +51,10 @@ status=$?
 # E2E_VISIBLE=1): the browser's own `eval` is the oracle for what
 # evaluate_js answers with top-level await (fuzz_tla.py), every owner of a
 # WebSocket against every way it ends must give one close line
-# (ws_matrix.py), every per-tab feature (console, uncaught errors, requests,
-# redirects, mocked routes) must work in every kind of target a tab has
-# (target_matrix.py), credential headers sent and answered must be hidden
+# (ws_matrix.py), every per-tab feature (console, uncaught errors, also
+# from an imported script, messages while a page loads after a site
+# change, requests, redirects, mocked and aborted routes) must work in
+# every kind of target a tab has, listed once (target_matrix.py), credential headers sent and answered must be hidden
 # and standard ones shown (headers.py), and a secret the page writes
 # through its encoders must show in no reply (secrets.py). One PASS or FAIL
 # line each.

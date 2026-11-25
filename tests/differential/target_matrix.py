@@ -11,10 +11,14 @@ found one at a time. This runs the table at once.
 Owners: the document, a same-origin iframe, a cross-origin iframe, a
 cross-origin iframe inside a same-origin one, a dedicated worker, a worker
 of a cross-origin iframe, a popup (its own tab).
-Features: a console message, an uncaught error with its stack, a request in
-the network log, a redirect hop with its status and Location, a mocked
-request answered by a route of the tab. WebSockets have their own table
-(ws_matrix.py).
+Features: a console message, an uncaught error with its stack, each also
+from a script the owner imported (a <script src>, importScripts: #207), a
+message the owner logs while it loads, right after the tab moved to another
+site (#206), a request in the network log, a redirect hop with its status
+and Location, a mocked request answered by a route of the tab, and one a
+route fails (#212). Each must be listed exactly once: a cell found by
+presence alone missed the duplicates (#207). WebSockets have their own
+table (ws_matrix.py).
 
 Usage (from the repository root):
     python3 -I tests/differential/target_matrix.py [--browser chrome|firefox]
@@ -38,7 +42,8 @@ from siteserver import Site  # noqa: E402
 
 OWNERS = ["document", "iframe-same-origin", "iframe-cross-origin", "iframe-nested",
           "worker", "worker-in-cross-iframe", "popup"]
-FEATURES = ["console", "uncaught", "request", "redirect", "mock"]
+FEATURES = ["console", "console-imported", "uncaught", "uncaught-imported", "load",
+            "request", "redirect", "mock", "abort"]
 
 # Waits for the owner's answer to the command of `token`.
 WAIT = """
@@ -70,15 +75,26 @@ class Cell:
         base = self.site.other_origin if other_origin else self.site.url
         return base("/probe.html" + query)
 
+    def own_query(self, query=""):
+        """`query` with the owner's `onload` token, for the `load` cell."""
+        if self.feature != "load":
+            return query
+        return query + ("&" if query else "?") + "onload=" + self.token
+
     def open(self):
-        """Loads the owner; the expression that posts a command to it."""
-        top = "/probe.html?worker=1" if self.owner == "worker" else "/probe.html"
+        """Loads the owner; the expression that posts a command to it. For
+        `load`, the tab first shows another site: the owner's page is the
+        first of its site."""
+        if self.feature == "load":
+            self.server.call("navigate", {"url": self.site.other_origin("/basic.html")})
+        top = "/probe.html" + (self.own_query("?worker=1") if self.owner == "worker" else
+                               self.own_query() if self.owner == "document" else "")
         self.server.call("navigate", {"url": self.site.url(top)})
         frame = {
-            "iframe-same-origin": self.owner_page(False),
-            "iframe-cross-origin": self.owner_page(True),
-            "iframe-nested": self.owner_page(False, "?child=" + quote(self.owner_page(True), safe="")),
-            "worker-in-cross-iframe": self.owner_page(True, "?worker=1"),
+            "iframe-same-origin": self.owner_page(False, self.own_query()),
+            "iframe-cross-origin": self.owner_page(True, self.own_query()),
+            "iframe-nested": self.owner_page(False, "?child=" + quote(self.owner_page(True, self.own_query()), safe="")),
+            "worker-in-cross-iframe": self.owner_page(True, self.own_query("?worker=1")),
         }.get(self.owner)
         if frame:
             self.js("await new Promise(r => { const f = document.createElement('iframe'); f.id = 'o'; f.onload = r;"
@@ -87,7 +103,7 @@ class Cell:
             return "document.getElementById('o').contentWindow"
         if self.owner == "popup":
             self.js("window.pop = window.open(%s); await new Promise(r => setTimeout(r, 1000)); 1"
-                    % json.dumps(self.owner_page(False)), gesture=True)
+                    % json.dumps(self.owner_page(False, self.own_query())), gesture=True)
             listed = self.server.call("list_tabs", {}).text
             listed = json.loads(listed[listed.index("{"):])
             self.tab = next(t["tab_id"] for t in listed["tabs"] if t["tab_id"] != listed["active_tab_id"])
@@ -109,23 +125,61 @@ class Cell:
             time.sleep(0.5)
         return False, text
 
+    def once(self, tool, args, check, seconds=6):
+        """`until` the reply holds what `check` wants, then once more a
+        moment later: a copy coming late from another feed shows then."""
+        ok, text = self.until(tool, args, check, seconds)
+        if not ok:
+            return ok, text
+        time.sleep(1)
+        text = self.call(tool, args).text
+        return check(text), text
+
+    def logged(self, words, stacked=False, level=None):
+        """A check that the console lists one message with `words` (with a
+        stack, at `level`), read from its details: a duplicate is no
+        repeat of the same line."""
+        def check(text):
+            if "{" not in text:
+                return False
+            found = [m for m in json.loads(text[text.index("{"):]).get("messages", [])
+                     if words in m.get("text", "")]
+            return (len(found) == 1 and (not stacked or "\n    at " in found[0]["text"])
+                    and (level is None or found[0].get("level") == level))
+        return check
+
+    def requested(self, token, status=None, failed=False):
+        """A check that the network log lists one request with `token`
+        (answered `status`, or failed)."""
+        def check(text):
+            if "{" not in text:
+                return False
+            found = [r for r in json.loads(text[text.index("{"):]).get("requests", {}).values()
+                     if token in r.get("url", "")]
+            if len(found) != 1:
+                return False
+            return bool(found[0].get("error")) if failed else found[0].get("response_status") == status
+        return check
+
     def run(self):
         target = self.open()
         token = self.token
-        if self.feature == "console":
-            self.command(target, "log:" + token)
-            return self.until("get_console_logs", {}, lambda t: "probe-log " + token in t)
-        if self.feature == "uncaught":
-            self.command(target, "throw:" + token)
-
-            def stacked(text):
-                lines = text.splitlines()
-                at = next((i for i, l in enumerate(lines) if "Uncaught Error: probe-throw " + token in l), None)
-                return at is not None and at + 1 < len(lines) and lines[at + 1].startswith("    at ")
-            return self.until("get_console_logs", {}, stacked)
+        details = {"include_details": True}
+        if self.feature in ("console", "console-imported"):
+            imported = self.feature == "console-imported"
+            self.command(target, ("ilog:" if imported else "log:") + token)
+            words = ("probe-lib-log " if imported else "probe-log ") + token
+            return self.once("get_console_logs", details, self.logged(words, level="log"))
+        if self.feature == "load":
+            return self.once("get_console_logs", details, self.logged("probe-onload " + token))
+        if self.feature in ("uncaught", "uncaught-imported"):
+            imported = self.feature == "uncaught-imported"
+            self.command(target, ("ithrow:" if imported else "throw:") + token)
+            words = ("probe-lib-throw " if imported else "probe-throw ") + token
+            return self.once("get_console_logs", details, self.logged(words, stacked=True))
         if self.feature == "request":
             self.command(target, "fetch:%s:/api/echo?probe=%s" % (token, token))
-            return self.until("get_network_logs", {"url_filter": token}, lambda t: "=> 200" in t)
+            return self.once("get_network_logs", {"url_filter": token, **details}, self.requested(token, 200))
         if self.feature == "redirect":
             to = quote("/api/echo?probe=%s" % token, safe="")
             self.command(target, "fetch:%s:/redirect?to=%s" % (token, to))
@@ -140,11 +194,20 @@ class Cell:
         if self.feature == "mock":
             self.call("mock_route", {"url_pattern": "*mocked=%s*" % token, "body": "MOCKED"})
             answer = self.command(target, "fetch:%s:/api/echo?mocked=%s" % (token, token))
-            return answer == "200 MOCKED", answer
+            if answer != "200 MOCKED":
+                return False, answer
+            return self.once("get_network_logs", {"url_filter": token, **details}, self.requested(token, 200))
+        if self.feature == "abort":
+            self.call("mock_route", {"url_pattern": "*aborted=%s*" % token, "abort": True})
+            answer = self.command(target, "fetch:%s:/api/echo?aborted=%s" % (token, token))
+            if not answer.startswith("failed TypeError"):
+                return False, answer
+            return self.once("get_network_logs", {"url_filter": token, **details},
+                             self.requested(token, failed=True))
         raise ValueError(self.feature)
 
     def close(self):
-        if self.feature == "mock":
+        if self.feature in ("mock", "abort"):
             self.call("remove_route", {})
         if self.tab:
             self.server.call("close_tab", {"tab_id": self.tab})

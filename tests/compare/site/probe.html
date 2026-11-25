@@ -2,9 +2,12 @@
 <html>
 <head><title>Probe</title></head>
 <body>
-<p>A page that does what the messages it gets ask (log, throw, fetch), and an iframe of its <code>child</code> parameter or a worker with <code>worker=1</code>; used by tests/differential/target_matrix.py.</p>
+<p>A page that does what the messages it gets ask (log, throw, fetch, also from an imported script), and an iframe of its <code>child</code> parameter or a worker with <code>worker=1</code>; with <code>onload=token</code> it (or its worker) logs while it loads; used by tests/differential/target_matrix.py.</p>
+<script src="/probe-lib.js"></script>
 <script>
 const params = new URLSearchParams(location.search);
+const onload = params.get('onload');
+if (onload && !params.get('worker')) console.log('probe-onload ' + onload);
 // A popup answers its opener, a frame the top page.
 const say = text => (window.opener || top).postMessage(text, '*');
 if (params.get('child')) {
@@ -13,12 +16,13 @@ if (params.get('child')) {
   document.body.append(frame);
 }
 if (params.get('worker')) {
-  window.wk = new Worker('/probe-worker.js');
+  window.wk = new Worker('/probe-worker.js' + (onload ? '?onload=' + encodeURIComponent(onload) : ''));
   wk.onmessage = event => say(event.data);
 }
-// The commands: `log:<token>`, `throw:<token>`, `fetch:<token>:<path>`;
-// each answers `done:<token>:<result>`. With a child or a worker, they go
-// to it instead.
+// The commands: `log:<token>`, `throw:<token>`, `fetch:<token>:<path>`,
+// and `ilog:<token>`, `ithrow:<token>` from probe-lib.js; each answers
+// `done:<token>:<result>`. With a child or a worker, they go to it
+// instead.
 addEventListener('message', event => {
   const text = String(event.data);
   if (text.startsWith('done:')) return;
@@ -26,6 +30,8 @@ addEventListener('message', event => {
   if (params.get('child')) return document.querySelector('iframe').contentWindow.postMessage(text, '*');
   const [command, token, ...rest] = text.split(':');
   if (command === 'log') { console.log('probe-log ' + token); say('done:' + token + ':logged'); }
+  else if (command === 'ilog') { probeLib.log(token); say('done:' + token + ':logged'); }
+  else if (command === 'ithrow') { probeLib.throwLater(token); say('done:' + token + ':thrown'); }
   else if (command === 'throw') {
     setTimeout(function probeThrower() { throw new Error('probe-throw ' + token); });
     say('done:' + token + ':thrown');

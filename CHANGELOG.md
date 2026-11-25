@@ -10,6 +10,18 @@ from a copy of its code: entries describe the differences from that release.
 
 ## [Unreleased]
 
+### Development
+
+- `tests/differential/target_matrix.py` checks that each cell is listed
+  exactly once (it checked presence, which a duplicate passes: #207), and
+  adds four features to every kind of target: a console message and an
+  uncaught error from a script the code imported (a `<script src>`,
+  `importScripts`), a message the target logs while it loads right after
+  the tab moved to another site (#206), and a request a route fails
+  (#212). Run against 1.0.0-rc.1 it fails the cells of #199, #200 and
+  #207; the issues of the console and of mocked routes were mostly such
+  cells, found one at a time.
+
 ### Added
 
 - `mock_route` can fail the requests it matches with a network error
