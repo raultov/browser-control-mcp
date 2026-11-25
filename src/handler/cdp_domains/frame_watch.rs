@@ -46,7 +46,8 @@ const WORKER_DOMAINS: [&str; 2] = ["Runtime", "Network"];
 enum Watch {
     /// A frame of another origin: console, network, debugger, its frames.
     Frame,
-    /// A dedicated worker: its console and requests (ISSUE-75).
+    /// A dedicated worker: its console and requests (ISSUE-75), and the
+    /// workers it starts (#207).
     Worker,
     /// Not watched (another kind, or past [`MAX_WATCHED`]): only released.
     Released,
@@ -155,11 +156,11 @@ async fn watch(session: Tab, mut events: cdp_browser_lite::EventFilter, sinks: F
 }
 
 /// An auto-attached target: its setup task (aborted when it detaches),
-/// what it is watched as, and its URL.
+/// what it is watched as, and its target id.
 struct Attached {
     _setup: ListenerHandles,
     kind: Watch,
-    url: String,
+    target_id: String,
 }
 
 impl Attached {
@@ -170,7 +171,7 @@ impl Attached {
         }
         sinks.watched.fetch_sub(1, Ordering::Relaxed);
         if self.kind == Watch::Worker {
-            sinks.log.lock().await.forget_worker(&self.url);
+            sinks.log.lock().await.forget_worker(&self.target_id);
         }
     }
 }
@@ -192,13 +193,13 @@ fn watch_kind(attached: &Value, sinks: &FrameSinks) -> Watch {
 /// Starts the setup of the target `attached` announces.
 async fn attach(session: &Tab, attached: Value, sinks: &FrameSinks) -> Attached {
     let kind = watch_kind(&attached, sinks);
-    let url = attached["targetInfo"]["url"]
+    let target_id = attached["targetInfo"]["targetId"]
         .as_str()
         .unwrap_or_default()
         .to_string();
     if kind == Watch::Worker {
         // Before it runs: its first messages come in its session.
-        sinks.log.lock().await.watch_worker(&url);
+        sinks.log.lock().await.watch_worker(&target_id);
     }
     let mut setup = ListenerHandles::default();
     let task = frame_setup(session.clone(), attached, kind, sinks.clone());
@@ -206,7 +207,7 @@ async fn attach(session: &Tab, attached: Value, sinks: &FrameSinks) -> Attached 
     Attached {
         _setup: setup,
         kind,
-        url,
+        target_id,
     }
 }
 
@@ -306,6 +307,10 @@ async fn watch_worker(session: &Tab, target_id: &str, sinks: FrameSinks) -> List
             .send_raw_command(&format!("{domain}.enable"), NoParams)
             .await;
     }
+    // The workers it starts: the tab's `Log` copies their messages under
+    // its own id, dropped as its own (#207), so they report in their own
+    // sessions (one past `MAX_WATCHED` is not heard).
+    listeners.push(start_frame_watcher(&worker, sinks));
     listeners
 }
 
@@ -483,21 +488,28 @@ mod tests {
     /// `Network` are enabled in its own session (not `Log`: the tab already
     /// reports its console there), it is released, and its console messages
     /// and requests reach the tab's buffers; the tab's log skips its copies.
+    /// #207: it auto-attaches to the workers it starts, whose copies the
+    /// tab's log names by its id.
     #[tokio::test]
     async fn workers_feed_the_tab() {
         // Given a tab watching its frames, When a worker attaches
         let watched = watched_tab().await;
         let worker = attached_worker(&watched).await;
         let (mock, sinks) = (watched.mock, &watched.sinks);
-        // Then it was readied in its own session
-        let readied: Vec<String> = mock
-            .commands()
-            .into_iter()
-            .filter(|c| c.session_id.as_deref() == Some(worker.as_str()))
-            .map(|c| c.method)
-            .collect();
-        assert_eq!(readied, ["Runtime.enable", "Network.enable"]);
-        assert!(sinks.log.lock().await.watches_worker("http://b/"));
+        // Then it was readied in its own session, watching its workers
+        let readied = || -> Vec<String> {
+            mock.commands()
+                .into_iter()
+                .filter(|c| c.session_id.as_deref() == Some(worker.as_str()))
+                .map(|c| c.method)
+                .collect()
+        };
+        eventually(|| readied().len() == 3).await;
+        assert_eq!(
+            readied(),
+            ["Runtime.enable", "Network.enable", "Target.setAutoAttach"]
+        );
+        assert!(sinks.log.lock().await.watches_worker("T-worker"));
         // And its console messages and requests reach the tab's buffers
         let logged = json!({"type": "log", "args": [{"type": "string", "value": "worker log"}], "timestamp": 1.0});
         mock.emit("Runtime.consoleAPICalled", logged, Some(&worker));
@@ -610,10 +622,10 @@ mod tests {
             sinks
                 .log
                 .try_lock()
-                .is_ok_and(|log| !log.watches_worker("http://b/"))
+                .is_ok_and(|log| !log.watches_worker("T-worker"))
         })
         .await;
-        assert!(!sinks.log.lock().await.watches_worker("http://b/"));
+        assert!(!sinks.log.lock().await.watches_worker("T-worker"));
         assert_eq!(sinks.watched.load(Ordering::Relaxed), 0);
     }
 

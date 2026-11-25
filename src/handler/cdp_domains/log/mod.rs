@@ -82,9 +82,9 @@ pub(crate) struct LogState {
     pub(crate) same_document_url: Option<String>,
     /// Chrome's id of the tab's main frame, once a navigation named it.
     main_frame: Option<String>,
-    /// Script URLs of the workers watched in their own session (Chrome,
-    /// see `frame_watch`): the tab's `Log` copies of their console messages
-    /// are dropped. At most `frame_watch::MAX_WATCHED` (one per watched
+    /// Target ids of the workers watched in their own session (Chrome, see
+    /// `frame_watch`): the tab's `Log` copies of their console messages are
+    /// dropped. At most `frame_watch::MAX_WATCHED` (one per watched
     /// target).
     workers: Vec<String>,
     /// Uncaught errors whose `cause` chain is being read (Chrome, see
@@ -101,30 +101,35 @@ impl LogState {
         self.same_document_url = Some(url.to_string());
     }
 
-    /// Notes that the worker running `url` reports its console itself.
-    pub(crate) fn watch_worker(&mut self, url: &str) {
-        self.workers.push(url.to_string());
+    /// Notes that the worker of target `target_id` reports its console
+    /// itself.
+    pub(crate) fn watch_worker(&mut self, target_id: &str) {
+        self.workers.push(target_id.to_string());
     }
 
-    /// Forgets one watch of the worker running `url` (it detached).
-    pub(crate) fn forget_worker(&mut self, url: &str) {
-        if let Some(at) = self.workers.iter().position(|w| w == url) {
+    /// Forgets the watch of the worker of target `target_id` (it detached).
+    pub(crate) fn forget_worker(&mut self, target_id: &str) {
+        if let Some(at) = self.workers.iter().position(|w| w == target_id) {
             self.workers.remove(at);
         }
     }
 
-    /// Whether a worker running `url` is watched.
-    pub(crate) fn watches_worker(&self, url: &str) -> bool {
-        self.workers.iter().any(|w| w == url)
+    /// Whether the worker of target `target_id` is watched.
+    pub(crate) fn watches_worker(&self, target_id: &str) -> bool {
+        self.workers.iter().any(|w| w == target_id)
     }
 
-    /// Whether `message` is the tab's copy of a watched worker's message.
-    fn is_watched_worker_copy(&self, message: &ConsoleMessage) -> bool {
-        message.source == "worker"
-            && message
-                .url
-                .as_deref()
-                .is_some_and(|url| self.watches_worker(url))
+    /// Whether the event (`method`, `params`) is the tab's `Log` copy of a
+    /// message a watched worker reports in its own session. The copy names
+    /// the worker by its target id (`workerId`); its URL is the script that
+    /// logged it, one the worker imported too (#207), and its text differs
+    /// (objects as `[object Object]`, errors without their stack).
+    fn is_watched_worker_copy(&self, method: &str, params: &Value) -> bool {
+        method == "Log.entryAdded"
+            && params
+                .pointer("/entry/workerId")
+                .and_then(Value::as_str)
+                .is_some_and(|worker| self.watches_worker(worker))
     }
 
     pub(crate) fn push_message(&mut self, msg: ConsoleMessage) {
@@ -474,7 +479,7 @@ pub(crate) async fn process_log_event(
     } else if let Some(message) = console_message(method, params) {
         let lookup = cause_lookup(method, params, &message);
         let mut state = state.lock().await;
-        if !state.is_watched_worker_copy(&message) {
+        if !state.is_watched_worker_copy(method, params) {
             state.push_message(message);
             return lookup;
         }
@@ -939,19 +944,30 @@ mod tests {
         );
     }
 
-    /// ISSUE-75 (Chrome): a watched worker's console comes from its own
-    /// session (with its real level); the tab's `Log` copy of it (`source:
-    /// "worker"`, `console.log` as `info`) is dropped. Other workers' copies
-    /// are kept.
+    /// ISSUE-75 / #207 (Chrome): a watched worker's console comes from its
+    /// own session (with its real level); the tab's `Log` copy of it
+    /// (`source: "worker"`, `console.log` as `info`), which names the worker
+    /// by its target id, is dropped, also for a message of a script the
+    /// worker imported (the copy's URL is that script's). Other workers'
+    /// copies are kept.
     #[tokio::test]
     async fn watched_workers_are_not_logged_twice() {
-        // Given a tab watching worker w.js
+        // Given a tab watching the worker of target W1, which imported lib.js
         let state = Arc::new(Mutex::new(LogState::default()));
-        state.lock().await.watch_worker("http://a/w.js");
-        let entry = |url: &str| json!({"method": "Log.entryAdded", "params": {"entry": {"source": "worker", "level": "info", "text": "hi", "url": url, "timestamp": 1.0}}});
-        // When the tab reports both workers' messages
-        for url in ["http://a/w.js", "http://a/other.js"] {
-            let event: WsResponse = serde_json::from_value(entry(url)).unwrap();
+        state.lock().await.watch_worker("W1");
+        let entry = |worker: &str, url: &str| {
+            json!({"method": "Log.entryAdded", "params": {"entry": {"source": "worker", "level": "info",
+            "text": "obj [object Object]", "url": url, "timestamp": 1.0, "workerId": worker}}})
+        };
+        // When the tab reports the messages of its script, of lib.js, and of
+        // an unwatched worker W2
+        let copies = [
+            ("W1", "http://a/w.js"),
+            ("W1", "http://a/lib.js"),
+            ("W2", "http://a/other.js"),
+        ];
+        for (worker, url) in copies {
+            let event: WsResponse = serde_json::from_value(entry(worker, url)).unwrap();
             process_log_event(&event, &state).await;
         }
         // Then only the unwatched worker's is kept
@@ -964,8 +980,8 @@ mod tests {
             .collect();
         assert_eq!(urls, [Some("http://a/other.js".to_string())]);
         // And once it stops, its messages are kept again
-        state.lock().await.forget_worker("http://a/w.js");
-        let event: WsResponse = serde_json::from_value(entry("http://a/w.js")).unwrap();
+        state.lock().await.forget_worker("W1");
+        let event: WsResponse = serde_json::from_value(entry("W1", "http://a/lib.js")).unwrap();
         process_log_event(&event, &state).await;
         assert_eq!(state.lock().await.messages.len(), 2);
     }

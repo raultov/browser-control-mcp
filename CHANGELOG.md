@@ -12,6 +12,15 @@ from a copy of its code: entries describe the differences from that release.
 
 ### Fixed
 
+- `get_console_logs` on Chrome lists once a message a dedicated worker
+  logs from a script it imported (`importScripts`, a module `import`), and
+  an uncaught error or rejection thrown there (#207, a regression of
+  0.11.0-beta.19). The tab's copy of a watched worker's message was
+  recognised by the worker's script URL, while it carries the URL of the
+  script that logged it; it is recognised by the worker it names
+  (`workerId`) now. The workers a worker starts are watched in their own
+  session too: their console messages keep their level, and their
+  requests, missing from `get_network_logs` on Chrome, are listed.
 - `get_console_logs` on Firefox keeps the messages a page logs while it
   loads after `navigate` moved the tab to another site (#206). Firefox
   stamps the commit of a navigation after the new page's first scripts

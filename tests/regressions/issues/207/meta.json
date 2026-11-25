@@ -1,0 +1,10 @@
+{
+ "number": 207,
+ "title": "get_console_logs on Chrome: a worker's message from an imported script (importScripts) is listed twice",
+ "family": "other",
+ "command": [
+  "repro_worker_dup.py"
+ ],
+ "bug_regex": "BUG: one console.log listed 2 times",
+ "exit_on_bug": true
+}
