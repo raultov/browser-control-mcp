@@ -12,6 +12,14 @@ from a copy of its code: entries describe the differences from that release.
 
 ### Fixed
 
+- `save_pdf` with `page_ranges` past the document's last page fails the
+  same way on both browsers, without writing a file (#208). Firefox
+  printed them as one blank page and answered success; Chrome answered
+  its protocol error. Both now say that the ranges select no page, and
+  Firefox how many pages the document has. Firefox prints the tab a
+  second time, without the ranges, to count them, only for a one-page
+  print whose ranges all start after page 1.
+
 - `get_console_logs` on Firefox pairs the two copies of a message (BiDi's
   and the debugger port's) by their stamp: both carry the time of the
   error they report, to the millisecond. They were paired by text within

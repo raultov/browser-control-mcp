@@ -28,7 +28,7 @@ use crate::handler::cdp_domains::network::get_network_logs::{self, GetNetworkLog
 use crate::handler::cdp_domains::page::capture_screenshot::{self, CaptureScreenshotTool};
 use crate::handler::cdp_domains::page::emulate::EmulateTool;
 use crate::handler::cdp_domains::page::navigate::{Destination, HistoryStep, NavigateTool};
-use crate::handler::cdp_domains::page::save_pdf::SavePdfTool;
+use crate::handler::cdp_domains::page::save_pdf::{SavePdfTool, printed_pages};
 use crate::handler::cdp_domains::page::scroll::ScrollTool;
 use crate::handler::cdp_domains::page::wait_for::WaitForTool;
 use crate::handler::cdp_domains::runtime::evaluate_js::EvaluateJsTool;
@@ -458,14 +458,28 @@ async fn geolocation_permission(
     Ok(())
 }
 
-/// `save_pdf`: `browsingContext.print`, then the shared delivery.
+/// `save_pdf`: `browsingContext.print`, then the shared delivery. Firefox
+/// prints one blank page for ranges past the document's last page, where
+/// Chrome refuses (#208): a one-page print of ranges that start after page
+/// 1 is checked against the whole document, printed again without them.
 pub(crate) async fn save_pdf(params: CallToolRequestParams, handler: &McpHandler) -> ToolResult {
     let args: SavePdfTool = parse_args(params)?;
     let path = args.checked(&handler.upload_roots)?;
     let (_, _, tab) = target(handler, &ids(&args.instance_id, &args.tab_id)).await?;
-    let print = args.bidi_params(tab.tab.context_id());
-    let printed = page::command(&tab.tab, "browsingContext.print", print).await?;
-    args.deliver(printed["data"].as_str(), path).await
+    let mut print = args.bidi_params(tab.tab.context_id());
+    let printed = page::command(&tab.tab, "browsingContext.print", print.clone()).await?;
+    let data = printed["data"].as_str();
+    if args.may_select_nothing() && printed_pages(data) == Some(1) {
+        if let Some(params) = print.as_object_mut() {
+            params.remove("pageRanges");
+        }
+        let whole = page::command(&tab.tab, "browsingContext.print", print).await?;
+        let pages = printed_pages(whole["data"].as_str());
+        if pages.is_some_and(|pages| args.past_the_end(pages)) {
+            return Err(args.nothing_to_print(pages));
+        }
+    }
+    args.deliver(data, path).await
 }
 
 /// `wait_for`: the shared checks, the whole wait raced against a dialog
@@ -1313,6 +1327,55 @@ mod tests {
             *sent,
             json!({"context": "ctx-0", "orientation": "portrait", "background": false,
                 "scale": 1.0, "pageRanges": ["1"]})
+        );
+        ts::stop(&handler).await;
+    }
+
+    /// #208 (Firefox): ranges past the document's last page fail as on
+    /// Chrome (Firefox prints them as one blank page): a one-page print of
+    /// ranges starting after page 1 is checked against the whole document,
+    /// printed again without them; a range within it prints as asked.
+    #[tokio::test]
+    async fn firefox_refuses_ranges_past_the_last_page() {
+        use base64::Engine;
+        // Given a two-page document, printed as one page for any range
+        let mock = MockFirefox::start(false).await.unwrap();
+        let pdf = |pages: usize| {
+            let page = "1 0 obj <</Type /Page>>\n".repeat(pages);
+            let pdf = format!("%PDF-1.4\n{page}%%EOF");
+            base64::engine::general_purpose::STANDARD.encode(pdf)
+        };
+        mock.bidi()
+            .respond_with("browsingContext.print", move |params| {
+                let pages = if params.get("pageRanges").is_some() {
+                    1
+                } else {
+                    2
+                };
+                json!({"data": pdf(pages)})
+            });
+        let handler = ts::handler(&mock);
+        let print =
+            |ranges: &str| save_pdf(call("save_pdf", json!({"page_ranges": ranges})), &handler);
+        // When save_pdf asks for page 9, then for page 2
+        let error = print("9").await.unwrap_err().to_string();
+        let reply = print("2").await.unwrap();
+        // Then page 9 fails naming the pages, without the blank PDF
+        assert_eq!(
+            error,
+            "'page_ranges' '9' selects no page: every range starts after the document's last page (it has 2 page(s)). Nothing was printed."
+        );
+        // And page 2 is printed
+        assert!(
+            ts::text(&reply).contains("of 1 page(s)"),
+            "{}",
+            ts::text(&reply)
+        );
+        let sent = mock.bidi().commands_named("browsingContext.print");
+        let ranges: Vec<Option<&Value>> = sent.iter().map(|c| c.params.get("pageRanges")).collect();
+        assert_eq!(
+            ranges,
+            [Some(&json!(["9"])), None, Some(&json!(["2"])), None]
         );
         ts::stop(&handler).await;
     }

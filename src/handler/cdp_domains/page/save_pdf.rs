@@ -69,6 +69,45 @@ impl SavePdfTool {
         ranges.split(',').map(str::trim).collect()
     }
 
+    /// The first page the ranges ask for (`-3` starts at 1); `None`
+    /// without ranges.
+    fn first_page(&self) -> Option<usize> {
+        self.page_ranges.as_ref()?;
+        let start = |range: &&str| {
+            let from = range.split_once('-').map_or(*range, |(from, _)| from);
+            match from.trim() {
+                "" => Some(1),
+                from => from.parse().ok(),
+            }
+        };
+        self.ranges().iter().filter_map(start).min()
+    }
+
+    /// Whether a one-page print may hold no page of the document: ranges
+    /// all past its last page print one blank page on Firefox (#208).
+    pub(crate) fn may_select_nothing(&self) -> bool {
+        self.first_page().is_some_and(|first| first > 1)
+    }
+
+    /// Whether the ranges select no page of a document of `pages` pages:
+    /// both browsers ignore the ranges past its last page, and Chrome
+    /// refuses to print when none is left.
+    pub(crate) fn past_the_end(&self, pages: usize) -> bool {
+        self.first_page().is_some_and(|first| first > pages)
+    }
+
+    /// The error for ranges that select no page of the document (of
+    /// `pages` pages, when known), the same on both browsers (#208).
+    pub(crate) fn nothing_to_print(&self, pages: Option<usize>) -> CallToolError {
+        let ranges = self.page_ranges.as_deref().unwrap_or_default();
+        let has = pages
+            .map(|n| format!(" (it has {n} page(s))"))
+            .unwrap_or_default();
+        CallToolError::from_message(format!(
+            "'page_ranges' '{ranges}' selects no page: every range starts after the document's last page{has}. Nothing was printed."
+        ))
+    }
+
     /// `Page.printToPDF`'s params.
     fn cdp_params(&self) -> Value {
         let mut params = json!({
@@ -150,12 +189,33 @@ impl SavePdfTool {
         let target =
             crate::handler::resolve_target(handler, args.instance_id.clone(), args.tab_id.clone())
                 .await?;
-        let method = "Page.printToPDF";
-        let reply =
-            crate::handler::send_or(&target, method, args.cdp_params(), "CDP Error").await?;
+        let printed = target
+            .send_raw_command("Page.printToPDF", args.cdp_params())
+            .await;
+        let reply = match printed {
+            Err(e) if exceeds_page_count(&e) => return Err(args.nothing_to_print(None)),
+            reply => reply.map_err(|e| {
+                CallToolError::from_message(crate::handler::cdp_failure("CDP Error", &e))
+            })?,
+        };
         let result = reply.result.unwrap_or_default();
         args.deliver(result["data"].as_str(), path).await
     }
+}
+
+/// Whether Chrome refused to print because the ranges select no page.
+fn exceeds_page_count(error: &cdp_browser_lite::CdpError) -> bool {
+    matches!(error, cdp_browser_lite::CdpError::ProtocolError { message, .. }
+        if message.contains("Page range exceeds page count"))
+}
+
+/// The pages of the PDF the browser printed (`data`, base64), when it is
+/// one whose pages can be counted.
+pub(crate) fn printed_pages(data: Option<&str>) -> Option<usize> {
+    let pdf = base64::engine::general_purpose::STANDARD
+        .decode(data?)
+        .ok()?;
+    page_count(&pdf)
 }
 
 /// `1`, `2-4`, `-3` or `5-`: what both browsers take.
@@ -449,6 +509,46 @@ mod tests {
         );
         let sent = &mock.commands_named("Page.printToPDF")[0].params;
         assert_eq!(sent["landscape"], true);
+    }
+
+    /// #208: the ranges' first page, and whether they can select no page
+    /// of a document: only when every range starts after page 1.
+    #[test]
+    fn ranges_past_the_last_page_are_told() {
+        let first = |ranges: &str| tool(json!({"page_ranges": ranges})).first_page();
+        assert_eq!(first("9"), Some(9));
+        assert_eq!(first("5-, 3-4"), Some(3));
+        assert_eq!(first("7, -2"), Some(1));
+        assert_eq!(tool(json!({})).first_page(), None);
+        let args = tool(json!({"page_ranges": "3-5, 9"}));
+        assert!(args.may_select_nothing());
+        assert!(args.past_the_end(2) && !args.past_the_end(3));
+        assert!(!tool(json!({"page_ranges": "-3"})).may_select_nothing());
+        assert!(!tool(json!({})).may_select_nothing());
+    }
+
+    /// #208 (Chrome): ranges that select no page fail with the same words
+    /// as on Firefox, not Chrome's protocol error.
+    #[tokio::test]
+    async fn chrome_refuses_ranges_past_the_last_page() {
+        // Given a tab Chrome will not print for the ranges
+        let mock = spawn_recording_mock().await;
+        mock.respond_with(
+            "Page.printToPDF",
+            |_| json!({"error": {"code": -32000, "message": "Page range exceeds page count"}}),
+        );
+        let handler = mock_handler(mock.http_port);
+        // When save_pdf asks for page 9
+        let args = json!({"page_ranges": "9"});
+        let error = SavePdfTool::handle(call("save_pdf", args), &handler)
+            .await
+            .unwrap_err()
+            .to_string();
+        // Then it says no page is selected, nothing printed
+        assert_eq!(
+            error,
+            "'page_ranges' '9' selects no page: every range starts after the document's last page. Nothing was printed."
+        );
     }
 
     /// The names in `dir`, sorted.
