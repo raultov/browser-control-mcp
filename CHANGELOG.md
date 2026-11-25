@@ -12,6 +12,14 @@ from a copy of its code: entries describe the differences from that release.
 
 ### Fixed
 
+- Chrome: the session-level connection to the browser's first page, which
+  serves the calls made before that page is registered as a tab, no
+  longer listens to it once it is one: every console message, request and
+  dialog of that tab was processed twice, an uncaught error's cause chain
+  read in the page twice, and Chrome kept its response bodies for both
+  connections. Its domains are disabled with its debugger, which already
+  was (AUD-EV-07).
+
 - `get_console_logs` on Chrome lists once a message a dedicated worker
   logs from a script it imported (`importScripts`, a module `import`), and
   an uncaught error or rejection thrown there (#207, a regression of

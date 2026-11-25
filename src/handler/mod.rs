@@ -47,6 +47,17 @@ pub(crate) const MAX_TABS: usize = 16;
 /// Most ids of pause_on_load's script remembered per tab (one per document
 /// of the tab that runs it: the page and its same-origin frames).
 pub(crate) const MAX_PAUSE_ON_LOAD_SOURCES: usize = 64;
+/// The domains the session-level page connection enables while it feeds
+/// the fallback states (`Debugger` after its listener starts).
+const FALLBACK_DOMAINS: [&str; 7] = [
+    "Runtime",
+    "Page",
+    "Network",
+    "Log",
+    "Performance",
+    "Audits",
+    "Debugger",
+];
 /// Most WebSocket connections remembered per tab, with their frames.
 pub(crate) const MAX_WS_CONNECTIONS: usize = 100;
 /// Most ids of WebSocket connections forgotten beyond
@@ -1121,7 +1132,12 @@ pub(crate) struct BrowserSession {
     pub(crate) emulation_state: Arc<Mutex<cdp_domains::page::emulate::Emulation>>,
     pub(crate) chrome_manager: Arc<Mutex<dyn chrome_instance::ChromeManager>>,
     pub(crate) tabs: Arc<std::sync::RwLock<chrome_instance::tab_registry::TabRegistry>>,
+    /// The listeners of the browser-level connection (downloads, tabs).
     pub(crate) session_listeners: Arc<Mutex<cdp_domains::event_pump::ListenerHandles>>,
+    /// The listeners of the session-level page connection, which feed the
+    /// fallback states until the page is a registered tab (see
+    /// `retire_fallback_page`).
+    fallback_listeners: Arc<Mutex<cdp_domains::event_pump::ListenerHandles>>,
     pub(crate) browser_version: Arc<Mutex<Option<BrowserVersion>>>,
     pub(crate) enable_webmcp: bool,
     /// Proxy-auth handler task per target (`None` = the session-level page),
@@ -1130,9 +1146,9 @@ pub(crate) struct BrowserSession {
     /// Set when a fresh connection started target discovery and no call has
     /// waited for the browser's page to register as a tab yet.
     first_tab_pending: std::sync::atomic::AtomicBool,
-    /// Set while the session-level connection has its debugger enabled;
-    /// turned off once a tab is registered (see `retire_fallback_debugger`).
-    fallback_debugger: std::sync::atomic::AtomicBool,
+    /// Set while the session-level connection feeds the fallback states;
+    /// turned off once a tab is registered (see `retire_fallback_page`).
+    fallback_page: std::sync::atomic::AtomicBool,
     /// The frames of another origin `snapshot` read, per tab (`frames`).
     pub(crate) frames: frames::FrameTables,
     /// The files the instance's pages downloaded, and where (#77).
@@ -1175,11 +1191,12 @@ impl BrowserSession {
                 chrome_instance::tab_registry::TabRegistry::new(MAX_TABS),
             )),
             session_listeners: Default::default(),
+            fallback_listeners: Default::default(),
             browser_version: Default::default(),
             proxy_auth_tasks: Default::default(),
             enable_webmcp,
             first_tab_pending: Default::default(),
-            fallback_debugger: Default::default(),
+            fallback_page: Default::default(),
             frames: Default::default(),
             downloads: Default::default(),
         }
@@ -1199,10 +1216,11 @@ impl BrowserSession {
     pub(crate) async fn reset_connection_state(&self) {
         *self.client.lock().await = None;
         *self.session_listeners.lock().await = cdp_domains::event_pump::ListenerHandles::default();
+        *self.fallback_listeners.lock().await = cdp_domains::event_pump::ListenerHandles::default();
         *self.browser_version.lock().await = None;
         self.first_tab_pending
             .store(false, std::sync::atomic::Ordering::SeqCst);
-        self.fallback_debugger
+        self.fallback_page
             .store(false, std::sync::atomic::Ordering::SeqCst);
         self.proxy_auth_tasks.lock().await.clear();
         *self.route_state.lock().await = Default::default();
@@ -1271,7 +1289,7 @@ impl BrowserSession {
     /// First use of a session-level client: enable the domains, read the
     /// version, start the listeners. The order matters (see each step).
     async fn prepare_client(&self, client: &CdpClient) {
-        for domain in ["Runtime", "Page", "Network", "Log", "Performance", "Audits"] {
+        for domain in FALLBACK_DOMAINS.into_iter().filter(|d| *d != "Debugger") {
             let _ = client
                 .send_raw_command(&format!("{domain}.enable"), cdp_browser_lite::NoParams)
                 .await;
@@ -1279,7 +1297,7 @@ impl BrowserSession {
         *self.browser_version.lock().await = read_browser_version(client).await;
 
         let target = cdp_domains::cdp_target::CdpTarget::client(client.clone());
-        let mut handles = self.start_session_listeners(&target);
+        let handles = self.start_session_listeners(&target);
         // WebMCP.enable replays the page's tools: its listener runs first.
         self.enable_session_webmcp(client).await;
         // Debugger.enable replays `scriptParsed`: the listener runs first.
@@ -1287,10 +1305,12 @@ impl BrowserSession {
             .send_raw_command("Debugger.enable", cdp_browser_lite::NoParams)
             .await;
         cdp_domains::debugger::sync_pauses(&target, &self.debugger_state).await;
-        self.fallback_debugger
+        self.fallback_page
             .store(true, std::sync::atomic::Ordering::SeqCst);
-        self.start_browser_listeners(&mut handles).await;
-        *self.session_listeners.lock().await = handles;
+        *self.fallback_listeners.lock().await = handles;
+        let mut browser = cdp_domains::event_pump::ListenerHandles::default();
+        self.start_browser_listeners(&mut browser).await;
+        *self.session_listeners.lock().await = browser;
     }
 
     /// Starts the listeners of the browser-level connection: downloads
@@ -1501,21 +1521,28 @@ impl BrowserSession {
         Ok(())
     }
 
-    /// Turns off the session-level connection's debugger once the page is
-    /// a registered tab: tools then only read the tab's state, and that
-    /// debugger, with no breakpoint of its own, would resume the tab's
-    /// pauses (every debugger on a page can resume it).
-    async fn retire_fallback_debugger(&self) {
+    /// Retires the session-level page connection once the page is a
+    /// registered tab: tools then only read the tab's state, which the tab's
+    /// own session feeds. Its debugger, with no breakpoint of its own, would
+    /// resume the tab's pauses (every debugger on a page can resume it), and
+    /// its other listeners did the tab's work a second time: each console
+    /// message, request and dialog of the page, an uncaught error's cause
+    /// chain read in the page twice, Chrome keeping response bodies for
+    /// both connections. Its listeners stop and its domains are disabled.
+    async fn retire_fallback_page(&self) {
         if !self
-            .fallback_debugger
+            .fallback_page
             .swap(false, std::sync::atomic::Ordering::SeqCst)
         {
             return;
         }
+        drop(std::mem::take(&mut *self.fallback_listeners.lock().await));
         let client = self.client.lock().await.clone();
-        if let Some(client) = client {
+        let Some(client) = client else { return };
+        let webmcp = self.enable_webmcp.then_some("WebMCP");
+        for domain in FALLBACK_DOMAINS.into_iter().chain(webmcp) {
             let _ = client
-                .send_raw_command("Debugger.disable", cdp_browser_lite::NoParams)
+                .send_raw_command(&format!("{domain}.disable"), cdp_browser_lite::NoParams)
                 .await;
         }
     }
@@ -1571,7 +1598,7 @@ impl BrowserSession {
         // Bound first: the lookup's error type is not `Send` across an await.
         let registered = self.registered_target(tab_id)?;
         if let Some(found) = registered {
-            self.retire_fallback_debugger().await;
+            self.retire_fallback_page().await;
             return Ok(found);
         }
         let client = self.get_or_connect().await?.clone();
@@ -1584,7 +1611,7 @@ impl BrowserSession {
             .swap(false, std::sync::atomic::Ordering::SeqCst)
             && let Some(tab) = wait_for_active_tab(&self.tabs, FIRST_TAB_WAIT).await
         {
-            self.retire_fallback_debugger().await;
+            self.retire_fallback_page().await;
             return Ok(tab);
         }
         client
@@ -2363,9 +2390,11 @@ mod tests {
 
     /// AUD-EV-07: once the page is registered as a tab, the session-level
     /// connection's debugger is turned off: with no breakpoints of its own
-    /// it would resume the tab's pauses (`pause_on_load`, breakpoints).
+    /// it would resume the tab's pauses (`pause_on_load`, breakpoints). Its
+    /// other domains too, and its listeners stop: they did all the tab's
+    /// work a second time.
     #[tokio::test]
-    async fn fallback_debugger_is_disabled_once_a_tab_is_registered() {
+    async fn fallback_page_is_retired_once_a_tab_is_registered() {
         // Given a session that used its session-level connection
         let mock = cdp_domains::tests::spawn_recording_mock().await;
         let handler = cdp_domains::tests::mock_handler(mock.http_port);
@@ -2379,6 +2408,7 @@ mod tests {
         };
         assert_eq!(fallback("Debugger.enable"), 1);
         assert_eq!(fallback("Debugger.disable"), 0);
+        assert!(session.fallback_listeners.lock().await.is_running());
         // When a tab registers and calls use it, twice
         let browser = cdp_browser_lite::BrowserClient::connect(
             &format!("127.0.0.1:{}", mock.http_port),
@@ -2393,8 +2423,12 @@ mod tests {
             .unwrap();
         session.target(None).await.unwrap();
         session.target(None).await.unwrap();
-        // Then the session-level debugger was disabled once
-        assert_eq!(fallback("Debugger.disable"), 1);
+        // Then each domain of the session-level connection was disabled once
+        for domain in FALLBACK_DOMAINS {
+            assert_eq!(fallback(&format!("{domain}.disable")), 1, "{domain}");
+        }
+        // And its listeners stopped
+        assert!(!session.fallback_listeners.lock().await.is_running());
     }
 
     /// ISSUE-18: the browser's own requests (the new-tab page's chrome://
