@@ -153,12 +153,7 @@ fn message_lines(message: &super::ConsoleMessage, repeats: usize) -> String {
     // watcher labels them `javascript`; console.error is `console-api`).
     let thrown =
         message.source == "exception" || (message.source == "javascript" && level == "error");
-    // Firefox says `uncaught exception: x` for a thrown value.
-    let uncaught = if thrown && !first.to_ascii_lowercase().starts_with("uncaught") {
-        "Uncaught "
-    } else {
-        ""
-    };
+    let uncaught = if thrown { uncaught_prefix(first) } else { "" };
     let at = match (&message.url, message.line_number) {
         (Some(url), Some(line)) => format!(" @ {url}:{}", line + 1),
         (Some(url), None) => format!(" @ {url}"),
@@ -174,6 +169,24 @@ fn message_lines(message: &super::ConsoleMessage, repeats: usize) -> String {
     let more: Vec<&str> = text.collect();
     continuation(&mut out, &more);
     out
+}
+
+/// What an uncaught error's line begins with before its first line
+/// `first`: `Uncaught `, unless it says so already (Firefox says
+/// `uncaught exception: x` for a thrown value).
+fn uncaught_prefix(first: &str) -> &'static str {
+    match first.to_ascii_lowercase().starts_with("uncaught") {
+        true => "",
+        false => "Uncaught ",
+    }
+}
+
+/// The first line of the uncaught error `message` as its line in the
+/// reply begins it (`Uncaught ...`), at most `max` characters: an input
+/// action's note quotes it (#210).
+pub(crate) fn uncaught_headline(message: &super::ConsoleMessage, max: usize) -> String {
+    let first = message.text.lines().next().unwrap_or_default();
+    cut(&format!("{}{first}", uncaught_prefix(first)), max)
 }
 
 /// Appends a message's continuation `lines`, indented: its stack, then
@@ -229,6 +242,7 @@ mod tests {
             line_number: None,
             channel: Default::default(),
             document: None,
+            uncaught: false,
         };
         assert_eq!(message_lines(&thrown, 1), "[error] uncaught exception: str");
     }
@@ -257,6 +271,7 @@ mod tests {
             line_number: None,
             channel: Default::default(),
             document: None,
+            uncaught: false,
         };
         let lines = message_lines(&thrown, 1);
         let shown: Vec<&str> = lines.lines().collect();
@@ -314,6 +329,7 @@ mod tests {
                 line_number: None,
                 channel: Default::default(),
                 document: None,
+                uncaught: false,
             });
         }
         Arc::new(Mutex::new(state))
@@ -350,6 +366,7 @@ mod tests {
             line_number: at.and_then(|(_, line)| line),
             channel: Default::default(),
             document: None,
+            uncaught: false,
         }
     }
 
@@ -461,6 +478,7 @@ mod tests {
                 line_number: None,
                 channel: Default::default(),
                 document: None,
+                uncaught: false,
             });
         }
         let state = Arc::new(Mutex::new(state));

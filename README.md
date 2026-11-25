@@ -273,8 +273,17 @@ active. So
 does one that downloaded a file (`The action downloaded data.csv (8 bytes) to …`),
 opened a file chooser (`set its files with upload_file`; Chrome intercepts
 file choosers, so none opens on screen) or changed the URL without loading
-a page (`history.pushState`, a `#fragment`). In a textarea or
-contenteditable, `fill_input` types a newline as the Enter key.
+a page (`history.pushState`, a `#fragment`). One during which the page
+raised uncaught errors or unhandled rejections (in the page, its frames or
+its workers) counts them and quotes the first line of the three newest:
+`The page raised 1 uncaught error(s) while the action ran: Uncaught
+TypeError: cart is undefined (see get_console_logs).` They were raised
+while the action ran, not necessarily by it (a timer's error in the same
+second counts too), and the count is a lower bound: an error the browser
+reports after the page settled is not in it (on Firefox, the debugger
+port's copy of an error can come later, and a rejection may be quoted
+without `(in promise)`). In a textarea or contenteditable, `fill_input`
+types a newline as the Enter key.
 
 The JavaScript debugger tools on Firefox need its debugger (RDP) port: on by
 default for a launched Firefox, `--firefox-rdp-port` for an attached one. The

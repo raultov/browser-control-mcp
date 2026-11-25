@@ -24,6 +24,11 @@ pub struct ConsoleMessage {
     /// document's late messages from the new one's first ones by it (#206).
     #[serde(skip)]
     pub(crate) document: Option<String>,
+    /// Whether it reports an error the page's code threw that nothing
+    /// caught (an uncaught exception, an unhandled rejection), as the feed
+    /// says it: counted for the input actions that ran meanwhile (#210).
+    #[serde(skip)]
+    pub(crate) uncaught: bool,
 }
 
 /// The feed a console message came from. Firefox reports some messages
@@ -96,6 +101,11 @@ pub(crate) struct LogState {
     /// dropped. At most `frame_watch::MAX_WATCHED` (one per watched
     /// target).
     workers: Vec<String>,
+    /// How many uncaught errors (see [`ConsoleMessage::uncaught`]) the tab
+    /// raised so far, each counted once, whichever feeds report it: an
+    /// input action says how many it saw (#210). Never lowered: a
+    /// navigation or `clear` empties the buffer, not the count.
+    pub(crate) uncaught: u64,
     /// Uncaught errors whose `cause` chain is being read (Chrome, see
     /// [`CauseLookup`]): `get_console_logs` waits for them, bounded. Each
     /// is counted by a [`Pending`] it carries, so the count goes down
@@ -147,6 +157,7 @@ impl LogState {
 
     /// Pushes a message whose text is already bounded.
     fn push_bounded(&mut self, msg: ConsoleMessage) {
+        self.uncaught += u64::from(msg.uncaught);
         self.messages.push_back(msg);
         if self.messages.len() > MAX_CONSOLE_MESSAGES {
             self.messages.pop_front();
@@ -179,11 +190,18 @@ impl LogState {
                     && twin_key(&m.text) == twin_key(&msg.text)
                     && same_instant(m.timestamp, msg.timestamp)
             });
-        match twin {
-            Some(existing) if msg.channel == Channel::Watcher => *existing = msg,
-            Some(_) => {}
-            None => self.push_bounded(msg),
+        let Some(existing) = twin else {
+            self.push_bounded(msg);
+            return;
+        };
+        // Counted once: when the first copy said so, or now.
+        let newly_uncaught = msg.uncaught && !existing.uncaught;
+        let uncaught = msg.uncaught || existing.uncaught;
+        if msg.channel == Channel::Watcher {
+            *existing = msg;
         }
+        existing.uncaught = uncaught;
+        self.uncaught += u64::from(newly_uncaught);
     }
 
     /// Notes that Firefox started navigation `navigation` in the tab at `at`
@@ -257,6 +275,22 @@ impl LogState {
             self.issues.reset();
         }
         self.site = Some(site);
+    }
+
+    /// The first lines of the `n` newest uncaught errors still in the
+    /// buffer, oldest first, each at most `max` characters (see
+    /// `get_console_logs::uncaught_headline`).
+    pub(crate) fn newest_uncaught(&self, n: usize, max: usize) -> Vec<String> {
+        let mut newest: Vec<String> = self
+            .messages
+            .iter()
+            .rev()
+            .filter(|m| m.uncaught)
+            .take(n)
+            .map(|m| get_console_logs::uncaught_headline(m, max))
+            .collect();
+        newest.reverse();
+        newest
     }
 
     /// The note of the last cross-site clear, once.
@@ -551,6 +585,7 @@ fn log_entry(entry: &Value) -> ConsoleMessage {
         line_number: entry.get("lineNumber").and_then(Value::as_i64),
         channel: Channel::Primary,
         document: None,
+        uncaught: false,
     }
 }
 
@@ -658,6 +693,7 @@ fn console_api_call(params: &Value) -> ConsoleMessage {
             .and_then(Value::as_i64),
         channel: Channel::Primary,
         document: None,
+        uncaught: false,
     }
 }
 
@@ -713,6 +749,7 @@ fn exception(params: &Value, details: &Value) -> ConsoleMessage {
         line_number: details.get("lineNumber").and_then(Value::as_i64),
         channel: Channel::Primary,
         document: None,
+        uncaught: true,
     }
 }
 
@@ -1178,6 +1215,7 @@ mod tests {
             line_number: None,
             channel: Channel::Primary,
             document: None,
+            uncaught: false,
         }
     }
 
@@ -1306,6 +1344,52 @@ mod tests {
             state.take_cleared_note().unwrap(),
             "1 console messages from a.test were cleared when the tab moved to b.test"
         );
+    }
+
+    /// #210: each uncaught error is counted once, whichever Firefox feed
+    /// reports it first, also when only one copy says it is one; console
+    /// messages are not counted, and a navigation or `clear` empties the
+    /// buffer without lowering the count. The newest still logged are
+    /// quoted by their first line, as get_console_logs begins them.
+    #[test]
+    fn uncaught_errors_are_counted_once() {
+        let copy = |text: &str, ms: f64, channel: Channel, uncaught: bool| ConsoleMessage {
+            timestamp: ms,
+            channel,
+            uncaught,
+            source: "exception".into(),
+            ..message(text)
+        };
+        let mut state = LogState::default();
+        state.on_document_committed("https://a.test/", None);
+        // BiDi first, then the watcher; the watcher first, then BiDi
+        state.push_deduplicated(copy("Error: one\n    at f", 10.0, Channel::Primary, true));
+        state.push_deduplicated(copy("Error: one\n    at f", 10.3, Channel::Watcher, true));
+        state.push_deduplicated(copy(
+            "uncaught exception: two",
+            20.6,
+            Channel::Watcher,
+            true,
+        ));
+        state.push_deduplicated(copy(
+            "uncaught exception: two",
+            20.0,
+            Channel::Primary,
+            true,
+        ));
+        // A twin only one copy flags, and a console message
+        state.push_deduplicated(copy("SyntaxError: three", 30.0, Channel::Watcher, false));
+        state.push_deduplicated(copy("SyntaxError: three", 30.1, Channel::Primary, true));
+        state.push_deduplicated(message("logged"));
+        assert_eq!(state.uncaught, 3);
+        assert_eq!(
+            state.newest_uncaught(2, 200),
+            ["uncaught exception: two", "Uncaught SyntaxError: three"]
+        );
+        // When another site clears the buffer, the count stays
+        state.on_document_committed("https://b.test/", None);
+        assert_eq!(state.uncaught, 3);
+        assert!(state.newest_uncaught(3, 200).is_empty());
     }
 
     /// #206 (Firefox): the new page's first messages, stamped after its

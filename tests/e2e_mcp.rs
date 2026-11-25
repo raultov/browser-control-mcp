@@ -2295,7 +2295,7 @@ mod e2e {
     /// ISSUE-81: the widgets of `input_effect_steps`, recording the Enter
     /// keys of the textarea and the wheel over the canvas.
     fn input_widgets_js() -> String {
-        let html = r#"<div id="ie81"><textarea id="ta81"></textarea><canvas id="cv81" width="200" height="60"></canvas><input type="file" id="f81"><button id="p81" onclick="history.pushState({}, '', '/pushed81')">push81</button></div>"#;
+        let html = r#"<div id="ie81"><textarea id="ta81"></textarea><canvas id="cv81" width="200" height="60"></canvas><input type="file" id="f81"><button id="p81" onclick="history.pushState({}, '', '/pushed81')">push81</button><button id="t210" onclick="throw new Error('thrown-210')">t210</button></div>"#;
         format!(
             "document.body.insertAdjacentHTML('afterbegin', {}); window.__url81 = location.href; window.__enter81 = 0; window.__wheel81 = 0; \
              ta81.addEventListener('keydown', e => {{ if (e.key === 'Enter') __enter81++; }}); \
@@ -2347,7 +2347,8 @@ mod e2e {
     }
 
     /// ISSUE-81: a click that opens a file chooser, or changes the URL
-    /// without loading a page, says so; the page's URL is put back.
+    /// without loading a page, says so; #210: so does one whose handler
+    /// throws; the page's URL is put back.
     fn input_note_steps(instance: &str) -> Vec<Step> {
         let i = json!(instance);
         let eval = |expression: &str| json!({"instance_id": i, "expression": expression});
@@ -2366,6 +2367,12 @@ mod e2e {
                 "click_element",
                 on("#p81"),
                 "The URL changed to ",
+            ),
+            (
+                "#210 a click whose handler throws",
+                "click_element",
+                on("#t210"),
+                "The page raised 1 uncaught error(s) while the action ran: Uncaught Error: thrown-210 (see get_console_logs).",
             ),
             (
                 "ISSUE-81 back to the page's URL",

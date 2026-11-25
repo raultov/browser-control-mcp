@@ -594,21 +594,13 @@ pub(crate) fn console_message(kind: &str, resource: &Value) -> Option<ConsoleMes
         });
     }
     let error = resource.get("pageError")?;
-    let flag = |key: &str| error.get(key).and_then(Value::as_bool).unwrap_or(false);
-    let level = if flag("error") {
-        "error"
-    } else if flag("warning") || kind == "css-message" {
-        "warning"
-    } else {
-        "info"
-    };
     let category = error
         .get("category")
         .and_then(Value::as_str)
         .unwrap_or_default();
     Some(ConsoleMessage {
         source: source_label(kind, category).into(),
-        level: level.into(),
+        level: page_error_level(kind, error).into(),
         text: error_text(error)?,
         timestamp: error
             .get("timeStamp")
@@ -630,6 +622,7 @@ pub(crate) fn console_message(kind: &str, resource: &Value) -> Option<ConsoleMes
             .get("innerWindowID")
             .and_then(Value::as_u64)
             .map(|id| format!("window-{id}")),
+        uncaught: thrown(error),
     })
 }
 
@@ -643,14 +636,12 @@ const MAX_STACK_FRAMES: usize = 20;
 /// gives it (#204: Firefox lists it apart, in `stacktrace`).
 fn error_text(error: &Value) -> Option<String> {
     let text = error.get("errorMessage")?.as_str()?;
-    let flag = |key: &str| error.get(key).and_then(Value::as_bool) == Some(true);
-    let rejection = flag("isPromiseRejection");
+    let rejection = error.get("isPromiseRejection").and_then(Value::as_bool) == Some(true);
     let mut out = match rejection {
         true => format!("{}{text}", crate::handler::cdp_domains::log::IN_PROMISE),
         false => text.to_string(),
     };
-    let worker = error.get("category").and_then(Value::as_str) == Some(WORKER_CATEGORY);
-    if flag("hasException") || rejection || worker {
+    if thrown(error) {
         let frames = error.get("stacktrace").and_then(Value::as_array);
         let frames = frames.into_iter().flatten().map(|frame| StackFrame {
             function: str_of(frame, "functionName"),
@@ -666,9 +657,31 @@ fn error_text(error: &Value) -> Option<String> {
     Some(out)
 }
 
+/// The console level of the page error `error`, a `kind` resource.
+fn page_error_level(kind: &str, error: &Value) -> &'static str {
+    let flag = |key: &str| error.get(key).and_then(Value::as_bool).unwrap_or(false);
+    if flag("error") {
+        "error"
+    } else if flag("warning") || kind == "css-message" {
+        "warning"
+    } else {
+        "info"
+    }
+}
+
 /// The category of a dedicated worker's script errors (it says nothing of
 /// JavaScript, and they carry no `hasException`).
 const WORKER_CATEGORY: &str = "Web Worker";
+
+/// Whether the page error `error` reports a value the page's code threw
+/// that nothing caught: it carries the exception, is an unhandled
+/// rejection, or a worker's script error; not a warning or a report of
+/// Firefox's own (a cookie rejected, a CSP block).
+fn thrown(error: &Value) -> bool {
+    let flag = |key: &str| error.get(key).and_then(Value::as_bool) == Some(true);
+    let worker = error.get("category").and_then(Value::as_str) == Some(WORKER_CATEGORY);
+    flag("hasException") || flag("isPromiseRejection") || worker
+}
 
 /// The string `key` of `value`, or an empty one.
 fn str_of<'a>(value: &'a Value, key: &str) -> &'a str {
@@ -1403,6 +1416,13 @@ mod tests {
         errors[0]["pageError"]["isPromiseRejection"] = json!(true);
         errors[0]["pageError"]["errorMessage"] = json!("Error: rej");
         let rejected = console_message("error-message", &errors[0]).unwrap();
+        // #210: uncaught, as the watcher says it; a rejected cookie is not
+        assert!(rejected.uncaught);
+        assert!(
+            !console_message("error-message", &errors[1])
+                .unwrap()
+                .uncaught
+        );
         let expected =
             "Uncaught (in promise) Error: rej\n    at https://example.com/test.html:43:7";
         assert_eq!(rejected.text, expected);

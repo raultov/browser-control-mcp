@@ -550,6 +550,8 @@ struct PageBefore {
     file_choosers: u64,
     log: Arc<Mutex<cdp_domains::log::LogState>>,
     same_document: u64,
+    /// How many uncaught errors it had raised (#210).
+    uncaught: u64,
 }
 
 impl PageBefore {
@@ -558,17 +560,22 @@ impl PageBefore {
         log: Arc<Mutex<cdp_domains::log::LogState>>,
     ) -> Self {
         let file_choosers = dialog.lock().await.file_choosers;
-        let same_document = log.lock().await.same_document;
+        let (same_document, uncaught) = {
+            let log = log.lock().await;
+            (log.same_document, log.uncaught)
+        };
         Self {
             dialog,
             file_choosers,
             log,
             same_document,
+            uncaught,
         }
     }
 
     /// The notes for what the page did since: a file chooser it opened, the
-    /// URL it moved to without loading a page.
+    /// URL it moved to without loading a page, the uncaught errors it
+    /// raised.
     async fn notes(&self) -> Vec<String> {
         let (opened, multiple) = {
             let dialog = self.dialog.lock().await;
@@ -577,16 +584,22 @@ impl PageBefore {
                 dialog.chooser_multiple,
             )
         };
-        let (moved, url) = {
+        let (moved, url, raised, newest) = {
             let log = self.log.lock().await;
+            let raised = log.uncaught.saturating_sub(self.uncaught);
+            let quoted =
+                usize::try_from(raised).map_or(UNCAUGHT_QUOTED, |n| n.min(UNCAUGHT_QUOTED));
             (
                 log.same_document.saturating_sub(self.same_document),
                 log.same_document_url.clone(),
+                raised,
+                log.newest_uncaught(quoted, UNCAUGHT_LINE_MAX),
             )
         };
         [
             chooser_note(opened, multiple),
             moved_note(moved, url.as_deref()),
+            uncaught_note(raised, &newest),
         ]
         .into_iter()
         .flatten()
@@ -611,6 +624,31 @@ fn moved_note(moved: u64, url: Option<&str>) -> Option<String> {
     let url = url.filter(|_| moved > 0)?;
     Some(format!(
         "The URL changed to {url} without loading a new page (history API or #fragment)."
+    ))
+}
+
+/// Most uncaught errors an action's note quotes (the newest).
+const UNCAUGHT_QUOTED: usize = 3;
+
+/// Most characters of the first line of each error a note quotes.
+const UNCAUGHT_LINE_MAX: usize = 200;
+
+/// The sentence for the uncaught errors the page raised while an action
+/// ran (`raised`), quoting the first lines of the newest still logged
+/// (`newest`, oldest first). Raised while it ran, not by it: a timer's
+/// error in the same second counts too.
+fn uncaught_note(raised: u64, newest: &[String]) -> Option<String> {
+    if raised == 0 {
+        return None;
+    }
+    let newest_only = usize::try_from(raised).is_ok_and(|n| n > newest.len());
+    let quoted = match (newest.len(), newest_only) {
+        (0, _) => String::new(),
+        (n, true) => format!(", the {n} newest: {}", newest.join("; ")),
+        (_, false) => format!(": {}", newest.join("; ")),
+    };
+    Some(format!(
+        "The page raised {raised} uncaught error(s) while the action ran{quoted} (see get_console_logs)."
     ))
 }
 
@@ -1413,6 +1451,76 @@ mod tests {
             )
         );
         assert_eq!(moved_note(0, Some("http://a/")), None);
+    }
+
+    /// #210: an action during which the page raised uncaught errors says
+    /// how many, quoting the newest (at most 3) still logged; none adds
+    /// nothing.
+    #[test]
+    fn uncaught_error_notes() {
+        let lines = |texts: &[&str]| texts.iter().map(|t| t.to_string()).collect::<Vec<_>>();
+        assert_eq!(uncaught_note(0, &[]), None);
+        assert_eq!(
+            uncaught_note(1, &lines(&["Uncaught TypeError: x is undefined"])).as_deref(),
+            Some(
+                "The page raised 1 uncaught error(s) while the action ran: Uncaught TypeError: x is undefined (see get_console_logs)."
+            )
+        );
+        let newest = lines(&[
+            "Uncaught Error: c",
+            "Uncaught Error: d",
+            "Uncaught Error: e",
+        ]);
+        assert_eq!(
+            uncaught_note(5, &newest).as_deref(),
+            Some(
+                "The page raised 5 uncaught error(s) while the action ran, the 3 newest: Uncaught Error: c; Uncaught Error: d; Uncaught Error: e (see get_console_logs)."
+            )
+        );
+        // A navigation cleared them: only the count
+        assert_eq!(
+            uncaught_note(2, &[]).as_deref(),
+            Some(
+                "The page raised 2 uncaught error(s) while the action ran (see get_console_logs)."
+            )
+        );
+    }
+
+    /// #210 (Chrome): a click whose handler throws says so in its reply,
+    /// after how the page reacted, the error's first line quoted.
+    #[tokio::test]
+    async fn input_actions_note_the_uncaught_errors_raised() {
+        use crate::handler::cdp_domains::tests::{mock_handler, reply_text, spawn_recording_mock};
+        // Given a page whose click handler throws once it is watched
+        let mock = spawn_recording_mock().await;
+        let handler = mock_handler(mock.http_port);
+        let session = handler.session(None).await.unwrap();
+        let log = session.log_state(None).unwrap();
+        mock.respond_with("Runtime.evaluate", move |params| {
+            let watching = params["expression"]
+                .to_string()
+                .contains("MutationObserver");
+            if let (true, Ok(mut log)) = (watching, log.try_lock()) {
+                log.push_message(cdp_domains::log::ConsoleMessage {
+                    source: "exception".into(),
+                    level: "error".into(),
+                    text: "TypeError: cart is undefined\n    at buy (http://a/cart.js:3:5)".into(),
+                    uncaught: true,
+                    ..Default::default()
+                });
+            }
+            page_reacting(params, 3)
+        });
+        // When the element is clicked
+        let args = serde_json::json!({"selector": "#b"});
+        let reply = call(&handler, params("click_element", args)).await.unwrap();
+        // Then the reply ends with the error, quoted
+        let text = reply_text(&reply);
+        assert!(
+            text.ends_with("\nThe page raised 1 uncaught error(s) while the action ran: Uncaught TypeError: cart is undefined (see get_console_logs)."),
+            "{text}"
+        );
+        assert!(text.contains("The page reacted"), "{text}");
     }
 
     /// ISSUE-77 (Chrome): a click that downloads a file says where the

@@ -516,6 +516,7 @@ mod tests {
             line_number: Some(3),
             channel: Default::default(),
             document: None,
+            uncaught: false,
         }
     }
 

@@ -653,6 +653,7 @@ mod tests {
             line_number: None,
             channel: Channel::Watcher,
             document: None,
+            uncaught: false,
         }
     }
 
@@ -735,6 +736,7 @@ mod tests {
                 line_number: None,
                 channel: Channel::Watcher,
                 document: None,
+                uncaught: false,
             });
         };
         push("Cookie “a” rejected", 1.0);

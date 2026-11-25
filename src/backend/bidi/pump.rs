@@ -432,6 +432,7 @@ pub(crate) fn console_message(params: &Value) -> ConsoleMessage {
             .pointer("/source/realm")
             .and_then(Value::as_str)
             .map(str::to_string),
+        uncaught: source == "exception",
     }
 }
 
@@ -812,12 +813,21 @@ mod tests {
         let cookie = json!({"type": "javascript", "level": "error", "text": "Cookie \u{201c}srv\u{201d} has been rejected", "source": {"realm": "r", "context": "c"}, "timestamp": 1});
         let cookie = console_message(&cookie);
         assert_eq!(
-            (cookie.source.as_str(), cookie.level.as_str()),
-            ("other", "error")
+            (
+                cookie.source.as_str(),
+                cookie.level.as_str(),
+                cookie.uncaught
+            ),
+            ("other", "error", false)
         );
         let thrown = json!({"type": "javascript", "level": "error", "text": "Error: x", "source": {"realm": "r", "context": "c"}, "timestamp": 1,
             "stackTrace": {"callFrames": [{"url": "http://a/", "lineNumber": 1, "columnNumber": 0, "functionName": ""}]}});
-        assert_eq!(console_message(&thrown).source, "exception");
+        let thrown = console_message(&thrown);
+        // #210: an uncaught error, as BiDi says it
+        assert_eq!(
+            (thrown.source.as_str(), thrown.uncaught),
+            ("exception", true)
+        );
     }
 
     /// #204 (Firefox): a script error BiDi reports (a frame's, which the

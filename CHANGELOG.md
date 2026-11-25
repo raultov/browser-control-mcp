@@ -10,6 +10,20 @@ from a copy of its code: entries describe the differences from that release.
 
 ## [Unreleased]
 
+### Added
+
+- The input actions (`click_element`, `hover`, `drag`, `fill_input`,
+  `fill_form`, `press_key`) say how many uncaught errors and unhandled
+  rejections the page raised while they ran, in the page, its frames or
+  its workers, quoting the first line of the three newest (#210): `The
+  page raised 1 uncaught error(s) while the action ran: Uncaught
+  TypeError: cart is undefined (see get_console_logs).` An agent whose
+  click "did nothing" learns that its handler threw without calling
+  `get_console_logs`. A reply with none is unchanged. Each error is
+  counted once, also on Firefox, which reports some on two feeds; the
+  count is a lower bound (an error reported after the page settled is
+  not in it).
+
 ### Fixed
 
 - `wait_for` on Chrome ends at once with "The tab closed while running
