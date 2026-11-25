@@ -77,6 +77,8 @@ def serial(directory, info):
     if re.search(r"SLOW|QUADRATIC|RSS|ratio", info["bug_regex"]):
         return True
     for name in os.listdir(directory):
+        if not os.path.isfile(os.path.join(directory, name)):
+            continue  # a __pycache__ a reproduction left
         with open(os.path.join(directory, name), errors="replace") as source:
             text = source.read()
         if re.search(r"'tests', 'compare', 'site'|tests/compare/site", text):
@@ -92,7 +94,7 @@ def run_one(directory, info, binary, timeout):
     started = time.time()
     try:
         for name in os.listdir(directory):
-            if name != "meta.json":
+            if name != "meta.json" and os.path.isfile(os.path.join(directory, name)):
                 shutil.copy(os.path.join(directory, name), scratch)
         os.symlink(os.path.join(ROOT, "tests"), os.path.join(scratch, "tests"))
         os.makedirs(os.path.join(scratch, "target", "release"))
