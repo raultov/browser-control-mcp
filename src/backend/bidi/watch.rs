@@ -589,9 +589,8 @@ pub(crate) fn console_message(kind: &str, resource: &Value) -> Option<ConsoleMes
                 .get("timeStamp")
                 .and_then(Value::as_f64)
                 .unwrap_or(0.0),
-            url: None,
-            line_number: None,
             channel: Channel::Watcher,
+            ..Default::default()
         });
     }
     let error = resource.get("pageError")?;
@@ -627,6 +626,10 @@ pub(crate) fn console_message(kind: &str, resource: &Value) -> Option<ConsoleMes
             .filter(|&l| l > 0)
             .map(|l| l - 1),
         channel: Channel::Watcher,
+        document: error
+            .get("innerWindowID")
+            .and_then(Value::as_u64)
+            .map(|id| format!("window-{id}")),
     })
 }
 

@@ -228,6 +228,7 @@ mod tests {
             url: None,
             line_number: None,
             channel: Default::default(),
+            document: None,
         };
         assert_eq!(message_lines(&thrown, 1), "[error] uncaught exception: str");
     }
@@ -255,6 +256,7 @@ mod tests {
             url: None,
             line_number: None,
             channel: Default::default(),
+            document: None,
         };
         let lines = message_lines(&thrown, 1);
         let shown: Vec<&str> = lines.lines().collect();
@@ -311,6 +313,7 @@ mod tests {
                 url: None,
                 line_number: None,
                 channel: Default::default(),
+                document: None,
             });
         }
         Arc::new(Mutex::new(state))
@@ -346,6 +349,7 @@ mod tests {
             url: at.map(|(url, _)| url.to_string()),
             line_number: at.and_then(|(_, line)| line),
             channel: Default::default(),
+            document: None,
         }
     }
 
@@ -456,6 +460,7 @@ mod tests {
                 url: None,
                 line_number: None,
                 channel: Default::default(),
+                document: None,
             });
         }
         let state = Arc::new(Mutex::new(state));

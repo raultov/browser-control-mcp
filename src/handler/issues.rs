@@ -652,6 +652,7 @@ mod tests {
             url: Some("http://a/".into()),
             line_number: None,
             channel: Channel::Watcher,
+            document: None,
         }
     }
 
@@ -733,6 +734,7 @@ mod tests {
                 url: None,
                 line_number: None,
                 channel: Channel::Watcher,
+                document: None,
             });
         };
         push("Cookie “a” rejected", 1.0);

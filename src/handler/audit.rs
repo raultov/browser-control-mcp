@@ -515,6 +515,7 @@ mod tests {
             url: Some("http://a/app.js".into()),
             line_number: Some(3),
             channel: Default::default(),
+            document: None,
         }
     }
 

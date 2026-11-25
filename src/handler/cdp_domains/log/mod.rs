@@ -8,7 +8,7 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-#[derive(Clone, Debug, ::serde::Serialize, ::serde::Deserialize)]
+#[derive(Clone, Debug, Default, ::serde::Serialize, ::serde::Deserialize)]
 pub struct ConsoleMessage {
     pub source: String,
     pub level: String,
@@ -19,6 +19,11 @@ pub struct ConsoleMessage {
     /// Which feed reported it (for de-duplication; not part of the reply).
     #[serde(skip)]
     pub(crate) channel: Channel,
+    /// The global that logged it, when the feed names it (Firefox: a BiDi
+    /// realm, a watcher window id): a cross-site navigation tells the old
+    /// document's late messages from the new one's first ones by it (#206).
+    #[serde(skip)]
+    pub(crate) document: Option<String>,
 }
 
 /// The feed a console message came from. Firefox reports some messages
@@ -58,6 +63,13 @@ pub(crate) struct LogState {
     /// When the last cross-site document committed (ms since the epoch):
     /// messages of the old site arriving late are dropped.
     cleared_before: Option<f64>,
+    /// The documents (see [`ConsoleMessage::document`]) whose messages the
+    /// last cross-site navigation cleared: their late ones are dropped too,
+    /// whenever they were stamped.
+    old_documents: std::collections::HashSet<String>,
+    /// The last navigation Firefox started in the tab (its id) and when
+    /// (ms since the epoch), until it commits.
+    started: Option<(String, f64)>,
     /// The problems Chrome diagnosed in the tab (`Audits`, ISSUE-60).
     pub(crate) issues: crate::handler::issues::IssueBuffer,
     /// Firefox: by issue code, the time up to which `get_issues` with
@@ -132,10 +144,14 @@ impl LogState {
     /// timestamps) is kept once, with the watcher's labels and stack, which
     /// say more.
     pub(crate) fn push_deduplicated(&mut self, msg: ConsoleMessage) {
-        if self
+        let before = self
             .cleared_before
-            .is_some_and(|at| msg.timestamp > 0.0 && msg.timestamp < at)
-        {
+            .is_some_and(|at| msg.timestamp > 0.0 && msg.timestamp < at);
+        let old = msg
+            .document
+            .as_ref()
+            .is_some_and(|document| self.old_documents.contains(document));
+        if before || old {
             return;
         }
         let msg = bounded(msg);
@@ -156,23 +172,66 @@ impl LogState {
         }
     }
 
-    /// A new top-level document committed at `url` (at `at`, ms since the
-    /// epoch, when the browser says). Moving to another site clears the
-    /// buffer (the old site's messages would bury the new page's); same-site
-    /// navigations and reloads keep it. Same-document navigations (fragment,
-    /// history API) never get here. With `at`, messages stamped at or after
-    /// it stay (Firefox reports some over another connection, which can
-    /// overtake the commit), and later ones stamped before it are dropped.
+    /// Notes that Firefox started navigation `navigation` in the tab at `at`
+    /// (ms since the epoch). Its start bounds the new document's messages:
+    /// Firefox stamps the commit after the new page's first scripts ran, so
+    /// their messages were older than it and cleared with the old site's
+    /// (#206).
+    pub(crate) fn on_navigation_started(&mut self, navigation: &str, at: f64) {
+        self.started = Some((navigation.to_string(), at));
+    }
+
+    /// Firefox committed navigation `navigation` at `url` (stamped
+    /// `committed`): [`Self::on_document_committed`] from when it started,
+    /// when that was noted, else from its commit.
+    pub(crate) fn on_navigation_committed(
+        &mut self,
+        url: &str,
+        navigation: Option<&str>,
+        committed: Option<f64>,
+    ) {
+        let started = self
+            .started
+            .take()
+            .filter(|(id, _)| Some(id.as_str()) == navigation)
+            .map(|(_, at)| at);
+        self.on_document_committed(url, started.or(committed));
+    }
+
+    /// A new top-level document committed at `url` (its navigation began at
+    /// `at`, ms since the epoch, when the browser says). Moving to another
+    /// site clears the buffer (the old site's messages would bury the new
+    /// page's); same-site navigations and reloads keep it. Same-document
+    /// navigations (fragment, history API) never get here. With `at`,
+    /// messages stamped at or after it stay (Firefox reports some over
+    /// another connection, which can overtake the commit), unless a document
+    /// that logged before it logged them; later ones stamped before it, or
+    /// from such a document, are dropped.
     pub(crate) fn on_document_committed(&mut self, url: &str, at: Option<f64>) {
         let site = crate::util::url::site(url);
         if let Some(previous) = self.site.as_deref()
             && previous != site
         {
             let before = self.messages.len();
-            match at {
-                Some(at) => self.messages.retain(|m| m.timestamp >= at),
-                None => self.messages.clear(),
-            }
+            self.old_documents = match at {
+                Some(at) => {
+                    let old: std::collections::HashSet<String> = self
+                        .messages
+                        .iter()
+                        .filter(|m| m.timestamp < at)
+                        .filter_map(|m| m.document.clone())
+                        .collect();
+                    let new = |m: &ConsoleMessage| {
+                        m.timestamp >= at && m.document.as_ref().is_none_or(|d| !old.contains(d))
+                    };
+                    self.messages.retain(new);
+                    old
+                }
+                None => {
+                    self.messages.clear();
+                    Default::default()
+                }
+            };
             let cleared = before - self.messages.len();
             if cleared > 0 {
                 self.cleared_note = Some(format!(
@@ -477,6 +536,7 @@ fn log_entry(entry: &Value) -> ConsoleMessage {
         url: opt_string(entry, "url"),
         line_number: entry.get("lineNumber").and_then(Value::as_i64),
         channel: Channel::Primary,
+        document: None,
     }
 }
 
@@ -583,6 +643,7 @@ fn console_api_call(params: &Value) -> ConsoleMessage {
             .and_then(|f| f.get("lineNumber"))
             .and_then(Value::as_i64),
         channel: Channel::Primary,
+        document: None,
     }
 }
 
@@ -637,6 +698,7 @@ fn exception(params: &Value, details: &Value) -> ConsoleMessage {
         url: opt_string(details, "url"),
         line_number: details.get("lineNumber").and_then(Value::as_i64),
         channel: Channel::Primary,
+        document: None,
     }
 }
 
@@ -1090,6 +1152,7 @@ mod tests {
             url: None,
             line_number: None,
             channel: Channel::Primary,
+            document: None,
         }
     }
 
@@ -1209,6 +1272,54 @@ mod tests {
             state.take_cleared_note().unwrap(),
             "1 console messages from a.test were cleared when the tab moved to b.test"
         );
+    }
+
+    /// #206 (Firefox): the new page's first messages, stamped after its
+    /// navigation started but before Firefox stamped the commit, stay; the
+    /// old document's go, also when they are stamped after the start or
+    /// arrive late.
+    #[test]
+    fn navigation_start_keeps_the_new_page_first_messages() {
+        let at = |text: &str, ms: f64, document: Option<&str>| ConsoleMessage {
+            timestamp: ms,
+            document: document.map(str::to_string),
+            ..message(text)
+        };
+        // Given a tab on a.test whose document "ra" logged, and a
+        // navigation to b.test started at 2000
+        let mut state = LogState::default();
+        state.on_navigation_committed("https://a.test/", None, Some(0.0));
+        state.push_deduplicated(at("old", 1000.0, Some("ra")));
+        state.on_navigation_started("n2", 2000.0);
+        state.push_deduplicated(at("old unloading", 2050.0, Some("ra")));
+        state.push_deduplicated(at("new before the commit", 2100.0, Some("rb")));
+        // When b.test commits, stamped 2300
+        state.on_navigation_committed("https://b.test/", Some("n2"), Some(2300.0));
+        // And messages arrive late: the new page's, stamped before the
+        // commit, the old document's, and one of no known document
+        state.push_deduplicated(at("new late", 2200.0, Some("rb")));
+        state.push_deduplicated(at("old late", 2250.0, Some("ra")));
+        state.push_deduplicated(at("unknown before the start", 1900.0, None));
+        state.push_deduplicated(at("unknown after the start", 2400.0, None));
+        // Then only the new page's and the later unknown one are kept
+        let texts: Vec<&str> = state.messages.iter().map(|m| m.text.as_str()).collect();
+        assert_eq!(
+            texts,
+            [
+                "new before the commit",
+                "new late",
+                "unknown after the start"
+            ]
+        );
+        assert_eq!(
+            state.take_cleared_note().unwrap(),
+            "2 console messages from a.test were cleared when the tab moved to b.test"
+        );
+        // And a commit of another navigation than the one started counts
+        // from its own time
+        state.on_navigation_started("n3", 3000.0);
+        state.on_navigation_committed("https://c.test/", Some("n4"), Some(3500.0));
+        assert!(state.messages.is_empty());
     }
 
     /// CON-03 / CON-07: same-document navigations keep the buffer; sibling

@@ -8,6 +8,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 `browser-control-mcp` is the successor of `chrome-debug-mcp` 1.5.6 and starts
 from a copy of its code: entries describe the differences from that release.
 
+## [Unreleased]
+
+### Fixed
+
+- `get_console_logs` on Firefox keeps the messages a page logs while it
+  loads after `navigate` moved the tab to another site (#206). Firefox
+  stamps the commit of a navigation after the new page's first scripts
+  ran, so their messages looked older than the commit and were cleared
+  with the old site's. The clear now counts from when the navigation
+  started, and the old page's messages that arrive late, or that it
+  logged after the start (a timer, a `pagehide` handler), are told apart
+  by the document that logged them.
+
 ## [1.0.0-rc.2] - 2026-11-24
 
 Second release candidate: bug fixes only. Mocked routes on Chrome reach

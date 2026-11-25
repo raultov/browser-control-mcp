@@ -1,0 +1,11 @@
+{
+ "number": 206,
+ "title": "get_console_logs on Firefox: after navigate to another site, the new page's own console messages are cleared too",
+ "family": "other",
+ "command": [
+  "repro_ff_site_change_console.py",
+  "firefox"
+ ],
+ "bug_regex": "BUG: firefox: the new page's console.log\\('on-c'\\) is missing",
+ "exit_on_bug": true
+}

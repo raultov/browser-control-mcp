@@ -370,13 +370,22 @@ async fn on_navigation(method: &str, params: &Value, state: &PumpState) {
     };
     let (network, log) = top;
     match method {
-        "browsingContext.navigationStarted" => network.lock().await.split_after_navigation(None),
+        "browsingContext.navigationStarted" => {
+            network.lock().await.split_after_navigation(None);
+            let at = params.get("timestamp").and_then(Value::as_f64);
+            if let (Some(navigation), Some(at)) = (str_field(params, "navigation"), at) {
+                log.lock().await.on_navigation_started(navigation, at);
+            }
+        }
         // The final URL (after redirects) of a new document; fragment and
         // history navigations have their own events.
         "browsingContext.navigationCommitted" => {
             if let Some(url) = str_field(params, "url") {
                 let at = params.get("timestamp").and_then(Value::as_f64);
-                log.lock().await.on_document_committed(url, at);
+                let navigation = str_field(params, "navigation");
+                log.lock()
+                    .await
+                    .on_navigation_committed(url, navigation, at);
             }
         }
         _ => {}
@@ -419,6 +428,10 @@ pub(crate) fn console_message(params: &Value) -> ConsoleMessage {
             .and_then(|f| f.get("lineNumber"))
             .and_then(Value::as_i64),
         channel: Default::default(),
+        document: params
+            .pointer("/source/realm")
+            .and_then(Value::as_str)
+            .map(str::to_string),
     }
 }
 
@@ -1352,6 +1365,59 @@ mod tests {
         .await;
         assert!(log.lock().await.messages.is_empty());
         assert_eq!(read(&state.tabs).tabs["tab-1"].url, "https://example.com/");
+    }
+
+    /// #206 (Firefox): Firefox stamps a commit after the new page's first
+    /// scripts ran; their messages, stamped after the navigation started,
+    /// are kept when another site commits.
+    #[tokio::test]
+    async fn the_new_site_first_messages_stay() {
+        // Given tab-1 on github.com with one console message
+        let mock = MockBidi::start(MockBidiBehavior::Ready).await.unwrap();
+        let (client, state) = one_tab(&mock).await;
+        let commit = |url: &str, navigation: &str, at: u64| json!({"context": "ctx-0", "navigation": navigation, "timestamp": at, "url": url});
+        let probe = |realm: &str, at: u64| {
+            let mut probe = fixture(
+                include_str!("../../../tests/fixtures/bidi/event-log-console-probe.json"),
+                "ctx-0",
+            );
+            probe["source"]["realm"] = json!(realm);
+            probe["timestamp"] = json!(at);
+            event("log.entryAdded", probe)
+        };
+        let committed = commit("https://github.com/", "n1", 1000);
+        route(
+            &event("browsingContext.navigationCommitted", committed),
+            &client,
+            &state,
+        )
+        .await;
+        route(&probe("old", 1500), &client, &state).await;
+        // When a navigation to example.com starts at 2000, commits stamped
+        // 2300, and the new page's message stamped 2200 arrives after it
+        let started = commit("https://example.com/", "n2", 2000);
+        route(
+            &event("browsingContext.navigationStarted", started),
+            &client,
+            &state,
+        )
+        .await;
+        let committed = commit("https://example.com/", "n2", 2300);
+        route(
+            &event("browsingContext.navigationCommitted", committed),
+            &client,
+            &state,
+        )
+        .await;
+        route(&probe("new", 2200), &client, &state).await;
+        // Then only the new page's message is kept, its realm noted
+        let log = read(&state.tabs).tabs["tab-1"].log.clone();
+        let messages = log.lock().await.messages.clone();
+        let kept: Vec<(f64, Option<&str>)> = messages
+            .iter()
+            .map(|m| (m.timestamp, m.document.as_deref()))
+            .collect();
+        assert_eq!(kept, [(2200.0, Some("new"))]);
     }
 
     /// BID-20: BiDi network events become the neutral request record.
