@@ -1,0 +1,11 @@
+{
+ "number": 209,
+ "title": "wait_for on Chrome: closing a popup does not end a wait on it; the wait runs to its timeout",
+ "family": "other",
+ "command": [
+  "repro_wait_for_popup_close.py",
+  "chrome"
+ ],
+ "bug_regex": "BUG: wait_for did not end when its tab closed",
+ "exit_on_bug": true
+}

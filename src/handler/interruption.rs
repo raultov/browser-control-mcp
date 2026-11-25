@@ -19,9 +19,11 @@ pub(crate) enum Interruption {
     Paused(Option<PauseLocation>),
     /// Its renderer process died (Chrome's `Inspector.targetCrashed`).
     Crashed,
-    /// Its tab closed (Chrome's `Inspector.detached`; Firefox's "no such
-    /// frame" during `wait_for`): a page that closed itself, for example
-    /// with `window.close()`, or a tab `close_tab` closed.
+    /// Its tab closed (Chrome's `Inspector.detached`, or for a popup the
+    /// browser connection's `Target.detachedFromTarget` of its session;
+    /// Firefox's "no such frame" during `wait_for`): a page that closed
+    /// itself, for example with `window.close()`, or a tab `close_tab`
+    /// closed.
     Closed,
 }
 

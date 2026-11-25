@@ -198,7 +198,8 @@ impl CdpTarget {
         let events = self
             .on_domain("Page")
             .merge(debugger)
-            .merge(self.on_domain("Inspector"));
+            .merge(self.on_domain("Inspector"))
+            .merge(self.detached());
         // The outcome is not held across the naming's await: a tool's error
         // (a possible `T`) is not `Send`.
         let location = match unless_interrupted(work, events, call).await {
@@ -214,6 +215,26 @@ impl CdpTarget {
             Some(state) => with_script_url(location, &*state.lock().await),
             None => location,
         }
+    }
+
+    /// The browser connection's `Target.detachedFromTarget` of the tab's own
+    /// session: a page another page opened (a popup) gets no
+    /// `Inspector.detached` when it closes, and this is then the only word
+    /// that it did (#209). None for the browser connection.
+    fn detached(&self) -> EventStream {
+        let Connection::Tab(tab) = &self.connection else {
+            return Box::pin(tokio_stream::empty());
+        };
+        let session = tab.session_id().to_string();
+        let ours = move |event: &CdpResult<WsResponse>| {
+            event.as_ref().is_ok_and(|event| {
+                let params = event.params.as_ref();
+                event.session_id.is_none()
+                    && event.method.as_deref() == Some(SESSION_DETACHED)
+                    && params.and_then(|p| p["sessionId"].as_str()) == Some(session.as_str())
+            })
+        };
+        Box::pin(tab.client().on_domain("Target").filter(ours))
     }
 
     pub(crate) fn on_domain(&self, domain: &'static str) -> EventFilter {
@@ -251,6 +272,12 @@ enum Blocker {
     Gone(Interruption),
 }
 
+/// A stream of CDP events, of whichever kind.
+type EventStream = std::pin::Pin<Box<dyn Stream<Item = CdpResult<WsResponse>> + Send>>;
+
+/// What the browser connection says when a session ends with its target.
+const SESSION_DETACHED: &str = "Target.detachedFromTarget";
+
 /// The `Inspector.detached` reason of a page whose renderer went away: Chrome
 /// 156 sends it for a page closing itself, and for a renderer that died.
 pub(crate) const RENDERER_GONE: &str = "Render process gone.";
@@ -282,6 +309,8 @@ fn blocker(event: &CdpResult<WsResponse>, pauses: bool) -> Option<Blocker> {
         "Inspector.detached" if detached_for_good(params) => {
             Some(Blocker::Gone(Interruption::Closed))
         }
+        // Only the tab's own session's (see `CdpTarget::detached`).
+        SESSION_DETACHED if event.session_id.is_none() => Some(Blocker::Gone(Interruption::Closed)),
         _ => None,
     }
 }
@@ -400,6 +429,10 @@ mod tests {
                 ),
                 Interruption::Closed,
             ),
+            (
+                make_event(SESSION_DETACHED, json!({"sessionId": "S", "targetId": "T"})),
+                Interruption::Closed,
+            ),
         ];
         for (event, expected) in cases {
             let blocked = std::future::pending::<CdpResult<u32>>();
@@ -425,6 +458,40 @@ mod tests {
             crashed.contains("crashed") && crashed.contains("reload"),
             "{crashed}"
         );
+    }
+
+    /// #209 (Chrome): a call on a popup ends at once when the popup closes,
+    /// Chrome saying so only on the browser connection (its session ends);
+    /// another session ending (a frame's, another tab's) does not end it.
+    #[tokio::test]
+    async fn a_closing_popup_ends_a_call_on_it() {
+        use crate::handler::cdp_domains::tests::spawn_recording_mock;
+        // Given a call on a tab that will not answer
+        let mock = spawn_recording_mock().await;
+        let address = format!("127.0.0.1:{}", mock.http_port);
+        let browser =
+            cdp_browser_lite::BrowserClient::connect(&address, std::time::Duration::from_secs(2))
+                .await
+                .unwrap();
+        let tab = browser.attach("T-popup").await.unwrap();
+        let session = tab.session_id().to_string();
+        let target = CdpTarget::tab(tab);
+        let blocked = std::future::pending::<()>();
+        let run = target.race_interruptions("wait_for", blocked);
+        // When another session ends, then the tab's own
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            let other = json!({"sessionId": "OTHER", "targetId": "T-frame"});
+            mock.emit(SESSION_DETACHED, other, None);
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            let ours = json!({"sessionId": session, "targetId": "T-popup"});
+            mock.emit(SESSION_DETACHED, ours, None);
+        });
+        let started = std::time::Instant::now();
+        let outcome = tokio::time::timeout(std::time::Duration::from_secs(2), run).await;
+        // Then the call ends then, saying the tab closed
+        assert_eq!(outcome.expect("ended at once"), Err(Interruption::Closed));
+        assert!(started.elapsed() >= std::time::Duration::from_millis(150));
     }
 
     /// ISSUE-1: a pause the debugger listener resumes at once (a page's own

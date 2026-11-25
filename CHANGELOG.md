@@ -12,6 +12,13 @@ from a copy of its code: entries describe the differences from that release.
 
 ### Fixed
 
+- `wait_for` on Chrome ends at once with "The tab closed while running
+  wait_for" when the tab it waits on is a popup that closes (by
+  `close_tab`, its opener or itself), as for any other tab and on
+  Firefox (#209); it ran to its timeout. Chrome tells a popup's session
+  nothing when it closes; the browser connection's word that the session
+  ended now interrupts any call on the tab, as a closing tab already did.
+
 - `save_pdf` with `page_ranges` past the document's last page fails the
   same way on both browsers, without writing a file (#208). Firefox
   printed them as one blank page and answered success; Chrome answered
