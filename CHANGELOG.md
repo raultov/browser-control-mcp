@@ -43,6 +43,13 @@ from a copy of its code: entries describe the differences from that release.
     printed as the console prints any value: `Uncaught str-boom`,
     `Uncaught 42`, `Uncaught {a: 1}`, `Uncaught (in promise) reason`. It
     was a bare `Uncaught`, also in the note of the input actions (#219).
+- Chrome: a service worker stopped and started again runs (#214). Chrome
+  keeps its target and the sessions attached to it across a restart (no
+  new attach, only `Inspector.targetReloadedAfterCrash`) and has it wait
+  for the debugger again, as the tab's auto-attach asks of every target;
+  it was never let run, so the page's requests it should answer stayed
+  pending and its later messages were not listed. It is now let run on
+  each restart.
 
 ### Development
 

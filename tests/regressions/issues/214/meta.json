@@ -1,0 +1,10 @@
+{
+ "number": 214,
+ "title": "Chrome: a service worker restarted while a tab is watched never runs; the tab's requests stay pending",
+ "family": "other",
+ "command": [
+  "repro_sw_restart_stalls.py"
+ ],
+ "bug_regex": "before the worker restart: from-sw; after: TIMEOUT",
+ "exit_on_bug": true
+}

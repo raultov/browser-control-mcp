@@ -162,7 +162,8 @@ mod e2e {
         (
             "/sw211.js",
             "self.addEventListener('install', e => { console.error('sw211-install-error'); \
-             e.waitUntil(fetch('/api?from=sw211')); self.skipWaiting(); });",
+             e.waitUntil(fetch('/api?from=sw211')); self.skipWaiting(); }); \
+             self.addEventListener('message', e => { console.log('sw214-woke'); e.source.postMessage('pong'); });",
         ),
     ];
 
@@ -2638,7 +2639,11 @@ mod e2e {
     /// cause steps.
     fn worker_and_cause_steps(instance: &str, chrome: bool) -> Vec<Step> {
         let service = if chrome {
-            service_worker_steps(instance)
+            let mut steps = service_worker_steps(instance);
+            let unregister = steps.pop();
+            steps.extend(service_worker_restart_steps(instance));
+            steps.extend(unregister);
+            steps
         } else {
             Vec::new()
         };
@@ -2689,6 +2694,43 @@ mod e2e {
                 "evaluate_js",
                 json!({"instance_id": i, "expression": unregister}),
                 "unregistered",
+            ),
+        ]
+    }
+
+    /// #214 (Chrome): a service worker stopped and started again (Chrome
+    /// keeps its sessions and has it wait for the debugger) runs: it
+    /// answers the page and its new messages are listed.
+    fn service_worker_restart_steps(instance: &str) -> Vec<Step> {
+        let i = json!(instance);
+        let raw = |method: &str| json!({"instance_id": i, "method": method, "params": "{}"});
+        let ping = "await new Promise(done => { navigator.serviceWorker.onmessage = e => done('sw214 ' + e.data); \
+            navigator.serviceWorker.getRegistration().then(r => r.active.postMessage('ping')); \
+            setTimeout(() => done('sw214 no answer'), 5000); })";
+        vec![
+            (
+                "#214 watch the service workers",
+                "send_cdp_command",
+                raw("ServiceWorker.enable"),
+                "",
+            ),
+            (
+                "#214 stop them",
+                "send_cdp_command",
+                raw("ServiceWorker.stopAllWorkers"),
+                "",
+            ),
+            (
+                "#214 the worker starts again and answers",
+                "evaluate_js",
+                json!({"instance_id": i, "expression": ping}),
+                "sw214 pong",
+            ),
+            (
+                "#214 its message after the restart is listed",
+                "get_console_logs",
+                json!({"instance_id": i}),
+                "sw214-woke @ ",
             ),
         ]
     }

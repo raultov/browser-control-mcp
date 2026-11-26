@@ -53,8 +53,8 @@ enum Watch {
     Worker,
     /// The service worker of the tab's scope: its console and its own
     /// requests (#211). It serves every tab of its scope, each of which
-    /// lists them; Chrome stops it when idle and attaches it again when it
-    /// restarts, paused, so its first messages are kept.
+    /// lists them; Chrome stops it when idle and starts it again in the same
+    /// sessions, waiting to be let run (see [`release_on_restart`]).
     ServiceWorker,
     /// Not watched (another kind, or past [`MAX_WATCHED`]): only released.
     Released,
@@ -376,10 +376,33 @@ async fn watch_service_worker(
     let network = crate::handler::cdp_domains::network::start_service_worker_network_listener;
     let worker_session = worker.session_id().to_string();
     listeners.push(network(&target, sinks.network.clone(), worker_session));
+    listeners.push(release_on_restart(&target, &worker));
     let _ = worker.send_raw_command_no_reply("Network.enable", NoParams);
     release(session, auto).await;
     let _ = worker.send_raw_command("Runtime.enable", NoParams).await;
     listeners
+}
+
+/// Lets the service worker of the session `worker` run each time Chrome
+/// starts it again (#214). Chrome stops an idle service worker and starts
+/// it for the next event, keeping its target and the sessions attached to
+/// it: no `Target.attachedToTarget` comes, only
+/// `Inspector.targetReloadedAfterCrash` in each session, and the worker
+/// waits for the debugger again, as the tab's auto-attach asks of every
+/// target. Left waiting, it answered none of the page's requests. Its
+/// domains stay enabled across the restart.
+fn release_on_restart(target: &CdpTarget, worker: &Tab) -> tokio::task::JoinHandle<()> {
+    let worker = worker.clone();
+    use crate::handler::cdp_domains::event_pump::spawn_domain_listener;
+    spawn_domain_listener(target, "Inspector", move |event| {
+        let worker = worker.clone();
+        async move {
+            if event.method.as_deref() == Some("Inspector.targetReloadedAfterCrash") {
+                let run = "Runtime.runIfWaitingForDebugger";
+                let _ = worker.send_raw_command(run, NoParams).await;
+            }
+        }
+    })
 }
 
 /// Lets the frame of the auto-attached session `auto` run.
@@ -644,6 +667,36 @@ mod tests {
             ]
         );
         assert_eq!(watched.sinks.watched.load(Ordering::Relaxed), 1);
+    }
+
+    /// #214: a service worker Chrome starts again (its sessions kept, no
+    /// new attach) waits for the debugger again: it is let run in its own
+    /// session, each time.
+    #[tokio::test]
+    async fn a_restarted_service_worker_is_released() {
+        // Given a tab watching its service worker
+        let watched = watched_tab().await;
+        let worker = attached_service_worker(&watched).await;
+        let mock = watched.mock;
+        let released = || {
+            session_of(mock, "Runtime.runIfWaitingForDebugger")
+                .into_iter()
+                .filter(|session| session.as_deref() == Some(worker.as_str()))
+                .count()
+        };
+        assert_eq!(released(), 0);
+        // When Chrome stops it and starts it again, twice
+        for restarts in 1..=2 {
+            mock.emit("Inspector.targetCrashed", json!({}), Some(&worker));
+            mock.emit(
+                "Inspector.targetReloadedAfterCrash",
+                json!({}),
+                Some(&worker),
+            );
+            eventually(|| released() == restarts).await;
+            // Then it is let run in its own session
+            assert_eq!(released(), restarts);
+        }
     }
 
     /// #217: a worker that started a worker of its own relays that
