@@ -2940,6 +2940,76 @@ mod tests {
         ts::stop(&handler).await;
     }
 
+    /// #216: a tab, and a newline in a one-line field, are inserted as text
+    /// from script, between the key actions of the characters around them,
+    /// as Chrome inserts them (`Input.insertText`): Firefox pressed a key
+    /// named `"\t"`, which fired a keydown Chrome does not.
+    #[tokio::test]
+    async fn control_characters_are_inserted_between_the_keys() {
+        // Given a one-line field
+        let mock = MockFirefox::start(false).await.unwrap();
+        let typed = json!({"status": "done", "matches": true, "empty": false});
+        fill_page(&mock, json!({"status": "ready"}), typed);
+        let handler = ts::handler(&mock);
+        // When a text with a tab and a newline between two letters is typed
+        let args = json!({"selector": "#a", "text": "a\t\nb"});
+        fill_input(call("fill_input", args), &handler)
+            .await
+            .unwrap();
+        // Then each letter is a key action, around one script that inserts both
+        assert_eq!(
+            script_and_input(&mock),
+            [
+                "script.evaluate",
+                "input.performActions",
+                "script.evaluate",
+                "input.performActions",
+                "input.releaseActions",
+                "script.evaluate"
+            ]
+        );
+        let actions = mock.bidi().commands_named("input.performActions");
+        let press =
+            |key: &str| json!([{"type": "keyDown", "value": key}, {"type": "keyUp", "value": key}]);
+        assert_eq!(actions[0].params["actions"][0]["actions"], press("a"));
+        assert_eq!(actions[1].params["actions"][0]["actions"], press("b"));
+        let insert = &mock.bidi().commands_named("script.evaluate")[1].params;
+        let expression = insert["expression"].as_str().unwrap();
+        assert!(
+            expression
+                .contains(r#"for (const c of "\t\n") doc.execCommand('insertText', false, c);"#),
+            "{expression}"
+        );
+        // And in the context the keys are typed into
+        assert_eq!(insert["target"]["context"], actions[0].params["context"]);
+        ts::stop(&handler).await;
+    }
+
+    /// #216: in a textarea a newline stays the Enter key, in the keys'
+    /// action, and a text of control characters alone sends no key.
+    #[tokio::test]
+    async fn only_keys_go_through_key_actions() {
+        // Given a textarea
+        let mock = MockFirefox::start(false).await.unwrap();
+        let typed = json!({"status": "done", "matches": true, "empty": false});
+        fill_page(&mock, json!({"status": "ready", "multiline": true}), typed);
+        let handler = ts::handler(&mock);
+        // When a line break, then a tab alone, are typed
+        for text in ["a\n", "\t"] {
+            let args = json!({"selector": "#a", "text": text});
+            fill_input(call("fill_input", args), &handler)
+                .await
+                .unwrap();
+        }
+        // Then Enter is a key of the one action, and the tab pressed none
+        let actions = mock.bidi().commands_named("input.performActions");
+        assert_eq!(actions.len(), 1);
+        let keys = &actions[0].params["actions"][0]["actions"];
+        assert_eq!(keys[2], json!({"type": "keyDown", "value": "\u{E007}"}));
+        assert_eq!(mock.bidi().commands_named("input.releaseActions").len(), 1);
+        ts::stop(&handler).await;
+    }
+
     /// AUD-IN-08: on Firefox too, a non-editable element fails and no key is typed.
     #[tokio::test]
     async fn fill_non_editable_sends_no_keys() {

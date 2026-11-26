@@ -5,6 +5,7 @@ use super::remote_value;
 use crate::backend::error::BackendError;
 use crate::handler::cdp_domains::input::click_element::ClickOptions;
 use crate::handler::cdp_domains::input::drag::DRAG_STEP_PAUSE;
+use crate::handler::cdp_domains::input::fill_input::inserted_as_text;
 use crate::handler::cdp_domains::input::keys;
 use crate::handler::cdp_domains::page::navigate::HistoryStep;
 use crate::handler::cdp_domains::page::wait_for::CheckError;
@@ -734,12 +735,12 @@ async fn perform_then(
     }
 }
 
-/// The WebDriver key value typing `c`: a newline in a textarea or
-/// contenteditable (`multiline`) is the Enter key (ISSUE-81: Firefox sent a
-/// key named `"\n"`).
-pub(crate) fn key_value(c: char, multiline: bool) -> String {
-    match (c, multiline) {
-        ('\n', true) => "\u{E007}".to_string(),
+/// The WebDriver key value typing `c`: a newline, typed as a key only in
+/// a textarea or contenteditable, is the Enter key (ISSUE-81: Firefox sent
+/// a key named `"\n"`).
+pub(crate) fn key_value(c: char) -> String {
+    match c {
+        '\n' => "\u{E007}".to_string(),
         _ => c.to_string(),
     }
 }
@@ -749,35 +750,53 @@ pub(crate) fn key_value(c: char, multiline: bool) -> String {
 /// (20 000 characters at once timed out half typed).
 pub(crate) const KEYS_PER_ACTION: usize = 500;
 
-/// Types `text` key by key into the focused element (spike H8), in
-/// batches of [`KEYS_PER_ACTION`] characters; see [`key_value`].
+/// Types `text` into the focused element (spike H8): key by key, in
+/// batches of [`KEYS_PER_ACTION`] characters (see [`key_value`]), except
+/// the characters every browser inserts as text ([`inserted_as_text`],
+/// which states the rule: a tab, a newline in a one-line field). BiDi has
+/// no command that inserts text, and a key action pressed a key named
+/// `"\t"` (#216): each run of them is inserted from script
+/// ([`crate::util::js::insert_text`]), between the keys around it.
 pub(crate) async fn type_text(tab: &Tab, text: &str, multiline: bool) -> Result<(), BackendError> {
-    if text.is_empty() {
-        return Ok(());
-    }
     let chars: Vec<char> = text.chars().collect();
-    for batch in chars.chunks(KEYS_PER_ACTION) {
-        let keys: Vec<Value> = batch
-            .iter()
-            .flat_map(|c| {
-                let value = key_value(*c, multiline);
-                [
-                    json!({"type": "keyDown", "value": value}),
-                    json!({"type": "keyUp", "value": value}),
-                ]
-            })
-            .collect();
-        let actions = json!([{"type": "key", "id": "keyboard", "actions": keys}]);
-        let params = json!({"context": tab.context_id(), "actions": actions});
-        command(tab, "input.performActions", params).await?;
+    let inserted = |c: &char| inserted_as_text(*c, multiline);
+    let mut pressed = false;
+    for run in chars.chunk_by(|a, b| inserted(a) == inserted(b)) {
+        if run.first().is_some_and(inserted) {
+            let run: String = run.iter().collect();
+            run_snippet(tab, &crate::util::js::insert_text(&run)).await?;
+            continue;
+        }
+        pressed = true;
+        for batch in run.chunks(KEYS_PER_ACTION) {
+            press_keys(tab, batch).await?;
+        }
     }
-    command(
-        tab,
-        "input.releaseActions",
-        json!({"context": tab.context_id()}),
-    )
-    .await?;
+    if pressed {
+        let params = json!({"context": tab.context_id()});
+        command(tab, "input.releaseActions", params).await?;
+    }
     Ok(())
+}
+
+/// One `input.performActions` pressing and releasing the key of each of
+/// `chars` in turn.
+async fn press_keys(tab: &Tab, chars: &[char]) -> Result<(), BackendError> {
+    let keys: Vec<Value> = chars
+        .iter()
+        .flat_map(|c| {
+            let value = key_value(*c);
+            [
+                json!({"type": "keyDown", "value": value}),
+                json!({"type": "keyUp", "value": value}),
+            ]
+        })
+        .collect();
+    let actions = json!([{"type": "key", "id": "keyboard", "actions": keys}]);
+    let params = json!({"context": tab.context_id(), "actions": actions});
+    command(tab, "input.performActions", params)
+        .await
+        .map(|_| ())
 }
 
 /// What `capture_screenshot` asks for.
@@ -850,13 +869,12 @@ mod tests {
         assert!(!text.contains("protocol error"), "{text}");
     }
 
-    /// ISSUE-81 (Firefox): a newline in a textarea or contenteditable is the
-    /// Enter key; elsewhere it is typed as it was.
+    /// ISSUE-81 (Firefox): a newline typed as a key (in a textarea or
+    /// contenteditable) is the Enter key.
     #[test]
     fn newlines_are_enter_in_multiline_fields() {
-        assert_eq!(key_value('\n', true), "\u{E007}");
-        assert_eq!(key_value('\n', false), "\n");
-        assert_eq!(key_value('a', true), "a");
+        assert_eq!(key_value('\n'), "\u{E007}");
+        assert_eq!(key_value('a'), "a");
     }
 
     /// BID-15 / EVL-04: A script exception is a tool error with its text and

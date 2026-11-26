@@ -183,14 +183,27 @@ pub(crate) fn fill_reply(value: &Value, selector: &str) -> Result<CallToolResult
     ]))
 }
 
+/// Whether `c` is inserted as text instead of typed as a key, on every
+/// browser: a control character (a tab, a newline in a one-line field),
+/// which no key of a keyboard types. As a key, Chrome would press Tab or
+/// Enter, moving the focus or submitting the form, and Firefox a key named
+/// after the character (#216). The page sees `input` (after `beforeinput`
+/// on Chrome only) and no keydown, keypress or keyup. A newline in a
+/// textarea or contenteditable (`multiline`) is not one of them: it is the
+/// Enter key, as a user types it (ISSUE-81). Chrome inserts with
+/// `Input.insertText` ([`typing`]), Firefox from script
+/// ([`crate::backend::bidi::page::type_text`]).
+pub(crate) fn inserted_as_text(c: char, multiline: bool) -> bool {
+    c.is_control() && !(c == '\n' && multiline)
+}
+
 /// The CDP commands that type `c`: the key press that types it, so the
 /// page sees keydown, keypress, beforeinput, input and keyup and its
 /// handlers can cancel the key, as on Firefox (BiDi key actions;
 /// `Input.insertText` skipped every key event). In a textarea or
 /// contenteditable (`multiline`) a newline is the Enter key, as a user
-/// types it (ISSUE-81). Another control character (a tab, a newline in a
-/// one-line field) is inserted as text: as a key, Chrome would press Tab or
-/// Enter, moving the focus or submitting the form.
+/// types it (ISSUE-81). A character [`inserted_as_text`] is inserted with
+/// `Input.insertText`.
 fn typing(c: char, multiline: bool) -> Vec<(&'static str, Value)> {
     let key = c.to_string();
     if c == '\n' && multiline {
@@ -205,7 +218,7 @@ fn typing(c: char, multiline: bool) -> Vec<(&'static str, Value)> {
             ("Input.dispatchKeyEvent", up),
         ];
     }
-    if c.is_control() {
+    if inserted_as_text(c, multiline) {
         return vec![("Input.insertText", json!({"text": key}))];
     }
     vec![
@@ -312,6 +325,20 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    /// #216: the characters inserted as text are the same on every browser:
+    /// control characters, but a newline in a textarea or contenteditable.
+    #[test]
+    fn control_characters_are_inserted_as_text() {
+        assert!(inserted_as_text('\t', true) && inserted_as_text('\t', false));
+        assert!(inserted_as_text('\n', false) && !inserted_as_text('\n', true));
+        assert!(inserted_as_text('\r', true) && inserted_as_text('\u{1}', false));
+        assert!(!inserted_as_text('a', false) && !inserted_as_text(' ', true));
+        assert_eq!(
+            typing('\t', true),
+            vec![("Input.insertText", json!({"text": "\t"}))]
+        );
     }
 
     #[tokio::test]

@@ -2108,7 +2108,36 @@ mod e2e {
         .into_iter()
         .chain(month_week_steps(&i))
         .chain(box_steps(&i))
+        .chain(typed_tab_steps(&i))
         .collect()
+    }
+
+    /// #216: a tab in the text of fill_input is inserted as text on both
+    /// browsers: the field holds it, and the page sees the keydown of the
+    /// keys around it only (Firefox pressed a key named `"\t"`).
+    fn typed_tab_steps(i: &Value) -> Vec<Step> {
+        let add = "(() => { const e = document.createElement('textarea'); e.id = 'ta216'; window.keys216 = []; e.addEventListener('keydown', k => window.keys216.push(k.key)); document.body.append(e); return 'added'; })()";
+        let read = "document.getElementById('ta216').value.replace('\\t', '<tab>') + ':' + window.keys216.join('+')";
+        vec![
+            (
+                "#216 a textarea that records its keys",
+                "evaluate_js",
+                json!({"instance_id": i, "expression": add}),
+                "added",
+            ),
+            (
+                "#216 fill a text with a tab",
+                "fill_input",
+                json!({"instance_id": i, "selector": "#ta216", "text": "a\tb"}),
+                "Successfully filled input '#ta216' with text.",
+            ),
+            (
+                "#216 the tab is text, not a key",
+                "evaluate_js",
+                json!({"instance_id": i, "expression": read}),
+                "a<tab>b:a+b",
+            ),
+        ]
     }
 
     /// #215: fill_form reports the state a box has after the click: a

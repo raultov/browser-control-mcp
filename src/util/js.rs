@@ -649,6 +649,24 @@ pub fn fill_result(selector: &str, text: &str, mode: FillMode) -> String {
     fill_snippet(selector, text, mode, &body)
 }
 
+/// Inserts each character of `text` in the focused element, as text
+/// rather than as a key: how Firefox inserts the characters `fill_input`
+/// does not type (a tab, a newline in a one-line field), for which Chrome
+/// has `Input.insertText` and BiDi no command. The browser's own editing
+/// command, so the field takes the character as typed text and the page
+/// gets one `input` per character (no `beforeinput`: Firefox fires none
+/// for a command), without a keydown, keypress or keyup. The command
+/// belongs to the document that holds the focused element: the focus is
+/// followed into same-origin iframes.
+pub fn insert_text(text: &str) -> String {
+    format!(
+        "(() => {{ let doc = document; \
+         for (let frame = doc.activeElement; frame && frame.contentDocument; frame = doc.activeElement) doc = frame.contentDocument; \
+         for (const c of {}) doc.execCommand('insertText', false, c); }})()",
+        string_literal(text)
+    )
+}
+
 /// Most characters of HTML `inspect_dom` returns without a query: the
 /// whole document of a large page would flood the agent, and a reply over
 /// 256 MB closes the browser connection.

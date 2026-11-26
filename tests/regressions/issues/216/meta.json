@@ -1,0 +1,10 @@
+{
+ "number": 216,
+ "title": "fill_input: a tab in the text fires keydown on Firefox but no key event on Chrome",
+ "family": "other",
+ "command": [
+  "repro_fill_input_tab_keydown.py"
+ ],
+ "bug_regex": "keydown keys identical: False",
+ "exit_on_bug": true
+}

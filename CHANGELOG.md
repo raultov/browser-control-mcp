@@ -59,6 +59,14 @@ from a copy of its code: entries describe the differences from that release.
   click, as a click does not uncheck a radio. A click that opens a dialog
   or pauses the debugger reports `clicked, state not read`.
 
+- `fill_input` on Firefox inserts a tab, and a newline in a one-line
+  field, as text, as Chrome does (#216); it pressed a key named after the
+  character, so the page got a keydown, keypress and keyup Chrome does
+  not fire. The keys around it are typed as before. Firefox fires `input`
+  without `beforeinput` for the inserted character, and in a
+  contenteditable that collapses white space its editor writes a tab as
+  spaces, as before.
+
 ### Development
 
 - `tests/differential/target_matrix.py` has one more owner, a worker
