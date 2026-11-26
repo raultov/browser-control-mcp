@@ -1,0 +1,10 @@
+{
+ "number": 215,
+ "title": "fill_form: reports 'unchecked' for a radio set to false while it stays checked",
+ "family": "other",
+ "command": [
+  "repro_fill_form_radio.py"
+ ],
+ "bug_regex": "outcome=unchecked r1\\.checked=True",
+ "exit_on_bug": true
+}

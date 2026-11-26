@@ -2107,7 +2107,44 @@ mod e2e {
         ]
         .into_iter()
         .chain(month_week_steps(&i))
+        .chain(box_steps(&i))
         .collect()
+    }
+
+    /// #215: fill_form reports the state a box has after the click: a
+    /// checked radio asked for `false` (not clicked) and a checkbox whose
+    /// click handler cancels the change fail, instead of being reported
+    /// in the wanted state.
+    fn box_steps(i: &Value) -> Vec<Step> {
+        let add = "document.body.insertAdjacentHTML('beforeend', '<input type=radio id=r215 checked><input type=checkbox id=c215 onclick=\"event.preventDefault()\">'); 'added'";
+        let read = "'states:' + document.getElementById('r215').checked + document.getElementById('c215').checked";
+        let fill = |selector: &str, value: &str| json!({"instance_id": i, "fields": [{"selector": selector, "value": value}]});
+        vec![
+            (
+                "#215 a checked radio and a box that cancels its click",
+                "evaluate_js",
+                json!({"instance_id": i, "expression": add}),
+                "added",
+            ),
+            (
+                "#215 a checked radio is not clicked to uncheck it",
+                "fill_form",
+                fill("#r215", "false"),
+                "!'#r215' is a checked radio",
+            ),
+            (
+                "#215 a box the page keeps unchecked fails",
+                "fill_form",
+                fill("#c215", "true"),
+                "!the page kept it unchecked",
+            ),
+            (
+                "#215 the states the page holds",
+                "evaluate_js",
+                json!({"instance_id": i, "expression": read}),
+                "states:truefalse",
+            ),
+        ]
     }
 
     /// #203: month and week inputs take a value in their format with one

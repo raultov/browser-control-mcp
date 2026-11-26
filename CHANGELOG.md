@@ -51,6 +51,14 @@ from a copy of its code: entries describe the differences from that release.
   pending and its later messages were not listed. It is now let run on
   each restart.
 
+- `fill_form` reports the state a checkbox or radio has after the click,
+  read again from the page, on both browsers (#215); it reported the
+  state it was asked for. A box the click leaves in the other state fails
+  the field, saying the state the page kept (a click handler that cancels
+  the change), and a checked radio asked for `false` fails without a
+  click, as a click does not uncheck a radio. A click that opens a dialog
+  or pauses the debugger reports `clicked, state not read`.
+
 ### Development
 
 - `tests/differential/target_matrix.py` has one more owner, a worker

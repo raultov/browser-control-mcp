@@ -346,15 +346,15 @@ pub fn html5_drag(path: &[(f64, f64)], pause_ms: u128) -> String {
 pub const LOADED: &str = "document.readyState === 'complete' || new Promise(resolve => addEventListener('load', () => resolve(true), { once: true }))";
 
 /// What `fill_form` does with the element `selector` names:
-/// `{status: 'missing'}`, `{status: 'box', checked}` for a checkbox or
-/// radio (it is clicked when its state differs), or `{status: 'field'}`
-/// (it is filled like `fill_input`).
+/// `{status: 'missing'}`, `{status: 'box', checked, radio}` for a checkbox
+/// or radio (it is clicked when its state differs, then read again), or
+/// `{status: 'field'}` (it is filled like `fill_input`).
 pub fn form_field(selector: &str) -> String {
     status_of(
         selector,
         "const W = el.ownerDocument.defaultView; \
          const box = el instanceof W.HTMLInputElement && (el.type === 'checkbox' || el.type === 'radio'); \
-         return box ? { status: 'box', checked: el.checked } : { status: 'field' };",
+         return box ? { status: 'box', checked: el.checked, radio: el.type === 'radio' } : { status: 'field' };",
     )
 }
 

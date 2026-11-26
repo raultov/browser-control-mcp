@@ -49,6 +49,8 @@ CHANGED_BY_DESIGN = {
     # mock_route upstream was removed in 1.0.0-rc.1. #194 and #195 also
     # happened with a plain mock: make e2e checks those (status 299, and
     # remove_route with 50 requests in flight).
+    215: "a checked radio asked for 'false' now fails the field without a click (a click does not uncheck a radio); "
+         "the script parses a success reply and exits with an error on the failure",
     194: "its script uses mock_route upstream, removed in 1.0.0-rc.1 (make e2e checks a plain mock with status 299)",
     195: "its script uses mock_route upstream, removed in 1.0.0-rc.1 (make e2e checks remove_route with 50 requests in flight)",
     196: "its script uses mock_route upstream, removed in 1.0.0-rc.1",

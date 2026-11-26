@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 
 #[macros::mcp_tool(
     name = "fill_form",
-    description = "Fills several fields in one call, in order: text fields and <select>s as fill_input does; a checkbox or radio takes 'true' or 'false' and is clicked only when its state differs. Returns each field's outcome (filled, selected, checked, unchecked, unchanged), never the values; stops at the first failing field, naming it and what was done."
+    description = "Fills several fields in one call, in order: text fields and <select>s as fill_input does; a checkbox or radio takes 'true' or 'false' and is clicked only when its state differs (the field fails when the click does not leave it in that state: a checked radio is unchecked by checking another one). Returns each field's outcome (filled, selected, checked, unchecked, unchanged), never the values; stops at the first failing field, naming it and what was done."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct FillFormTool {
@@ -113,15 +113,7 @@ async fn fill_one(ops: &impl FormOps, field: &FormField) -> Result<String, CallT
     let selector = &field.selector;
     let kind = ops.snippet(&crate::util::js::form_field(selector)).await?;
     match kind["status"].as_str() {
-        Some("box") => {
-            let wanted = checked(&field.value, selector)?;
-            if kind["checked"].as_bool() == Some(wanted) {
-                return Ok("unchanged".into());
-            }
-            let reply = ops.click(selector).await?;
-            let outcome = if wanted { "checked" } else { "unchecked" };
-            Ok(with_note(outcome, &reply))
-        }
+        Some("box") => set_box(ops, field, &kind).await,
         Some("field") => {
             let reply = text_of(&ops.fill(selector, &field.value).await?);
             let outcome = if reply.starts_with("Successfully selected") {
@@ -160,14 +152,56 @@ fn text_of(reply: &CallToolResult) -> String {
         .unwrap_or_default()
 }
 
-/// `outcome`, plus what the click's reply noted (a dialog it opened).
-fn with_note(outcome: &str, reply: &CallToolResult) -> String {
+/// What the click's reply noted (a dialog it opened), if anything.
+fn note_of(reply: &CallToolResult) -> Option<String> {
     let text = text_of(reply);
     let first = text.lines().next().unwrap_or_default();
     // The click reply is "... at coordinates (x, y). <note>".
-    match first.split_once("). ") {
-        Some((_, note)) => format!("{outcome}; {note}"),
-        None => outcome.to_string(),
+    first.split_once("). ").map(|(_, note)| note.to_string())
+}
+
+/// Brings a checkbox or radio (`found`: what `util::js::form_field` read)
+/// to the state `field` asks for, with one click when it differs. The
+/// outcome is the state the box has once clicked, read again, never the
+/// wanted one: a click leaves a radio checked, and a click handler may
+/// cancel the change (#215).
+async fn set_box(
+    ops: &impl FormOps,
+    field: &FormField,
+    found: &Value,
+) -> Result<String, CallToolError> {
+    let selector = &field.selector;
+    let wanted = checked(&field.value, selector)?;
+    if found["checked"].as_bool() == Some(wanted) {
+        return Ok("unchanged".into());
+    }
+    if found["radio"] == true && !wanted {
+        return Err(CallToolError::from_message(format!(
+            "'{selector}' is a checked radio, which a click does not uncheck (check another radio of its group instead); it was not clicked and is still checked."
+        )));
+    }
+    let reply = ops.click(selector).await?;
+    if let Some(note) = note_of(&reply) {
+        // What the click opened (a dialog, a pause) blocks the page.
+        return Ok(format!("clicked, state not read; {note}"));
+    }
+    let after = ops.snippet(&crate::util::js::form_field(selector)).await?;
+    clicked_outcome(&after, wanted, selector)
+}
+
+/// The outcome of a clicked box from its state `after` the click: an error
+/// unless it is the `wanted` one.
+fn clicked_outcome(after: &Value, wanted: bool, selector: &str) -> Result<String, CallToolError> {
+    let state = |checked| if checked { "checked" } else { "unchecked" };
+    match after["checked"].as_bool() {
+        Some(now) if now == wanted => Ok(state(now).into()),
+        Some(now) => Err(CallToolError::from_message(format!(
+            "'{selector}' was clicked, but the page kept it {} (its click handler may cancel the change).",
+            state(now)
+        ))),
+        None => Err(CallToolError::from_message(format!(
+            "'{selector}' disappeared after the click (the page replaced it), so its state could not be read."
+        ))),
     }
 }
 
@@ -197,12 +231,34 @@ mod tests {
     use std::cell::RefCell;
 
     /// A page whose fields are text boxes, except those named in `boxes`
-    /// (checkboxes with their state); it records the fills and clicks.
+    /// (checkboxes with their state, which a click changes); it records the
+    /// fills and clicks.
     #[derive(Default)]
     struct Page {
         boxes: Vec<(&'static str, bool)>,
+        /// The boxes that are radios: a click checks one, never unchecks it.
+        radios: Vec<&'static str>,
+        /// The boxes whose click handler cancels the change.
+        kept: Vec<&'static str>,
+        /// The boxes whose click opens a dialog.
+        alerts: Vec<&'static str>,
         missing: Vec<&'static str>,
         calls: RefCell<Vec<String>>,
+    }
+
+    impl Page {
+        /// The state of the box `selector`, which started as `checked`.
+        fn state(&self, selector: &str, checked: bool) -> Value {
+            let click = format!("click {selector}");
+            let clicked = self.calls.borrow().contains(&click) && !self.kept.contains(&selector);
+            let radio = self.radios.contains(&selector);
+            let now = if radio {
+                checked || clicked
+            } else {
+                checked != clicked
+            };
+            json!({"status": "box", "checked": now, "radio": radio})
+        }
     }
 
     impl FormOps for Page {
@@ -212,7 +268,7 @@ mod tests {
                 return Ok(json!({"status": "missing"}));
             }
             Ok(match self.boxes.iter().find(|(s, _)| named(s)) {
-                Some((_, checked)) => json!({"status": "box", "checked": checked}),
+                Some((selector, checked)) => self.state(selector, *checked),
                 None => json!({"status": "field"}),
             })
         }
@@ -226,9 +282,12 @@ mod tests {
 
         async fn click(&self, selector: &str) -> Result<CallToolResult, CallToolError> {
             self.calls.borrow_mut().push(format!("click {selector}"));
-            Ok(CallToolResult::text_content(vec![
-                "Successfully clicked".into(),
-            ]))
+            let done = "Successfully clicked on element at coordinates (1, 2)";
+            let reply = match self.alerts.contains(&selector) {
+                true => format!("{done}. The page opened a JavaScript alert dialog.\n{{}}"),
+                false => done.to_string(),
+            };
+            Ok(CallToolResult::text_content(vec![reply.into()]))
         }
     }
 
@@ -324,20 +383,120 @@ mod tests {
         assert!(form(&[("#a", "x")]).check_arguments().is_ok());
     }
 
-    /// ISSUE-5: a click's note (a dialog it opened) reaches the outcome.
+    /// #215: a checked radio asked for `false` fails without a click (a
+    /// click leaves a radio checked; it was reported "unchecked").
+    #[tokio::test]
+    async fn a_checked_radio_is_not_clicked_to_uncheck_it() {
+        // Given a checked radio
+        let page = Page {
+            boxes: vec![("#r1", true)],
+            radios: vec!["#r1"],
+            ..Page::default()
+        };
+        // When it is asked to be unchecked
+        let error = form(&[("#r1", "false")])
+            .fill_all(&page)
+            .await
+            .unwrap_err()
+            .to_string();
+        // Then the field fails saying why, and the radio was not clicked
+        assert!(
+            error.starts_with("Field 1 of 1 ('#r1') failed: '#r1' is a checked radio"),
+            "{error}"
+        );
+        assert!(
+            error.contains("check another radio of its group"),
+            "{error}"
+        );
+        assert!(error.contains("still checked"), "{error}");
+        assert!(page.calls.borrow().is_empty());
+    }
+
+    /// #215: the outcome of a clicked box is its state in the page, read
+    /// again after the click: a box whose click handler cancels the change
+    /// fails saying the state it kept (it was reported "checked").
+    #[tokio::test]
+    async fn a_box_is_read_again_after_the_click() {
+        // Given a box that takes the click, a radio, and a box that cancels it
+        let page = Page {
+            boxes: vec![("#news", true), ("#r2", false), ("#terms", false)],
+            radios: vec!["#r2"],
+            kept: vec!["#terms"],
+            ..Page::default()
+        };
+        let tool = form(&[("#news", "false"), ("#r2", "true"), ("#terms", "true")]);
+        // When they are filled
+        let error = tool.fill_all(&page).await.unwrap_err().to_string();
+        // Then the first two report the state the page holds, and the third
+        // fails with the state it kept
+        assert_eq!(
+            *page.calls.borrow(),
+            ["click #news", "click #r2", "click #terms"]
+        );
+        assert!(
+            error.starts_with("Field 3 of 3 ('#terms') failed: '#terms' was clicked, but the page kept it unchecked"),
+            "{error}"
+        );
+        assert!(
+            error.contains(r##"{"outcome":"unchecked","selector":"#news"}"##),
+            "{error}"
+        );
+        assert!(
+            error.contains(r##"{"outcome":"checked","selector":"#r2"}"##),
+            "{error}"
+        );
+    }
+
+    /// #215: a box whose click opened a dialog cannot be read while the
+    /// dialog blocks the page: the outcome says clicked, with the note, not
+    /// a state.
+    #[tokio::test]
+    async fn a_box_behind_a_dialog_is_not_given_a_state() {
+        // Given a box whose click handler opens an alert
+        let page = Page {
+            boxes: vec![("#terms", false)],
+            alerts: vec!["#terms"],
+            ..Page::default()
+        };
+        // When it is checked
+        let reply = form(&[("#terms", "true")]).fill_all(&page).await.unwrap();
+        // Then the outcome is the click and its note
+        let text = text_of(&reply);
+        assert!(
+            text.contains("clicked, state not read; The page opened a JavaScript alert dialog."),
+            "{text}"
+        );
+    }
+
+    /// #215: a box the click removed from the page fails, as its state
+    /// cannot be read; one the page kept checked says so.
+    #[test]
+    fn a_clicked_box_reports_the_state_it_has() {
+        let outcome =
+            |after: Value, wanted| clicked_outcome(&after, wanted, "#t").map_err(|e| e.to_string());
+        let checked = json!({"status": "box", "checked": true, "radio": false});
+        assert_eq!(outcome(checked.clone(), true).unwrap(), "checked");
+        let kept = outcome(checked, false).unwrap_err();
+        assert!(kept.contains("the page kept it checked"), "{kept}");
+        let gone = outcome(json!({"status": "missing"}), true).unwrap_err();
+        assert!(gone.contains("'#t' disappeared after the click"), "{gone}");
+    }
+
+    /// ISSUE-5: a click's note (a dialog it opened) reaches the outcome;
+    /// #215: without a state, which a blocked page does not let read.
     #[test]
     fn click_notes_reach_the_outcome() {
         let reply = CallToolResult::text_content(vec![
             "Successfully clicked on element '#t' at coordinates (1, 2). The page opened a JavaScript alert dialog (\"Hi\"), which blocks it: call handle_dialog with accept true or false to close it.\n{}".into(),
         ]);
-        let outcome = with_note("checked", &reply);
+        let note = note_of(&reply).unwrap();
         assert!(
-            outcome.starts_with("checked; The page opened a JavaScript alert dialog"),
-            "{outcome}"
+            note.starts_with("The page opened a JavaScript alert dialog"),
+            "{note}"
         );
         let plain = CallToolResult::text_content(vec![
             "Successfully clicked on element '#t' at coordinates (1, 2)".into(),
         ]);
-        assert_eq!(with_note("checked", &plain), "checked");
+        assert_eq!(note_of(&plain), None);
     }
 }
