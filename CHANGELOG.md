@@ -8,7 +8,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 `browser-control-mcp` is the successor of `chrome-debug-mcp` 1.5.6 and starts
 from a copy of its code: entries describe the differences from that release.
 
-## [Unreleased]
+## [1.0.0-rc.4] - 2026-11-26
+
+Fourth release candidate. `get_console_logs` lists each message once and
+oldest first by construction: Firefox pairs the two copies of a page
+error by the millisecond both carry, oldest first, so a burst of one
+error is no longer listed newest first or doubled (#218); on Chrome a
+worker no longer lists the errors of the workers it started (#217), and
+a thrown value that is not an error is printed instead of a bare
+`Uncaught` (#219). The README states what the console promises and what
+it does not. Chrome lets a service worker run again after it stopped it
+(#214); `fill_form` reports the state a checkbox or radio has after the
+click (#215); `fill_input` inserts a tab as text on Firefox too (#216).
+`bidi-browser-lite` 0.1.7 is adopted (#213, which stays open: Firefox
+does not report a service worker's messages without taking the dedicated
+workers' away). The target matrix of `make e2e` grows to 88 cells per
+browser.
 
 ### Fixed
 
