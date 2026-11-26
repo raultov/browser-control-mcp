@@ -67,6 +67,20 @@ from a copy of its code: entries describe the differences from that release.
   contenteditable that collapses white space its editor writes a tab as
   spaces, as before.
 
+### Changed
+
+- Dependencies: `bidi-browser-lite` 0.1.7, which brings `bidi-lite`
+  0.1.6 (first step of #213). On Firefox a breakpoint without a column
+  no longer fails as a whole when one script with its URL is gone (its
+  frame navigated), and a frame that ended is not followed again. Its
+  `Debugger` can follow the tab's service workers, which the server does
+  not use yet: measured by `bidi-lite` on Firefox 160, a service
+  worker's console calls reach the debugger port only with the
+  preference `dom.worker.console.dispatch_events_to_main_thread` set to
+  `false`, which takes the console calls of dedicated workers away from
+  both BiDi and the tab, and its uncaught errors and own requests reach
+  no protocol. The README's `get_console_logs` row says so.
+
 ### Development
 
 - `tests/differential/target_matrix.py` has one more owner, a worker

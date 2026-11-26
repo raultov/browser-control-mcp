@@ -142,9 +142,9 @@ checksum = "ac07cdecf99051d9a5238b80f35af32cdeba5b336e55d957b318b50137e18da5"
 
 [[package]]
 name = "bidi-browser-lite"
-version = "0.1.6"
+version = "0.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f679d3f42e20699a5912ff0450548907a89f99e051a5d5db00ee020be98041bd"
+checksum = "fd67ecaa2d8328613e5221ebfc16f0bb8e71d3d1314a00214194d1239d40b293"
 dependencies = [
  "bidi-lite",
  "futures-util",
@@ -161,9 +161,9 @@ dependencies = [
 
 [[package]]
 name = "bidi-lite"
-version = "0.1.5"
+version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d9a9aa92659eef324f1a66dcfadd5cadeebe40022eff842e87cde5c19bf547a7"
+checksum = "12e828a7ee5256e92bffbf5fe2aa12e89071329b6807fcf57a1f75cc380661ed"
 dependencies = [
  "futures-util",
  "oneshot 0.2.1",
