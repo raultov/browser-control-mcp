@@ -97,6 +97,16 @@ implements the semantic operations with its own protocol.
 - **Bounded state:** every observation buffer has a cap; every spawned task
   is owned by a `ListenerHandles` (abort on drop) and never holds a strong
   reference to its owner.
+- **One event, several feeds.** A browser reports one console message or
+  request over several feeds (a CDP session per frame and worker, a parent's
+  copy of its worker's messages; BiDi and the RDP watcher). A buffer lists it
+  once, from the target it happened in, in the order of the browser's
+  timestamps (`handler/cdp_domains/log/mod.rs` states the rules). A new feed,
+  or a new kind of target, says how its copies are told: by what the browser
+  states of them (an id, a missing value, a stamp both copies carry), never
+  by a message's text alone, a time window or a lookback. It adds its owner
+  or feature to `tests/differential/target_matrix.py` (or `ws_matrix.py`) in
+  the same commit: a bug of this family is a missing cell.
 
 ## Layout
 
