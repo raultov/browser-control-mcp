@@ -1,7 +1,7 @@
 {
  "number": 206,
  "title": "get_console_logs on Firefox: after navigate to another site, the new page's own console messages are cleared too",
- "family": "other",
+ "family": "console",
  "command": [
   "repro_ff_site_change_console.py",
   "firefox"

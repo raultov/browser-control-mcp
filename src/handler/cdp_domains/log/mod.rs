@@ -1,3 +1,23 @@
+//! A tab's console buffer: what the page, its frames and its workers
+//! logged, and the errors nothing caught. Browsers report one message over
+//! several feeds (a CDP session per target; on Firefox, BiDi and the
+//! debugger port's watcher), and the buffer holds three rules for them, so
+//! `get_console_logs` reads the same whatever the feeds do:
+//!
+//! 1. **Once.** A message is listed from the feed of the target that
+//!    logged it. What another feed says of it is a copy, told by what the
+//!    browser states (never by its text alone) and dropped or merged: the
+//!    tab's `Log` copy of a watched worker's message names the worker
+//!    ([`LogState::is_watched_worker_copy`]); a worker's relay of an error
+//!    one of its workers threw carries no thrown value ([`is_relayed`]);
+//!    Firefox's two copies of a page error carry the same millisecond and
+//!    first line, and are paired oldest first, each once
+//!    ([`LogState::push_deduplicated`]).
+//! 2. **In order.** The buffer is sorted by the browser's timestamp,
+//!    whatever order the feeds deliver in ([`LogState::place`]).
+//! 3. **As thrown.** An uncaught error's text is the thrown value printed
+//!    as the console prints any value ([`arg_text`]).
+
 pub mod get_console_logs;
 
 use crate::handler::MAX_CONSOLE_MESSAGES;
@@ -45,22 +65,34 @@ pub(crate) enum Channel {
     Primary,
     /// Firefox's RDP watcher resources.
     Watcher,
+    /// Both of Firefox's feeds: its two copies, merged. It pairs with no
+    /// further copy.
+    Both,
+}
+
+impl Channel {
+    /// The feed whose copy of a message of this one is still awaited;
+    /// none once both came.
+    fn other(self) -> Option<Self> {
+        match self {
+            Self::Primary => Some(Self::Watcher),
+            Self::Watcher => Some(Self::Primary),
+            Self::Both => None,
+        }
+    }
 }
 
 /// Whether two copies of one message from Firefox's two feeds can be
-/// stamped `a` and `b` (ms since the epoch): both stamp it with the time of
-/// the error it reports, BiDi to the millisecond and the watcher with its
-/// fraction (measured on Firefox 160: page and worker errors, rejected
-/// cookies, CORS and CSP reports). A millisecond apart at most, which
-/// rounding could make: two messages with the same text stamped further
-/// apart are two, and stay so (a window of 2 s paired a page's repeated
-/// error with another occurrence's copy, and could drop one).
+/// stamped `a` and `b` (ms since the epoch): both read the stamp of the
+/// one error Firefox recorded, the watcher with its microseconds and BiDi
+/// cut to the millisecond (measured on Firefox 160, 700 pairs: page and
+/// worker errors, rejections, rejected cookies, CORS and CSP reports, all
+/// in the same millisecond). Messages with the same text stamped in
+/// different milliseconds are two, and stay so (#218: a tolerance of 1 ms
+/// paired an error with its neighbour's copy; one of 2 s could drop one).
 fn same_instant(a: f64, b: f64) -> bool {
-    (a.floor() - b.floor()).abs() <= 1.0
+    a > 0.0 && a.floor().to_bits() == b.floor().to_bits()
 }
-
-/// How many recent messages are compared for duplicates.
-const DUPLICATE_LOOKBACK: usize = 64;
 
 /// Most characters kept of a console message's text: a page can log
 /// megabytes, which `get_console_logs` would return whole.
@@ -163,16 +195,54 @@ impl LogState {
     /// Pushes a message whose text is already bounded.
     fn push_bounded(&mut self, msg: ConsoleMessage) {
         self.uncaught += u64::from(msg.uncaught);
-        self.messages.push_back(msg);
+        self.place(msg);
+    }
+
+    /// Puts `msg` where its timestamp says, after the messages stamped the
+    /// same: the feeds of a tab (a session per frame and worker; Firefox's
+    /// two connections) deliver in an order of their own, and the buffer
+    /// is read oldest first. A message without a stamp goes last, and
+    /// none is put before it. The oldest message makes room.
+    fn place(&mut self, msg: ConsoleMessage) {
+        let later = |m: &ConsoleMessage| m.timestamp > msg.timestamp;
+        let after = match msg.timestamp > 0.0 {
+            true => self.messages.iter().rev().take_while(|m| later(m)).count(),
+            false => 0,
+        };
+        self.messages.insert(self.messages.len() - after, msg);
         if self.messages.len() > MAX_CONSOLE_MESSAGES {
             self.messages.pop_front();
         }
     }
 
-    /// Pushes a message that another feed may report too (Firefox): a copy
-    /// already pushed by the other feed (same first line, same stamp, see
-    /// [`same_instant`]) is kept once, with the watcher's labels and stack,
-    /// which say more.
+    /// Where the copy of `msg` Firefox's other feed pushed first is, if
+    /// any still waits for it: the oldest message of that feed with its
+    /// stamp (see [`same_instant`]) and first line. Each feed delivers in
+    /// order, so the oldest copy waiting is this message's: of errors
+    /// thrown in one millisecond, the newest was taken, which listed them
+    /// newest first (#218). The buffer is sorted, so the search ends at
+    /// the first older message, however many came since (a lookback of 64
+    /// messages listed twice an error whose first copy was further back).
+    fn twin_of(&self, msg: &ConsoleMessage) -> Option<usize> {
+        let other = msg.channel.other()?;
+        let older =
+            |m: &ConsoleMessage| m.timestamp > 0.0 && m.timestamp.floor() < msg.timestamp.floor();
+        let recent = self.messages.iter().enumerate().rev();
+        recent
+            .take_while(|(_, m)| !older(m))
+            .filter(|(_, m)| {
+                m.channel == other
+                    && same_instant(m.timestamp, msg.timestamp)
+                    && twin_key(&m.text) == twin_key(&msg.text)
+            })
+            .last()
+            .map(|(at, _)| at)
+    }
+
+    /// Pushes a message that another feed may report too (Firefox): with
+    /// the copy the other feed already pushed (see [`Self::twin_of`]) it is
+    /// kept once, as the watcher gives it (its labels and stack say more),
+    /// and pairs with no later copy.
     pub(crate) fn push_deduplicated(&mut self, msg: ConsoleMessage) {
         let before = self
             .cleared_before
@@ -185,28 +255,23 @@ impl LogState {
             return;
         }
         let msg = bounded(msg);
-        let twin = self
-            .messages
-            .iter_mut()
-            .rev()
-            .take(DUPLICATE_LOOKBACK)
-            .find(|m| {
-                m.channel != msg.channel
-                    && twin_key(&m.text) == twin_key(&msg.text)
-                    && same_instant(m.timestamp, msg.timestamp)
-            });
-        let Some(existing) = twin else {
+        let first = self.twin_of(&msg).and_then(|at| self.messages.remove(at));
+        let Some(first) = first else {
             self.push_bounded(msg);
             return;
         };
         // Counted once: when the first copy said so, or now.
-        let newly_uncaught = msg.uncaught && !existing.uncaught;
-        let uncaught = msg.uncaught || existing.uncaught;
-        if msg.channel == Channel::Watcher {
-            *existing = msg;
-        }
-        existing.uncaught = uncaught;
-        self.uncaught += u64::from(newly_uncaught);
+        self.uncaught += u64::from(msg.uncaught && !first.uncaught);
+        let uncaught = msg.uncaught || first.uncaught;
+        let kept = match msg.channel {
+            Channel::Watcher => msg,
+            _ => first,
+        };
+        self.place(ConsoleMessage {
+            uncaught,
+            channel: Channel::Both,
+            ..kept
+        });
     }
 
     /// Notes that Firefox started navigation `navigation` in the tab at `at`
@@ -497,23 +562,22 @@ pub(crate) async fn causes_read(state: &Arc<Mutex<LogState>>, wait: std::time::D
     }
 }
 
-/// [`process_event`] for an event of a tab, a frame or a dedicated worker.
+/// [`process_event`] for an event of a tab or a frame.
 #[cfg(test)]
 pub(crate) async fn process_log_event(
     event: &WsResponse,
     state: &Arc<Mutex<LogState>>,
 ) -> Option<CauseLookup> {
-    process_event(event, state, false).await
+    process_event(event, state, &Feed::Page).await
 }
 
-/// Applies one event of the tab's ordered stream to its console state
-/// (an event of its service worker's session when `service_worker`: its
-/// messages say so, #211). Returns the lookup of an uncaught error's cause
+/// Applies one event of the ordered stream of `feed`'s session to the
+/// tab's console state. Returns the lookup of an uncaught error's cause
 /// chain to read, if any (see [`CauseLookup`]).
 async fn process_event(
     event: &WsResponse,
     state: &Arc<Mutex<LogState>>,
-    service_worker: bool,
+    feed: &Feed,
 ) -> Option<CauseLookup> {
     let (Some(method), Some(params)) = (event.method.as_deref(), &event.params) else {
         return None;
@@ -535,8 +599,9 @@ async fn process_event(
         if let (true, Some(url)) = (main, params["url"].as_str()) {
             state.note_same_document(url);
         }
-    } else if let Some(mut message) = console_message(method, params) {
-        message.target_type = service_worker.then(|| crate::handler::SERVICE_WORKER.to_string());
+    } else if let Some(mut message) = feed.console_message(method, params) {
+        message.target_type =
+            matches!(feed, Feed::ServiceWorker).then(|| crate::handler::SERVICE_WORKER.to_string());
         let lookup = cause_lookup(method, params, &message);
         let mut state = state.lock().await;
         if !state.is_watched_worker_copy(method, params) {
@@ -746,17 +811,20 @@ fn twin_key(text: &str) -> &str {
     text.split('\n').next().unwrap_or(text)
 }
 
+/// An uncaught exception's message. Its text is the thrown value as the
+/// console prints any value ([`arg_text`]): an error by its description
+/// (its stack), a string or a number as it is, an object previewed (#219:
+/// only a description was read, so `throw 'x'` was a bare `Uncaught`).
+/// Without a thrown value, Chrome's own text.
 fn exception(params: &Value, details: &Value) -> ConsoleMessage {
-    let description = details
-        .get("exception")
-        .and_then(|e| str_field(e, "description"));
+    let thrown = details.get("exception").and_then(arg_text);
     let rejection =
         str_field(details, "text").is_some_and(|t| t.starts_with(IN_PROMISE.trim_end()));
-    let text = match description {
-        Some(described) if rejection && !described.starts_with("Uncaught") => {
-            format!("{IN_PROMISE}{described}")
+    let text = match thrown {
+        Some(thrown) if rejection && !thrown.starts_with("Uncaught") => {
+            format!("{IN_PROMISE}{thrown}")
         }
-        Some(described) => described.to_string(),
+        Some(thrown) => thrown,
         None => string_or_empty(details, "text"),
     };
     ConsoleMessage {
@@ -773,30 +841,78 @@ fn exception(params: &Value, details: &Value) -> ConsoleMessage {
     }
 }
 
-/// Feeds `state` from the console of `target`: a tab, a frame of another
-/// origin or a dedicated worker.
+/// What the session a console listener reads belongs to.
+#[derive(Clone, Default)]
+pub(crate) enum Feed {
+    /// A tab or a frame of another origin.
+    #[default]
+    Page,
+    /// A dedicated worker; the flag is set once it started a worker of
+    /// its own, whose uncaught errors it then relays (see [`is_relayed`]).
+    Worker(Arc<std::sync::atomic::AtomicBool>),
+    /// The tab's service worker: its messages say so (#211).
+    ServiceWorker,
+}
+
+impl Feed {
+    /// The console message the event (`method`, `params`) of this feed
+    /// describes, unless the worker that threw it lists it.
+    fn console_message(&self, method: &str, params: &Value) -> Option<ConsoleMessage> {
+        console_message(method, params).filter(|_| !self.relays(method, params))
+    }
+
+    /// Whether the event (`method`, `params`) of this feed is a copy of
+    /// what another session reports.
+    fn relays(&self, method: &str, params: &Value) -> bool {
+        match self {
+            Self::Worker(parent) => {
+                parent.load(std::sync::atomic::Ordering::Relaxed) && is_relayed(method, params)
+            }
+            _ => false,
+        }
+    }
+}
+
+/// Whether the event (`method`, `params`) of a worker's session reports an
+/// error one of the worker's own workers threw (#217). Chrome fires the
+/// error at the `Worker` object of the worker that started it, where
+/// nothing handles it, and reports it there too, at the script that threw:
+/// an exception with no thrown value (none, or `null`: the value stays in
+/// the thread that threw), in each worker up the chain. The worker that
+/// threw reports it itself, with its value. Told by the missing value
+/// alone: the copy's script may be one the worker imported (#207), and
+/// nothing else names the worker. So the `throw null` of a worker that
+/// started workers reads the same, and is not listed either.
+pub(crate) fn is_relayed(method: &str, params: &Value) -> bool {
+    let thrown = params.pointer("/exceptionDetails/exception");
+    method == "Runtime.exceptionThrown"
+        && thrown.is_none_or(|value| str_field(value, "subtype") == Some("null"))
+}
+
+/// Feeds `state` from the console of `target`: a tab or a frame of another
+/// origin.
 pub(crate) fn start_log_listener(
     target: &crate::handler::cdp_domains::cdp_target::CdpTarget,
     state: Arc<Mutex<LogState>>,
 ) -> crate::handler::cdp_domains::event_pump::ListenerHandles {
-    start_listener(target, state, false)
+    start_listener(target, state, Feed::Page)
 }
 
-/// Feeds `state` from the console of `target`, the tab's service worker:
-/// its messages say so (#211).
-pub(crate) fn start_service_worker_log_listener(
+/// Feeds `state` from the console of `target`, as `feed` says: a dedicated
+/// worker, or the tab's service worker.
+pub(crate) fn start_worker_log_listener(
     target: &crate::handler::cdp_domains::cdp_target::CdpTarget,
     state: Arc<Mutex<LogState>>,
+    feed: Feed,
 ) -> crate::handler::cdp_domains::event_pump::ListenerHandles {
-    start_listener(target, state, true)
+    start_listener(target, state, feed)
 }
 
-/// Feeds `state` from the console of `target` (a service worker's when
-/// `service_worker`).
+/// Feeds `state` from the console of `target`, the session of `feed`.
 fn start_listener(
     target: &crate::handler::cdp_domains::cdp_target::CdpTarget,
     state: Arc<Mutex<LogState>>,
-    service_worker: bool,
+    feed: Feed,
 ) -> crate::handler::cdp_domains::event_pump::ListenerHandles {
     use crate::handler::cdp_domains::event_pump::{ListenerHandles, spawn_state_listener};
     // One ordered stream of every domain (filtered in `process_event`):
@@ -814,9 +930,9 @@ fn start_listener(
         "",
         state,
         move |event, state| {
-            let lookups = lookups.clone();
+            let (lookups, feed) = (lookups.clone(), feed.clone());
             async move {
-                let Some(lookup) = process_event(&event, &state, service_worker).await else {
+                let Some(lookup) = process_event(&event, &state, &feed).await else {
                     return;
                 };
                 let count = state.lock().await.causes_pending.clone();
@@ -1361,6 +1477,184 @@ mod tests {
                 ("again", "security", 4300.9),
             ]
         );
+    }
+
+    /// A copy of the uncaught error `text` from `channel`, stamped `ms`.
+    fn copy(text: &str, ms: f64, channel: Channel) -> ConsoleMessage {
+        ConsoleMessage {
+            timestamp: ms,
+            channel,
+            uncaught: true,
+            source: "exception".into(),
+            ..message(text)
+        }
+    }
+
+    /// The stamps of the buffer's messages, in its order.
+    fn stamps(state: &LogState) -> Vec<f64> {
+        state.messages.iter().map(|m| m.timestamp).collect()
+    }
+
+    /// #218 (Firefox): of errors with the same text thrown in one
+    /// millisecond, each watcher copy takes the oldest BiDi copy still
+    /// waiting, so they stay oldest first, each once and counted once; a
+    /// neighbour stamped in the next millisecond is never taken instead.
+    #[test]
+    fn a_burst_of_one_error_is_paired_oldest_first() {
+        let mut state = LogState::default();
+        // Given BiDi's copies of five throws, three of them in one millisecond
+        for ms in [992.0, 992.0, 992.0, 993.0, 995.0] {
+            state.push_deduplicated(copy("Error: burst\n    at f", ms, Channel::Primary));
+        }
+        // When the watcher's copies come, in the order they were thrown
+        for ms in [992.522, 992.533, 992.9, 993.1, 995.7] {
+            state.push_deduplicated(copy("Error: burst\n    at g", ms, Channel::Watcher));
+        }
+        // Then each throw is listed once, as the watcher gave it, in order
+        assert_eq!(stamps(&state), [992.522, 992.533, 992.9, 993.1, 995.7]);
+        assert!(state.messages.iter().all(|m| m.text.ends_with("at g")));
+        assert_eq!(state.uncaught, 5);
+        // And a third copy of a paired throw is another throw
+        state.push_deduplicated(copy("Error: burst", 995.0, Channel::Primary));
+        assert_eq!(state.messages.len(), 6);
+    }
+
+    /// #218 (Firefox): a copy finds its twin however many messages came
+    /// since (BiDi can run 100 messages ahead of the watcher: a lookback
+    /// of 64 listed those errors twice).
+    #[test]
+    fn a_copy_far_behind_finds_its_twin() {
+        let mut state = LogState::default();
+        for throw in 0..300_u32 {
+            let ms = 1000.0 + f64::from(throw) * 3.0;
+            state.push_deduplicated(copy("Error: burst", ms, Channel::Primary));
+        }
+        for throw in 0..300_u32 {
+            let ms = 1000.4 + f64::from(throw) * 3.0;
+            state.push_deduplicated(copy("Error: burst", ms, Channel::Watcher));
+        }
+        assert_eq!((state.messages.len(), state.uncaught), (300, 300));
+        assert!(state.messages.iter().all(|m| m.channel == Channel::Both));
+        let listed = stamps(&state);
+        assert!(listed.is_sorted(), "{listed:?}");
+    }
+
+    /// The buffer is read oldest first whatever order the feeds deliver
+    /// in: a message is put where its stamp says, after those stamped the
+    /// same; one without a stamp stays where it arrived.
+    #[test]
+    fn messages_are_kept_in_the_order_of_their_stamps() {
+        let at = |text: &str, ms: f64| ConsoleMessage {
+            timestamp: ms,
+            ..message(text)
+        };
+        let mut state = LogState::default();
+        // Given a worker's messages arriving before the page's older ones
+        for (text, ms) in [("worker 2", 20.5), ("page 1", 10.0), ("worker 3", 30.0)] {
+            state.push_message(at(text, ms));
+        }
+        state.push_message(at("page 2", 20.5));
+        // And one without a stamp, then an older stamped one
+        state.push_message(message("unstamped"));
+        state.push_message(at("late", 5.0));
+        let texts: Vec<&str> = state.messages.iter().map(|m| m.text.as_str()).collect();
+        assert_eq!(
+            texts,
+            [
+                "page 1",
+                "worker 2",
+                "page 2",
+                "worker 3",
+                "unstamped",
+                "late"
+            ]
+        );
+    }
+
+    /// #219 (Chrome): an uncaught value that is not an error is printed as
+    /// the console prints it, a rejection after `(in promise)`; an error
+    /// keeps its description.
+    #[test]
+    fn thrown_values_are_printed() {
+        let thrown = |text: &str, exception: Value| {
+            let details = json!({"text": text, "exception": exception});
+            let params = json!({"timestamp": 1.0, "exceptionDetails": details});
+            console_message("Runtime.exceptionThrown", &params)
+                .unwrap()
+                .text
+        };
+        let object = json!({"type": "object", "className": "Object", "description": "Object",
+            "preview": {"type": "object", "description": "Object", "overflow": false,
+                "properties": [{"name": "a", "type": "number", "value": "1"}]}});
+        let cases = [
+            (json!({"type": "string", "value": "str-boom"}), "str-boom"),
+            (
+                json!({"type": "number", "value": 42, "description": "42"}),
+                "42",
+            ),
+            (json!({"type": "boolean", "value": true}), "true"),
+            (
+                json!({"type": "object", "subtype": "null", "value": null}),
+                "null",
+            ),
+            (json!({"type": "undefined"}), "undefined"),
+            (
+                json!({"type": "bigint", "unserializableValue": "10n", "description": "10n"}),
+                "10n",
+            ),
+            (
+                json!({"type": "symbol", "description": "Symbol(s)"}),
+                "Symbol(s)",
+            ),
+            (object, "{a: 1}"),
+        ];
+        for (exception, text) in cases {
+            assert_eq!(thrown("Uncaught", exception), text);
+        }
+        let rejected = json!({"type": "string", "value": "rej-str"});
+        assert_eq!(
+            thrown("Uncaught (in promise)", rejected),
+            "Uncaught (in promise) rej-str"
+        );
+        let error = json!({"type": "object", "subtype": "error", "description": "Error: boom\n    at a.js:1:7",
+            "preview": {"type": "object", "subtype": "error", "description": "Error: boom", "overflow": false, "properties": []}});
+        assert_eq!(thrown("Uncaught", error), "Error: boom\n    at a.js:1:7");
+    }
+
+    /// #217 (Chrome): the error a worker relays for one of its workers
+    /// has no thrown value (none, or `null`); one it threw itself has one,
+    /// and so has a rejection. Only a worker that started a worker relays.
+    #[test]
+    fn relayed_errors_have_no_thrown_value() {
+        let thrown = |exception: Option<Value>| {
+            let mut details =
+                json!({"text": "Uncaught", "url": "http://a/inner.js", "lineNumber": 0});
+            if let Some(exception) = exception {
+                details["exception"] = exception;
+            }
+            json!({"timestamp": 1.0, "exceptionDetails": details})
+        };
+        let null = thrown(Some(
+            json!({"type": "object", "subtype": "null", "value": null}),
+        ));
+        let none = thrown(None);
+        let own = thrown(Some(
+            json!({"type": "object", "subtype": "error", "description": "Error: boom"}),
+        ));
+        let string = thrown(Some(json!({"type": "string", "value": "str"})));
+        let relayed = |params: &Value| is_relayed("Runtime.exceptionThrown", params);
+        assert!(relayed(&null) && relayed(&none));
+        assert!(!relayed(&own) && !relayed(&string));
+        assert!(!is_relayed("Runtime.consoleAPICalled", &none));
+        // A worker's own `throw null` is kept until it starts a worker
+        let parent = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let worker = Feed::Worker(parent.clone());
+        assert!(!worker.relays("Runtime.exceptionThrown", &null));
+        parent.store(true, std::sync::atomic::Ordering::Relaxed);
+        assert!(worker.relays("Runtime.exceptionThrown", &null));
+        assert!(!worker.relays("Runtime.exceptionThrown", &own));
+        // And a page relays nothing
+        assert!(!Feed::Page.relays("Runtime.exceptionThrown", &null));
     }
 
     /// REV-F11-5: with the commit time, messages the new page logged before

@@ -7,4 +7,14 @@ self.probeLib = {
   throwLater(token) {
     setTimeout(function probeLibThrower() { throw new Error('probe-lib-throw ' + token); });
   },
+  // A thrown value that is not an error (#219).
+  throwValue(token) {
+    setTimeout(function probeValueThrower() { throw 'probe-value ' + token; });
+  },
+  // The same error `count` times at once: several in one millisecond (#218).
+  burst(token, count) {
+    for (let k = 0; k < count; k++) {
+      setTimeout(function probeBurstThrower() { throw new Error('probe-burst ' + token); });
+    }
+  },
 };

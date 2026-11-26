@@ -1,7 +1,7 @@
 {
  "number": 204,
  "title": "get_console_logs: Firefox lists uncaught errors without their stack lines",
- "family": "other",
+ "family": "console",
  "command": [
   "repro_ff_uncaught_stack.py"
  ],

@@ -11,7 +11,7 @@ reproduction that does not finish in time fails too.
 
 Usage (from the repository root):
     python3 -I tests/regressions/run.py [--bin target/debug/browser-control-mcp]
-        [--family top-level-await|headers|secrets|websockets|other]
+        [--family top-level-await|headers|secrets|websockets|console|other]
         [--issue N ...] [--jobs 4] [--timeout 300]
 """
 

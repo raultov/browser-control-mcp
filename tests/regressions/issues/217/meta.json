@@ -1,0 +1,11 @@
+{
+ "number": 217,
+ "title": "get_console_logs (Chrome): a nested worker's uncaught error is listed twice, once as a bare 'Uncaught'",
+ "family": "console",
+ "command": [
+  "repro_nested_worker_uncaught_twice.py",
+  "chrome"
+ ],
+ "bug_regex": "chrome: 2 'Uncaught' line\\(s\\)",
+ "exit_on_bug": true
+}

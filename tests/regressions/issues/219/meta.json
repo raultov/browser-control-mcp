@@ -1,0 +1,10 @@
+{
+ "number": 219,
+ "title": "get_console_logs / action notes (Chrome): a thrown string or number is reported as a bare 'Uncaught'",
+ "family": "console",
+ "command": [
+  "repro_thrown_string_lost.py"
+ ],
+ "bug_regex": "thrown value missing from both replies: True",
+ "exit_on_bug": true
+}

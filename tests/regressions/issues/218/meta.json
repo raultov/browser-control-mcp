@@ -1,0 +1,11 @@
+{
+ "number": 218,
+ "title": "get_console_logs (Firefox): a burst of uncaught errors is listed newest first and doubled",
+ "family": "console",
+ "command": [
+  "repro_ff_console_burst.py",
+  "page"
+ ],
+ "bug_regex": "page: \\d+ 'burst' errors listed \\(100 thrown\\), [1-9]\\d* listed before an older one",
+ "exit_on_bug": true
+}

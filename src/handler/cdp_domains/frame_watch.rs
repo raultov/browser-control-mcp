@@ -27,7 +27,7 @@ use cdp_browser_lite::{BrowserClient, NoParams, Tab, WsResponse};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use tokio::sync::Mutex;
 use tokio_stream::StreamExt;
 
@@ -77,6 +77,10 @@ pub(crate) struct FrameSinks {
     /// The targets of the watched frames the session lives in, outermost
     /// first (none for the tab): the frames its sockets go with (#167).
     frames: Vec<String>,
+    /// Set once the session, a worker's, attached a worker of its own: its
+    /// console listener then drops the errors it relays (#217, see
+    /// `log::is_relayed`). None for a tab or a frame, which relay none.
+    parent: Option<Arc<AtomicBool>>,
 }
 
 impl FrameSinks {
@@ -95,6 +99,7 @@ impl FrameSinks {
             routes,
             watched: Arc::default(),
             frames: Vec::new(),
+            parent: None,
         }
     }
 
@@ -102,6 +107,15 @@ impl FrameSinks {
     fn within(&self, target_id: &str) -> Self {
         let mut nested = self.clone();
         nested.frames.push(target_id.to_string());
+        nested.parent = None;
+        nested
+    }
+
+    /// The sinks of a worker of this session, for the workers it starts:
+    /// `parent` is set when one attaches.
+    fn of_worker(&self, parent: Arc<AtomicBool>) -> Self {
+        let mut nested = self.clone();
+        nested.parent = Some(parent);
         nested
     }
 
@@ -209,6 +223,11 @@ async fn attach(session: &Tab, attached: Value, sinks: &FrameSinks) -> Attached 
         // Before it runs: its first messages come in its session.
         sinks.log.lock().await.watch_worker(&target_id);
     }
+    if let (Some("worker"), Some(parent)) = (attached["targetInfo"]["type"].as_str(), &sinks.parent)
+    {
+        // Watched or not: the session relays its errors from now on.
+        parent.store(true, Ordering::Relaxed);
+    }
     let mut setup = ListenerHandles::default();
     let task = frame_setup(session.clone(), attached, kind, sinks.clone());
     setup.push(tokio::spawn(task));
@@ -304,11 +323,11 @@ async fn watch_worker(session: &Tab, target_id: &str, sinks: FrameSinks) -> List
         return listeners;
     };
     let target = CdpTarget::tab(worker.clone());
+    let parent = Arc::new(AtomicBool::new(false));
+    let feed = crate::handler::cdp_domains::log::Feed::Worker(parent.clone());
     // Subscribed before the domains are enabled: nothing is missed.
-    listeners.absorb(crate::handler::cdp_domains::log::start_log_listener(
-        &target,
-        sinks.log.clone(),
-    ));
+    let log = crate::handler::cdp_domains::log::start_worker_log_listener;
+    listeners.absorb(log(&target, sinks.log.clone(), feed));
     listeners.push(
         crate::handler::cdp_domains::network::start_frame_network_listener(
             &target,
@@ -325,7 +344,7 @@ async fn watch_worker(session: &Tab, target_id: &str, sinks: FrameSinks) -> List
     // The workers it starts: the tab's `Log` copies their messages under
     // its own id, dropped as its own (#207), so they report in their own
     // sessions (one past `MAX_WATCHED` is not heard).
-    listeners.push(start_frame_watcher(&worker, sinks));
+    listeners.push(start_frame_watcher(&worker, sinks.of_worker(parent)));
     listeners
 }
 
@@ -351,8 +370,9 @@ async fn watch_service_worker(
         return listeners;
     };
     let target = CdpTarget::tab(worker.clone());
-    let log = crate::handler::cdp_domains::log::start_service_worker_log_listener;
-    listeners.absorb(log(&target, sinks.log.clone()));
+    let log = crate::handler::cdp_domains::log::start_worker_log_listener;
+    let feed = crate::handler::cdp_domains::log::Feed::ServiceWorker;
+    listeners.absorb(log(&target, sinks.log.clone(), feed));
     let network = crate::handler::cdp_domains::network::start_service_worker_network_listener;
     let worker_session = worker.session_id().to_string();
     listeners.push(network(&target, sinks.network.clone(), worker_session));
@@ -624,6 +644,53 @@ mod tests {
             ]
         );
         assert_eq!(watched.sinks.watched.load(Ordering::Relaxed), 1);
+    }
+
+    /// #217: a worker that started a worker of its own relays that
+    /// worker's uncaught errors (an exception with no thrown value): the
+    /// worker that threw lists them, the relay is dropped; the worker's
+    /// own errors are kept, and so is its `throw null` while it has
+    /// started none.
+    #[tokio::test]
+    async fn a_worker_does_not_list_the_errors_of_its_workers() {
+        // Given a tab watching a worker
+        let watched = watched_tab().await;
+        let worker = attached_worker(&watched).await;
+        let (mock, sinks) = (watched.mock, &watched.sinks);
+        let thrown = |exception: Value, at: f64| {
+            let details = json!({"text": "Uncaught", "url": "http://b/inner.js", "lineNumber": 0, "exception": exception});
+            json!({"timestamp": at, "exceptionDetails": details})
+        };
+        let null = json!({"type": "object", "subtype": "null", "value": null});
+        let texts = || {
+            let log = sinks.log.try_lock().ok()?;
+            Some(
+                log.messages
+                    .iter()
+                    .map(|m| m.text.clone())
+                    .collect::<Vec<_>>(),
+            )
+        };
+        // When it throws null itself
+        mock.emit(
+            "Runtime.exceptionThrown",
+            thrown(null.clone(), 1.0),
+            Some(&worker),
+        );
+        eventually(|| texts().is_some_and(|texts| texts.len() == 1)).await;
+        // And then starts a worker, whose error it relays, then throws its own
+        let info = json!({"targetId": "T-inner", "type": "worker", "url": "http://b/inner.js"});
+        let attached =
+            json!({"sessionId": "AUTO-I", "targetInfo": info, "waitingForDebugger": true});
+        mock.emit("Target.attachedToTarget", attached, Some(&worker));
+        let released = || session_of(mock, "Runtime.runIfWaitingForDebugger");
+        eventually(|| released().contains(&Some("AUTO-I".into()))).await;
+        mock.emit("Runtime.exceptionThrown", thrown(null, 2.0), Some(&worker));
+        let own = json!({"type": "object", "subtype": "error", "description": "Error: outer"});
+        mock.emit("Runtime.exceptionThrown", thrown(own, 3.0), Some(&worker));
+        eventually(|| texts().is_some_and(|texts| texts.len() == 2)).await;
+        // Then only its own are listed
+        assert_eq!(texts().unwrap(), ["null", "Error: outer"]);
     }
 
     /// #211: the service worker's console messages and its own requests

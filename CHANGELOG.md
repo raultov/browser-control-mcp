@@ -8,6 +8,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 `browser-control-mcp` is the successor of `chrome-debug-mcp` 1.5.6 and starts
 from a copy of its code: entries describe the differences from that release.
 
+## [Unreleased]
+
+### Fixed
+
+- `get_console_logs` lists each message once and oldest first by
+  construction, instead of by one repair per report (#217, #218, #219,
+  after #204, #206 and #207). A browser reports one message over several
+  feeds (Chrome: a session per frame and worker, and the tab's own copy
+  of a worker's messages; Firefox: WebDriver BiDi and its debugger port),
+  and each of those issues was two feeds disagreeing. Three rules now
+  hold for every feed, stated in the README's scope of the convenience
+  features with what they do not promise:
+  - **Once.** On Firefox the two copies of a page error are paired by
+    the millisecond and first line both carry (measured on Firefox 160:
+    BiDi's stamp is the watcher's cut to the millisecond, in 700 pairs
+    of errors, rejections, rejected cookies, CORS and CSP reports),
+    oldest waiting copy first, each copy once, however many messages
+    came since. A page throwing one error several times in a millisecond
+    had them listed newest first, a tolerance of a millisecond could
+    pair an error with its neighbour's copy, and a copy more than 64
+    messages behind its twin was listed twice (#218). On Chrome a worker
+    that started a worker no longer lists the errors that worker threw:
+    Chrome reports them again in each worker up the chain, as an
+    exception without its value, and a nested worker's uncaught error
+    was listed twice, once as a bare `Uncaught` (#217). The worker that
+    threw lists it. Such a worker's own `throw null` reads the same to
+    Chrome and is not listed (documented).
+  - **In order.** The buffer is kept sorted by the browser's timestamps
+    rather than by arrival: the feeds of a tab deliver in an order of
+    their own (a worker's session ahead of the page's, Firefox's
+    debugger port behind BiDi).
+  - **As thrown.** On Chrome an uncaught value that is not an error is
+    printed as the console prints any value: `Uncaught str-boom`,
+    `Uncaught 42`, `Uncaught {a: 1}`, `Uncaught (in promise) reason`. It
+    was a bare `Uncaught`, also in the note of the input actions (#219).
+
+### Development
+
+- `tests/differential/target_matrix.py` has one more owner, a worker
+  that a worker started (#217), and two more features in every kind of
+  target: a thrown value that is not an error, listed with the value
+  (#219), and the same error thrown 30 times at once, each listed once
+  and oldest first (#218): 88 cells per browser.
+- `make regressions` has a `console` family (`--family console`).
+
 ## [1.0.0-rc.3] - 2026-11-25
 
 Third release candidate. Firefox keeps the console messages a page logs

@@ -10,9 +10,12 @@ found one at a time. This runs the table at once.
 
 Owners: the document, a same-origin iframe, a cross-origin iframe, a
 cross-origin iframe inside a same-origin one, a dedicated worker, a worker
-of a cross-origin iframe, a popup (its own tab).
+that worker started (#217), a worker of a cross-origin iframe, a popup (its
+own tab).
 Features: a console message, an uncaught error with its stack, each also
 from a script the owner imported (a <script src>, importScripts: #207), a
+thrown value that is not an error, listed with the value (#219), the same
+error thrown 30 times at once, each listed once and oldest first (#218), a
 message the owner logs while it loads, right after the tab moved to another
 site (#206), a request in the network log, a redirect hop with its status
 and Location, a mocked request answered by a route of the tab, and one a
@@ -41,9 +44,15 @@ from mcp_client import Server  # noqa: E402
 from siteserver import Site  # noqa: E402
 
 OWNERS = ["document", "iframe-same-origin", "iframe-cross-origin", "iframe-nested",
-          "worker", "worker-in-cross-iframe", "popup"]
-FEATURES = ["console", "console-imported", "uncaught", "uncaught-imported", "load",
-            "request", "redirect", "mock", "abort"]
+          "worker", "worker-nested", "worker-in-cross-iframe", "popup"]
+FEATURES = ["console", "console-imported", "uncaught", "uncaught-imported", "thrown-value", "burst",
+            "load", "request", "redirect", "mock", "abort"]
+
+# How many times the `burst` cell throws its error.
+BURST = 30
+
+# The page's worker parameter of the owners that are one.
+WORKERS = {"worker": "?worker=1", "worker-nested": "?worker=nested"}
 
 # Waits for the owner's answer to the command of `token`.
 WAIT = """
@@ -87,7 +96,7 @@ class Cell:
         first of its site."""
         if self.feature == "load":
             self.server.call("navigate", {"url": self.site.other_origin("/basic.html")})
-        top = "/probe.html" + (self.own_query("?worker=1") if self.owner == "worker" else
+        top = "/probe.html" + (self.own_query(WORKERS[self.owner]) if self.owner in WORKERS else
                                self.own_query() if self.owner == "document" else "")
         self.server.call("navigate", {"url": self.site.url(top)})
         frame = {
@@ -108,7 +117,7 @@ class Cell:
             listed = json.loads(listed[listed.index("{"):])
             self.tab = next(t["tab_id"] for t in listed["tabs"] if t["tab_id"] != listed["active_tab_id"])
             return "window.pop"
-        time.sleep(0.5 if self.owner == "worker" else 0)
+        time.sleep(0.5 if self.owner in WORKERS else 0)
         return "window"
 
     def command(self, target, command):
@@ -148,6 +157,17 @@ class Cell:
                     and (level is None or found[0].get("level") == level))
         return check
 
+    def burst(self, words):
+        """A check that the console lists `BURST` messages with `words`,
+        none before an older one (by their own timestamps)."""
+        def check(text):
+            if "{" not in text:
+                return False
+            stamps = [m["timestamp"] for m in json.loads(text[text.index("{"):]).get("messages", [])
+                      if words in m.get("text", "")]
+            return len(stamps) == BURST and stamps == sorted(stamps)
+        return check
+
     def requested(self, token, status=None, failed=False):
         """A check that the network log lists one request with `token`
         (answered `status`, or failed)."""
@@ -177,6 +197,12 @@ class Cell:
             self.command(target, ("ithrow:" if imported else "throw:") + token)
             words = ("probe-lib-throw " if imported else "probe-throw ") + token
             return self.once("get_console_logs", details, self.logged(words, stacked=True))
+        if self.feature == "thrown-value":
+            self.command(target, "throwvalue:" + token)
+            return self.once("get_console_logs", details, self.logged("probe-value " + token, level="error"))
+        if self.feature == "burst":
+            self.command(target, "burst:%s:%d" % (token, BURST))
+            return self.once("get_console_logs", {"limit": 1000, **details}, self.burst("probe-burst " + token))
         if self.feature == "request":
             self.command(target, "fetch:%s:/api/echo?probe=%s" % (token, token))
             return self.once("get_network_logs", {"url_filter": token, **details}, self.requested(token, 200))

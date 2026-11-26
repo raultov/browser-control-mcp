@@ -1,7 +1,7 @@
 {
  "number": 207,
  "title": "get_console_logs on Chrome: a worker's message from an imported script (importScripts) is listed twice",
- "family": "other",
+ "family": "console",
  "command": [
   "repro_worker_dup.py"
  ],
