@@ -2114,7 +2114,7 @@ mod tests {
     /// The most bytes the default tool list may take as `tools/list`
     /// answers it (compact JSON). Lowered with every change that shortens
     /// it, never raised: the curve is in `docs/specs/13-roadmap.md`.
-    const DEFAULT_TOOL_LIST_BUDGET: usize = 24_648;
+    const DEFAULT_TOOL_LIST_BUDGET: usize = 23_374;
 
     /// CTX-01: the default tool list fits its budget.
     #[test]

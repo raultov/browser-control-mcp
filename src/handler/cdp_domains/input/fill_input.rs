@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 
 #[macros::mcp_tool(
     name = "fill_input",
-    description = "Types into a text field, textarea or contenteditable, replacing its content (or after it with append), key by key so the page's handlers run (~1 ms per character); picks the <select> option(s) named; sets a date, time, range or colour input (YYYY-MM-DD, HH:MM, a number, #rrggbb). Fails without typing on disabled, read-only, non-text or unfocusable elements and when the field rejects the text; notes a reformatted value. For several fields at once use fill_form."
+    description = "Types into a text field, textarea or contenteditable, replacing its content (or after it with append), key by key so the page's handlers run. Also picks <select> options by value or label, and sets date, time, range and colour inputs (YYYY-MM-DD, HH:MM, a number, #rrggbb). For several fields at once use fill_form."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct FillInputTool {

@@ -6,7 +6,7 @@ use rust_mcp_sdk::{
 
 #[macros::mcp_tool(
     name = "get_console_logs",
-    description = "Lists the tab's console messages and uncaught exceptions, oldest first, one line each: [level] text @ url:line (lines from 1; objects previewed, repeats folded, stacks indented); on Chrome an uncaught error's cause chain follows it (Caused by: lines); include_details gives {messages, total, truncated, notes?} as JSON. Keeps the last 1000 (10000 characters each); cleared when the tab moves to another site. For problems the browser diagnosed (blocked cookies, CORS, CSP) use get_issues."
+    description = "Lists the tab's console messages and uncaught exceptions, oldest first, one line each ([level] text @ url:line). Cleared when the tab moves to another site. For problems the browser diagnosed (blocked cookies, CORS, CSP) use get_issues."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct GetConsoleLogsTool {

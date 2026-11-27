@@ -15,7 +15,7 @@ use tokio::sync::Mutex;
 
 #[macros::mcp_tool(
     name = "navigate",
-    description = "Loads a URL in the tab, or moves back or forward in its history, and waits for load (at most 30 s; a breakpoint or dialog while loading fails at once saying so). Returns {url (after redirects), tab_id, browser, status?, notes?}. A network error, a download or a page behind HTTP authentication (log in with http://user:password@host/path) fails with 'Navigation failed: <reason> (<url>)'. With --local only local addresses are allowed. Note: copy_cookies imports the user's real Chrome cookies: ask the user first. On a running instance it relaunches it, closing its tabs: the call first fails listing them, then re-issue it with confirm_restart: true."
+    description = "Loads a URL in the tab, or goes back or forward in its history, and waits for the load (at most 30 s). Returns the final URL and the HTTP status. A network error, a download or a page behind HTTP authentication fails saying so (log in with http://user:password@host/path)."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct NavigateTool {

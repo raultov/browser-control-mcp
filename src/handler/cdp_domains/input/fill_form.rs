@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 
 #[macros::mcp_tool(
     name = "fill_form",
-    description = "Fills several fields in one call, in order: text fields and <select>s as fill_input does; a checkbox or radio takes 'true' or 'false' and is clicked only when its state differs (the field fails when the click does not leave it in that state: a checked radio is unchecked by checking another one). Returns each field's outcome (filled, selected, checked, unchecked, unchanged), never the values; stops at the first failing field, naming it and what was done."
+    description = "Fills several fields in one call, in order: text fields and <select>s as fill_input does; a checkbox or radio takes 'true' or 'false' and is clicked only when its state differs. Returns each field's outcome; stops at the first field that fails, naming it."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct FillFormTool {

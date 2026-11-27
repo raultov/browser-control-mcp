@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 
 #[macros::mcp_tool(
     name = "click_element",
-    description = "Clicks an element with real mouse input after scrolling it into view; waits up to 2 s for a CSS selector's element to appear or be enabled, and fails without clicking when it is hidden, covered (naming the overlay) or disabled. A dialog or breakpoint the click triggers is noted in the reply ({dialog} or {paused, location}), not an error: continue with handle_dialog or resume (evaluate_on_call_frame, with --tool-groups debug, reads the paused frame)."
+    description = "Clicks an element with real mouse input after scrolling it into view; fails without clicking when it is hidden, covered (naming the overlay) or disabled. A dialog or breakpoint the click opens is noted in the reply, not an error: continue with handle_dialog or resume."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct ClickElementTool {
