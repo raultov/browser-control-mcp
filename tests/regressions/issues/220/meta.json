@@ -1,0 +1,10 @@
+{
+ "number": 220,
+ "title": "cookies: get and delete skip Secure cookies the browser sends to http://127.0.0.1 and localhost",
+ "family": "other",
+ "command": [
+  "repro_cookies_secure_http.py"
+ ],
+ "bug_regex": "NOT LISTED",
+ "exit_on_bug": true
+}

@@ -161,9 +161,7 @@ impl Cookie {
         } else {
             host == own
         };
-        host_ok
-            && path_matches(parsed.path(), &self.path)
-            && (!self.secure || parsed.scheme() == "https")
+        host_ok && path_matches(parsed.path(), &self.path) && (!self.secure || secure_url(&parsed))
     }
 
     fn to_json(&self, show_value: bool) -> Value {
@@ -365,6 +363,22 @@ pub(crate) fn deleted_reply(deleted: &[Cookie]) -> CallToolResult {
     CallToolResult::text_content(vec![text.into()])
 }
 
+/// Whether browsers send a Secure cookie to `url`: over https, and over
+/// http to a loopback host (127.0.0.0/8, `[::1]`, `localhost` and its
+/// subdomains), which Chrome and Firefox treat as secure (#220).
+fn secure_url(url: &url::Url) -> bool {
+    match (url.scheme(), url.host()) {
+        ("https", _) => true,
+        ("http", Some(url::Host::Ipv4(ip))) => ip.is_loopback(),
+        ("http", Some(url::Host::Ipv6(ip))) => ip.is_loopback(),
+        ("http", Some(url::Host::Domain(host))) => {
+            let host = host.to_ascii_lowercase();
+            host == "localhost" || host.ends_with(".localhost")
+        }
+        _ => false,
+    }
+}
+
 /// RFC 6265 §5.1.4 path-match: a cookie with path `/app` goes to `/app`
 /// and `/app/page`, not to `/application` (#143).
 fn path_matches(request: &str, cookie: &str) -> bool {
@@ -423,6 +437,34 @@ mod tests {
         assert!(cookie("a", ".example.com", "/", false).of_domain("example.com"));
         assert!(cookie("a", "app.example.com", "/", false).of_domain("example.com"));
         assert!(!cookie("a", "notexample.com", "/", false).of_domain("example.com"));
+    }
+
+    /// #220: browsers store and send a Secure cookie over http to a
+    /// loopback host (127.0.0.0/8, [::1], localhost and its subdomains),
+    /// which they treat as secure; over http to any other host, never.
+    #[test]
+    fn secure_cookies_are_sent_to_loopback_hosts_over_http() {
+        // Given Secure cookies of loopback hosts
+        let secure = |host: &str| cookie("sec", host, "/", true);
+        // Then they go to those hosts over http and https
+        for (host, url) in [
+            ("127.0.0.1", "http://127.0.0.1:8080/page.html"),
+            ("127.1.2.3", "http://127.1.2.3/"),
+            ("[::1]", "http://[::1]:3000/"),
+            ("localhost", "http://localhost:3000/"),
+            ("app.localhost", "http://app.localhost/"),
+            ("localhost", "https://localhost/"),
+        ] {
+            assert!(secure(host).sent_to(url), "{url}");
+        }
+        // And not to other hosts over http
+        for (host, url) in [
+            ("example.com", "http://example.com/"),
+            ("localhost.example.com", "http://localhost.example.com/"),
+            ("10.0.0.1", "http://10.0.0.1/"),
+        ] {
+            assert!(!secure(host).sent_to(url), "{url}");
+        }
     }
 
     /// #143: a cookie's path matches whole path segments (RFC 6265

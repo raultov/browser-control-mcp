@@ -54,6 +54,10 @@ it sends.
   worker of its own. It was dropped as a copy of an error of the workers
   it started, which Chrome relays to it as uncaught errors without their
   value, but never as rejections (#223).
+- `cookies` `get` and `delete` pick the `Secure` cookies the browser
+  sends over http to a loopback host (`127.0.0.1`, `[::1]`, `localhost`
+  and its subdomains), which Chrome and Firefox treat as secure: `get`
+  left them out and `delete` left them behind (#220).
 
 ### Development
 
