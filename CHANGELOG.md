@@ -8,6 +8,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 `browser-control-mcp` is the successor of `chrome-debug-mcp` 1.5.6 and starts
 from a copy of its code: entries describe the differences from that release.
 
+## [Unreleased]
+
+### Changed
+
+- The instructions the server sends at `initialize`, which clients put in
+  the model's context on every turn, keep only the rules no single tool
+  owns (instances, the active tab, selectors, the wait after an input,
+  Firefox's single session) and describe what this run lists: the
+  debugger, cookie import, proxy and WebMCP paragraphs come only with
+  their flags, and one line names the tool groups that are off. Without
+  flags they go from 4 148 to 1 237 characters (about 1 040 to 310
+  tokens). No tool, argument or reply changes.
+
 ## [1.0.0-rc.4] - 2026-11-26
 
 Fourth release candidate. `get_console_logs` lists each message once and

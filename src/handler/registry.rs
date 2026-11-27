@@ -66,6 +66,12 @@ impl Gate {
     }
 }
 
+/// Whether `handler` lists the tools of `group`: `--tool-groups` names it,
+/// or `all`.
+pub(crate) fn group_enabled(handler: &McpHandler, group: ToolGroup) -> bool {
+    Gate::Group(group).is_open(handler)
+}
+
 /// The opt-in groups' gates.
 const DEBUG: Gate = Gate::Group(ToolGroup::Debug);
 const STORAGE: Gate = Gate::Group(ToolGroup::Storage);

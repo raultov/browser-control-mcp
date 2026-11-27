@@ -43,7 +43,7 @@ pub async fn run(args: Args) -> std::process::ExitCode {
     let handler = build_handler(args, secrets);
     let shutdown = handler.shutdown_hook();
     let server = server_runtime::create_server(mcp_server::McpServerOptions {
-        server_details: server_info::initialize_result(),
+        server_details: server_info::initialize_result(&handler),
         transport,
         handler: handler.to_mcp_server_handler(),
         task_store: None,

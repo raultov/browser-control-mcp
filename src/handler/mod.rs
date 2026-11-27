@@ -18,6 +18,8 @@ mod schema_compat;
 pub(crate) mod settle;
 pub(crate) mod shutdown;
 
+pub(crate) use registry::group_enabled;
+
 use async_trait::async_trait;
 use cdp_browser_lite::CdpClient;
 use rust_mcp_sdk::{McpServer, mcp_server::ServerHandler, schema::*};
