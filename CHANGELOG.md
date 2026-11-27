@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 `browser-control-mcp` is the successor of `chrome-debug-mcp` 1.5.6 and starts
 from a copy of its code: entries describe the differences from that release.
 
+## [Unreleased]
+
+### Changed
+
+- `bidi-browser-lite` 0.1.8 (`bidi-lite` 0.1.7: the debugger follows the
+  tab's dedicated workers).
+
 ## [1.0.0-rc.5] - 2026-11-27
 
 Fifth release candidate. What the server puts in the model's context
