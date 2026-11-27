@@ -13,7 +13,7 @@ It is the successor of
 from a copy of its code) and complements Playwright MCP or
 chrome-devtools-mcp with runtime JavaScript debugging on both browsers.
 
-> **Status: release candidate (1.0.0-rc.4).** Feature-complete for 1.0:
+> **Status: release candidate (1.0.0-rc.5).** Feature-complete for 1.0:
 > until 1.0.0 only bugs are fixed, and tools, arguments and replies do not
 > change unless a fix needs it. Differences between Chrome and Firefox are
 > in [Limitations and TODO](#limitations-and-todo); what has not been
@@ -25,8 +25,8 @@ chrome-devtools-mcp with runtime JavaScript debugging on both browsers.
 
 ## Comparison with Playwright MCP, chrome-devtools-mcp and Selenium MCP
 
-Measured on 2026-11-27 with browser-control-mcp built from the current
-sources (1.0.0-rc.4 and the changes since), `@playwright/mcp` 0.0.86,
+Measured on 2026-11-27 with browser-control-mcp 1.0.0-rc.5 built from
+the current sources, `@playwright/mcp` 0.0.86,
 `chrome-devtools-mcp` 1.14.0 (the latest of both on npm that day) and the
 official Selenium MCP server (`SeleniumHQ/mcp` 0.1.0, "v1 in progress",
 not on npm yet: a checkout of commit `ae86da8`), driven by the
@@ -370,7 +370,7 @@ curl --proto '=https' --tlsv1.2 -LsSf https://github.com/raultov/browser-control
 
 **4. Cargo**, if you already have Rust:
 ```bash
-cargo install browser-control-mcp --version 1.0.0-rc.4   # compiles from crates.io
+cargo install browser-control-mcp --version 1.0.0-rc.5   # compiles from crates.io
 cargo binstall browser-control-mcp    # with cargo-binstall: fetches the pre-compiled binary, no compile
 ```
 
@@ -399,7 +399,7 @@ brew install raultov/tap/browser-control-mcp
 
 **4. Cargo**, if you already have Rust:
 ```bash
-cargo install browser-control-mcp --version 1.0.0-rc.4   # compiles from crates.io
+cargo install browser-control-mcp --version 1.0.0-rc.5   # compiles from crates.io
 cargo binstall browser-control-mcp    # with cargo-binstall: fetches the pre-compiled binary, no compile
 ```
 
@@ -425,7 +425,7 @@ powershell -ExecutionPolicy Bypass -c "irm https://github.com/raultov/browser-co
 
 **4. Cargo**, if you already have Rust:
 ```powershell
-cargo install browser-control-mcp --version 1.0.0-rc.4   # compiles from crates.io
+cargo install browser-control-mcp --version 1.0.0-rc.5   # compiles from crates.io
 cargo binstall browser-control-mcp    # with cargo-binstall: fetches the pre-compiled binary, no compile
 ```
 

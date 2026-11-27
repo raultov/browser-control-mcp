@@ -8,7 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 `browser-control-mcp` is the successor of `chrome-debug-mcp` 1.5.6 and starts
 from a copy of its code: entries describe the differences from that release.
 
-## [Unreleased]
+## [1.0.0-rc.5] - 2026-11-27
+
+Fifth release candidate. What the server puts in the model's context
+before any call goes from about 7 920 to 5 450 tokens, under Playwright
+MCP's 5 565: the instructions keep only the rules no tool owns and follow
+the flags, the tool descriptions say what an agent would get wrong from a
+tool's name and schema, and `instance_id` and `tab_id` are explained
+once. No tool, argument or reply changes. A new agent eval
+(`tests/compare/agent_eval`) gives Claude Code and opencode the same 13
+browser tasks and checks the page afterwards; the README comparison is
+measured again, with the tools each server exposes and the instructions
+it sends.
 
 ### Changed
 
@@ -28,11 +39,13 @@ from a copy of its code: entries describe the differences from that release.
   selector argument says "a snapshot ref (e12) or a CSS selector". The
   default tool list goes from about 6 880 to 5 140 tokens (26 536 to
   19 664 bytes), and with the instructions from about 7 920 to 5 450:
-  under Playwright MCP's 5 565. Claude Code (Sonnet 5.5) finished the
-  same 13 browser tasks 39 times out of 39 before and after, with 145
-  calls instead of 152, 3 error replies instead of 9, and 26 % fewer
-  input tokens per task (`tests/compare/agent_eval`). No tool, argument
-  or reply changes.
+  under Playwright MCP's 5 565. On the same 13 browser tasks, 3 runs each
+  (`tests/compare/agent_eval`), Claude Code with Sonnet 5.5 and opencode
+  with DeepSeek V4.1 Flash finished 39 out of 39 before and after; Claude
+  Code with 145 calls instead of 152, 3 error replies instead of 9 and
+  26 % fewer input tokens per task, opencode with 212 calls instead of
+  224, 1 error reply instead of 2 and 20 % fewer input tokens. No tool,
+  argument or reply changes.
 
 ## [1.0.0-rc.4] - 2026-11-26
 
