@@ -74,9 +74,9 @@ browser-control promises there, and what it does not, is in
 | Task | browser-control-mcp | Playwright MCP | chrome-devtools-mcp | Selenium MCP |
 | --- | --- | --- | --- | --- |
 | MCP tools exposed | 31 by default; 41 with the debugger (`--tool-groups debug`); 59 with every group | 25 by default; 72 with every `--caps` | 33 by default; 63 with every category flag | 24 by default (5 of them for Selenium Grid); 47 with `--allow-evaluate --caps pdf,storage,vision` |
-| Tool list in context, default tools | 5 141 tokens (6 766 with the debugger) | 5 565 tokens | 8 672 tokens | 2 082 tokens |
+| Tool list in context, default tools | **5 141 tokens** (6 766 with the debugger) | 5 565 tokens | 8 672 tokens | 2 082 tokens |
 | Server instructions in context (Claude Code and opencode put them in the system prompt) | 309 tokens (427 with the debugger) | none | none | 96 tokens |
-| Tool list in context, every opt-in tool on | 11 535 tokens | 12 326 tokens | 16 940 tokens | 3 868 tokens |
+| Tool list in context, every opt-in tool on | **11 535 tokens** | 12 326 tokens | 16 940 tokens | 3 868 tokens |
 | Snapshot of Hacker News | **4 020 tokens** | 10 941 tokens | 6 062 tokens | 1 535 tokens, controls and headings only; 6 540 with the text (`all: true`) |
 | Snapshot of Wikipedia "Web browser" | **12 547 tokens** (cut, searchable) | 34 475 tokens | 27 590 tokens | 3 620 tokens, controls and headings only; 14 677 with the text |
 | Snapshot of MDN `<input>` | **12 543 tokens** (cut, searchable) | 158 434 tokens | 76 077 tokens | 18 986 tokens, controls and headings only; 73 416 with the text. Its navigation there fails ("Cannot find context"), though the page loads |
