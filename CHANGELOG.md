@@ -10,6 +10,12 @@ from a copy of its code: entries describe the differences from that release.
 
 ## [Unreleased]
 
+### Fixed
+
+- `mock_route` on Chrome answers the tab's service worker's own requests
+  too: they reached the network, mocked or aborted routes or not (found
+  by the target matrix's new service worker owner).
+
 ### Changed
 
 - `bidi-browser-lite` 0.1.8 (`bidi-lite` 0.1.7: the debugger follows the

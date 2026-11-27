@@ -380,6 +380,10 @@ async fn watch_service_worker(
     let _ = worker.send_raw_command_no_reply("Network.enable", NoParams);
     release(session, auto).await;
     let _ = worker.send_raw_command("Runtime.enable", NoParams).await;
+    // The tab's routes answer its own requests too (the tab's `Fetch`
+    // does not see them), from when it runs.
+    let routes = crate::handler::cdp_domains::fetch::mock_route::watch_frame;
+    routes(&sinks.routes, target_id, target).await;
     listeners
 }
 
@@ -853,6 +857,49 @@ mod tests {
         })
         .await;
         assert!(sinks.routes.lock().await.frames.is_empty());
+    }
+
+    /// #213 (found by the target matrix): the tab's service worker pauses
+    /// the requests the tab's routes match in its own session (the tab's
+    /// does not see its own requests), once it runs (a command answered
+    /// while it waits kept it from running), and a request it pauses is
+    /// fulfilled there.
+    #[tokio::test]
+    async fn the_service_worker_answers_the_tabs_routes() {
+        // Given a tab with a route, watching its targets
+        let watched = watched_tab().await;
+        let (mock, sinks) = (watched.mock, &watched.sinks);
+        let response = crate::handler::routes::MockResponse {
+            status: 200,
+            headers: vec![],
+            body: "MOCKED".into(),
+        };
+        sinks.routes.lock().await.add("*/api/*", response).unwrap();
+        // When its service worker attaches
+        let worker = attached_service_worker(&watched).await;
+        eventually(|| !mock.commands_named("Fetch.enable").is_empty()).await;
+        // Then its session pauses the route's requests after it runs
+        let order: Vec<(String, Option<String>)> = mock
+            .commands()
+            .into_iter()
+            .filter(|c| c.method == "Fetch.enable" || c.method == "Runtime.runIfWaitingForDebugger")
+            .map(|c| (c.method, c.session_id))
+            .collect();
+        let step = |method: &str, session: &str| (method.to_string(), Some(session.to_string()));
+        assert_eq!(
+            order,
+            [
+                step("Runtime.runIfWaitingForDebugger", "AUTO-S"),
+                step("Fetch.enable", &worker),
+            ]
+        );
+        // And a request it pauses is fulfilled in its session
+        let paused = json!({"requestId": "S1", "request": {"url": "http://a/api/x", "method": "GET"},
+            "resourceType": "Fetch"});
+        mock.emit("Fetch.requestPaused", paused, Some(&worker));
+        eventually(|| !mock.commands_named("Fetch.fulfillRequest").is_empty()).await;
+        let fulfilled = mock.commands_named("Fetch.fulfillRequest");
+        assert_eq!(fulfilled[0].session_id.as_deref(), Some(worker.as_str()));
     }
 
     /// ISSUE-75: once a worker detaches, the tab's log reports its URL's

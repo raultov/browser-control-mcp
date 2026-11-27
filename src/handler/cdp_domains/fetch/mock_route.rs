@@ -269,10 +269,11 @@ pub(crate) struct FrameRoutes {
     listener: ListenerHandles,
 }
 
-/// Has the frame of another origin `target_id` (its session `frame`)
-/// answer the tab's routes too, from now on and for the routes added
-/// later: called by the frame watcher before the frame runs, so its first
-/// requests are paused (#199: the tab's `Fetch` does not see them).
+/// Has the frame of another origin `target_id` (its session `frame`), or
+/// the tab's service worker, answer the tab's routes too, from now on and
+/// for the routes added later: called by the frame watcher before the
+/// frame runs, so its first requests are paused (#199: the tab's `Fetch`
+/// does not see them), and once the service worker runs (#213).
 pub(crate) async fn watch_frame(state: &Arc<Mutex<RouteState>>, target_id: &str, frame: CdpTarget) {
     let mut routes = state.lock().await;
     let mut watched = FrameRoutes {
