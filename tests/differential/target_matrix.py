@@ -210,11 +210,13 @@ class Cell:
             self.command(target, "rejectnull:" + token)
 
             def rejected(text):
-                # Firefox words it `uncaught exception: null`.
+                # Firefox words the reason `uncaught exception: null`.
                 if "{" not in text:
                     return False
-                found = [m for m in json.loads(text[text.index("{"):]).get("messages", [])
-                         if m.get("text", "").split("\n")[0].endswith(" null")]
+                messages = json.loads(text[text.index("{"):]).get("messages", [])
+                first = [(m, m.get("text", "").split("\n")[0]) for m in messages]
+                found = [m for m, line in first
+                         if line.startswith("Uncaught (in promise) ") and line.endswith(" null")]
                 return len(found) == 1 and found[0].get("level") == "error"
             return self.once("get_console_logs", details, rejected)
         if self.feature == "request":

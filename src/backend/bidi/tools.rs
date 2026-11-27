@@ -3442,6 +3442,48 @@ mod tests {
         ts::stop(&handler).await;
     }
 
+    /// Firefox: an iframe is a target of its own, whose page errors only it
+    /// reports: an unhandled rejection in one is listed once, as the
+    /// watcher words it (`Uncaught (in promise)`), not as BiDi's copy,
+    /// which does not say it was a rejection.
+    #[tokio::test]
+    async fn a_frames_rejection_is_listed_as_one() {
+        use bidi_browser_lite::test_support::fixtures::RDP_RESOURCES_ERROR_MESSAGE;
+        // Given a watched Firefox tab with an iframe of its own target
+        let mock = ts::firefox_with_debugger().await;
+        let rdp = mock.rdp().unwrap();
+        let handler = ts::handler(&mock);
+        let session = handler.firefox(None).await.unwrap();
+        session.browser().await.unwrap();
+        let frame = rdp.add_frame("http://localhost:8765/inner.html");
+        // When the iframe rejects a promise, reported by BiDi and by the
+        // iframe's target
+        let text = "Error: frame-rej";
+        let at = 1_791_822_789_737_u64;
+        let bidi = json!({"type": "javascript", "level": "error", "text": text,
+            "timestamp": at, "source": {"context": "ctx-0", "realm": "r"}});
+        mock.bidi().emit("log.entryAdded", bidi);
+        let mut error = fixture_resources(RDP_RESOURCES_ERROR_MESSAGE)[0].clone();
+        error["pageError"]["isPromiseRejection"] = json!(true);
+        error["pageError"]["errorMessage"] = json!(text);
+        rdp.emit_packet(json!({"type": "resources-available-array", "from": frame,
+            "array": [["error-message", [error]]]}));
+        // Then it is listed once, as a rejection
+        let details = json!({"include_details": true});
+        let rejected = format!("Uncaught (in promise) {text}");
+        let reply = until_contains(&handler, "get_console_logs", details, &rejected).await;
+        let body: Value = serde_json::from_str(&reply).unwrap();
+        let messages = body["messages"].as_array().unwrap();
+        let listed = |m: &&Value| m["text"].as_str().unwrap_or_default().contains(text);
+        let found: Vec<&Value> = messages.iter().filter(listed).collect();
+        assert_eq!(found.len(), 1, "{reply}");
+        assert!(
+            found[0]["text"].as_str().unwrap().starts_with(&rejected),
+            "{reply}"
+        );
+        ts::stop(&handler).await;
+    }
+
     /// BKD-06: Tab ids are MCP-level and map to native ids.
     #[tokio::test]
     async fn tab_ids_map_to_native_ids() {

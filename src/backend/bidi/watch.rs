@@ -27,7 +27,7 @@ use tokio_stream::StreamExt;
 /// The watcher resources read per tab.
 pub(crate) const RESOURCE_TYPES: &[&str] = &[
     "websocket",
-    "error-message",
+    ERROR_MESSAGE,
     "css-message",
     "platform-message",
 ];
@@ -43,7 +43,10 @@ pub(crate) struct TabBuffers {
 
 /// Watches [`RESOURCE_TYPES`] on `debugger`, routing them into `buffers`.
 /// The streams exist before `watchResources` is sent: Firefox announces the
-/// resources it already has right away.
+/// resources it already has right away. Page errors come from every
+/// target of the tab: each iframe, same-origin too, is one, whose errors
+/// only it reports, and BiDi's copy does not say an error was an
+/// unhandled rejection.
 pub(crate) async fn watch(
     debugger: &Debugger,
     buffers: &TabBuffers,
@@ -51,7 +54,10 @@ pub(crate) async fn watch(
     let mut handles = ListenerHandles::default();
     handles.push(watch_websockets(debugger, buffers.network.clone()));
     for &kind in RESOURCE_TYPES.iter().filter(|&&kind| kind != WEBSOCKET) {
-        let mut packets = debugger.on_resource(kind);
+        let mut packets = match kind {
+            ERROR_MESSAGE => debugger.on_any_resource(kind),
+            _ => debugger.on_resource(kind),
+        };
         let log = buffers.log.clone();
         handles.push(tokio::spawn(async move {
             while let Some(packet) = packets.next().await {
@@ -76,6 +82,10 @@ async fn log_resources(kind: &str, packet: &RdpPacket, log: &Mutex<LogState>) {
 
 /// The watcher resource of WebSocket connections and frames.
 const WEBSOCKET: &str = "websocket";
+
+/// The watcher resource of page errors (script errors, rejections, and
+/// Firefox's own reports: cookies, security).
+const ERROR_MESSAGE: &str = "error-message";
 
 /// Follows the WebSocket resources of the tab's document and of its
 /// frames: every iframe, same-origin too, is a target of its own whose

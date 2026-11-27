@@ -19,12 +19,12 @@ once. No tool, argument or reply changes. A new agent eval
 (`tests/compare/agent_eval`) gives Claude Code and opencode the same 13
 browser tasks and checks the page afterwards; the README comparison is
 measured again, with the tools each server exposes and the instructions
-it sends. Four fixes: Chrome lists a worker's `Promise.reject(null)`
+it sends. Five fixes: Chrome lists a worker's `Promise.reject(null)`
 after the worker started one of its own (#223), `cookies` picks the
 `Secure` cookies of a loopback host over http (#220), `evaluate_js` places
-an error in code with a top-level `await` in that code (#221), and
-Firefox's `search_scripts` reads each inline script within its span of
-the page (#222).
+an error in code with a top-level `await` in that code (#221), Firefox's
+`search_scripts` reads each inline script within its span of the page
+(#222), and Firefox says that an iframe's unhandled rejection is one.
 
 ### Changed
 
@@ -78,13 +78,22 @@ the page (#222).
   page as its source, so text outside every script matched, and a match
   in an inline script was listed once per inline script of the page
   (#222).
+- `get_console_logs` on Firefox lists an unhandled rejection in an iframe
+  (or in a worker of one) as `Uncaught (in promise) …`, as in the page.
+  Each iframe, same-origin too, is a target of its own whose page errors
+  only it reports, and they were read from the page's target alone: the
+  iframe's rejection was listed as WebDriver BiDi words it, which does not
+  say it was a rejection (`uncaught exception: null` for
+  `Promise.reject(null)`). An iframe's script errors and Firefox's own
+  reports in it (a rejected cookie) now carry the page's labels
+  (`javascript`, `security`), where they read `exception` and `other`.
 
 ### Development
 
 - `tests/differential/target_matrix.py` has one more owner, a worker that
   started an idle worker of its own (#223), and one more feature in every
-  kind of target, an unhandled rejection whose reason is `null`: 108
-  cells per browser.
+  kind of target, an unhandled rejection whose reason is `null`, listed
+  as a rejection (`Uncaught (in promise)`): 108 cells per browser.
 
 ## [1.0.0-rc.4] - 2026-11-26
 
