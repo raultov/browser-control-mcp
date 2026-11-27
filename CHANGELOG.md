@@ -19,7 +19,12 @@ once. No tool, argument or reply changes. A new agent eval
 (`tests/compare/agent_eval`) gives Claude Code and opencode the same 13
 browser tasks and checks the page afterwards; the README comparison is
 measured again, with the tools each server exposes and the instructions
-it sends.
+it sends. Four fixes: Chrome lists a worker's `Promise.reject(null)`
+after the worker started one of its own (#223), `cookies` picks the
+`Secure` cookies of a loopback host over http (#220), `evaluate_js` places
+an error in code with a top-level `await` in that code (#221), and
+Firefox's `search_scripts` reads each inline script within its span of
+the page (#222).
 
 ### Changed
 
