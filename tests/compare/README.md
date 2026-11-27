@@ -69,11 +69,19 @@ python3 -I tests/compare/agent_eval/run.py --only 'form|select' --runs 1   # som
 - `run.py`: `--runs 3` per task and client, `--jobs 3` at once, then
   `results/agent-<time>-<label>/` (`report.md`, `results.json`, the call
   logs). With `--baseline`, the report compares per task and gives the
-  verdict: total passes not lower, no task falling from all its runs to a
-  third or less, calls and error replies at most 10 % higher.
+  verdict, per judged run: the pass rate not lower, no task falling from
+  all its runs to a third or less, calls and error replies at most 10 %
+  higher, and at least two thirds of the baseline's judged runs.
+  `--rejudge <results.json>` classifies a run's rows again from its logs.
+- A run the client broke is an error (`E`), not judged: the CLI failed (a
+  provider's quota, a rate limit), or the model was not given the tool
+  list (fewer input tokens than the list holds; opencode did that near
+  the end of a provider's quota).
 
-It spends model tokens (78 short agent runs by default) and its outcome
-varies from run to run: compare runs of the same CLIs and models only.
+It spends model tokens (78 short agent runs by default; a provider's
+quota can run out: 100 runs of the default opencode model used up a
+week's quota of Gemini through Antigravity) and its outcome varies from
+run to run: compare runs of the same CLIs and models only.
 
 ## Servers
 
@@ -96,7 +104,7 @@ needs a token. A checkout at the pinned commit (`SELENIUM_COMMIT` in
 
 ```sh
 git clone https://github.com/SeleniumHQ/mcp ~/.local/share/selenium-mcp/mcp
-cd ~/.local/share/selenium-mcp/mcp && git checkout de8899c && rm .npmrc
+cd ~/.local/share/selenium-mcp/mcp && git checkout ae86da8 && rm .npmrc
 npm pkg set dependencies.selenium-webdriver=^4.54.0 && npm install --omit=dev
 ```
 

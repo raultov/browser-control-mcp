@@ -171,18 +171,44 @@ def one_run(args, site, task, client, index, out_dir):
     finally:
         proxy.stop()
         shutil.rmtree(work, ignore_errors=True)
-    calls = []
+    return add_calls(row, log)
+
+
+def add_calls(row, log):
+    """`row` with the calls the proxy logged; a run whose model was not
+    given the tool list (the client sent fewer input tokens than the list
+    holds: seen with opencode near a provider's quota) is the client's
+    error, not a failure of the server."""
+    calls, listed = [], 0
     with open(log) as f:
         for line in f:
             entry = json.loads(line)
             if entry.get("event") == "call":
                 calls.append(entry)
+            elif entry.get("event") == "tools/list":
+                listed = entry["chars"] // 4
     row["calls"] = len(calls)
     row["error_replies"] = sum(1 for c in calls if c["error"])
     row["reply_tokens"] = sum(c["chars"] for c in calls) // 4
     row["tools"] = [c["tool"] for c in calls]
     row["errors"] = [f"{c['tool']}: {c.get('message', '')[:160]}" for c in calls if c["error"]]
+    if row["status"] in ("pass", "fail") and row.get("model_input_tokens", 0) < listed:
+        row["status"] = "error"
+        row["note"] = f"the model was not given the tool list ({row['model_input_tokens']} input tokens)"
     return row
+
+
+def rejudge(path):
+    """Applies `add_calls` again to the rows of a results.json, from its
+    logs, and rewrites it."""
+    with open(path) as f:
+        data = json.load(f)
+    logs = os.path.join(os.path.dirname(path), "logs")
+    for row in data["rows"]:
+        add_calls(row, os.path.join(logs, f"{row['task']}.{row['client']}.{row['run']}.jsonl"))
+    with open(path, "w") as f:
+        json.dump(data, f, indent=1, ensure_ascii=False)
+    return data
 
 
 def summary(rows):
@@ -264,9 +290,11 @@ def totals_text(rows):
 
 
 def verdict(table, before):
-    """The acceptance rule of the plan: total passes not lower; no task falls
-    from all runs to a third or less; error replies and calls at most 10 %
-    higher in total."""
+    """The acceptance rule of the plan, per judged run (a run the client
+    broke is left out on both sides): the pass rate not lower; no task falls
+    from all runs to a third or less; error replies and calls per run at
+    most 10 % higher. Fewer than two thirds of the baseline's judged runs
+    decide nothing."""
     out = []
     ok = True
     clients = sorted({c for _, c in table})
@@ -274,24 +302,27 @@ def verdict(table, before):
         keys = [k for k in table if k[1] == client and k in before]
         now = {k: table[k] for k in keys}
         old = {k: before[k] for k in keys}
-        passes_now = sum(c["pass"] for c in now.values())
-        passes_old = sum(c["pass"] for c in old.values())
-        calls_now = sum(c["calls"] for c in now.values())
-        calls_old = sum(c["calls"] for c in old.values())
-        err_now = sum(c["error_replies"] for c in now.values())
-        err_old = sum(c["error_replies"] for c in old.values())
+        judged_now = sum(c["pass"] + c["fail"] for c in now.values())
+        judged_old = sum(c["pass"] + c["fail"] for c in old.values())
+        if not judged_now or not judged_old:
+            ok = False
+            out.append(f"- **{client}**: no judged run to compare")
+            continue
+        rate = lambda cells, k, n: sum(c[k] for c in cells.values()) / n
         problems = []
-        if passes_now < passes_old:
-            problems.append(f"passes {passes_now} < {passes_old}")
+        if judged_now * 3 < judged_old * 2:
+            problems.append(f"only {judged_now} judged runs against {judged_old}: too few to decide")
+        if rate(now, "pass", judged_now) < rate(old, "pass", judged_old):
+            problems.append(f"pass rate {rate(now, 'pass', judged_now):.0%} < {rate(old, 'pass', judged_old):.0%}")
         for key in keys:
             o, n = old[key], now[key]
             oj, nj = o["pass"] + o["fail"], n["pass"] + n["fail"]
             if oj and nj and o["pass"] == oj and n["pass"] * 3 <= nj:
                 problems.append(f"{key[0]} fell from {o['pass']}/{oj} to {n['pass']}/{nj}")
-        if calls_now > calls_old * 1.1 + 1:
-            problems.append(f"calls {calls_now} > {calls_old} + 10 %")
-        if err_now > err_old * 1.1 + 1:
-            problems.append(f"error replies {err_now} > {err_old} + 10 %")
+        for what in ("calls", "error_replies"):
+            mine, theirs = rate(now, what, judged_now), rate(old, what, judged_old)
+            if mine > theirs * 1.1 + 0.1:
+                problems.append(f"{what} per run {mine:.2f} > {theirs:.2f} + 10 %")
         ok = ok and not problems
         out.append(f"- **{client}**: " + ("accepted" if not problems else "; ".join(problems)))
     out.append("")
@@ -311,8 +342,20 @@ def main():
     parser.add_argument("--timeout", type=int, default=300, help="seconds per run")
     parser.add_argument("--label", default="run")
     parser.add_argument("--baseline", help="results.json of an earlier run to compare with")
+    parser.add_argument("--rejudge", help="results.json to classify again from its logs, then report")
     args = parser.parse_args()
     args.bin = os.path.abspath(args.bin)
+    baseline_rows = None
+    if args.baseline:
+        with open(args.baseline) as f:
+            baseline_rows = json.load(f)["rows"]
+    if args.rejudge:
+        data = rejudge(args.rejudge)
+        text = report(data["rows"], baseline_rows, data["label"])
+        with open(os.path.join(os.path.dirname(args.rejudge), "report.md"), "w") as f:
+            f.write(text)
+        print(text)
+        return
 
     started = datetime.datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
     out_dir = os.path.join(COMPARE, "results", f"agent-{started}-{args.label}")
@@ -332,10 +375,6 @@ def main():
                       f"{row['note'][:100]}", flush=True)
     finally:
         site.stop()
-    baseline_rows = None
-    if args.baseline:
-        with open(args.baseline) as f:
-            baseline_rows = json.load(f)["rows"]
     with open(os.path.join(out_dir, "results.json"), "w") as f:
         json.dump({"label": args.label, "started": started, "bin": args.bin,
                    "models": {"claude": args.claude_model, "opencode": args.opencode_model}, "rows": rows},
