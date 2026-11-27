@@ -76,6 +76,62 @@ pub struct AsyncForm {
     /// (but on a page paused in Chrome's debugger, where nothing can be
     /// awaited).
     pub wrapped: String,
+    /// Where the code sits in [`Self::wrapped`].
+    layout: Layout,
+}
+
+/// What [`AsyncForm::wrapped`] opens with.
+const WRAP_OPEN: &str = "(async () => { ";
+
+/// What [`AsyncForm::wrapped`] puts before the last expression.
+const WRAP_RETURN: &str = "return (";
+
+/// Where the code sits in [`AsyncForm::wrapped`], as browsers count
+/// positions: 0-based lines and columns in UTF-16 units.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Layout {
+    /// Where [`WRAP_RETURN`] went in: the last expression's start.
+    returned: Option<(usize, usize)>,
+    /// Where the code kept ends (the last expression's, or the code's);
+    /// the wrapper's closing follows.
+    end: (usize, usize),
+}
+
+impl AsyncForm {
+    /// The position in the code of `line` and `column` in
+    /// [`Self::wrapped`] (0-based, columns in UTF-16 units, as browsers
+    /// report an exception's), `None` in the wrapper (#221). Both browsers
+    /// place an error of the returned expression at `return`: that is the
+    /// expression's start.
+    pub fn position_in_code(&self, line: usize, column: usize) -> Option<(usize, usize)> {
+        let Layout { returned, end } = self.layout;
+        let mut column = match line {
+            0 => column.checked_sub(WRAP_OPEN.len())?,
+            _ => column,
+        };
+        if let Some((at_line, at)) = returned
+            && line == at_line
+            && column >= at
+        {
+            column = column.saturating_sub(WRAP_RETURN.len()).max(at);
+        }
+        ((line, column) < end).then_some((line, column))
+    }
+}
+
+/// The position of byte `at` of `code`: 0-based line (after each line
+/// terminator, `\r\n` counting once) and column in UTF-16 units.
+fn position_of(code: &str, at: usize) -> (usize, usize) {
+    let mut chars = code.get(..at).unwrap_or(code).chars().peekable();
+    let (mut line, mut column) = (0, 0);
+    while let Some(c) = chars.next() {
+        match c {
+            '\r' if chars.peek() == Some(&'\n') => {}
+            '\n' | '\r' | '\u{2028}' | '\u{2029}' => (line, column) = (line + 1, 0),
+            _ => column += c.len_utf16(),
+        }
+    }
+    (line, column)
 }
 
 /// [`AsyncForm`] of `code`, from one parse.
@@ -87,14 +143,27 @@ pub fn async_form(code: &str) -> AsyncForm {
         let end = usize::try_from(span.end).ok()?.checked_sub(OPEN.len())?;
         Some((code.get(..start)?, code.get(start..end)?))
     });
-    let wrapped = match last {
+    let (wrapped, layout) = match last {
         // The line break ends a comment inside the last line.
-        Some((head, last)) => format!("(async () => {{ {head}return ({last}\n); }})()"),
-        None => format!("(async () => {{ {code}\n}})()"),
+        Some((head, last)) => (
+            format!("{WRAP_OPEN}{head}{WRAP_RETURN}{last}\n); }})()"),
+            Layout {
+                returned: Some(position_of(code, head.len())),
+                end: position_of(code, head.len() + last.len()),
+            },
+        ),
+        None => (
+            format!("{WRAP_OPEN}{code}\n}})()"),
+            Layout {
+                returned: None,
+                end: position_of(code, code.len()),
+            },
+        ),
     };
     AsyncForm {
         awaits: parsed.is_some_and(|p| p.awaits),
         wrapped,
+        layout,
     }
 }
 
@@ -988,5 +1057,44 @@ mod tests {
         with_top_level_await(&fewer);
         // Then it is quick
         assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    }
+
+    /// #221: a position the browser gives in the wrapped code (0-based,
+    /// columns in UTF-16 units) is read in the agent's code: past the
+    /// wrapper's opening on the first line and its `return (` on the last
+    /// expression's line; one at `return` (where both browsers put an
+    /// error of the returned expression) is the expression's start; one in
+    /// the wrapper is none.
+    #[test]
+    fn positions_in_the_wrapped_code_are_read_in_the_code() {
+        // Given code wrapped as an async function, and positions the
+        // browser gave in the wrapped code
+        let cases = [
+            // Then the first line loses the wrapper's opening
+            ("await 0;\n  nope_c;\n1", (1, 2), Some((1, 2))),
+            ("const v = await nope; v", (0, 31), Some((0, 16))),
+            // And the returned expression loses `return (`, measured at
+            // `return` or inside the expression
+            ("await 0; nope_a", (0, 24), Some((0, 9))),
+            ("await 0; nope_a", (0, 32), Some((0, 9))),
+            ("await 0; libThrow()", (0, 32), Some((0, 9))),
+            ("const v = await 1;\nnope_b + v", (1, 0), Some((1, 0))),
+            ("const v = await 1;\nnope_b + v", (1, 17), Some((1, 9))),
+            ("  await 0; nope_d", (0, 26), Some((0, 11))),
+            // And columns count UTF-16 units, lines every line terminator
+            ("await 0; 'ñ😀'; nope_u;\n1", (0, 31), Some((0, 16))),
+            ("await 0;\r\n'é'\u{2028}nope", (2, 8), Some((2, 0))),
+            // And a position in the wrapper is none: its opening, past the
+            // code kept (its closing), and code without a last value too
+            ("await 0; nope_a", (0, 3), None),
+            ("await 0; nope_a", (1, 5), None),
+            ("await 0; nope_a // c", (0, 40), None),
+            ("await 0; let x = nope;", (0, 32), Some((0, 17))),
+            ("await 0; let x = nope;", (1, 2), None),
+        ];
+        for (code, (line, column), expected) in cases {
+            let found = async_form(code).position_in_code(line, column);
+            assert_eq!(found, expected, "{code:?} at {line}:{column}");
+        }
     }
 }

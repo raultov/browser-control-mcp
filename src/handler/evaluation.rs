@@ -11,6 +11,7 @@
 //! [`exception_message`]'s wording. A result over [`EVAL_MAX_CHARS`] is cut
 //! (strings) or described (objects) and marked `truncated: true`.
 
+use crate::util::top_level_await::AsyncForm;
 use rust_mcp_sdk::schema::CallToolResult;
 use serde_json::{Value, json};
 
@@ -260,31 +261,63 @@ pub(crate) fn exception_message(thrown: &str, line: i64, column: i64) -> String 
     format!("{thrown} (line {line}, column {column})")
 }
 
+/// The `(line L, column C)` that ends `message`, an exception's text
+/// ([`exception_message`]): where the text before it ends, and the line
+/// and column.
+fn message_position(message: &str) -> Option<(usize, usize, usize)> {
+    const OPEN: &str = " (line ";
+    let at = message.rfind(OPEN)?;
+    let (line, column) = message[at + OPEN.len()..]
+        .strip_suffix(')')?
+        .split_once(", column ")?;
+    Some((at, line.trim().parse().ok()?, column.trim().parse().ok()?))
+}
+
 /// `message`, an exception's text, without its `(line L, column C)` when
 /// that line is past the lines of `expression`: the position is then in
 /// the evaluation's own wrapper (Firefox) or where a promise settled
 /// (Chrome), not in the agent's code (ISSUE-88).
 pub(crate) fn within_expression(message: &str, expression: &str) -> String {
-    let Some(at) = message.rfind(" (line ") else {
-        return message.to_string();
-    };
-    let line = message[at + " (line ".len()..]
-        .split(',')
-        .next()
-        .and_then(|n| n.trim().parse::<usize>().ok());
     let lines = expression.lines().count().max(1);
-    match line {
-        Some(line) if line > lines && message.ends_with(')') => message[..at].to_string(),
+    match message_position(message) {
+        Some((at, line, _)) if line > lines => message[..at].to_string(),
         _ => message.to_string(),
     }
 }
 
+/// `message`, an exception's text with its position in the code that ran
+/// (`form`'s wrapped code), with the position in the agent's code instead,
+/// or none when it is in the wrapper (#221).
+fn in_code(message: &str, form: &AsyncForm) -> String {
+    let Some((at, line, column)) = message_position(message) else {
+        return message.to_string();
+    };
+    let position = line
+        .checked_sub(1)
+        .zip(column.checked_sub(1))
+        .and_then(|(line, column)| form.position_in_code(line, column));
+    let text = &message[..at];
+    match position {
+        Some((line, column)) => exception_message(
+            text,
+            i64::try_from(line).unwrap_or(i64::MAX),
+            i64::try_from(column).unwrap_or(i64::MAX),
+        ),
+        None => text.to_string(),
+    }
+}
+
 /// The error `evaluate_js` answers with for the exception text `message`
-/// of `expression`: [`within_expression`], and for code too long to look
-/// for a top-level `await` in, why and what to do
+/// of `expression`, run as `wrapped` when it was ([`in_code`]):
+/// [`within_expression`], and for code too long to look for a top-level
+/// `await` in, why and what to do
 /// ([`crate::util::top_level_await::over_limit_note`]).
-pub(crate) fn error_text(message: &str, expression: &str) -> String {
-    let message = within_expression(message, expression);
+pub(crate) fn error_text(message: &str, expression: &str, wrapped: Option<&AsyncForm>) -> String {
+    let message = match wrapped {
+        Some(form) => in_code(message, form),
+        None => message.to_string(),
+    };
+    let message = within_expression(&message, expression);
     match crate::util::top_level_await::over_limit_note(expression) {
         Some(note) => format!("{}. {note}", message.trim_end_matches('.')),
         None => message,
@@ -341,11 +374,37 @@ pub(crate) fn from_cdp(remote: &Value, by_value: Option<Value>) -> Evaluation {
 
 /// The error text of CDP `exceptionDetails` (`evaluate_js`).
 pub(crate) fn cdp_exception(details: &Value) -> String {
-    exception_message(
-        &cdp_thrown(details),
-        details["lineNumber"].as_i64().unwrap_or(0),
-        details["columnNumber"].as_i64().unwrap_or(0),
-    )
+    let thrown = cdp_thrown(details);
+    match cdp_place(details) {
+        Some((line, column)) => exception_message(&thrown, line, column),
+        None => thrown,
+    }
+}
+
+/// Where in the evaluated code an exception happened (0-based): the
+/// innermost frame of that code, which has no URL (a page script has one:
+/// a function of it the code called is not in the code), not the details'
+/// place, 1-based for a rejection (read from the error's stack, #221).
+/// Without a stack, the details' place when they name a script (a thrown
+/// value that is not an error); a rejected one has none.
+fn cdp_place(details: &Value) -> Option<(i64, i64)> {
+    let number = |value: &Value, key: &str| value[key].as_i64().unwrap_or(0);
+    let frames = details
+        .pointer("/stackTrace/callFrames")
+        .and_then(Value::as_array)
+        .filter(|frames| !frames.is_empty());
+    match frames {
+        Some(frames) => frames
+            .iter()
+            .find(|frame| frame["url"].as_str().is_none_or(str::is_empty))
+            .map(|frame| (number(frame, "lineNumber"), number(frame, "columnNumber"))),
+        None => details.get("scriptId").map(|_| {
+            (
+                number(details, "lineNumber"),
+                number(details, "columnNumber"),
+            )
+        }),
+    }
 }
 
 /// What CDP `exceptionDetails` says was thrown: the first line of an
@@ -587,6 +646,49 @@ mod tests {
         assert_eq!(
             cdp_exception(&string["result"]["exceptionDetails"]),
             "boom (line 1, column 7)"
+        );
+    }
+
+    /// #221 (Chrome): an exception of code that ran wrapped (top-level
+    /// `await`) is placed in the agent's code: at the innermost frame of
+    /// the evaluated code (the details of a rejection are 1-based, and a
+    /// page script's line is not in the code), past the wrapper's
+    /// additions; a position in the wrapper is left out.
+    #[test]
+    fn exceptions_of_wrapped_code_are_placed_in_the_code() {
+        // Given what Chrome 158 answered for wrapped code
+        let chrome: Value = serde_json::from_str(include_str!(
+            "../../tests/fixtures/cdp/runtime-evaluate-top-level-await.json"
+        ))
+        .unwrap();
+        let form = crate::util::js::async_form;
+        let error = |code: &str| {
+            let thrown = cdp_exception(&chrome[code]["exceptionDetails"]);
+            error_text(&thrown, code, Some(&form(code)))
+        };
+        // Then the position is the one in the code
+        assert_eq!(
+            error("await 0;\n  nope_c;\n1"),
+            "ReferenceError: nope_c is not defined (line 2, column 3)"
+        );
+        assert_eq!(
+            error("await 0; nope_a"),
+            "ReferenceError: nope_a is not defined (line 1, column 10)"
+        );
+        // And an error a page script threw is placed at the call
+        assert_eq!(
+            error("await 0; libThrow()"),
+            "Error: in lib (line 1, column 10)"
+        );
+        // And a position in the wrapper is left out
+        let code = "await 0; x";
+        assert_eq!(
+            error_text("Error: e (line 1, column 3)", code, Some(&form(code))),
+            "Error: e"
+        );
+        assert_eq!(
+            error_text("Error: e (line 1, column 3)", code, None),
+            "Error: e (line 1, column 3)"
         );
     }
 }

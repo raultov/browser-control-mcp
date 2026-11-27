@@ -59,14 +59,12 @@ impl EvaluateJsTool {
         // `replMode`, whose `const`s outlive the call). Code not parsed
         // (too long, or not JavaScript) runs once, as written (#188).
         let form = crate::util::js::async_form(&args.expression);
-        let code = match !paused && form.awaits {
-            true => form.wrapped.as_str(),
-            false => args.expression.as_str(),
-        };
+        let wrapped = (!paused && form.awaits).then_some(&form);
+        let code = wrapped.map_or(args.expression.as_str(), |form| form.wrapped.as_str());
         let evaluated = evaluate(code).await;
-        evaluated
-            .map(|evaluation| evaluation.reply())
-            .map_err(|e| CallToolError::from_message(evaluation::error_text(&e, &args.expression)))
+        evaluated.map(|evaluation| evaluation.reply()).map_err(|e| {
+            CallToolError::from_message(evaluation::error_text(&e, &args.expression, wrapped))
+        })
     }
 }
 

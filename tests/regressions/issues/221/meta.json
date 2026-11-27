@@ -1,0 +1,10 @@
+{
+ "number": 221,
+ "title": "evaluate_js: wrong line and column for an error in code with top-level await",
+ "family": "top-level-await",
+ "command": [
+  "repro_tla_position.py"
+ ],
+ "bug_regex": "WRONG POSITION on (chrome|firefox)",
+ "exit_on_bug": true
+}

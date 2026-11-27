@@ -1,0 +1,102 @@
+{
+  "await 0;\n  nope_c;\n1": {
+    "exceptionDetails": {
+      "columnNumber": 3,
+      "exception": {
+        "className": "ReferenceError",
+        "description": "ReferenceError: nope_c is not defined\n    at <anonymous>:2:3",
+        "objectId": "5167642929426581764.2.2",
+        "subtype": "error",
+        "type": "object"
+      },
+      "exceptionId": 1,
+      "lineNumber": 2,
+      "scriptId": "4",
+      "stackTrace": {
+        "callFrames": [
+          {
+            "columnNumber": 2,
+            "functionName": "",
+            "lineNumber": 1,
+            "scriptId": "4",
+            "url": ""
+          }
+        ]
+      },
+      "text": "Uncaught (in promise) ReferenceError: nope_c is not defined"
+    },
+    "result": {
+      "type": "object",
+      "value": {}
+    }
+  },
+  "await 0; nope_a": {
+    "exceptionDetails": {
+      "columnNumber": 25,
+      "exception": {
+        "className": "ReferenceError",
+        "description": "ReferenceError: nope_a is not defined\n    at <anonymous>:1:25",
+        "objectId": "5167642929426581764.2.3",
+        "subtype": "error",
+        "type": "object"
+      },
+      "exceptionId": 2,
+      "lineNumber": 1,
+      "scriptId": "5",
+      "stackTrace": {
+        "callFrames": [
+          {
+            "columnNumber": 24,
+            "functionName": "",
+            "lineNumber": 0,
+            "scriptId": "5",
+            "url": ""
+          }
+        ]
+      },
+      "text": "Uncaught (in promise) ReferenceError: nope_a is not defined"
+    },
+    "result": {
+      "type": "object",
+      "value": {}
+    }
+  },
+  "await 0; libThrow()": {
+    "exceptionDetails": {
+      "columnNumber": 9,
+      "exception": {
+        "className": "Error",
+        "description": "Error: in lib\n    at window.libThrow (http://127.0.0.1:8000/lib.js:2:9)\n    at <anonymous>:1:33",
+        "objectId": "5167642929426581764.2.4",
+        "subtype": "error",
+        "type": "object"
+      },
+      "exceptionId": 3,
+      "lineNumber": 2,
+      "scriptId": "3",
+      "stackTrace": {
+        "callFrames": [
+          {
+            "columnNumber": 8,
+            "functionName": "window.libThrow",
+            "lineNumber": 1,
+            "scriptId": "3",
+            "url": "http://127.0.0.1:8000/lib.js"
+          },
+          {
+            "columnNumber": 32,
+            "functionName": "",
+            "lineNumber": 0,
+            "scriptId": "6",
+            "url": ""
+          }
+        ]
+      },
+      "text": "Uncaught (in promise) Error: in lib"
+    },
+    "result": {
+      "type": "object",
+      "value": {}
+    }
+  }
+}

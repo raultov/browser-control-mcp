@@ -58,6 +58,16 @@ it sends.
   sends over http to a loopback host (`127.0.0.1`, `[::1]`, `localhost`
   and its subdomains), which Chrome and Firefox treat as secure: `get`
   left them out and `delete` left them behind (#220).
+- `evaluate_js` gives the line and column of an exception in code with a
+  top-level `await` in the agent's code. That code runs wrapped in an
+  async function: Firefox counted the wrapper's opening in the column,
+  both browsers placed an error of the last expression at the `return`
+  the wrapper adds, and Chrome gave an awaited rejection's position
+  1-based, so positions were off or left out (#221). The place is now the
+  innermost frame of the evaluated code: an error thrown in a function of
+  a page script is placed at the call in the expression rather than at a
+  line of that script (Firefox cannot tell the page's inline scripts from
+  the expression).
 
 ### Development
 

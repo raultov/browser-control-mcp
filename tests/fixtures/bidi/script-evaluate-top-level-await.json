@@ -1,0 +1,92 @@
+{
+  "await 0;\n  nope_c;\n1": {
+    "exceptionDetails": {
+      "columnNumber": 2,
+      "exception": {
+        "type": "error"
+      },
+      "lineNumber": 1,
+      "stackTrace": {
+        "callFrames": [
+          {
+            "columnNumber": 2,
+            "functionName": "",
+            "lineNumber": 1,
+            "url": "http://127.0.0.1:8000/basic.html"
+          },
+          {
+            "columnNumber": 5,
+            "functionName": "",
+            "lineNumber": 3,
+            "url": "http://127.0.0.1:8000/basic.html"
+          }
+        ]
+      },
+      "text": "ReferenceError: nope_c is not defined"
+    },
+    "realm": "b579dabc-c7e4-4f69-9f00-313c7ecbbeec",
+    "type": "exception"
+  },
+  "await 0; nope_a": {
+    "exceptionDetails": {
+      "columnNumber": 24,
+      "exception": {
+        "type": "error"
+      },
+      "lineNumber": 0,
+      "stackTrace": {
+        "callFrames": [
+          {
+            "columnNumber": 24,
+            "functionName": "",
+            "lineNumber": 0,
+            "url": "http://127.0.0.1:8000/basic.html"
+          },
+          {
+            "columnNumber": 5,
+            "functionName": "",
+            "lineNumber": 1,
+            "url": "http://127.0.0.1:8000/basic.html"
+          }
+        ]
+      },
+      "text": "ReferenceError: nope_a is not defined"
+    },
+    "realm": "b579dabc-c7e4-4f69-9f00-313c7ecbbeec",
+    "type": "exception"
+  },
+  "await 0; libThrow()": {
+    "exceptionDetails": {
+      "columnNumber": 8,
+      "exception": {
+        "type": "error"
+      },
+      "lineNumber": 1,
+      "stackTrace": {
+        "callFrames": [
+          {
+            "columnNumber": 8,
+            "functionName": "window.libThrow",
+            "lineNumber": 1,
+            "url": "http://127.0.0.1:8000/lib.js"
+          },
+          {
+            "columnNumber": 32,
+            "functionName": "",
+            "lineNumber": 0,
+            "url": "http://127.0.0.1:8000/basic.html"
+          },
+          {
+            "columnNumber": 5,
+            "functionName": "",
+            "lineNumber": 1,
+            "url": "http://127.0.0.1:8000/basic.html"
+          }
+        ]
+      },
+      "text": "Error: in lib"
+    },
+    "realm": "b579dabc-c7e4-4f69-9f00-313c7ecbbeec",
+    "type": "exception"
+  }
+}

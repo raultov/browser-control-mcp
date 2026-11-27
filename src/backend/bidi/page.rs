@@ -314,15 +314,14 @@ pub(crate) async fn evaluate_js(
     user_gesture: bool,
 ) -> Result<Evaluation, BackendError> {
     let form = crate::util::js::async_form(expression);
-    let code = match form.awaits {
-        true => form.wrapped.as_str(),
-        false => expression,
-    };
+    let wrapped = form.awaits.then_some(&form);
+    let code = wrapped.map_or(expression, |form| form.wrapped.as_str());
     let outcome = evaluate_once(tab, code, user_gesture).await;
-    // A position past the expression is Firefox's wrapper's (ISSUE-88).
+    // A position in the server's wrapper (#221), or past the expression
+    // (Firefox's own, ISSUE-88), is not the agent's code's.
     outcome.map_err(|error| match error {
         BackendError::InvalidArgument(text) => {
-            BackendError::InvalidArgument(evaluation::error_text(&text, expression))
+            BackendError::InvalidArgument(evaluation::error_text(&text, expression, wrapped))
         }
         other => other,
     })
@@ -484,11 +483,37 @@ fn thrown(reply: &Value) -> Result<(), BackendError> {
         .get("text")
         .and_then(Value::as_str)
         .unwrap_or("exception");
+    let (line, column) = exception_place(details);
     Err(BackendError::InvalidArgument(exception_message(
-        text,
-        details["lineNumber"].as_i64().unwrap_or(0),
-        details["columnNumber"].as_i64().unwrap_or(0),
+        text, line, column,
     )))
+}
+
+/// Where in the evaluated code an exception happened (0-based): the
+/// innermost frame of that code, the script of the outermost frame (Firefox
+/// lists the async callers too), for a function of another script the code
+/// called is not in it (#221); Firefox's own frames left out. The details'
+/// place without a stack.
+fn exception_place(details: &Value) -> (i64, i64) {
+    fn url<'a>(frame: &&'a Value) -> &'a str {
+        frame["url"].as_str().unwrap_or_default()
+    }
+    let number = |value: &Value, key: &str| value[key].as_i64().unwrap_or(0);
+    let frames: Vec<&Value> = details
+        .pointer("/stackTrace/callFrames")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|frame| !super::watch::is_firefox_own(url(frame)))
+        .collect();
+    let code = frames.last().map(url);
+    match frames.iter().find(|frame| Some(url(frame)) == code) {
+        Some(frame) => (number(frame, "lineNumber"), number(frame, "columnNumber")),
+        None => (
+            number(details, "lineNumber"),
+            number(details, "columnNumber"),
+        ),
+    }
 }
 
 /// `input.setFiles` on the element `selector` names (BiDi takes the
@@ -896,6 +921,40 @@ mod tests {
         .unwrap();
         let err = outcome(&string["result"]).unwrap_err().to_string();
         assert_eq!(err, "boom (line 1, column 7)");
+    }
+
+    /// #221 (Firefox): an exception of code that ran wrapped (top-level
+    /// `await`) is placed in the agent's code: at the innermost frame of
+    /// the evaluated code (a page script's line is not in the code), past
+    /// the wrapper's opening and its `return (`.
+    #[test]
+    fn exceptions_of_wrapped_code_are_placed_in_the_code() {
+        // Given what Firefox 160 answered for wrapped code
+        let firefox: Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/bidi/script-evaluate-top-level-await.json"
+        ))
+        .unwrap();
+        let error = |code: &str| match outcome(&firefox[code]) {
+            Err(BackendError::InvalidArgument(text)) => {
+                let form = crate::util::js::async_form(code);
+                evaluation::error_text(&text, code, Some(&form))
+            }
+            other => format!("{other:?}"),
+        };
+        // Then the position is the one in the code
+        assert_eq!(
+            error("await 0;\n  nope_c;\n1"),
+            "ReferenceError: nope_c is not defined (line 2, column 3)"
+        );
+        assert_eq!(
+            error("await 0; nope_a"),
+            "ReferenceError: nope_a is not defined (line 1, column 10)"
+        );
+        // And an error a page script threw is placed at the call
+        assert_eq!(
+            error("await 0; libThrow()"),
+            "Error: in lib (line 1, column 10)"
+        );
     }
 
     /// ISSUE-43 (Firefox): a symbol is described (`this` of a function

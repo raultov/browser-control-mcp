@@ -703,9 +703,7 @@ pub(crate) struct StackFrame<'a> {
 /// Firefox's own frames (`chrome://`, `resource://`: its Remote Agent
 /// running `evaluate_js`), as Chrome leaves out its own.
 pub(crate) fn v8_stack<'a>(frames: impl Iterator<Item = StackFrame<'a>>) -> String {
-    let page = |frame: &StackFrame<'_>| {
-        !(frame.url.starts_with("chrome://") || frame.url.starts_with("resource://"))
-    };
+    let page = |frame: &StackFrame<'_>| !is_firefox_own(frame.url);
     let lines = frames.filter(page).take(MAX_STACK_FRAMES).map(|frame| {
         let place = format!("{}:{}:{}", frame.url, frame.line, frame.column);
         match frame.function {
@@ -714,6 +712,12 @@ pub(crate) fn v8_stack<'a>(frames: impl Iterator<Item = StackFrame<'a>>) -> Stri
         }
     });
     lines.collect()
+}
+
+/// Whether `url` is a script of Firefox's own (`chrome://`, `resource://`:
+/// its Remote Agent running `evaluate_js`), in no page.
+pub(crate) fn is_firefox_own(url: &str) -> bool {
+    url.starts_with("chrome://") || url.starts_with("resource://")
 }
 
 /// What a Firefox console category is about: `javascript` (script errors),
