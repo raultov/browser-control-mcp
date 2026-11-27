@@ -12,7 +12,30 @@ pub(crate) fn normalize_tool_with_options(mut tool: Tool, allow_cookie_import: b
             normalize_object(property);
         }
     }
+    drop_shared_descriptions(&mut tool);
     tool
+}
+
+/// Arguments that mean the same on every tool, which the server's
+/// instructions say once. A tool's description of one that only repeats
+/// that meaning is left out of tools/list, which is in the model's context
+/// on every turn (CTX-01); one that says more (switch_tab's tab_id) is kept.
+const SHARED_ARGUMENTS: [(&str, &str); 2] = [
+    ("instance_id", "Default: 'default'."),
+    ("tab_id", "Default: the active tab."),
+];
+
+fn drop_shared_descriptions(tool: &mut Tool) {
+    let Some(properties) = tool.input_schema.properties.as_mut() else {
+        return;
+    };
+    for (name, shared) in SHARED_ARGUMENTS {
+        if let Some(property) = properties.get_mut(name)
+            && property.get("description").and_then(Value::as_str) == Some(shared)
+        {
+            property.remove("description");
+        }
+    }
 }
 
 /// The arguments tools/list hides without `--allow-cookie-import`.
@@ -160,6 +183,36 @@ mod tests {
             .clone();
         normalize_object(&mut map);
         Value::Object(map)
+    }
+
+    /// The description `tools/list` gives `argument` of `tool`.
+    fn listed_description(tool: Tool, argument: &str) -> Option<String> {
+        let tool = normalize_tool_with_options(tool, false);
+        let properties = tool.input_schema.properties.unwrap_or_default();
+        properties
+            .get(argument)
+            .and_then(|p| p.get("description"))
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    }
+
+    /// CTX-03: an argument the instructions explain once (instance_id,
+    /// tab_id) is not described again on every tool, unless its
+    /// description says more than the shared meaning.
+    #[test]
+    fn shared_arguments_are_described_once() {
+        // Given navigate, whose instance_id and tab_id mean what they mean everywhere
+        let navigate = crate::handler::cdp_domains::page::navigate::NavigateTool::tool;
+        // Then tools/list gives them no description of their own
+        assert_eq!(listed_description(navigate(), "instance_id"), None);
+        assert_eq!(listed_description(navigate(), "tab_id"), None);
+        // And an argument of navigate that is not shared keeps its own
+        assert!(listed_description(navigate(), "url").is_some());
+        // Given switch_tab, whose tab_id is the tab to switch to
+        let switch = crate::handler::chrome_instance::switch_tab::SwitchTabTool::tool();
+        // Then that description is kept
+        let described = listed_description(switch, "tab_id").unwrap_or_default();
+        assert!(described.contains("tab-1"), "{described}");
     }
 
     #[test]
