@@ -1,0 +1,64 @@
+{
+  "sources": {
+    "from": "server1.conn1.watcher22.process8//thread1",
+    "sources": [
+      {
+        "actor": "server1.conn1.watcher22.process8//source18",
+        "extensionName": null,
+        "introductionType": "scriptElement",
+        "isBlackBoxed": false,
+        "isInlineSource": true,
+        "sourceLength": 23,
+        "sourceMapBaseURL": "http://127.0.0.1:8000/inline.html",
+        "sourceMapURL": null,
+        "sourceStartColumn": 8,
+        "sourceStartLine": 3,
+        "url": "http://127.0.0.1:8000/inline.html"
+      },
+      {
+        "actor": "server1.conn1.watcher22.process8//source19",
+        "extensionName": null,
+        "introductionType": "scriptElement",
+        "isBlackBoxed": false,
+        "isInlineSource": true,
+        "sourceLength": 37,
+        "sourceMapBaseURL": "http://127.0.0.1:8000/inline.html",
+        "sourceMapURL": null,
+        "sourceStartColumn": 23,
+        "sourceStartLine": 4,
+        "url": "http://127.0.0.1:8000/inline.html"
+      },
+      {
+        "actor": "server1.conn1.watcher22.process8//source20",
+        "extensionName": null,
+        "introductionType": "scriptElement",
+        "isBlackBoxed": false,
+        "isInlineSource": true,
+        "sourceLength": 40,
+        "sourceMapBaseURL": "http://127.0.0.1:8000/inline.html",
+        "sourceMapURL": null,
+        "sourceStartColumn": 8,
+        "sourceStartLine": 6,
+        "url": "http://127.0.0.1:8000/inline.html"
+      },
+      {
+        "actor": "server1.conn1.watcher22.process8//source21",
+        "extensionName": null,
+        "introductionType": "scriptElement",
+        "isBlackBoxed": false,
+        "isInlineSource": true,
+        "sourceLength": 38,
+        "sourceMapBaseURL": "http://127.0.0.1:8000/inline.html",
+        "sourceMapURL": null,
+        "sourceStartColumn": 8,
+        "sourceStartLine": 7,
+        "url": "http://127.0.0.1:8000/inline.html"
+      }
+    ]
+  },
+  "source": {
+    "contentType": "text/html",
+    "from": "server1.conn1.watcher22.process8//source18",
+    "source": "<!doctype html><html><body>\n<p>htmlOnlyNeedle in plain text</p>\n<script>var a = 'inlineNeedle';</script>\n<div>😀😀</div>  <script>var b = 2;\n var c = 'secondNeedle ñ';</script>\n<script>var e = '😀'; var after = 'emojiNeedle';</script>\r\n<script>var f = 'crlf';\r\n var g = 'crlfNeedle';</script>\n</body></html>\n"
+  }
+}

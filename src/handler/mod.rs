@@ -2048,15 +2048,20 @@ pub(crate) fn extract_from_value<'a>(
 /// units the browsers' debuggers use: lines end at `\n`, columns count
 /// UTF-16 code units.
 pub(crate) fn find_line_column(source: &str, pattern: &str) -> Option<(u32, u32)> {
-    let byte_index = source.find(pattern)?;
-    let prefix = &source[..byte_index];
+    source.find(pattern).map(|at| line_column_at(source, at))
+}
+
+/// The 0-based line and column of byte `at` of `source`, counted as
+/// [`find_line_column`] counts them.
+pub(crate) fn line_column_at(source: &str, at: usize) -> (u32, u32) {
+    let prefix = source.get(..at).unwrap_or(source);
     let line_start = prefix.rfind('\n').map_or(0, |i| i + 1);
     let line = prefix.matches('\n').count();
     let column = prefix[line_start..].encode_utf16().count();
-    Some((
+    (
         u32::try_from(line).unwrap_or(u32::MAX),
         u32::try_from(column).unwrap_or(u32::MAX),
-    ))
+    )
 }
 
 #[async_trait]

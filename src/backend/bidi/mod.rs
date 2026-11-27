@@ -9,6 +9,7 @@ pub(crate) mod css;
 pub(crate) mod debugger;
 pub(crate) mod frames;
 pub(crate) mod grip;
+pub(crate) mod inline_sources;
 pub(crate) mod launch;
 pub(crate) mod lighthouse;
 pub(crate) mod page;

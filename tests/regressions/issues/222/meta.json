@@ -1,0 +1,10 @@
+{
+ "number": 222,
+ "title": "search_scripts on Firefox: matches HTML text outside scripts, and repeats each inline match once per inline script",
+ "family": "other",
+ "command": [
+  "repro_search_scripts_inline_ff.py"
+ ],
+ "bug_regex": "WRONG: ",
+ "exit_on_bug": true
+}

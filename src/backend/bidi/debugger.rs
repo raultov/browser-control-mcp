@@ -400,7 +400,15 @@ fn not_paused() -> BackendError {
 /// after the first: ISSUE-62), so each thread is also asked for its
 /// `sources`; a thread that does not answer keeps what was announced.
 async fn every_source(debugger: &Debugger) -> Vec<SourceInfo> {
+    listed_sources(debugger).await.0
+}
+
+/// [`every_source`], and the threads' `sources` replies, which say more of
+/// each source than the announcements (where an inline script sits in its
+/// document, #222).
+async fn listed_sources(debugger: &Debugger) -> (Vec<SourceInfo>, Vec<Value>) {
     let mut known = announced_sources(debugger);
+    let mut replies = Vec::new();
     let frames = debugger.frame_targets().into_iter().map(|f| f.thread_actor);
     let threads = std::iter::once(debugger.thread_actor()).chain(frames);
     for thread in threads {
@@ -410,9 +418,10 @@ async fn every_source(debugger: &Debugger) -> Vec<SourceInfo> {
             .await;
         if let Ok(reply) = listed {
             merge_sources(&mut known, &reply.body);
+            replies.push(reply.body);
         }
     }
-    known
+    (known, replies)
 }
 
 /// The sources Firefox announced for the tab's document and its frames.
@@ -1104,6 +1113,8 @@ const FIREFOX_SCOPE: &str = "'scope' is not available on Firefox: its debugger e
 
 /// `search_scripts`: same query language and output as on Chrome; scripts
 /// are identified by their source actor, with their URL as `scriptHash`.
+/// An inline script is read within its span of its document, which
+/// Firefox gives as its source (#222).
 pub(crate) async fn search_scripts(
     params: CallToolRequestParams,
     handler: &McpHandler,
@@ -1112,11 +1123,9 @@ pub(crate) async fn search_scripts(
     let session = handler.firefox(args.instance_id.as_deref()).await?;
     let report = with_debugger(&session, args.tab_id.as_deref(), async |entry| {
         // Source actors name their process: frames' never collide.
-        let sources: Vec<_> = every_source(&entry.debugger)
-            .await
-            .into_iter()
-            .filter(|s| s.url.is_some())
-            .collect();
+        let (sources, replies) = listed_sources(&entry.debugger).await;
+        let spans = super::inline_sources::inline_spans(&replies);
+        let sources: Vec<_> = sources.into_iter().filter(|s| s.url.is_some()).collect();
         if args.query.is_empty() {
             return Ok(format!("Total cached scripts: {}", sources.len()));
         }
@@ -1125,20 +1134,24 @@ pub(crate) async fn search_scripts(
             match entry.debugger.source_text(&source.actor).await {
                 Ok(code) => {
                     let url = source.url.clone().unwrap_or_default();
+                    let span = spans.get(&source.actor);
+                    let (text, start) = super::inline_sources::script_text(&code, span);
                     report.add_source(
                         &args.query,
                         &ScriptText {
                             id: &source.actor,
                             hash: &url,
-                            source: &code,
-                            // Firefox gives the whole document's text.
-                            start: (0, 0),
+                            source: text,
+                            start,
                         },
                     );
                 }
                 Err(e) => report.add_error(&source.actor, e.to_string()),
             }
         }
+        // An inline script without its span is the whole document, as is
+        // every other one of its page.
+        report.drop_repeated_places();
         Ok(report.text(&args.query))
     })
     .await?;

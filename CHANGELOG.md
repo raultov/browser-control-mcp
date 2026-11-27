@@ -68,6 +68,11 @@ it sends.
   a page script is placed at the call in the expression rather than at a
   line of that script (Firefox cannot tell the page's inline scripts from
   the expression).
+- `search_scripts` on Firefox reads each inline script within its span of
+  the page, as Chrome does. Firefox gives every inline script the whole
+  page as its source, so text outside every script matched, and a match
+  in an inline script was listed once per inline script of the page
+  (#222).
 
 ### Development
 

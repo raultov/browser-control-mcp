@@ -224,6 +224,22 @@ impl SearchReport {
     }
 
     /// Records a failed source fetch; a script that no longer exists is not an error.
+    /// Keeps one match per place (script URL or hash, line, column): the
+    /// first. Firefox gives every inline script of a page its whole
+    /// document as source, so one read without its span repeats the
+    /// others' matches (#222).
+    pub(crate) fn drop_repeated_places(&mut self) {
+        let mut seen = std::collections::HashSet::new();
+        self.results.retain(|row| match row.get("lineNumber") {
+            Some(line) => seen.insert((
+                row["scriptHash"].to_string(),
+                line.to_string(),
+                row["columnNumber"].to_string(),
+            )),
+            None => true,
+        });
+    }
+
     pub(crate) fn add_error(&mut self, id: &str, message: String) {
         if !message.contains("No script for id") {
             self.errors.push(format!("Err for {}: {}", id, message));
