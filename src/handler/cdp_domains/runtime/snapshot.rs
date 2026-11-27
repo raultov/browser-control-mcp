@@ -17,7 +17,7 @@ pub struct SnapshotTool {
     pub instance_id: Option<String>,
     /// Default: the active tab.
     pub tab_id: Option<String>,
-    /// Outline only this element (CSS, 'host >>> inner' or a ref). Default: the whole page.
+    /// Outline only this element (a ref or CSS). Default: the whole page.
     pub selector: Option<String>,
     /// Most nesting levels (0 = the top level only). Default: no limit.
     pub depth: Option<u32>,

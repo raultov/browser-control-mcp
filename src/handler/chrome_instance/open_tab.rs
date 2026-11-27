@@ -6,7 +6,7 @@ use rust_mcp_sdk::{
 
 #[macros::mcp_tool(
     name = "open_tab",
-    description = "Opens a tab (launching the instance if needed; a fresh instance's untouched blank start tab is used, once, instead of opening a second one), makes it the active tab in front, and waits for 'url' to load. Returns {tab_id, target_id, url, label}; a network error fails naming the tab, which stays open.",
+    description = "Opens a tab (launching the instance if needed), makes it the active tab and waits for url to load. Returns its tab_id.",
     destructive_hint = false
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]

@@ -8,7 +8,7 @@ use serde_json::Value;
 
 #[macros::mcp_tool(
     name = "find_in_snapshot",
-    description = "Searches the whole 'snapshot' outline (never cut) and returns only the matching lines under their ancestors, with their refs (at most 20 matches). Cheaper than 'snapshot' on a large page.",
+    description = "Searches the whole snapshot outline, never cut, and returns the matching lines with their ancestors and refs (at most 20). Cheaper than snapshot on a large page.",
     read_only_hint = true
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]

@@ -10,7 +10,7 @@ use serde_json::Value;
 
 #[macros::mcp_tool(
     name = "press_key",
-    description = "Presses one key, with modifiers (Control+a, Shift+Tab), as a user would, in the element given (focused first) or the focused one; the browser's default action runs (Enter submits, Tab moves the focus). With Control, Alt or Meta held nothing is typed. To type text use fill_input. A dialog or breakpoint it causes is noted, as for click_element."
+    description = "Presses one key, with modifiers (Control+a, Shift+Tab), in the element given or the focused one, as a user would: the browser's default action runs (Enter submits, Tab moves the focus). To type text use fill_input."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct PressKeyTool {
@@ -22,7 +22,7 @@ pub struct PressKeyTool {
     pub key: String,
     /// Keys held while it is pressed.
     pub modifiers: Option<Vec<Modifier>>,
-    /// Element to focus first (CSS, 'host >>> inner' or a snapshot ref). Default: the focused element.
+    /// Element to focus first (a ref or CSS). Default: the focused element.
     pub selector: Option<String>,
 }
 

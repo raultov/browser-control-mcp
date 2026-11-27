@@ -6,7 +6,7 @@ use rust_mcp_sdk::{
 
 #[macros::mcp_tool(
     name = "inspect_dom",
-    description = "Returns the page's HTML (open shadow roots as <template shadowrootmode>, same-origin iframes appended after <!-- iframe src: -->; at most 100000 characters), or with 'query' the first match and its context. To find elements to act on, prefer 'snapshot'.",
+    description = "Returns the page's HTML, shadow roots and same-origin iframes included (at most 100000 characters), or with query the first match and its context. To find elements to act on, prefer snapshot.",
     read_only_hint = true
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]

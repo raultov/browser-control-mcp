@@ -17,7 +17,7 @@ pub struct UploadFileTool {
     pub instance_id: Option<String>,
     /// Default: the active tab.
     pub tab_id: Option<String>,
-    /// CSS selector, 'host >>> inner' (into an open shadow root or same-origin iframe) or snapshot ref (e12).
+    /// A snapshot ref (e12) or a CSS selector.
     pub selector: String,
     /// 1 to 20 absolute paths of existing files (several need a 'multiple' input).
     pub paths: Vec<String>,

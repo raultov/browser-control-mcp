@@ -18,7 +18,7 @@ pub struct ClickElementTool {
     pub instance_id: Option<String>,
     /// Default: the active tab.
     pub tab_id: Option<String>,
-    /// CSS selector, 'host >>> inner' (into an open shadow root or same-origin iframe) or snapshot ref (e12).
+    /// A snapshot ref (e12) or a CSS selector.
     pub selector: String,
     /// Mouse button ('right' opens context menus). Default: 'left'.
     pub button: Option<MouseButton>,

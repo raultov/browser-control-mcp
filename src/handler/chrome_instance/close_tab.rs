@@ -6,7 +6,7 @@ use rust_mcp_sdk::{
 
 #[macros::mcp_tool(
     name = "close_tab",
-    description = "Closes a tab (default: the active one); the most recently active open tab (else the newest) becomes active and is brought to the front. Returns {closed_tab_id, active_tab_id}."
+    description = "Closes a tab (default: the active one); the most recently active tab becomes the active one."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct CloseTabTool {

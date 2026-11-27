@@ -664,7 +664,7 @@ pub struct GetCssStylesTool {
     pub instance_id: Option<String>,
     /// Default: the active tab.
     pub tab_id: Option<String>,
-    /// The element (CSS, 'host >>> inner' or a snapshot ref).
+    /// The element (a snapshot ref or CSS).
     pub selector: String,
     /// Only these properties (e.g. ['color', 'margin']); a shorthand also matches its longhands.
     pub properties: Option<Vec<String>>,

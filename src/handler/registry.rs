@@ -2217,6 +2217,21 @@ The page reacted (the DOM changed) and settled after ",
         }
     }
 
+    /// CTX-04: a shorter navigate description keeps the copy_cookies
+    /// warning tools/list shows with --allow-cookie-import.
+    #[test]
+    fn the_copy_cookies_warning_stays() {
+        // Given navigate's description in the source
+        let navigate = all_tools().into_iter().find(|t| t.name == "navigate");
+        let description = navigate.and_then(|t| t.description).unwrap_or_default();
+        // Then it ends with the note schema_compat cuts without the flag
+        assert!(
+            description.contains(" Note: copy_cookies")
+                && description.contains("ask the user first"),
+            "{description}"
+        );
+    }
+
     /// TOL-06: Descriptions only reference existing tools.
     #[test]
     fn descriptions_reference_existing_tools() {

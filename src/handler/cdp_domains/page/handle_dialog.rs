@@ -8,7 +8,7 @@ use serde_json::json;
 
 #[macros::mcp_tool(
     name = "handle_dialog",
-    description = "Accepts or dismisses the JavaScript dialog (alert, confirm, prompt, beforeunload) open on the tab. While one is open, tools that run page code fail naming it. Returns {accepted, dialog}; fails when none is open."
+    description = "Accepts or dismisses the JavaScript dialog (alert, confirm, prompt, beforeunload) open on the tab. While one is open, tools that run page code fail naming it."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct HandleDialogTool {

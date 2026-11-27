@@ -23,7 +23,7 @@ pub struct FillFormTool {
 /// One field of `fill_form`.
 #[derive(Debug, Clone, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct FormField {
-    /// CSS selector, 'host >>> inner' (into an open shadow root or same-origin iframe) or snapshot ref (e12).
+    /// A snapshot ref (e12) or a CSS selector.
     pub selector: String,
     /// Text, option value or label, or 'true' / 'false' for a checkbox or radio.
     pub value: String,

@@ -6,7 +6,7 @@ use rust_mcp_sdk::{
 
 #[macros::mcp_tool(
     name = "list_instances",
-    description = "Lists the instances: id, browser, capabilities, label, host, port (0 until a Chrome the server launches has picked one), profile_dir, features, is_default.",
+    description = "Lists the instances with their browser, capabilities and label.",
     read_only_hint = true
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]

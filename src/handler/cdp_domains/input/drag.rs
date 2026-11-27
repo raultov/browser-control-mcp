@@ -16,7 +16,7 @@ pub struct DragTool {
     pub instance_id: Option<String>,
     /// Default: the active tab.
     pub tab_id: Option<String>,
-    /// Element to drag: CSS selector, 'host >>> inner' (into an open shadow root or same-origin iframe) or snapshot ref (e12).
+    /// Element to drag: a snapshot ref (e12) or a CSS selector.
     pub from: String,
     /// Element to drop onto, same forms as 'from'.
     pub to: String,

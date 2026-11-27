@@ -9,7 +9,7 @@ use std::time::Duration;
 
 #[macros::mcp_tool(
     name = "wait_for",
-    description = "Waits until every condition given holds: visible text appears or disappears (open shadow roots and same-origin iframes included), an element reaches a state, or the URL contains a text; checks every 100 ms. Returns the time waited; on timeout it fails naming what is missing. A dialog or debugger pause ends it at once.",
+    description = "Waits until every condition given holds: visible text appears or disappears, an element reaches a state, or the URL contains a text. On timeout it fails naming what is missing.",
     read_only_hint = true
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
@@ -22,7 +22,7 @@ pub struct WaitForTool {
     pub text: Option<String>,
     /// Visible text to wait to disappear, e.g. 'Loading'.
     pub text_gone: Option<String>,
-    /// CSS selector, 'host >>> inner' (into an open shadow root or same-origin iframe) or snapshot ref (e12).
+    /// A snapshot ref (e12) or a CSS selector.
     pub selector: Option<String>,
     /// State 'selector' must reach ('hidden' = missing or without a visible box). Default: 'visible'.
     pub state: Option<WaitState>,

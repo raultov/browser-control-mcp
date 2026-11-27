@@ -6,7 +6,7 @@ use rust_mcp_sdk::{
 
 #[macros::mcp_tool(
     name = "stop_browser",
-    description = "Stops an instance's browser and closes its tabs; other instances keep running. A browser the server attached to (not launched) is only disconnected."
+    description = "Stops an instance's browser and closes its tabs; other instances keep running."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct StopChromeTool {

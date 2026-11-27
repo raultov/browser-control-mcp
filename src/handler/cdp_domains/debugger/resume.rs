@@ -8,7 +8,7 @@ use rust_mcp_sdk::{
 
 #[macros::mcp_tool(
     name = "resume",
-    description = "Resumes a page paused in the debugger (a breakpoint, a step, an exception or its own debugger statement). Returns {paused, location: {url, line_number, column_number} | null} (0-based): paused only if it stopped again within 250 ms (another breakpoint)."
+    description = "Resumes a page paused in the debugger (a breakpoint, a step, an exception or its own debugger statement), and says whether it paused again."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct ResumeTool {
