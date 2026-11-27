@@ -90,6 +90,8 @@ class Server:
         if "result" not in init:
             raise RuntimeError(f"initialize failed: {init}")
         self.info = init["result"].get("serverInfo", {})
+        # Clients such as Claude Code and opencode put these in the system prompt.
+        self.instructions = init["result"].get("instructions") or ""
         self.notify("notifications/initialized")
 
     def notify(self, method, params=None):

@@ -21,7 +21,12 @@ and `se`, and saves the numbers as JSON:
 
 ```sh
 make build && python3 -I tests/compare/bench.py [--servers bc,pw] [--runs 10]
+python3 -I tests/compare/bench.py --servers bc,pw --context-only   # tool lists and instructions only
 ```
+
+Besides the tool list, it counts the server's `instructions` (Claude Code
+and opencode put them in the system prompt) and, per tool, the tokens of
+its description and of its input schema.
 
 `footprint.py` measures the README's "Advantages of a native Rust binary":
 how long each server takes to answer `initialize`, the memory of its own
@@ -32,6 +37,43 @@ and the first navigation, for `bc`, `pw`, `cd` (with `npx`, then with
 ```sh
 make build && python3 -I tests/compare/footprint.py [--servers bc,pw] [--runs 10]
 ```
+
+`agent_eval/` gives the same goals to real agents, with browser-control-mcp
+as their only tool server, and checks the page afterwards. The other
+harnesses call tools through adapters, so no model reads a description
+there; here one does, and a description that got worse shows as a goal an
+agent no longer reaches, or reaches with more calls and error replies:
+
+```sh
+make build && cp target/release/browser-control-mcp /tmp/bc-baseline   # before a change
+python3 -I tests/compare/agent_eval/run.py --bin /tmp/bc-baseline --label baseline
+python3 -I tests/compare/agent_eval/run.py --label after --baseline tests/compare/results/agent-<time>-baseline/results.json
+python3 -I tests/compare/agent_eval/run.py --only 'form|select' --runs 1   # some tasks, once
+```
+
+- Clients: `claude -p` (Claude Code; `--claude-model`, default `sonnet`)
+  and `opencode2 run --standalone` (opencode 2; `--opencode-model`,
+  default `google/antigravity-gemini-3.8-flash-medium`), each with
+  browser-control-mcp as its only tool server and no other tool. The
+  harness removes `ANTHROPIC_*` and `OPENCODE*` from their environment.
+- `tasks.py`: 13 goals in plain words that name no tool, each with an
+  oracle: a value read in the page after the agent finished, the tabs
+  open, or words its final answer must hold.
+- `proxy.py` and `relay.py`: the CLI starts `relay.py`, which pipes its
+  stdio to a proxy the harness owns; the proxy owns the server and logs each
+  tool call (name, error, reply size; not the arguments). CLIs kill their
+  MCP servers when they exit (Claude Code: SIGINT, SIGTERM, then a kill),
+  which would close the browser before the check: here only the relay
+  dies, and the harness reads the page through the proxy, with calls the
+  agent never sees.
+- `run.py`: `--runs 3` per task and client, `--jobs 3` at once, then
+  `results/agent-<time>-<label>/` (`report.md`, `results.json`, the call
+  logs). With `--baseline`, the report compares per task and gives the
+  verdict: total passes not lower, no task falling from all its runs to a
+  third or less, calls and error replies at most 10 % higher.
+
+It spends model tokens (78 short agent runs by default) and its outcome
+varies from run to run: compare runs of the same CLIs and models only.
 
 ## Servers
 
@@ -80,6 +122,7 @@ which the Selenium adapter sets.
   (rare), each with its check.
 - `bench.py`: the README's comparison table (see above).
 - `footprint.py`: start time and memory of each server (see above).
+- `agent_eval/`: real agents on the same site (see above).
 - `run.py`: runs them and writes `results/<time>/` (`report.md`,
   `results.json`, `run.log`; git-ignored); with `baseline.json`, the report
   lists the scenarios whose status changed.

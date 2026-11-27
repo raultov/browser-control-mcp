@@ -7,6 +7,7 @@ the network log. Chrome, headless; tokens as `mcp_client` counts them.
 
     python3 -I tests/compare/bench.py                     # bc, pw, cd, se
     python3 -I tests/compare/bench.py --servers bc --runs 5
+    python3 -I tests/compare/bench.py --servers bc --context-only   # tool list and instructions only
 
 Not a gate: it starts real browsers, fetches the other servers with npx (the
 Selenium MCP server from a checkout: see README.md) and reads live pages
@@ -59,10 +60,16 @@ def commands(bin_path, output, selenium_bin=SELENIUM_BIN):
 
 
 def tool_tokens(adapter_class, command):
-    """Tokens of the tool list a server puts in the model's context."""
+    """What a server puts in the model's context before any call: the tokens
+    of its tool list, its tools' names, the tokens of its instructions, and
+    per tool [total, description, input schema] tokens."""
     adapter = adapter_class(command, dict(os.environ))
     try:
-        return len(json.dumps(adapter.server.tools())) // 4
+        tools = adapter.server.tools()
+        per_tool = {t["name"]: [len(json.dumps(t)) // 4, len(t.get("description", "")) // 4,
+                                len(json.dumps(t.get("inputSchema", {}))) // 4] for t in tools}
+        return {"tokens": len(json.dumps(tools)) // 4, "names": sorted(per_tool),
+                "instructions": len(adapter.server.instructions) // 4, "per tool": per_tool}
     finally:
         adapter.close()
 
@@ -197,6 +204,8 @@ def main():
     parser.add_argument("--runs", type=int, default=10, help="calls per latency median")
     parser.add_argument("--bc-bin", default=os.path.join(REPO, "target", "release", "browser-control-mcp"))
     parser.add_argument("--selenium-bin", default=SELENIUM_BIN)
+    parser.add_argument("--context-only", action="store_true",
+                        help="only the tool lists and instructions (no browser, no live pages)")
     args = parser.parse_args()
     output = tempfile.mkdtemp(prefix="bench-")
     site = Site()
@@ -204,9 +213,17 @@ def main():
     try:
         for name in args.servers.split(","):
             adapter_class, default, every = commands(args.bc_bin, output, args.selenium_bin)[name]
-            row = {"tools default": tool_tokens(adapter_class, default)}
+            listed = tool_tokens(adapter_class, default)
+            row = {"tools default": listed["tokens"], "instructions default": listed["instructions"],
+                   "tool names default": listed["names"], "per tool default": listed["per tool"]}
             if every:
-                row["tools all"] = tool_tokens(adapter_class, every)
+                listed = tool_tokens(adapter_class, every)
+                row.update({"tools all": listed["tokens"], "instructions all": listed["instructions"],
+                            "tool names all": listed["names"]})
+            if args.context_only:
+                results[name] = row
+                print(name, json.dumps({k: v for k, v in row.items() if not isinstance(v, (list, dict))}))
+                continue
             adapter = adapter_class(every or default, dict(os.environ))
             adapter.server.timeout = 120
             try:
