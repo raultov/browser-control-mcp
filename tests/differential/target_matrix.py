@@ -11,7 +11,9 @@ found one at a time. This runs the table at once.
 Owners: the document, a same-origin iframe, a cross-origin iframe, a
 cross-origin iframe inside a same-origin one, a dedicated worker, a worker
 that worker started (#217), a worker that started an idle one of its own
-(#223), a worker of a cross-origin iframe, a popup (its own tab).
+(#223), a worker of a cross-origin iframe, a popup (its own tab), the
+tab's service worker (#211, #213; a cell Firefox reports to no protocol
+the server reads is skipped, saying why: `GAPS`).
 Features: a console message, an uncaught error with its stack, each also
 from a script the owner imported (a <script src>, importScripts: #207), a
 thrown value that is not an error, listed with the value (#219), the same
@@ -45,9 +47,24 @@ from mcp_client import Server  # noqa: E402
 from siteserver import Site  # noqa: E402
 
 OWNERS = ["document", "iframe-same-origin", "iframe-cross-origin", "iframe-nested",
-          "worker", "worker-nested", "worker-parent", "worker-in-cross-iframe", "popup"]
+          "worker", "worker-nested", "worker-parent", "worker-in-cross-iframe", "popup",
+          "service-worker"]
 FEATURES = ["console", "console-imported", "uncaught", "uncaught-imported", "thrown-value", "burst",
             "rejection-null", "load", "request", "redirect", "mock", "abort"]
+
+# The cells a browser reports to no protocol the server reads, and why:
+# skipped, not failed. Firefox's tab watcher reports neither a service
+# worker's uncaught errors nor its own requests (measured on Firefox 160,
+# bidi-lite's README): its console calls only.
+SW_ERRORS = "Firefox reports a service worker's uncaught errors to no protocol the server reads"
+SW_REQUESTS = "Firefox reports a service worker's own requests to no protocol the server reads"
+GAPS = {
+    ("firefox", "service-worker", feature): reason
+    for features, reason in (
+        (("uncaught", "uncaught-imported", "thrown-value", "burst", "rejection-null"), SW_ERRORS),
+        (("request", "redirect", "mock", "abort"), SW_REQUESTS))
+    for feature in features
+}
 
 # How many times the `burst` cell throws its error.
 BURST = 30
@@ -98,8 +115,12 @@ class Cell:
         if self.feature == "load":
             self.server.call("navigate", {"url": self.site.other_origin("/basic.html")})
         top = "/probe.html" + (self.own_query(WORKERS[self.owner]) if self.owner in WORKERS else
+                               self.own_query("?sw=1") if self.owner == "service-worker" else
                                self.own_query() if self.owner == "document" else "")
         self.server.call("navigate", {"url": self.site.url(top)})
+        if self.owner == "service-worker":
+            self.js("await window.swReady; 1")
+            return "window"
         frame = {
             "iframe-same-origin": self.owner_page(False, self.own_query()),
             "iframe-cross-origin": self.owner_page(True, self.own_query()),
@@ -251,6 +272,9 @@ class Cell:
     def close(self):
         if self.feature in ("mock", "abort"):
             self.call("remove_route", {})
+        if self.owner == "service-worker":
+            self.js("await navigator.serviceWorker.getRegistrations()"
+                    ".then(all => Promise.all(all.map(r => r.unregister()))); 1")
         if self.tab:
             self.server.call("close_tab", {"tab_id": self.tab})
 
@@ -289,6 +313,10 @@ def main():
                 if args.only and args.only != "%s/%s" % (owner, feature):
                     continue
                 cells += 1
+                gap = GAPS.get((args.browser, owner, feature))
+                if gap:
+                    print("SKIP %-24s %-9s %s" % (owner, feature, gap), flush=True)
+                    continue
                 verdict, detail = run_cell(server, site, owner, feature, cells)
                 failures += verdict == "FAIL"
                 print("%s %-24s %-9s %s" % (verdict, owner, feature, detail), flush=True)

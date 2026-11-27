@@ -2701,18 +2701,15 @@ mod e2e {
         ]
     }
 
-    /// The worker steps (Chrome: the service worker's too), then the error
-    /// cause steps.
+    /// The worker steps, the service worker's (Chrome: its restart too),
+    /// then the error cause steps.
     fn worker_and_cause_steps(instance: &str, chrome: bool) -> Vec<Step> {
-        let service = if chrome {
-            let mut steps = service_worker_steps(instance);
-            let unregister = steps.pop();
-            steps.extend(service_worker_restart_steps(instance));
-            steps.extend(unregister);
-            steps
-        } else {
-            Vec::new()
-        };
+        let mut service = service_worker_steps(instance, chrome);
+        if chrome {
+            let unregister = service.pop();
+            service.extend(service_worker_restart_steps(instance));
+            service.extend(unregister);
+        }
         [
             worker_steps(instance),
             service,
@@ -2721,16 +2718,23 @@ mod e2e {
         .concat()
     }
 
-    /// #211 (Chrome): the tab's service worker's console messages, from
-    /// its install too, and its own requests reach the tab's logs, marked
-    /// as its; it is unregistered after.
-    fn service_worker_steps(instance: &str) -> Vec<Step> {
+    /// #211 (Chrome), #213 (Firefox): the tab's service worker's console
+    /// messages, from its install too, reach the tab's log, marked as its;
+    /// on Chrome its own requests reach the network log (Firefox reports
+    /// them to no protocol the server reads); it is unregistered after.
+    fn service_worker_steps(instance: &str, chrome: bool) -> Vec<Step> {
         let i = json!(instance);
         let register = "await navigator.serviceWorker.register('/sw211.js').then(r => new Promise(done => { \
             const w = r.installing || r.waiting || r.active; if (w.state === 'activated') return done('sw active'); \
             w.onstatechange = () => w.state === 'activated' && done('sw active'); }))";
         let unregister = "await navigator.serviceWorker.getRegistrations().then(all => Promise.all(all.map(r => r.unregister()))).then(() => 'unregistered')";
-        vec![
+        let request = (
+            "#211 its request is listed as its",
+            "get_network_logs",
+            json!({"instance_id": i, "url_filter": "from=sw211"}),
+            "=> 200 OK [Fetch] [service worker]",
+        );
+        [
             (
                 "#211 register a service worker",
                 "evaluate_js",
@@ -2749,19 +2753,16 @@ mod e2e {
                 json!({"instance_id": i}),
                 "sw211.js:1 (service worker)",
             ),
-            (
-                "#211 its request is listed as its",
-                "get_network_logs",
-                json!({"instance_id": i, "url_filter": "from=sw211"}),
-                "=> 200 OK [Fetch] [service worker]",
-            ),
-            (
-                "#211 unregister it",
-                "evaluate_js",
-                json!({"instance_id": i, "expression": unregister}),
-                "unregistered",
-            ),
         ]
+        .into_iter()
+        .chain(chrome.then_some(request))
+        .chain([(
+            "#211 unregister it",
+            "evaluate_js",
+            json!({"instance_id": i, "expression": unregister}),
+            "unregistered",
+        )])
+        .collect()
     }
 
     /// #214 (Chrome): a service worker stopped and started again (Chrome

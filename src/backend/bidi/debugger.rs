@@ -165,6 +165,7 @@ async fn attach(browser: &Browser, tab: &FirefoxTab) -> Result<TabDebugger, Back
     let buffers = super::watch::TabBuffers {
         network: tab.network.clone(),
         log: tab.log.clone(),
+        workers: tab.workers.clone(),
     };
     // Without the watch the debugger still works: only frames are missing.
     let watch = super::watch::watch(&debugger, &buffers)
@@ -424,11 +425,23 @@ async fn listed_sources(debugger: &Debugger) -> (Vec<SourceInfo>, Vec<Value>) {
     (known, replies)
 }
 
-/// The sources Firefox announced for the tab's document and its frames.
+/// The sources Firefox announced for the tab's document, its frames and
+/// its workers: the watcher follows the workers for their console (#213),
+/// so a breakpoint binds in their scripts and pauses them too, and a pause
+/// there names its script.
 fn announced_sources(debugger: &Debugger) -> Vec<SourceInfo> {
     let frames = debugger.frame_targets();
     let in_frames = frames.iter().flat_map(|f| debugger.frame_sources(&f.actor));
-    debugger.sources().into_iter().chain(in_frames).collect()
+    let workers = debugger.worker_targets();
+    let in_workers = workers
+        .iter()
+        .flat_map(|w| debugger.worker_sources(&w.actor));
+    let services = debugger.service_worker_targets();
+    let in_services = services
+        .iter()
+        .flat_map(|w| debugger.service_worker_sources(&w.actor));
+    let own = debugger.sources().into_iter().chain(in_frames);
+    own.chain(in_workers).chain(in_services).collect()
 }
 
 /// Adds the scripts of a thread's `sources` reply that `known` lacks,
@@ -2260,6 +2273,38 @@ mod tests {
             ]
         );
         assert_eq!(known.len(), 5);
+    }
+
+    /// #213 (Firefox): the watcher follows the tab's workers, so their
+    /// scripts are the tab's too: searched, and a breakpoint by their URL
+    /// binds (and a pause there names its script).
+    #[tokio::test]
+    async fn workers_scripts_are_the_tabs() {
+        // Given a watched Firefox tab running a dedicated and a service worker
+        let mock = ts::firefox_with_debugger().await;
+        let rdp = mock.rdp().unwrap();
+        let handler = ts::handler(&mock);
+        let search = || ts::call("search_scripts", json!({"query": ""}));
+        let before = ts::text(&search_scripts(search(), &handler).await.unwrap());
+        rdp.add_worker("http://localhost:8765/dw.js");
+        rdp.add_service_worker("http://localhost:8765/sw.js");
+        // When the scripts are counted, once the workers are announced
+        let mut after = String::new();
+        for _ in 0..100 {
+            after = ts::text(&search_scripts(search(), &handler).await.unwrap());
+            if after != before {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        // Then both workers' scripts are counted
+        let count = |text: &str| {
+            text.trim_start_matches("Total cached scripts: ")
+                .parse::<usize>()
+                .unwrap()
+        };
+        assert_eq!(count(&after), count(&before) + 2, "{before} / {after}");
+        ts::stop(&handler).await;
     }
 
     /// ISSUE-62 (Firefox): search_scripts asks the tab's thread for its

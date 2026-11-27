@@ -10,6 +10,33 @@ from a copy of its code: entries describe the differences from that release.
 
 ## [Unreleased]
 
+### Added
+
+- `get_console_logs` on Firefox lists the console calls of the tab's
+  service worker, marked `(service worker)` (`target_type:
+  "service_worker"`), as on Chrome: its install-time messages too, and
+  those after Firefox stopped it and started it again (#213). Firefox
+  reads each worker's console from the worker's own target, through its
+  debugger port: a Firefox the server launches with the debugger sets
+  `dom.worker.console.dispatch_events_to_main_thread` to `false` in its
+  profile, which keeps the workers' console calls there, the dedicated
+  workers' included (WebDriver BiDi then no longer has them; they read as
+  the page's do, but an object argument lists its properties by name).
+  Each announcement of a worker's target sends again what it
+  logged before: a message is listed once by the worker's id and
+  Firefox's microsecond stamp. The targets send `console.count`'s count
+  and a timer's time empty: the count is kept per worker and the time
+  read from the stamps (`c: 2`, `t: 1.5ms - timer ended`). Not listed:
+  a service worker's uncaught errors and its own requests, which Firefox
+  reports to no protocol the server reads. A Firefox attached without the
+  preference keeps listing its dedicated workers' console from BiDi and
+  lists none of its service worker's (README).
+- Firefox: a breakpoint also binds in the scripts of the tab's dedicated
+  and service workers and pauses them, as the debugger now follows the
+  workers; `call_stack`, `evaluate_on_call_frame`, the steps and `resume`
+  act on the paused worker, and `search_scripts` lists their scripts.
+  Chrome pauses no worker.
+
 ### Fixed
 
 - `mock_route` on Chrome answers the tab's service worker's own requests
@@ -20,6 +47,14 @@ from a copy of its code: entries describe the differences from that release.
 
 - `bidi-browser-lite` 0.1.8 (`bidi-lite` 0.1.7: the debugger follows the
   tab's dedicated workers).
+
+### Development
+
+- `tests/differential/target_matrix.py` has one more owner, the tab's
+  service worker: 120 cells per browser. A cell the browser reports to no
+  protocol the server reads is skipped, saying why (Firefox: a service
+  worker's uncaught errors and requests, 9 cells).
+- The E2E service worker steps run on Firefox too (without its request).
 
 ## [1.0.0-rc.5] - 2026-11-27
 

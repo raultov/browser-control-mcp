@@ -1,12 +1,14 @@
 //! What WebDriver BiDi does not report on Firefox, read from the RDP watcher
 //! of each tab's debugger: WebSocket frames, page errors (script errors,
-//! cookie and security warnings), CSS warnings and platform messages.
+//! cookie and security warnings), CSS warnings, platform messages and the
+//! console of the tab's workers ([`super::workers`]).
 //!
 //! They land in the same per-tab buffers and shapes as Chrome's, so
 //! `get_network_logs` and `get_console_logs` answer alike on both browsers.
 //! A message BiDi also reports (script errors, some warnings) is kept once:
 //! the watcher's copy, which carries the better labels.
 
+use super::workers::{Worker, WorkerConsole};
 use crate::handler::NetworkRequest;
 use crate::handler::NetworkState;
 use crate::handler::WebSocketFrame;
@@ -17,7 +19,7 @@ use crate::handler::cdp_domains::network::{FRAME_GONE, NAVIGATED_AWAY};
 use crate::util::bounded::BoundedMap;
 use bidi_browser_lite::Debugger;
 use bidi_browser_lite::bidi_lite::rdp::protocol::RdpPacket;
-use bidi_browser_lite::bidi_lite::rdp::resources::parse_resources;
+use bidi_browser_lite::bidi_lite::rdp::resources::{WorkerTarget, parse_resources};
 use serde_json::Value;
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -30,6 +32,7 @@ pub(crate) const RESOURCE_TYPES: &[&str] = &[
     ERROR_MESSAGE,
     "css-message",
     "platform-message",
+    CONSOLE_MESSAGE,
 ];
 
 /// Where a tab's watched resources go.
@@ -39,6 +42,8 @@ pub(crate) struct TabBuffers {
     pub(crate) network: Arc<Mutex<NetworkState>>,
     /// Console messages.
     pub(crate) log: Arc<Mutex<LogState>>,
+    /// What the tab's workers' console needs remembered.
+    pub(crate) workers: Arc<Mutex<WorkerConsole>>,
 }
 
 /// Watches [`RESOURCE_TYPES`] on `debugger`, routing them into `buffers`.
@@ -53,7 +58,9 @@ pub(crate) async fn watch(
 ) -> Result<ListenerHandles, bidi_browser_lite::BidiError> {
     let mut handles = ListenerHandles::default();
     handles.push(watch_websockets(debugger, buffers.network.clone()));
-    for &kind in RESOURCE_TYPES.iter().filter(|&&kind| kind != WEBSOCKET) {
+    handles.push(watch_worker_console(debugger, buffers));
+    let page_feeds = |kind: &&&str| ![WEBSOCKET, CONSOLE_MESSAGE].contains(*kind);
+    for &kind in RESOURCE_TYPES.iter().filter(page_feeds) {
         let mut packets = match kind {
             ERROR_MESSAGE => debugger.on_any_resource(kind),
             _ => debugger.on_resource(kind),
@@ -68,7 +75,72 @@ pub(crate) async fn watch(
         }));
     }
     debugger.watch_resources(RESOURCE_TYPES).await?;
+    // Best effort: a Firefox that cannot follow them keeps the rest.
+    if let Err(error) = debugger.watch_workers().await {
+        tracing::debug!(%error, "watching the dedicated workers failed");
+    }
+    if let Err(error) = debugger.watch_service_workers().await {
+        tracing::debug!(%error, "watching the service workers failed");
+    }
     Ok(handles)
+}
+
+/// The watcher resource of console calls: the page's come from BiDi, so
+/// only the workers' targets' are read (#213).
+const CONSOLE_MESSAGE: &str = "console-message";
+
+/// How many worker targets [`watch_worker_console`] remembers the id of.
+const WORKER_TARGETS: usize = 256;
+
+/// Reads the console of the tab's dedicated and service workers from their
+/// own targets into the tab's log (see [`super::workers`]). Their target
+/// forms come from the watcher, on another stream, read first: a worker's
+/// `id`, which a replay under a new actor keeps.
+fn watch_worker_console(debugger: &Debugger, buffers: &TabBuffers) -> tokio::task::JoinHandle<()> {
+    let mut dedicated = debugger.on_worker_resource(CONSOLE_MESSAGE);
+    let mut service = debugger.on_service_worker_resource(CONSOLE_MESSAGE);
+    let mut targets = debugger.client().on_actor(debugger.watcher());
+    let (log, workers) = (buffers.log.clone(), buffers.workers.clone());
+    tokio::spawn(async move {
+        let mut ids: BoundedMap<String, String, WORKER_TARGETS> = BoundedMap::default();
+        loop {
+            let (packet, is_service) = tokio::select! {
+                biased;
+                Some(packet) = targets.next() => {
+                    if let Ok(packet) = packet
+                        && packet.r#type.as_deref() == Some("target-available-form")
+                        && let Some(worker) = WorkerTarget::from_form(&packet.body)
+                    {
+                        let id = worker.id.unwrap_or_else(|| worker.actor.clone());
+                        ids.insert(worker.actor, id);
+                    }
+                    continue;
+                }
+                Some(packet) = dedicated.next() => (packet, false),
+                Some(packet) = service.next() => (packet, true),
+                else => break,
+            };
+            let Ok(packet) = packet else { continue };
+            let actor = packet.from.clone().unwrap_or_default();
+            let id = ids.get(&actor).cloned().unwrap_or_else(|| actor.clone());
+            let worker = Worker {
+                actor: &actor,
+                id: &id,
+                service: is_service,
+            };
+            let messages: Vec<_> = {
+                let mut workers = workers.lock().await;
+                parse_resources(&packet, CONSOLE_MESSAGE)
+                    .iter()
+                    .filter_map(|resource| workers.message(worker, resource))
+                    .collect()
+            };
+            let mut log = log.lock().await;
+            for message in messages {
+                log.push_deduplicated(message);
+            }
+        }
+    })
 }
 
 /// Puts the console messages of a packet of `kind` resources in `log`.

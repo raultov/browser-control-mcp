@@ -2,12 +2,12 @@
 <html>
 <head><title>Probe</title></head>
 <body>
-<p>A page that does what the messages it gets ask (log, throw, fetch, also from an imported script), and an iframe of its <code>child</code> parameter or a worker with <code>worker=1</code> (a worker of that worker with <code>worker=nested</code>, a worker that started an idle one with <code>worker=parent</code>); with <code>onload=token</code> it (or its worker) logs while it loads; used by tests/differential/target_matrix.py.</p>
+<p>A page that does what the messages it gets ask (log, throw, fetch, also from an imported script), and an iframe of its <code>child</code> parameter or a worker with <code>worker=1</code> (a worker of that worker with <code>worker=nested</code>, a worker that started an idle one with <code>worker=parent</code>) or a service worker with <code>sw=1</code>; with <code>onload=token</code> it (or its worker) logs while it loads; used by tests/differential/target_matrix.py.</p>
 <script src="/probe-lib.js"></script>
 <script>
 const params = new URLSearchParams(location.search);
 const onload = params.get('onload');
-if (onload && !params.get('worker')) console.log('probe-onload ' + onload);
+if (onload && !params.get('worker') && !params.get('sw')) console.log('probe-onload ' + onload);
 // A popup answers its opener, a frame the top page.
 const say = text => (window.opener || top).postMessage(text, '*');
 if (params.get('child')) {
@@ -20,6 +20,17 @@ if (params.get('worker')) {
   window.wk = new Worker('/probe-worker.js?onload=' + encodeURIComponent(onload || '') + nested);
   wk.onmessage = event => say(event.data);
 }
+// A service worker of its own (its script URL names the cell), active
+// once `window.swReady` settles; it answers through the page.
+if (params.get('sw')) {
+  const script = '/probe-sw.js?onload=' + encodeURIComponent(onload || '');
+  window.swReady = navigator.serviceWorker.register(script).then(r => new Promise(done => {
+    const w = r.installing || r.waiting || r.active;
+    if (w.state === 'activated') return done(w);
+    w.onstatechange = () => w.state === 'activated' && done(w);
+  })).then(w => { window.sw = w; });
+  navigator.serviceWorker.onmessage = event => say(event.data);
+}
 // The commands: `log:<token>`, `throw:<token>`, `fetch:<token>:<path>`,
 // and `ilog:<token>`, `ithrow:<token>`, `throwvalue:<token>`,
 // `burst:<token>:<count>`, `rejectnull:<token>` from probe-lib.js; each answers
@@ -29,6 +40,7 @@ addEventListener('message', event => {
   const text = String(event.data);
   if (text.startsWith('done:')) return;
   if (window.wk) return wk.postMessage(text);
+  if (window.sw) return sw.postMessage(text);
   if (params.get('child')) return document.querySelector('iframe').contentWindow.postMessage(text, '*');
   const [command, token, ...rest] = text.split(':');
   if (command === 'log') { console.log('probe-log ' + token); say('done:' + token + ':logged'); }

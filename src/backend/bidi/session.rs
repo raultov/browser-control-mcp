@@ -67,6 +67,8 @@ pub(crate) struct FirefoxTab {
     pub(crate) url: String,
     /// Console messages.
     pub(crate) log: Arc<Mutex<LogState>>,
+    /// What its workers' console needs remembered (#213).
+    pub(crate) workers: Arc<Mutex<super::workers::WorkerConsole>>,
     /// Requests, by navigation.
     pub(crate) network: Arc<Mutex<NetworkState>>,
     /// Events of modules the agent subscribed to.
@@ -156,6 +158,7 @@ impl FirefoxTabs {
             label,
             url: url.to_string(),
             log: Default::default(),
+            workers: Default::default(),
             network: Default::default(),
             custom: Default::default(),
             dialog: Default::default(),

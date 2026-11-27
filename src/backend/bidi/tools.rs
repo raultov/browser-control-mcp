@@ -3484,6 +3484,92 @@ mod tests {
         ts::stop(&handler).await;
     }
 
+    /// A watched Firefox tab whose watcher was asked to follow the service
+    /// workers, the last of the watch requests.
+    async fn watching_workers() -> (bidi_browser_lite::test_support::MockFirefox, McpHandler) {
+        let mock = ts::firefox_with_debugger().await;
+        let handler = ts::handler(&mock);
+        handler
+            .firefox(None)
+            .await
+            .unwrap()
+            .browser()
+            .await
+            .unwrap();
+        let rdp = mock.rdp().unwrap();
+        for _ in 0..100 {
+            let watched = rdp.requests().into_iter().any(|r| {
+                r.request_type == "watchTargets" && r.params["targetType"] == "service_worker"
+            });
+            if watched {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        (mock, handler)
+    }
+
+    /// #213: a watched tab asks the watcher to follow its dedicated and
+    /// service workers, and the console calls their targets report.
+    #[tokio::test]
+    async fn the_watcher_follows_the_workers_console() {
+        // Given a watched Firefox tab
+        let (mock, handler) = watching_workers().await;
+        // Then the watcher was asked for both kinds of worker and the console
+        let asked = mock.rdp().unwrap().requests();
+        let watched = |kind: &str| {
+            asked
+                .iter()
+                .any(|r| r.request_type == "watchTargets" && r.params["targetType"] == kind)
+        };
+        assert!(watched("worker") && watched("service_worker"), "{asked:?}");
+        let resources = asked.iter().any(|r| {
+            r.request_type == "watchResources"
+                && r.params["resourceTypes"]
+                    .as_array()
+                    .is_some_and(|types| types.contains(&json!("console-message")))
+        });
+        assert!(resources, "{asked:?}");
+        ts::stop(&handler).await;
+    }
+
+    /// #213: a watched tab lists its workers' console from their own
+    /// targets: the service worker's marked as its, each message once
+    /// though an announcement sends it again, and none of the page's
+    /// target's copies (BiDi has the page's console).
+    #[tokio::test]
+    async fn workers_console_is_read_from_their_targets() {
+        use bidi_browser_lite::test_support::fixtures::{
+            RDP_SERVICE_WORKER_RESOURCES_CONSOLE_MESSAGE, RDP_WORKER_RESOURCES_CONSOLE_MESSAGE,
+        };
+        // Given a watched Firefox tab running a worker and a service worker
+        let (mock, handler) = watching_workers().await;
+        let rdp = mock.rdp().unwrap();
+        let worker = rdp.add_worker("http://127.0.0.1:38241/dw/worker.js");
+        let service = rdp.add_service_worker("http://127.0.0.1:36631/sw/sw.js");
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        // When each logs, the worker's messages sent twice, and the page's
+        // target sends its copy of a page message
+        let dedicated = fixture_resources(RDP_WORKER_RESOURCES_CONSOLE_MESSAGE);
+        rdp.emit_target_resources(&worker, "console-message", dedicated.clone());
+        rdp.emit_target_resources(&worker, "console-message", dedicated);
+        let sw = fixture_resources(RDP_SERVICE_WORKER_RESOURCES_CONSOLE_MESSAGE);
+        rdp.emit_target_resources(&service, "console-message", sw);
+        let page = json!({"level": "log", "arguments": ["page copy"], "timeStamp": 1.0});
+        rdp.emit_resources("console-message", vec![page]);
+        // Then each worker message is listed once, the service worker's
+        // marked, the page's copy left out
+        let reply =
+            until_contains(&handler, "get_console_logs", json!({}), "sw console error").await;
+        let count = |text: &str| reply.lines().filter(|l| l.contains(text)).count();
+        assert_eq!(count("dw warn {a: 1}"), 1, "{reply}");
+        let error = "[error] dw error @ http://127.0.0.1:38241/dw/worker.js:5";
+        assert_eq!(count(error), 1, "{reply}");
+        assert_eq!(count("sw.js:7 (service worker)"), 1, "{reply}");
+        assert_eq!(count("page copy"), 0, "{reply}");
+        ts::stop(&handler).await;
+    }
+
     /// BKD-06: Tab ids are MCP-level and map to native ids.
     #[tokio::test]
     async fn tab_ids_map_to_native_ids() {

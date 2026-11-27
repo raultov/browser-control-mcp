@@ -25,6 +25,7 @@ pub(crate) mod storage;
 pub(crate) mod test_support;
 pub(crate) mod tools;
 pub(crate) mod watch;
+pub(crate) mod workers;
 
 use super::BrowserKind;
 use super::error::BackendError;

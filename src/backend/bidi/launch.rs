@@ -17,6 +17,16 @@ pub(crate) struct FirefoxSpec {
     pub(crate) downloads_dir: Option<std::path::PathBuf>,
 }
 
+/// The Firefox preference that keeps a worker's console calls in the
+/// worker, set to `false` in a profile launched with the debugger (#213):
+/// each worker's target then reports them, where the debugger reads them
+/// (a service worker's reach no other feed). By default Firefox hands them
+/// to the main thread of the worker's process: a dedicated worker's reach
+/// WebDriver BiDi with the page's, a service worker's are lost. A launch
+/// without the debugger keeps the default, or its workers would log to no
+/// feed the server reads.
+pub(crate) const WORKER_CONSOLE_PREF: &str = "dom.worker.console.dispatch_events_to_main_thread";
+
 impl FirefoxSpec {
     /// Whether the debugger (RDP) port will be available.
     pub(crate) fn has_debugger(&self) -> bool {
@@ -46,11 +56,17 @@ impl FirefoxSpec {
             None if self.browser.user_profile => {
                 return Err("--user-profile on Firefox needs --firefox-port: attach to your running Firefox (started with --remote-debugging-port) instead of launching one".into());
             }
+            None if self.firefox.no_firefox_debugger => builder
+                .mode(LaunchMode::LaunchNew)
+                .profile(ProfileMode::Ephemeral)
+                .port(0)
+                .rdp(false),
             None => builder
                 .mode(LaunchMode::LaunchNew)
                 .profile(ProfileMode::Ephemeral)
                 .port(0)
-                .rdp(!self.firefox.no_firefox_debugger),
+                .rdp(true)
+                .pref(WORKER_CONSOLE_PREF, false),
         };
         // bidi-browser-lite refuses a proxy URL with credentials;
         // enable_proxy_auth reads them from --proxy-server instead.
@@ -136,6 +152,31 @@ mod tests {
         };
         let config = spec.config().unwrap();
         assert!(config.validate().is_ok());
+    }
+
+    /// #213: a Firefox launched with its debugger has its workers report
+    /// their console to their own targets (where the debugger reads it,
+    /// the service worker's included); without the debugger, or attached,
+    /// the profile keeps Firefox's default (the page's feed has them).
+    #[test]
+    fn workers_report_their_console_to_their_targets_with_the_debugger() {
+        // Given a launched Firefox with and without its debugger, and an
+        // attached one
+        let with = FirefoxSpec::default();
+        let mut without = FirefoxSpec::default();
+        without.firefox.no_firefox_debugger = true;
+        let mut attached = FirefoxSpec::default();
+        attached.firefox.firefox_port = Some(9333);
+        attached.firefox.firefox_rdp_port = Some(6001);
+        let prefs = |spec: &FirefoxSpec| format!("{:?}", spec.config().unwrap());
+        // Then only the first sets the preference
+        assert!(
+            prefs(&with).contains(WORKER_CONSOLE_PREF),
+            "{}",
+            prefs(&with)
+        );
+        assert!(!prefs(&without).contains(WORKER_CONSOLE_PREF));
+        assert!(!prefs(&attached).contains(WORKER_CONSOLE_PREF));
     }
 
     /// CLI-06: --user-profile with a launched Firefox fails clearly.

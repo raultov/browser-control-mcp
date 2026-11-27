@@ -68,6 +68,9 @@ pub(crate) enum Channel {
     /// Both of Firefox's feeds: its two copies, merged. It pairs with no
     /// further copy.
     Both,
+    /// A feed that no other reports the message on: a Firefox worker's own
+    /// target (#213). It pairs with no copy.
+    Sole,
 }
 
 impl Channel {
@@ -77,7 +80,7 @@ impl Channel {
         match self {
             Self::Primary => Some(Self::Watcher),
             Self::Watcher => Some(Self::Primary),
-            Self::Both => None,
+            Self::Both | Self::Sole => None,
         }
     }
 }
