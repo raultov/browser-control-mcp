@@ -165,9 +165,16 @@ top-level navigation to `data:` URLs: test pages are served on `127.0.0.1`.
    supports it; declare the capability.
 3. Add the tool struct (`#[mcp_tool]`, `JsonSchema`) in `src/tools/`, its
    entry in the tool table with its capabilities and flag gate, and a
-   description that states browser limits.
-4. Update `server_info` instructions if relevant, the README feature matrix
-   and CHANGELOG.
+   description written for the model, which reads every listed tool's
+   description on every turn: what the tool does, and what an agent would
+   get wrong from its name and schema alone. Bounds, formats and
+   per-browser details go to the README feature matrix; a browser
+   difference stays only when it changes what the agent should do next. A
+   Chrome-only tool's description ends with `Chrome only (not available
+   on Firefox).` (TOL-03). A default tool must fit the CTX-01 budget,
+   which is only lowered.
+4. Update `server_info` instructions only for a rule no single tool owns
+   (CTX-02 budgets them), the README feature matrix and CHANGELOG.
 
 ## Plans
 
