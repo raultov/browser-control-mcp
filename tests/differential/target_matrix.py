@@ -10,12 +10,13 @@ found one at a time. This runs the table at once.
 
 Owners: the document, a same-origin iframe, a cross-origin iframe, a
 cross-origin iframe inside a same-origin one, a dedicated worker, a worker
-that worker started (#217), a worker of a cross-origin iframe, a popup (its
-own tab).
+that worker started (#217), a worker that started an idle one of its own
+(#223), a worker of a cross-origin iframe, a popup (its own tab).
 Features: a console message, an uncaught error with its stack, each also
 from a script the owner imported (a <script src>, importScripts: #207), a
 thrown value that is not an error, listed with the value (#219), the same
-error thrown 30 times at once, each listed once and oldest first (#218), a
+error thrown 30 times at once, each listed once and oldest first (#218),
+an unhandled rejection whose reason is null (#223), a
 message the owner logs while it loads, right after the tab moved to another
 site (#206), a request in the network log, a redirect hop with its status
 and Location, a mocked request answered by a route of the tab, and one a
@@ -44,15 +45,15 @@ from mcp_client import Server  # noqa: E402
 from siteserver import Site  # noqa: E402
 
 OWNERS = ["document", "iframe-same-origin", "iframe-cross-origin", "iframe-nested",
-          "worker", "worker-nested", "worker-in-cross-iframe", "popup"]
+          "worker", "worker-nested", "worker-parent", "worker-in-cross-iframe", "popup"]
 FEATURES = ["console", "console-imported", "uncaught", "uncaught-imported", "thrown-value", "burst",
-            "load", "request", "redirect", "mock", "abort"]
+            "rejection-null", "load", "request", "redirect", "mock", "abort"]
 
 # How many times the `burst` cell throws its error.
 BURST = 30
 
 # The page's worker parameter of the owners that are one.
-WORKERS = {"worker": "?worker=1", "worker-nested": "?worker=nested"}
+WORKERS = {"worker": "?worker=1", "worker-nested": "?worker=nested", "worker-parent": "?worker=parent"}
 
 # Waits for the owner's answer to the command of `token`.
 WAIT = """
@@ -203,6 +204,19 @@ class Cell:
         if self.feature == "burst":
             self.command(target, "burst:%s:%d" % (token, BURST))
             return self.once("get_console_logs", {"limit": 1000, **details}, self.burst("probe-burst " + token))
+        if self.feature == "rejection-null":
+            # The reason names no cell: the tab's earlier messages go first.
+            self.call("get_console_logs", {"clear": True, "limit": 1000})
+            self.command(target, "rejectnull:" + token)
+
+            def rejected(text):
+                # Firefox words it `uncaught exception: null`.
+                if "{" not in text:
+                    return False
+                found = [m for m in json.loads(text[text.index("{"):]).get("messages", [])
+                         if m.get("text", "").split("\n")[0].endswith(" null")]
+                return len(found) == 1 and found[0].get("level") == "error"
+            return self.once("get_console_logs", details, rejected)
         if self.feature == "request":
             self.command(target, "fetch:%s:/api/echo?probe=%s" % (token, token))
             return self.once("get_network_logs", {"url_filter": token, **details}, self.requested(token, 200))

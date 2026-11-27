@@ -882,10 +882,17 @@ impl Feed {
 /// threw reports it itself, with its value. Told by the missing value
 /// alone: the copy's script may be one the worker imported (#207), and
 /// nothing else names the worker. So the `throw null` of a worker that
-/// started workers reads the same, and is not listed either.
+/// started workers reads the same, and is not listed either. Chrome relays
+/// no unhandled rejection: one (`Uncaught (in promise)`) is the worker's
+/// own, also with the reason `null` (#223).
 pub(crate) fn is_relayed(method: &str, params: &Value) -> bool {
-    let thrown = params.pointer("/exceptionDetails/exception");
+    let details = params.get("exceptionDetails");
+    let thrown = details.and_then(|d| d.get("exception"));
+    let rejection = details
+        .and_then(|d| str_field(d, "text"))
+        .is_some_and(|text| text.starts_with("Uncaught (in promise)"));
     method == "Runtime.exceptionThrown"
+        && !rejection
         && thrown.is_none_or(|value| str_field(value, "subtype") == Some("null"))
 }
 
@@ -1655,6 +1662,31 @@ mod tests {
         assert!(!worker.relays("Runtime.exceptionThrown", &own));
         // And a page relays nothing
         assert!(!Feed::Page.relays("Runtime.exceptionThrown", &null));
+    }
+
+    /// #223 (Chrome): a worker relays its workers' uncaught errors, never
+    /// their unhandled rejections, so its own `Promise.reject(null)` (an
+    /// `Uncaught (in promise)` with a null value) is its own and listed.
+    #[test]
+    fn a_rejection_with_reason_null_is_never_a_relay() {
+        // Given a worker that started a worker of its own
+        let worker = Feed::Worker(Arc::new(std::sync::atomic::AtomicBool::new(true)));
+        let reason = json!({"type": "object", "subtype": "null", "value": null});
+        let details = |text: &str| {
+            json!({"timestamp": 1.0, "exceptionDetails": {"text": text,
+                "url": "http://a/outer.js", "lineNumber": 1, "exception": reason.clone()}})
+        };
+        // When it rejects a promise with null, and when it relays a throw
+        let rejected = details("Uncaught (in promise)");
+        let relayed = details("Uncaught");
+        // Then the rejection is listed, and the relay is not
+        assert!(!worker.relays("Runtime.exceptionThrown", &rejected));
+        assert!(worker.relays("Runtime.exceptionThrown", &relayed));
+        let listed = worker.console_message("Runtime.exceptionThrown", &rejected);
+        assert_eq!(
+            listed.map(|m| m.text),
+            Some("Uncaught (in promise) null".to_string())
+        );
     }
 
     /// REV-F11-5: with the commit time, messages the new page logged before

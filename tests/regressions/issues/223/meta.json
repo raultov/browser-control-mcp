@@ -1,0 +1,10 @@
+{
+ "number": 223,
+ "title": "get_console_logs: Chrome drops Promise.reject(null) in a worker that started a worker",
+ "family": "console",
+ "command": [
+  "repro_worker_reject_null.py"
+ ],
+ "bug_regex": "MISSING: Uncaught \\(in promise\\) null",
+ "exit_on_bug": true
+}

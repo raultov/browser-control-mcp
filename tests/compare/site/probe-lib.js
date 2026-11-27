@@ -17,4 +17,8 @@ self.probeLib = {
       setTimeout(function probeBurstThrower() { throw new Error('probe-burst ' + token); });
     }
   },
+  // An unhandled rejection whose reason is null (#223).
+  rejectNull() {
+    setTimeout(function probeNullRejecter() { Promise.reject(null); });
+  },
 };

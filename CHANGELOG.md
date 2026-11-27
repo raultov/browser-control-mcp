@@ -47,6 +47,21 @@ it sends.
   224, 1 error reply instead of 2 and 20 % fewer input tokens. No tool,
   argument or reply changes.
 
+### Fixed
+
+- `get_console_logs` on Chrome lists an unhandled rejection whose reason
+  is `null` (`Uncaught (in promise) null`) in a worker that started a
+  worker of its own. It was dropped as a copy of an error of the workers
+  it started, which Chrome relays to it as uncaught errors without their
+  value, but never as rejections (#223).
+
+### Development
+
+- `tests/differential/target_matrix.py` has one more owner, a worker that
+  started an idle worker of its own (#223), and one more feature in every
+  kind of target, an unhandled rejection whose reason is `null`: 108
+  cells per browser.
+
 ## [1.0.0-rc.4] - 2026-11-26
 
 Fourth release candidate. `get_console_logs` lists each message once and
