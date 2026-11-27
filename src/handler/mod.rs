@@ -2064,12 +2064,8 @@ impl ServerHandler for McpHandler {
         _request: Option<PaginatedRequestParams>,
         _runtime: Arc<dyn McpServer>,
     ) -> std::result::Result<ListToolsResult, RpcError> {
-        let allow_cookie_import = self.flags.allow_cookie_import;
         Ok(ListToolsResult {
-            tools: registry::listed_tools(self)
-                .into_iter()
-                .map(|t| schema_compat::normalize_tool_with_options(t, allow_cookie_import))
-                .collect(),
+            tools: advertised_tools(self),
             meta: None,
             next_cursor: None,
         })
@@ -2082,6 +2078,18 @@ impl ServerHandler for McpHandler {
     ) -> std::result::Result<CallToolResult, CallToolError> {
         registry::call(self, params).await
     }
+}
+
+/// The tool list `tools/list` answers, as clients get it: the tools
+/// `handler`'s flags enable, normalized for strict tool-calling engines. It
+/// is in the model's context in every session, so its size is budgeted
+/// (CTX-01).
+pub(crate) fn advertised_tools(handler: &McpHandler) -> Vec<Tool> {
+    let allow_cookie_import = handler.flags.allow_cookie_import;
+    registry::listed_tools(handler)
+        .into_iter()
+        .map(|t| schema_compat::normalize_tool_with_options(t, allow_cookie_import))
+        .collect()
 }
 
 /// A handler on mock browsers, for tests of other modules.
@@ -2101,6 +2109,27 @@ pub(crate) fn listed_tool_names(handler: &McpHandler) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    /// The most bytes the default tool list may take as `tools/list`
+    /// answers it (compact JSON). Lowered with every change that shortens
+    /// it, never raised: the curve is in `docs/specs/13-roadmap.md`.
+    const DEFAULT_TOOL_LIST_BUDGET: usize = 26_536;
+
+    /// CTX-01: the default tool list fits its budget.
+    #[test]
+    fn the_default_tool_list_fits_its_budget() {
+        // Given a server started without flags
+        let handler = McpHandler::new_test();
+        // When its tool list is serialized as clients get it
+        let size = serde_json::to_string(&advertised_tools(&handler))
+            .unwrap()
+            .len();
+        // Then it is within the budget
+        assert!(
+            size <= DEFAULT_TOOL_LIST_BUDGET,
+            "the default tool list takes {size} bytes, over its budget of {DEFAULT_TOOL_LIST_BUDGET}"
+        );
+    }
+
     /// #132: concurrent first calls on the default instance all get its
     /// session: the one that loses the race to register it uses the
     /// session the winner registered.

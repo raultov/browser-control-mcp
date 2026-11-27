@@ -53,6 +53,24 @@ pub fn initialize_result() -> InitializeResult {
 mod tests {
     use super::*;
 
+    /// The most bytes the instructions of a server started without flags
+    /// may take. Lowered with every change that shortens them, never
+    /// raised: the curve is in `docs/specs/13-roadmap.md`.
+    const DEFAULT_INSTRUCTIONS_BUDGET: usize = 4_148;
+
+    /// CTX-02: the default instructions fit their budget.
+    #[test]
+    fn the_default_instructions_fit_their_budget() {
+        // Given a server started without flags
+        // When it answers initialize
+        let size = initialize_result().instructions.unwrap_or_default().len();
+        // Then its instructions are within the budget
+        assert!(
+            size <= DEFAULT_INSTRUCTIONS_BUDGET,
+            "the default instructions take {size} bytes, over their budget of {DEFAULT_INSTRUCTIONS_BUDGET}"
+        );
+    }
+
     /// SRV-01: Server info names the product and leads with debugging.
     #[test]
     fn server_info_leads_with_debugging() {
