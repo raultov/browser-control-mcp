@@ -38,7 +38,7 @@ DEVTOOLS = "chrome-devtools-mcp@1.14.0"
 PUPPETEER = "@hisma/server-puppeteer@0.6.5"
 # The official Selenium MCP server is not on npm yet: a checkout of
 # SeleniumHQ/mcp at this commit (see README.md), started with node.
-SELENIUM_COMMIT = "de8899c"
+SELENIUM_COMMIT = "ae86da8"
 SELENIUM_BIN = os.path.expanduser("~/.local/share/selenium-mcp/mcp/bin/selenium-mcp.js")
 
 

@@ -25,10 +25,11 @@ chrome-devtools-mcp with runtime JavaScript debugging on both browsers.
 
 ## Comparison with Playwright MCP, chrome-devtools-mcp and Selenium MCP
 
-Measured on 2026-11-24 with browser-control-mcp 1.0.0-rc.2 built from the
-current sources, `@playwright/mcp` 0.0.86, `chrome-devtools-mcp` 1.14.0
-and the official Selenium MCP server (`SeleniumHQ/mcp` 0.1.0, "v1 in
-progress", not on npm yet: a checkout of commit `de8899c`), driven by the
+Measured on 2026-11-27 with browser-control-mcp built from the current
+sources (1.0.0-rc.4 and the changes since), `@playwright/mcp` 0.0.86,
+`chrome-devtools-mcp` 1.14.0 (the latest of both on npm that day) and the
+official Selenium MCP server (`SeleniumHQ/mcp` 0.1.0, "v1 in progress",
+not on npm yet: a checkout of commit `ae86da8`), driven by the
 same stdio client through the same tasks on Chrome 158.0.8127.88
 (headless, Linux) with `tests/compare/bench.py`. Every outcome was checked
 in the page, not taken from the reply. Tokens are estimated as characters
@@ -72,16 +73,18 @@ browser-control promises there, and what it does not, is in
 
 | Task | browser-control-mcp | Playwright MCP | chrome-devtools-mcp | Selenium MCP |
 | --- | --- | --- | --- | --- |
-| Tool list in context, default tools | 6 854 tokens (8 681 with the debugger, `--tool-groups debug`) | 5 565 tokens | 8 672 tokens | 1 672 tokens |
-| Tool list in context, every opt-in tool on | 13 691 tokens | 12 326 tokens | 16 940 tokens | 3 459 tokens |
-| Snapshot of Hacker News | **4 471 tokens** | 11 901 tokens | 6 711 tokens | 1 634 tokens, controls and headings only; 6 794 with the text (`all: true`) |
-| Snapshot of Wikipedia "Web browser" | **12 547 tokens** (cut, searchable) | 34 460 tokens | 27 648 tokens | 3 620 tokens, controls and headings only; 14 677 with the text |
-| Snapshot of MDN `<input>` | **12 561 tokens** (cut, searchable) | 158 431 tokens | 75 978 tokens | 18 986 tokens, controls and headings only; 73 419 with the text. Its navigation there fails ("Cannot find context"), though the page loads |
+| MCP tools exposed | 31 by default; 41 with the debugger (`--tool-groups debug`); 59 with every group | 25 by default; 72 with every `--caps` | 33 by default; 63 with every category flag | 24 by default (5 of them for Selenium Grid); 47 with `--allow-evaluate --caps pdf,storage,vision` |
+| Tool list in context, default tools | 5 141 tokens (6 766 with the debugger) | 5 565 tokens | 8 672 tokens | 2 082 tokens |
+| Server instructions in context (Claude Code and opencode put them in the system prompt) | 309 tokens (427 with the debugger) | none | none | 96 tokens |
+| Tool list in context, every opt-in tool on | 11 535 tokens | 12 326 tokens | 16 940 tokens | 3 868 tokens |
+| Snapshot of Hacker News | **4 020 tokens** | 10 941 tokens | 6 062 tokens | 1 535 tokens, controls and headings only; 6 540 with the text (`all: true`) |
+| Snapshot of Wikipedia "Web browser" | **12 547 tokens** (cut, searchable) | 34 475 tokens | 27 590 tokens | 3 620 tokens, controls and headings only; 14 677 with the text |
+| Snapshot of MDN `<input>` | **12 543 tokens** (cut, searchable) | 158 434 tokens | 76 077 tokens | 18 986 tokens, controls and headings only; 73 416 with the text. Its navigation there fails ("Cannot find context"), though the page loads |
 | Log in step by step (8 calls) | **296 tokens, 0.6 s** | 626 tokens, 1.2 s | 411 tokens, 1.4 s | 686 tokens, 0.7 s |
-| Log in with `fill_form` (5 calls) | **319 tokens, 0.4 s** | 433 tokens, 0.6 s | 355 tokens, 0.8 s | 429 tokens, 0.6 s |
-| Click, median | 52 ms | 516 ms | 232 ms | **34 ms** (it does not wait for the page to react) |
+| Log in with `fill_form` (5 calls) | **319 tokens, 0.4 s** | 433 tokens, 0.6 s | 355 tokens, 0.8 s | 429 tokens, 0.7 s |
+| Click, median | 52 ms | 516 ms | 233 ms | **25 ms** (it does not wait for the page to react) |
 | Evaluate JavaScript, median | **0 ms** | 502 ms | 202 ms | 1 ms |
-| Navigate (local page), median | **46 ms** | 59 ms | 112 ms | 66 ms |
+| Navigate (local page), median | **46 ms** | 55 ms | 110 ms | 59 ms |
 | Full-page screenshot of a 31 700 px page | cut at 16 384 px, with a note | 0.6 MB image in the reply, also saved to a file | saved to a file, with a warning that content past 16 384 px may repeat or be corrupted | ✗ the viewport only |
 | Navigation to an unknown host | error | error | success with the error in the text | error |
 | Navigate, then read the console (log, warning, errors) | 218 tokens (keeps the same site's earlier messages, here a favicon 404) | 190 tokens | 160 tokens | 70 tokens: no locations or stack, the logged object as `Object(1)` |
@@ -170,7 +173,10 @@ tools are off by default and listed only with `--tool-groups`:
 `--tool-groups all` lists every group. The page, input and observation
 tools and `resume` are always listed (31 tools), plus `enable_proxy_auth` with
 `--proxy-server` and the WebMCP tools with `--enable-webmcp`. A tool of a
-group that is off fails naming the flag. The list is fixed for the server's
+group that is off fails naming the flag, and the server's instructions name
+the groups that are off, so the agent can tell the user which flag a task
+needs; they describe only what the run lists (the debugger, cookie import,
+proxy and WebMCP paragraphs come with their flags). The list is fixed for the server's
 life: it never changes during a session, so clients can cache it. Tools
 that only read (`snapshot`, `find_in_snapshot`, `inspect_dom`,
 `capture_screenshot`, `wait_for`, `audit_page`, `call_stack`,

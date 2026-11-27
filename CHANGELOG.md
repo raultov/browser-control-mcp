@@ -23,7 +23,16 @@ from a copy of its code: entries describe the differences from that release.
 - Shorter tool descriptions: each says what the tool does and what an
   agent would get wrong from its name and schema alone; the bounds,
   formats and per-browser details stay in the README's feature matrix.
-  No tool, argument or reply changes.
+  `instance_id` and `tab_id`, which mean the same on every tool, are
+  explained once in the instructions instead of on each tool, and a
+  selector argument says "a snapshot ref (e12) or a CSS selector". The
+  default tool list goes from about 6 880 to 5 140 tokens (26 536 to
+  19 664 bytes), and with the instructions from about 7 920 to 5 450:
+  under Playwright MCP's 5 565. Claude Code (Sonnet 5.5) finished the
+  same 13 browser tasks 39 times out of 39 before and after, with 145
+  calls instead of 152, 3 error replies instead of 9, and 26 % fewer
+  input tokens per task (`tests/compare/agent_eval`). No tool, argument
+  or reply changes.
 
 ## [1.0.0-rc.4] - 2026-11-26
 
