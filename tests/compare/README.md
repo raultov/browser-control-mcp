@@ -52,8 +52,9 @@ python3 -I tests/compare/agent_eval/run.py --only 'form|select' --runs 1   # som
 ```
 
 - Clients: `claude -p` (Claude Code; `--claude-model`, default `sonnet`)
-  and `opencode2 run --standalone` (opencode 2; `--opencode-model`,
-  default `google/antigravity-gemini-3.8-flash-medium`), each with
+  and `opencode2 run --standalone` (opencode 2 with the user's global
+  `opencode.json` and plugins; `--opencode-model`, default
+  `opencode-go/deepseek-v4.1-flash`), each with
   browser-control-mcp as its only tool server and no other tool. The
   harness removes `ANTHROPIC_*` and `OPENCODE*` from their environment.
 - `tasks.py`: 13 goals in plain words that name no tool, each with an
@@ -75,13 +76,17 @@ python3 -I tests/compare/agent_eval/run.py --only 'form|select' --runs 1   # som
   `--rejudge <results.json>` classifies a run's rows again from its logs.
 - A run the client broke is an error (`E`), not judged: the CLI failed (a
   provider's quota, a rate limit), or the model was not given the tool
-  list (fewer input tokens than the list holds; opencode did that near
-  the end of a provider's quota).
+  list (fewer input tokens than the list holds).
+- opencode gets the server with `"protocol": "legacy"`. Without it,
+  opencode 2.4 first sends a `server/discover` probe, which the server
+  leaves unanswered before `initialize` (rust-mcp-sdk 1.1 drops the error
+  reply then), waits about 5 s before it falls back, and a model that
+  answers sooner runs without the server's tools.
 
 It spends model tokens (78 short agent runs by default; a provider's
-quota can run out: 100 runs of the default opencode model used up a
-week's quota of Gemini through Antigravity) and its outcome varies from
-run to run: compare runs of the same CLIs and models only.
+quota can run out: about 100 runs used up a week's quota of Gemini 3.8
+Flash through Antigravity) and its outcome varies from run to run:
+compare runs of the same CLIs and models only.
 
 ## Servers
 

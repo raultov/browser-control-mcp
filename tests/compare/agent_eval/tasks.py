@@ -41,8 +41,8 @@ TASKS = [
      "oracle": ("eval", "window.__last === 1", True)},
     {"id": "eval.await",
      "prompt": "Open {url}/basic.html. From that page, with JavaScript, send a POST request to /api/echo whose "
-               "body is the text \"zebra\", and tell me the exact value of the \"type\" field in the JSON the "
-               "server answers.",
+               "body is the text \"zebra\", without setting any header, and tell me the exact value of the "
+               "\"type\" field in the JSON the server answers.",
      "oracle": ("answer", ["text/plain"])},
     {"id": "dialog.prompt",
      "prompt": "Open {url}/dialogs.html, click \"Prompt\" and answer the question it asks with \"Bench\".",

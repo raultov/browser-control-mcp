@@ -73,8 +73,13 @@ def read_claude(stdout):
 
 def opencode(work, server, prompt, model):
     os.makedirs(os.path.join(work, ".opencode"), exist_ok=True)
+    # protocol "legacy": opencode 2.4 otherwise first sends a server/discover
+    # probe, which the server leaves unanswered before initialize (rust-mcp-sdk
+    # 1.1 drops an error reply then); opencode waits about 5 s before it falls
+    # back, and a model that answers faster runs without the server's tools.
     config = {"$schema": "https://opencode.ai/config.json",
-              "mcp": {"servers": {"bc": {"type": "local", "command": server, "codemode": False}}},
+              "mcp": {"servers": {"bc": {"type": "local", "command": server, "codemode": False,
+                                         "protocol": "legacy"}}},
               "agents": {"bceval": {"mode": "primary", "description": "Browser tasks",
                                     "permissions": [{"action": "*", "resource": "*", "effect": "deny"},
                                                     {"action": "bc_*", "resource": "*", "effect": "allow"}]}}}
@@ -177,8 +182,8 @@ def one_run(args, site, task, client, index, out_dir):
 def add_calls(row, log):
     """`row` with the calls the proxy logged; a run whose model was not
     given the tool list (the client sent fewer input tokens than the list
-    holds: seen with opencode near a provider's quota) is the client's
-    error, not a failure of the server."""
+    holds: opencode did when the server connected after the model's first
+    request) is the client's error, not a failure of the server."""
     calls, listed = [], 0
     with open(log) as f:
         for line in f:
@@ -335,7 +340,7 @@ def main():
     parser.add_argument("--bin", default=os.path.join(REPO, "target", "release", "browser-control-mcp"))
     parser.add_argument("--clients", default="claude,opencode")
     parser.add_argument("--claude-model", default="sonnet")
-    parser.add_argument("--opencode-model", default="google/antigravity-gemini-3.8-flash-medium")
+    parser.add_argument("--opencode-model", default="opencode-go/deepseek-v4.1-flash")
     parser.add_argument("--runs", type=int, default=3)
     parser.add_argument("--jobs", type=int, default=3, help="runs at once")
     parser.add_argument("--only", help="regex on task ids")
