@@ -20,6 +20,10 @@ from a copy of its code: entries describe the differences from that release.
   their flags, and one line names the tool groups that are off. Without
   flags they go from 4 148 to 1 237 characters (about 1 040 to 310
   tokens). No tool, argument or reply changes.
+- Shorter tool descriptions: each says what the tool does and what an
+  agent would get wrong from its name and schema alone; the bounds,
+  formats and per-browser details stay in the README's feature matrix.
+  No tool, argument or reply changes.
 
 ## [1.0.0-rc.4] - 2026-11-26
 

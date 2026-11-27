@@ -655,7 +655,7 @@ pub(crate) fn sheet_lookup(element: &str, samples: &[SheetSample]) -> String {
 
 #[macros::mcp_tool(
     name = "get_css_styles",
-    description = "Explains why an element looks as it does: the CSS rules matching it, highest priority first (style attribute, then rules), each with selector, stylesheet URL (the page's for an inline <style>), 0-based line and column, enclosing at-rules (@media, @container, @layer, @supports) and declarations marked important, invalid or overridden; its pseudo-elements; and the computed values of the declared properties. Options add the ancestors' rules (nearest first) and the browser's, or narrow to some properties (declarations included). Firefox reads them with its inspector (needs its debugger port).",
+    description = "Explains why an element looks as it does: the CSS rules matching it, highest priority first, each with its stylesheet location and its declarations marked important, invalid or overridden, then the computed values. Options add inherited and browser rules or narrow to some properties.",
     read_only_hint = true
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]

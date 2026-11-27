@@ -8,7 +8,7 @@ use serde_json::Value;
 
 #[macros::mcp_tool(
     name = "snapshot",
-    description = "Outlines the page to act on it: one line per element with a role (button, link, textbox, heading...), name, states, value and a ref ([ref=e12]), indented under its parent; an invalid field shows [invalid] [error='why'], a <select> its first 25 options (pick one with fill_input); through open shadow roots and iframes (another origin's frame is [frame=f2], refs f2e5; selector 'f2' outlines it alone); hidden elements left out, passwords never shown; at most 50000 characters (find_in_snapshot searches it whole). Refs work as the selector of the input tools until the page navigates. Same on Chrome and Firefox.",
+    description = "Outlines the page to act on it: one line per element with its role, name, states, value and a ref ([ref=e12]) that the input tools take as selector until the page navigates. Shadow roots and iframes included (a frame of another origin is [frame=f2], its refs f2e5); hidden elements left out. A <select> lists its options: pick one with fill_input. Cut at 50000 characters: search the rest with find_in_snapshot.",
     read_only_hint = true
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]

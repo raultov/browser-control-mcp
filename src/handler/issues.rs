@@ -387,7 +387,7 @@ fn code_matches(filter: Option<&str>, code: &str) -> bool {
 
 #[macros::mcp_tool(
     name = "get_issues",
-    description = "Lists the problems the browser diagnosed in the tab that the console hides or words vaguely: blocked or warned cookies and why, CORS and Content-Security-Policy blocks, mixed content, deprecated features, and on Chrome every code of its DevTools Issues panel (form fields without id, name or label, LazyLoadImageIssue...). One line each, oldest first: [code] title: summary @ url [xN] (a title for the common Chrome codes; N distinct reports, one per element or request), then on Chrome its elements (selector [ref=eN], refs as snapshot's, at most 10). For console messages use get_console_logs. Firefox has no Issues panel: its security and deprecation console messages are read as issues (cookies, CSP, mixed content, CORS, DeprecationIssue; needs its debugger port)."
+    description = "Lists the problems the browser diagnosed in the tab that the console hides or words vaguely: blocked cookies, CORS and Content-Security-Policy blocks, mixed content, deprecations, and on Chrome every code of its DevTools Issues panel. One line each, oldest first, with the elements involved as refs. For console messages use get_console_logs."
 )]
 #[derive(Debug, ::serde::Deserialize, ::serde::Serialize, macros::JsonSchema)]
 pub struct GetIssuesTool {
