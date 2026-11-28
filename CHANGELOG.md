@@ -50,6 +50,10 @@ from a copy of its code: entries describe the differences from that release.
   and U+2029 end a line too (a CRLF once). A match in a script whose lines
   end with a lone CR was on line 0, where a breakpoint never paused, and
   previewed with the whole file (#230).
+- `emulate` calls sent at once to a Chrome tab each add to the others:
+  they merged from what the tab emulated before any of them and each sent
+  its media features or device metrics without the others', so options
+  reported as set were lost (#226).
 
 ### Changed
 

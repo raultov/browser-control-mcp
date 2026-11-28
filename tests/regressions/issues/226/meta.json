@@ -1,0 +1,10 @@
+{
+ "number": 226,
+ "title": "emulate: calls sent at once to a Chrome tab overwrite each other; options reported as set are lost",
+ "family": "other",
+ "command": [
+  "repro_emulate_pipelined.py"
+ ],
+ "bug_regex": "LOST in [1-5] of 5 rounds",
+ "exit_on_bug": true
+}

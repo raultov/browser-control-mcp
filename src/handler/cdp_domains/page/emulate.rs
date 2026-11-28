@@ -715,10 +715,13 @@ impl EmulateTool {
             Self::names_error(&crate::handler::snippet_value(&target, &check).await?)?;
         }
         let state = session.emulation_state(args.tab_id.clone())?;
-        let merged = state.lock().await.merged(&args);
+        // Held until Chrome took it all and it is kept: a call sent at
+        // once merges this one in, not what both started from (#226).
+        let mut emulated = state.lock().await;
+        let merged = emulated.merged(&args);
         apply(&target, &args.cdp_commands(&merged), args.resets()).await?;
-        // Kept once Chrome took it all.
-        *state.lock().await = merged.clone();
+        *emulated = merged.clone();
+        drop(emulated);
         // The position the page reads comes in a promise, awaited; Chrome
         // runs no microtask while the page is paused in the debugger, so it
         // is left out then (ISSUE-64).
@@ -894,6 +897,47 @@ mod tests {
             );
             assert_eq!(read["awaitPromise"] == json!(true), waits, "{args}");
         }
+    }
+
+    /// #226 (Chrome): calls sent at once to a tab each add to the others:
+    /// each merges what the tab emulates once the call before it was sent,
+    /// so none resends the media features or device metrics without
+    /// another's.
+    #[tokio::test]
+    async fn calls_at_once_add_to_each_other() {
+        use crate::handler::cdp_domains::tests::{call, mock_handler, spawn_recording_mock};
+        // Given a Chrome tab
+        let mock = spawn_recording_mock().await;
+        mock.respond_with(
+            "Runtime.evaluate",
+            |_| json!({"result": {"result": {"type": "object", "value": {}}}}),
+        );
+        let handler = mock_handler(mock.http_port);
+        // When two media options and two viewport options are asked at once
+        let calls = [
+            json!({"color_scheme": "dark"}),
+            json!({"reduced_motion": true}),
+            json!({"device_scale_factor": 2.0}),
+            json!({"width": 480, "height": 600}),
+        ];
+        let replies = futures_util::future::join_all(
+            calls
+                .into_iter()
+                .map(|args| EmulateTool::handle(call("emulate", args), &handler)),
+        )
+        .await;
+        assert!(replies.iter().all(Result::is_ok));
+        // Then the last media and metrics Chrome got hold both options of each
+        let media = mock.commands_named("Emulation.setEmulatedMedia");
+        let features = &media.last().unwrap().params["features"];
+        assert_eq!(features.as_array().unwrap().len(), 2, "{features}");
+        let metrics = mock.commands_named("Emulation.setDeviceMetricsOverride");
+        let last = &metrics.last().unwrap().params;
+        assert_eq!(
+            (&last["width"], &last["deviceScaleFactor"]),
+            (&json!(480), &json!(2.0)),
+            "{last}"
+        );
     }
 
     /// ISSUE-9: options that make no sense are refused before any browser
