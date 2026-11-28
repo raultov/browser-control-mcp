@@ -36,11 +36,21 @@ impl EvaluateJsTool {
         handler: &McpHandler,
     ) -> Result<CallToolResult, CallToolError> {
         let args: EvaluateJsTool = crate::handler::parse_args(params)?;
-        let target = crate::handler::resolve_target(handler, args.instance_id, args.tab_id).await?;
+        let session = handler.session(args.instance_id).await?;
+        let target = session.target(args.tab_id.clone()).await?;
         // Chrome cannot await a promise while the page is paused in the
         // debugger (no microtask runs): the call would wait for the timeout.
         let paused = target.is_paused().await;
         let gesture = args.user_gesture == Some(true);
+        // The user interacts with the tab the browser shows, which has the
+        // focus fullscreen and the clipboard need (#228: a headless Chrome
+        // focuses no page). Best effort; a tab in the background stays so.
+        let shown = session.tab_id_of(None) == session.tab_id_of(args.tab_id.as_deref());
+        if gesture && shown {
+            let _ = target
+                .send_raw_command("Page.bringToFront", json!({}))
+                .await;
+        }
         let evaluate = |expression: &str| {
             let mut params = json!({"expression": expression, "awaitPromise": !paused});
             // Opt-in only: it lets the page open popups or write the clipboard.
@@ -395,6 +405,42 @@ mod tests {
             .map(|c| c.params["userGesture"].clone())
             .collect();
         assert_eq!(gestures, [json!(true), Value::Null]);
+    }
+
+    /// #228 (Chrome): a user gesture on the tab the browser shows brings
+    /// it to the front first, as the user's interaction would: a page that
+    /// is not focused (a headless Chrome focuses none) is refused
+    /// fullscreen and the clipboard though it has the activation. Without
+    /// the gesture nothing is brought to the front.
+    #[tokio::test]
+    async fn a_user_gesture_brings_the_shown_tab_to_the_front() {
+        // Given a shown tab
+        let mock = spawn_recording_mock().await;
+        mock.respond_with(
+            "Runtime.evaluate",
+            |_| json!({"result": {"result": {"type": "boolean", "value": true}}}),
+        );
+        let handler = mock_handler(mock.http_port);
+        // When evaluate_js runs with user_gesture true, then without it
+        for args in [
+            json!({"expression": "1", "user_gesture": true}),
+            json!({"expression": "2"}),
+        ] {
+            EvaluateJsTool::handle(call("evaluate_js", args), &handler)
+                .await
+                .unwrap();
+        }
+        // Then the tab was brought to the front once, before the gesture
+        let order: Vec<String> = mock
+            .commands()
+            .into_iter()
+            .map(|c| c.method)
+            .filter(|m| m == "Page.bringToFront" || m == "Runtime.evaluate")
+            .collect();
+        assert_eq!(
+            order,
+            ["Page.bringToFront", "Runtime.evaluate", "Runtime.evaluate"]
+        );
     }
 
     /// EVL-02: an object is evaluated by reference, read by value, and the

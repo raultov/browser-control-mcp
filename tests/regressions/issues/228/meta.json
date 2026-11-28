@@ -1,0 +1,10 @@
+{
+ "number": 228,
+ "title": "evaluate_js user_gesture on Chrome: requestFullscreen() and clipboard.writeText() still refused",
+ "family": "other",
+ "command": [
+  "repro_user_gesture.py"
+ ],
+ "bug_regex": "REFUSED WITH user_gesture: fullscreen",
+ "exit_on_bug": true
+}

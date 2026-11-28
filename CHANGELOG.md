@@ -81,6 +81,11 @@ from a copy of its code: entries describe the differences from that release.
   viewport, which Chrome takes on the page only (#227). The README names
   what still differs: such a frame's `devicePixelRatio` on Chrome, and the
   user agent of workers already running.
+- `evaluate_js` with `user_gesture: true` on Chrome brings the active tab
+  to the front first, as the user's interaction would: the page had the
+  activation but not the focus (a headless Chrome focuses no page), so
+  `requestFullscreen()` was refused (`not granted`) and
+  `navigator.clipboard.writeText()` too (`Document is not focused`) (#228).
 
 ### Changed
 
