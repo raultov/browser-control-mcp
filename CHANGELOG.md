@@ -8,7 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 `browser-control-mcp` is the successor of `chrome-debug-mcp` 1.5.6 and starts
 from a copy of its code: entries describe the differences from that release.
 
-## [Unreleased]
+## [1.0.0-rc.6] - 2026-11-28
+
+Sixth release candidate. Firefox lists the console of the tab's service
+worker (#213), and eight bugs found by automated testing are fixed
+(#224-#231): `emulate` reaches Chrome's frames of another origin and
+Firefox's other origins, calls sent at once and `set_offline` no longer
+undo each other, `user_gesture` gets fullscreen and the clipboard on a
+headless Chrome, and clicks, script search lines and error positions are
+right in the edge cases reported. No tool, argument or reply shape
+changes.
 
 ### Added
 
