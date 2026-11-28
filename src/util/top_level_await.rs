@@ -21,8 +21,8 @@
 
 use oxc_allocator::Allocator;
 use oxc_ast::ast::{
-    ArrowFunctionExpression, AwaitExpression, ForOfStatement, Function, FunctionBody, Statement,
-    VariableDeclaration, VariableDeclarationKind,
+    ArrowFunctionExpression, AwaitExpression, ForOfStatement, Function, FunctionBody,
+    PropertyDefinition, Statement, StaticBlock, VariableDeclaration, VariableDeclarationKind,
 };
 use oxc_ast_visit::{Visit, walk};
 use oxc_parser::Parser;
@@ -58,6 +58,10 @@ const STACK_PER_BYTE: usize = if cfg!(debug_assertions) {
     4 << 10
 };
 
+/// Where a function of the code starts and where it ends (past its last
+/// character): 0-based lines and columns in UTF-16 units.
+type Extent = ((usize, usize), (usize, usize));
+
 /// What the code opens with when parsed: the body of an async function,
 /// where `await` is an expression.
 const OPEN: &str = "async function w() { ";
@@ -78,6 +82,10 @@ pub struct AsyncForm {
     pub wrapped: String,
     /// Where the code sits in [`Self::wrapped`].
     layout: Layout,
+    /// Where the code's functions start and end (0-based lines and
+    /// columns in UTF-16 units, the end past their last character), as
+    /// [`function_spans`] reads them; `None` for code not parsed.
+    functions: Option<Vec<Extent>>,
 }
 
 /// What [`AsyncForm::wrapped`] opens with.
@@ -116,6 +124,35 @@ impl AsyncForm {
             column = column.saturating_sub(WRAP_RETURN.len()).max(at);
         }
         ((line, column) < end).then_some((line, column))
+    }
+
+    /// Which of an exception's frames, all in the script the code ran as
+    /// (`frames`: their 0-based lines and columns, innermost first; the
+    /// code's [`Self::wrapped`] form when [`Self::awaits`]), is the code's
+    /// own innermost (#229): one inside a function of the code, else the
+    /// one running the code's top level, the outermost in the code
+    /// (Firefox adds the wrapper's caller). A frame of a function another
+    /// evaluation or an inline script of the page defined shares the
+    /// code's URL on Firefox, but it is in none of the code's functions.
+    /// The innermost for code not parsed; `None` without a frame in the
+    /// code.
+    pub fn frame_in_code(&self, frames: &[(usize, usize)]) -> Option<usize> {
+        let in_code = |&(line, column): &(usize, usize)| match self.awaits {
+            true => self.position_in_code(line, column),
+            false => Some((line, column)),
+        };
+        let Some(functions) = &self.functions else {
+            return (!frames.is_empty()).then_some(0);
+        };
+        let top = frames.iter().rposition(|frame| in_code(frame).is_some())?;
+        let in_function = |frame: &(usize, usize)| {
+            in_code(frame).is_some_and(|at| {
+                functions
+                    .iter()
+                    .any(|&(start, end)| start <= at && at < end)
+            })
+        };
+        Some(frames[..top].iter().position(in_function).unwrap_or(top))
     }
 }
 
@@ -160,11 +197,53 @@ pub fn async_form(code: &str) -> AsyncForm {
             },
         ),
     };
+    let functions = parsed.as_ref().map(|p| function_spans(code, &p.functions));
     AsyncForm {
         awaits: parsed.is_some_and(|p| p.awaits),
         wrapped,
         layout,
+        functions,
     }
+}
+
+/// The positions in `code` of `spans`, spans in the parsed source (after
+/// [`OPEN`]), read in one pass over the code.
+fn function_spans(code: &str, spans: &[Span]) -> Vec<Extent> {
+    let byte = |at: u32| {
+        usize::try_from(at)
+            .unwrap_or(usize::MAX)
+            .saturating_sub(OPEN.len())
+    };
+    let mut offsets: Vec<usize> = spans
+        .iter()
+        .flat_map(|span| [byte(span.start), byte(span.end)])
+        .collect();
+    offsets.sort_unstable();
+    offsets.dedup();
+    let mut found = std::collections::HashMap::with_capacity(offsets.len());
+    let mut wanted = offsets.into_iter().peekable();
+    let (mut line, mut column) = (0, 0);
+    let mut chars = code.char_indices().peekable();
+    loop {
+        let at = chars.peek().map_or(code.len(), |&(i, _)| i);
+        while let Some(offset) = wanted.next_if(|&offset| offset <= at) {
+            found.insert(offset, (line, column));
+        }
+        let Some((_, c)) = chars.next() else {
+            break;
+        };
+        match c {
+            '\r' if chars.peek().is_some_and(|&(_, next)| next == '\n') => {}
+            '\n' | '\r' | '\u{2028}' | '\u{2029}' => (line, column) = (line + 1, 0),
+            _ => column += c.len_utf16(),
+        }
+    }
+    let end = (line, column);
+    let place = |at: u32| found.get(&byte(at)).copied().unwrap_or(end);
+    spans
+        .iter()
+        .map(|span| (place(span.start), place(span.end)))
+        .collect()
 }
 
 /// `code` with the `-->` it starts with (after spaces) written `// `: an
@@ -195,6 +274,9 @@ pub fn with_top_level_await(code: &str) -> String {
 /// What the parse of the code found.
 struct Parsed {
     awaits: bool,
+    /// The spans of the code's functions ([`FunctionFinder`]), in the
+    /// parsed source.
+    functions: Vec<Span>,
     /// The span of the last expression statement's expression, in the
     /// parsed source (after [`OPEN`]), when the last statement is one.
     last: Option<Span>,
@@ -234,8 +316,11 @@ fn parse(code: &str) -> Option<Parsed> {
     let body = function.body.as_ref()?;
     let mut finder = AwaitFinder::default();
     finder.visit_statements(&body.statements);
+    let mut functions = FunctionFinder::default();
+    functions.visit_statements(&body.statements);
     Some(Parsed {
         awaits: finder.found,
+        functions: functions.spans,
         last: last_expression(body),
     })
 }
@@ -290,6 +375,36 @@ impl<'a> Visit<'a> for AwaitFinder {
     fn visit_function(&mut self, _: &Function<'a>, _: ScopeFlags) {}
 
     fn visit_arrow_function_expression(&mut self, _: &ArrowFunctionExpression<'a>) {}
+}
+
+/// Finds the code's outermost functions, which run in frames of their
+/// own: functions (declarations, expressions, methods, accessors), arrows,
+/// and a class's field initializers and static blocks. A function inside
+/// one is inside its span.
+#[derive(Default)]
+struct FunctionFinder {
+    spans: Vec<Span>,
+}
+
+impl<'a> Visit<'a> for FunctionFinder {
+    fn visit_function(&mut self, it: &Function<'a>, _: ScopeFlags) {
+        self.spans.push(it.span);
+    }
+
+    fn visit_arrow_function_expression(&mut self, it: &ArrowFunctionExpression<'a>) {
+        self.spans.push(it.span);
+    }
+
+    fn visit_static_block(&mut self, it: &StaticBlock<'a>) {
+        self.spans.push(it.span);
+    }
+
+    fn visit_property_definition(&mut self, it: &PropertyDefinition<'a>) {
+        self.visit_property_key(&it.key);
+        if let Some(value) = &it.value {
+            self.spans.push(value.span());
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1095,6 +1210,67 @@ mod tests {
         for (code, (line, column), expected) in cases {
             let found = async_form(code).position_in_code(line, column);
             assert_eq!(found, expected, "{code:?} at {line}:{column}");
+        }
+    }
+
+    /// #229: of an exception's frames in the code's script (innermost
+    /// first), the code's own innermost is one inside a function of the
+    /// code (an arrow, a method, a field initializer, a static block),
+    /// else the frame running its top level: a frame of a function
+    /// another evaluation defined (Firefox gives it the code's URL) is in
+    /// none of them. The innermost for code not parsed.
+    #[test]
+    fn the_codes_own_frame_is_inside_its_functions() {
+        let cases = [
+            // Then a frame inside a function of the code is its own
+            (
+                "const f = () => {\n  return null.k;\n};\nf()",
+                vec![(1, 2), (3, 0)],
+                Some(0),
+            ),
+            (
+                "class C { m() { null.k } }\nnew C().m()",
+                vec![(0, 16), (1, 0)],
+                Some(0),
+            ),
+            (
+                "class C { x = null.k; }\nnew C()",
+                vec![(0, 14), (1, 0)],
+                Some(0),
+            ),
+            (
+                "class C { static { null.k } }",
+                vec![(0, 19), (0, 0)],
+                Some(0),
+            ),
+            // And another code's frame is not: the top level is
+            ("0;\n\nevalBoom()", vec![(2, 2), (2, 0)], Some(1)),
+            (
+                "0;\n\npageBoom(() => null.w)",
+                vec![(2, 15), (0, 57), (2, 8)],
+                Some(0),
+            ),
+            ("0;\n\npageBoom()", vec![(0, 57), (2, 0)], Some(1)),
+            // And wrapped code's top level is the wrapper's frame, inside
+            // the frame of its caller, in the wrapper
+            (
+                "await 0;\n\nevalBoom()",
+                vec![(2, 2), (2, 8), (3, 5)],
+                Some(1),
+            ),
+            (
+                "await 0;\nconst f = () => null.k;\nf()",
+                vec![(1, 16), (2, 8), (3, 5)],
+                Some(0),
+            ),
+            // And no frame in the code is none
+            ("await 0;\n\nevalBoom()", vec![(3, 5)], None),
+            // And code not parsed keeps its innermost frame
+            ("0;\n\nevalBoom( +", vec![(2, 2), (2, 0)], Some(0)),
+        ];
+        for (code, frames, expected) in cases {
+            let found = async_form(code).frame_in_code(&frames);
+            assert_eq!(found, expected, "{code:?} {frames:?}");
         }
     }
 }

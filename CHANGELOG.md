@@ -59,6 +59,14 @@ from a copy of its code: entries describe the differences from that release.
   dropped the throttling (and `emulate` still reported it), and throttling
   an offline tab, or resetting its emulation, brought it back online.
   Each now sends the other's part as the tab has it (#231).
+- `evaluate_js` places an error thrown in a function an earlier
+  evaluation or `new Function` defined at the call in the expression, as
+  one a page script's function threw: it was given the function's own
+  line and column (#229, a case #221 did not cover). Chrome tells the
+  expression's frames by their script; Firefox, which names earlier
+  evaluations and the page's inline scripts as it names the expression,
+  by the expression's functions (an error thrown by an inline script's
+  function was placed in the expression too).
 
 ### Changed
 

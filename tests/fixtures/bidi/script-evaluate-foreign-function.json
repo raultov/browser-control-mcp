@@ -1,0 +1,250 @@
+{
+ "0;\n\nevalBoom()": {
+  "exceptionDetails": {
+   "columnNumber": 2,
+   "exception": {
+    "type": "error"
+   },
+   "lineNumber": 2,
+   "stackTrace": {
+    "callFrames": [
+     {
+      "columnNumber": 2,
+      "functionName": "globalThis.evalBoom",
+      "lineNumber": 2,
+      "url": "http://127.0.0.1:8000/basic.html"
+     },
+     {
+      "columnNumber": 0,
+      "functionName": "",
+      "lineNumber": 2,
+      "url": "http://127.0.0.1:8000/basic.html"
+     }
+    ]
+   },
+   "text": "TypeError: can't access property \"c\", a.b is undefined"
+  },
+  "realm": "b8681377-c188-4225-a332-31ffe096fb30",
+  "type": "exception"
+ },
+ "0;\n\nnew Function('return null.q')()": {
+  "exceptionDetails": {
+   "columnNumber": 0,
+   "exception": {
+    "type": "error"
+   },
+   "lineNumber": 2,
+   "stackTrace": {
+    "callFrames": [
+     {
+      "columnNumber": 0,
+      "functionName": "anonymous",
+      "lineNumber": 2,
+      "url": "http://127.0.0.1:8000/basic.html line 3 > Function"
+     },
+     {
+      "columnNumber": 29,
+      "functionName": "",
+      "lineNumber": 2,
+      "url": "http://127.0.0.1:8000/basic.html"
+     }
+    ]
+   },
+   "text": "TypeError: can't access property \"q\" of null"
+  },
+  "realm": "b8681377-c188-4225-a332-31ffe096fb30",
+  "type": "exception"
+ },
+ "0;\n\npageBoom()": {
+  "exceptionDetails": {
+   "columnNumber": 57,
+   "exception": {
+    "type": "error"
+   },
+   "lineNumber": 0,
+   "stackTrace": {
+    "callFrames": [
+     {
+      "columnNumber": 57,
+      "functionName": "pageBoom",
+      "lineNumber": 0,
+      "url": "http://127.0.0.1:8000/basic.html"
+     },
+     {
+      "columnNumber": 0,
+      "functionName": "",
+      "lineNumber": 2,
+      "url": "http://127.0.0.1:8000/basic.html"
+     }
+    ]
+   },
+   "text": "TypeError: can't access property \"z\" of null"
+  },
+  "realm": "b8681377-c188-4225-a332-31ffe096fb30",
+  "type": "exception"
+ },
+ "0;\n\npageBoom(() => null.w)": {
+  "exceptionDetails": {
+   "columnNumber": 15,
+   "exception": {
+    "type": "error"
+   },
+   "lineNumber": 2,
+   "stackTrace": {
+    "callFrames": [
+     {
+      "columnNumber": 15,
+      "functionName": "",
+      "lineNumber": 2,
+      "url": "http://127.0.0.1:8000/basic.html"
+     },
+     {
+      "columnNumber": 57,
+      "functionName": "pageBoom",
+      "lineNumber": 0,
+      "url": "http://127.0.0.1:8000/basic.html"
+     },
+     {
+      "columnNumber": 8,
+      "functionName": "",
+      "lineNumber": 2,
+      "url": "http://127.0.0.1:8000/basic.html"
+     }
+    ]
+   },
+   "text": "TypeError: can't access property \"w\" of null"
+  },
+  "realm": "b8681377-c188-4225-a332-31ffe096fb30",
+  "type": "exception"
+ },
+ "const f = () => {\n  return null.k;\n};\nf()": {
+  "exceptionDetails": {
+   "columnNumber": 2,
+   "exception": {
+    "type": "error"
+   },
+   "lineNumber": 1,
+   "stackTrace": {
+    "callFrames": [
+     {
+      "columnNumber": 2,
+      "functionName": "f",
+      "lineNumber": 1,
+      "url": "http://127.0.0.1:8000/basic.html"
+     },
+     {
+      "columnNumber": 0,
+      "functionName": "",
+      "lineNumber": 3,
+      "url": "http://127.0.0.1:8000/basic.html"
+     }
+    ]
+   },
+   "text": "TypeError: can't access property \"k\" of null"
+  },
+  "realm": "b8681377-c188-4225-a332-31ffe096fb30",
+  "type": "exception"
+ },
+ "await 0;\n\nevalBoom()": {
+  "exceptionDetails": {
+   "columnNumber": 2,
+   "exception": {
+    "type": "error"
+   },
+   "lineNumber": 2,
+   "stackTrace": {
+    "callFrames": [
+     {
+      "columnNumber": 2,
+      "functionName": "globalThis.evalBoom",
+      "lineNumber": 2,
+      "url": "http://127.0.0.1:8000/basic.html"
+     },
+     {
+      "columnNumber": 8,
+      "functionName": "",
+      "lineNumber": 2,
+      "url": "http://127.0.0.1:8000/basic.html"
+     },
+     {
+      "columnNumber": 5,
+      "functionName": "",
+      "lineNumber": 3,
+      "url": "http://127.0.0.1:8000/basic.html"
+     }
+    ]
+   },
+   "text": "TypeError: can't access property \"c\", a.b is undefined"
+  },
+  "realm": "b8681377-c188-4225-a332-31ffe096fb30",
+  "type": "exception"
+ },
+ "await 0;\nconst f = () => null.k;\nf()": {
+  "exceptionDetails": {
+   "columnNumber": 16,
+   "exception": {
+    "type": "error"
+   },
+   "lineNumber": 1,
+   "stackTrace": {
+    "callFrames": [
+     {
+      "columnNumber": 16,
+      "functionName": "f",
+      "lineNumber": 1,
+      "url": "http://127.0.0.1:8000/basic.html"
+     },
+     {
+      "columnNumber": 8,
+      "functionName": "",
+      "lineNumber": 2,
+      "url": "http://127.0.0.1:8000/basic.html"
+     },
+     {
+      "columnNumber": 5,
+      "functionName": "",
+      "lineNumber": 3,
+      "url": "http://127.0.0.1:8000/basic.html"
+     }
+    ]
+   },
+   "text": "TypeError: can't access property \"k\" of null"
+  },
+  "realm": "b8681377-c188-4225-a332-31ffe096fb30",
+  "type": "exception"
+ },
+ "await 0;\n\npageBoom()": {
+  "exceptionDetails": {
+   "columnNumber": 57,
+   "exception": {
+    "type": "error"
+   },
+   "lineNumber": 0,
+   "stackTrace": {
+    "callFrames": [
+     {
+      "columnNumber": 57,
+      "functionName": "pageBoom",
+      "lineNumber": 0,
+      "url": "http://127.0.0.1:8000/basic.html"
+     },
+     {
+      "columnNumber": 8,
+      "functionName": "",
+      "lineNumber": 2,
+      "url": "http://127.0.0.1:8000/basic.html"
+     },
+     {
+      "columnNumber": 5,
+      "functionName": "",
+      "lineNumber": 3,
+      "url": "http://127.0.0.1:8000/basic.html"
+     }
+    ]
+   },
+   "text": "TypeError: can't access property \"z\" of null"
+  },
+  "realm": "b8681377-c188-4225-a332-31ffe096fb30",
+  "type": "exception"
+ }
+}

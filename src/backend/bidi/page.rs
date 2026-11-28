@@ -316,7 +316,7 @@ pub(crate) async fn evaluate_js(
     let form = crate::util::js::async_form(expression);
     let wrapped = form.awaits.then_some(&form);
     let code = wrapped.map_or(expression, |form| form.wrapped.as_str());
-    let outcome = evaluate_once(tab, code, user_gesture).await;
+    let outcome = evaluate_once(tab, code, user_gesture, &form).await;
     // A position in the server's wrapper (#221), or past the expression
     // (Firefox's own, ISSUE-88), is not the agent's code's.
     outcome.map_err(|error| match error {
@@ -333,11 +333,13 @@ pub(crate) async fn evaluate_js(
 /// fits ([`evaluation::MEASURE`]): a large one would cross the connection
 /// whole. With `user_gesture` the page gets user activation, as after a
 /// click (`userActivation`; Firefox 160+ no longer clears an earlier one
-/// when it is false); the server's own evaluations never ask for it.
+/// when it is false); the server's own evaluations never ask for it. An
+/// exception is placed in `form`'s code ([`exception_place`]).
 async fn evaluate_once(
     tab: &Tab,
     expression: &str,
     user_gesture: bool,
+    form: &crate::util::top_level_await::AsyncForm,
 ) -> Result<Evaluation, BackendError> {
     let mut params = json!({
         "expression": expression,
@@ -354,7 +356,7 @@ async fn evaluate_once(
         .await?
         .map(|reply| reply.result.unwrap_or(Value::Null))
         .map_err(|e| evaluation_error(&e))?;
-    let outcome = match thrown(&reply) {
+    let outcome = match thrown_in(&reply, Some(form)) {
         Ok(()) => measured(tab, &reply["result"]).await,
         Err(error) => Err(error),
     };
@@ -475,6 +477,14 @@ pub(crate) fn outcome(reply: &Value) -> Result<Value, BackendError> {
 /// The exception of a `script.evaluate` reply as an error (Firefox puts
 /// what was thrown in `text`).
 fn thrown(reply: &Value) -> Result<(), BackendError> {
+    thrown_in(reply, None)
+}
+
+/// [`thrown`] for the agent's code `form` ran ([`exception_place`]).
+fn thrown_in(
+    reply: &Value,
+    form: Option<&crate::util::top_level_await::AsyncForm>,
+) -> Result<(), BackendError> {
     if reply.get("type").and_then(Value::as_str) != Some("exception") {
         return Ok(());
     }
@@ -483,7 +493,7 @@ fn thrown(reply: &Value) -> Result<(), BackendError> {
         .get("text")
         .and_then(Value::as_str)
         .unwrap_or("exception");
-    let (line, column) = exception_place(details);
+    let (line, column) = exception_place(details, form);
     Err(BackendError::InvalidArgument(exception_message(
         text, line, column,
     )))
@@ -492,9 +502,16 @@ fn thrown(reply: &Value) -> Result<(), BackendError> {
 /// Where in the evaluated code an exception happened (0-based): the
 /// innermost frame of that code, the script of the outermost frame (Firefox
 /// lists the async callers too), for a function of another script the code
-/// called is not in it (#221); Firefox's own frames left out. The details'
-/// place without a stack.
-fn exception_place(details: &Value) -> (i64, i64) {
+/// called is not in it (#221); Firefox's own frames left out. Of the
+/// agent's code (`form`), the frame [`AsyncForm::frame_in_code`] picks: a
+/// function another evaluation or an inline script of the page defined
+/// has the page's URL too (#229). The details' place without a stack.
+///
+/// [`AsyncForm::frame_in_code`]: crate::util::top_level_await::AsyncForm::frame_in_code
+fn exception_place(
+    details: &Value,
+    form: Option<&crate::util::top_level_await::AsyncForm>,
+) -> (i64, i64) {
     fn url<'a>(frame: &&'a Value) -> &'a str {
         frame["url"].as_str().unwrap_or_default()
     }
@@ -507,8 +524,24 @@ fn exception_place(details: &Value) -> (i64, i64) {
         .filter(|frame| !super::watch::is_firefox_own(url(frame)))
         .collect();
     let code = frames.last().map(url);
-    match frames.iter().find(|frame| Some(url(frame)) == code) {
-        Some(frame) => (number(frame, "lineNumber"), number(frame, "columnNumber")),
+    let of_code: Vec<&Value> = frames
+        .into_iter()
+        .filter(|frame| Some(url(frame)) == code)
+        .collect();
+    let place = |frame: &Value| (number(frame, "lineNumber"), number(frame, "columnNumber"));
+    let index = |frame: &Value, key: &str| usize::try_from(number(frame, key)).unwrap_or(0);
+    let positions: Vec<(usize, usize)> = of_code
+        .iter()
+        .map(|frame| (index(frame, "lineNumber"), index(frame, "columnNumber")))
+        .collect();
+    let chosen = match form {
+        Some(form) => form
+            .frame_in_code(&positions)
+            .or(positions.len().checked_sub(1)),
+        None => (!positions.is_empty()).then_some(0),
+    };
+    match chosen.and_then(|i| of_code.get(i)) {
+        Some(frame) => place(frame),
         None => (
             number(details, "lineNumber"),
             number(details, "columnNumber"),
@@ -955,6 +988,45 @@ mod tests {
             error("await 0; libThrow()"),
             "Error: in lib (line 1, column 10)"
         );
+    }
+
+    /// #229 (Firefox): an error thrown in a function another evaluation or
+    /// an inline script of the page defined (Firefox gives their frames
+    /// the page's URL, as the code's) is placed at the call in the code; a
+    /// function the code defines keeps its own place.
+    #[test]
+    fn errors_of_functions_from_other_code_are_placed_at_the_call() {
+        // Given what Firefox 160 answered after an evaluation defined evalBoom
+        let firefox: Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/bidi/script-evaluate-foreign-function.json"
+        ))
+        .unwrap();
+        let error = |code: &str| {
+            let form = crate::util::js::async_form(code);
+            match thrown_in(&firefox[code], Some(&form)) {
+                Err(BackendError::InvalidArgument(text)) => {
+                    evaluation::error_text(&text, code, form.awaits.then_some(&form))
+                }
+                other => format!("{other:?}"),
+            }
+        };
+        let undefined = "TypeError: can't access property \"c\", a.b is undefined";
+        let null = |key: &str| format!("TypeError: can't access property \"{key}\" of null");
+        let at =
+            |text: &str, line: u32, column: u32| format!("{text} (line {line}, column {column})");
+        // Then an error of another code's function is placed at the call
+        assert_eq!(error("0;\n\nevalBoom()"), at(undefined, 3, 1));
+        assert_eq!(error("await 0;\n\nevalBoom()"), at(undefined, 3, 1));
+        let built = "0;\n\nnew Function('return null.q')()";
+        assert_eq!(error(built), at(&null("q"), 3, 30));
+        assert_eq!(error("0;\n\npageBoom()"), at(&null("z"), 3, 1));
+        assert_eq!(error("await 0;\n\npageBoom()"), at(&null("z"), 3, 1));
+        // And one in a function of the code is placed in it
+        assert_eq!(error("0;\n\npageBoom(() => null.w)"), at(&null("w"), 3, 16));
+        let own = "const f = () => {\n  return null.k;\n};\nf()";
+        assert_eq!(error(own), at(&null("k"), 2, 3));
+        let own = "await 0;\nconst f = () => null.k;\nf()";
+        assert_eq!(error(own), at(&null("k"), 2, 17));
     }
 
     /// ISSUE-43 (Firefox): a symbol is described (`this` of a function

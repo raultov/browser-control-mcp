@@ -382,11 +382,12 @@ pub(crate) fn cdp_exception(details: &Value) -> String {
 }
 
 /// Where in the evaluated code an exception happened (0-based): the
-/// innermost frame of that code, which has no URL (a page script has one:
-/// a function of it the code called is not in the code), not the details'
-/// place, 1-based for a rejection (read from the error's stack, #221).
-/// Without a stack, the details' place when they name a script (a thrown
-/// value that is not an error); a rejected one has none.
+/// innermost frame of that code, the script of the outermost frame, which
+/// has no URL (a function of a page script, of another evaluation or of
+/// `new Function` the code called is not in the code, #229), not the
+/// details' place, 1-based for a rejection (read from the error's stack,
+/// #221). Without a stack, the details' place when they name a script (a
+/// thrown value that is not an error); a rejected one has none.
 fn cdp_place(details: &Value) -> Option<(i64, i64)> {
     let number = |value: &Value, key: &str| value[key].as_i64().unwrap_or(0);
     let frames = details
@@ -394,10 +395,14 @@ fn cdp_place(details: &Value) -> Option<(i64, i64)> {
         .and_then(Value::as_array)
         .filter(|frames| !frames.is_empty());
     match frames {
-        Some(frames) => frames
-            .iter()
-            .find(|frame| frame["url"].as_str().is_none_or(str::is_empty))
-            .map(|frame| (number(frame, "lineNumber"), number(frame, "columnNumber"))),
+        Some(frames) => {
+            let code = frames.last().map(|frame| &frame["scriptId"]);
+            frames
+                .iter()
+                .filter(|frame| Some(&frame["scriptId"]) == code)
+                .find(|frame| frame["url"].as_str().is_none_or(str::is_empty))
+                .map(|frame| (number(frame, "lineNumber"), number(frame, "columnNumber")))
+        }
         None => details.get("scriptId").map(|_| {
             (
                 number(details, "lineNumber"),
@@ -647,6 +652,42 @@ mod tests {
             cdp_exception(&string["result"]["exceptionDetails"]),
             "boom (line 1, column 7)"
         );
+    }
+
+    /// #229 (Chrome): an error thrown in a function another evaluation (or
+    /// `new Function`) defined is placed at the call in the code, as one a
+    /// page script's function threw: its frame has no URL either, but
+    /// another script; a function the code defines keeps its own place.
+    #[test]
+    fn errors_of_functions_from_other_code_are_placed_at_the_call() {
+        // Given what Chrome 158 answered after an evaluation defined evalBoom
+        let chrome: Value = serde_json::from_str(include_str!(
+            "../../tests/fixtures/cdp/runtime-evaluate-foreign-function.json"
+        ))
+        .unwrap();
+        let error = |code: &str| {
+            let thrown = cdp_exception(&chrome[code]["exceptionDetails"]);
+            let form = crate::util::js::async_form(code);
+            error_text(&thrown, code, form.awaits.then_some(&form))
+        };
+        let undefined = "TypeError: Cannot read properties of undefined (reading 'c')";
+        let null =
+            |key: &str| format!("TypeError: Cannot read properties of null (reading '{key}')");
+        // Then an error of another script's function is placed at the call
+        let at =
+            |text: &str, line: u32, column: u32| format!("{text} (line {line}, column {column})");
+        assert_eq!(error("0;\n\nevalBoom()"), at(undefined, 3, 1));
+        assert_eq!(error("await 0;\n\nevalBoom()"), at(undefined, 3, 1));
+        let built = "0;\n\nnew Function('return null.q')()";
+        assert_eq!(error(built), at(&null("q"), 3, 30));
+        assert_eq!(error("0;\n\npageBoom()"), at(&null("z"), 3, 1));
+        assert_eq!(error("await 0;\n\npageBoom()"), at(&null("z"), 3, 1));
+        // And one in a function of the code is placed in it
+        assert_eq!(error("0;\n\npageBoom(() => null.w)"), at(&null("w"), 3, 21));
+        let own = "const f = () => {\n  return null.k;\n};\nf()";
+        assert_eq!(error(own), at(&null("k"), 2, 15));
+        let own = "await 0;\nconst f = () => null.k;\nf()";
+        assert_eq!(error(own), at(&null("k"), 2, 22));
     }
 
     /// #221 (Chrome): an exception of code that ran wrapped (top-level

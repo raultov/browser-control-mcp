@@ -1,0 +1,10 @@
+{
+ "number": 229,
+ "title": "evaluate_js: an error thrown in a function from an earlier evaluate_js gets that function's line and column",
+ "family": "top-level-await",
+ "command": [
+  "repro_eval_foreign_pos.py"
+ ],
+ "bug_regex": "WRONG: .*call evalBoom",
+ "exit_on_bug": true
+}
