@@ -54,6 +54,11 @@ from a copy of its code: entries describe the differences from that release.
   they merged from what the tab emulated before any of them and each sent
   its media features or device metrics without the others', so options
   reported as set were lost (#226).
+- `set_offline` and `emulate`'s `network_throttling` no longer undo each
+  other on Chrome, which takes both in one command: going offline and back
+  dropped the throttling (and `emulate` still reported it), and throttling
+  an offline tab, or resetting its emulation, brought it back online.
+  Each now sends the other's part as the tab has it (#231).
 
 ### Changed
 

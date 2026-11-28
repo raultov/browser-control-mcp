@@ -44,14 +44,20 @@ impl SetOfflineTool {
         handler: &McpHandler,
     ) -> Result<CallToolResult, CallToolError> {
         let args: SetOfflineTool = crate::handler::parse_args(params)?;
+        let session = handler.session(args.instance_id.clone()).await?;
         let target =
             crate::handler::resolve_target(handler, args.instance_id.clone(), args.tab_id.clone())
                 .await?;
-        // -1: no throughput limit (only the offline switch is emulated).
-        let conditions = json!({"offline": args.offline, "latency": 0,
-            "downloadThroughput": -1, "uploadThroughput": -1});
+        // The switch goes with the network throttling `emulate` set, in
+        // one command that replaces both (#231); held as `emulate` holds it.
+        let state = session.emulation_state(args.tab_id.clone())?;
+        let mut emulated = state.lock().await;
+        let switched = emulated.with_offline(args.offline);
         let method = "Network.emulateNetworkConditions";
+        let conditions = switched.network_conditions();
         crate::handler::send_or(&target, method, conditions, "CDP Error").await?;
+        *emulated = switched;
+        drop(emulated);
         let online = crate::handler::snippet_value(&target, MEASURE).await?;
         Ok(args.reply(&online))
     }
@@ -83,10 +89,50 @@ mod tests {
         let sent = &mock.commands_named("Network.emulateNetworkConditions")[0].params;
         assert_eq!(
             *sent,
-            json!({"offline": true, "latency": 0, "downloadThroughput": -1, "uploadThroughput": -1})
+            json!({"offline": true, "latency": 0.0, "downloadThroughput": -1.0, "uploadThroughput": -1.0})
         );
         let text = reply_text(&reply);
         assert!(text.starts_with("The tab is offline"), "{text}");
         assert!(text.contains("\"navigator_online\": false"), "{text}");
+    }
+
+    /// #231 (Chrome): the offline switch goes with the tab's network
+    /// throttling in one command: going offline and back keeps the
+    /// throttling `emulate` set, and the tab is kept offline for `emulate`.
+    #[tokio::test]
+    async fn chrome_keeps_the_throttling() {
+        use crate::handler::cdp_domains::page::emulate::EmulateTool;
+        // Given a tab throttled to slow 3G
+        let mock = spawn_recording_mock().await;
+        mock.respond_with(
+            "Runtime.evaluate",
+            |_| json!({"result": {"result": {"type": "object", "value": {}}}}),
+        );
+        let handler = mock_handler(mock.http_port);
+        let slow = json!({"network_throttling": "slow-3g"});
+        EmulateTool::handle(call("emulate", slow), &handler)
+            .await
+            .unwrap();
+        // When it goes offline and back online
+        for offline in [true, false] {
+            let args = json!({"offline": offline});
+            SetOfflineTool::handle(call("set_offline", args), &handler)
+                .await
+                .unwrap();
+        }
+        // Then each switch kept the throttling
+        let sent = mock.commands_named("Network.emulateNetworkConditions");
+        let switched: Vec<_> = sent[1..]
+            .iter()
+            .map(|c| (c.params["offline"].clone(), c.params["latency"].clone()))
+            .collect();
+        assert_eq!(
+            switched,
+            [(json!(true), json!(2000.0)), (json!(false), json!(2000.0))]
+        );
+        // And the tab's emulation knows it is online
+        let session = handler.session(None).await.unwrap();
+        let state = session.emulation_state(None).unwrap();
+        assert_eq!(state.lock().await.network_conditions()["offline"], false);
     }
 }

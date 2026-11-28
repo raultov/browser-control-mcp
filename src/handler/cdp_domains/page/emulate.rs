@@ -100,6 +100,9 @@ pub(crate) struct Emulation {
     cpu_throttling: Option<f64>,
     cpu_performance_tier: Option<CpuPerformanceTier>,
     network_throttling: Option<NetworkThrottling>,
+    /// Whether `set_offline` took the tab offline: Chrome takes it and the
+    /// network throttling in one command (#231). A reset keeps it.
+    offline: bool,
 }
 
 impl Emulation {
@@ -141,26 +144,48 @@ impl Emulation {
     }
 
     /// The CDP commands that put this emulation's CPU and network
-    /// throttling back (none when it sets none).
+    /// throttling back (none when it sets none), and its offline switch.
     pub(crate) fn throttling_commands(&self) -> Vec<(&'static str, Value)> {
-        let network = self.network_throttling.unwrap_or(NetworkThrottling::None);
         vec![
             (
                 "Emulation.setCPUThrottlingRate",
                 json!({"rate": self.cpu_throttling.unwrap_or(1.0)}),
             ),
-            ("Network.emulateNetworkConditions", network.cdp_conditions()),
+            (
+                "Network.emulateNetworkConditions",
+                self.network_conditions(),
+            ),
         ]
     }
 
-    /// This emulation with what `args` gives (nothing after a reset; `1`
-    /// for `cpu_throttling` and `"none"` for `network_throttling` clear
-    /// them).
+    /// `Network.emulateNetworkConditions` for this emulation's network
+    /// throttling and offline switch: Chrome replaces both with each such
+    /// command, so `emulate` and `set_offline` each send the other's part
+    /// again (#231: either undid the other).
+    pub(crate) fn network_conditions(&self) -> Value {
+        let throttling = self.network_throttling.unwrap_or(NetworkThrottling::None);
+        let mut conditions = throttling.cdp_conditions();
+        conditions["offline"] = json!(self.offline);
+        conditions
+    }
+
+    /// This emulation with the tab taken offline or back online.
+    pub(crate) fn with_offline(&self, offline: bool) -> Self {
+        Self {
+            offline,
+            ..self.clone()
+        }
+    }
+
+    /// This emulation with what `args` gives (nothing after a reset but
+    /// the offline switch, which is `set_offline`'s; `1` for
+    /// `cpu_throttling` and `"none"` for `network_throttling` clear them).
     pub(crate) fn merged(&self, args: &EmulateTool) -> Self {
         if args.resets() {
-            return Self::default();
+            return Self::default().with_offline(self.offline);
         }
         Self {
+            offline: self.offline,
             width: args.width.or(self.width),
             height: args.height.or(self.height),
             device_scale_factor: args.device_scale_factor.or(self.device_scale_factor),
@@ -555,7 +580,7 @@ impl EmulateTool {
     /// with `state`, what the tab emulates with this call merged in.
     pub(crate) fn cdp_commands(&self, state: &Emulation) -> Vec<(&'static str, Value)> {
         if self.resets() {
-            return reset_commands();
+            return reset_commands(state);
         }
         let mut commands = Vec::new();
         if self.sets_viewport() {
@@ -572,8 +597,9 @@ impl EmulateTool {
             let method = "Emulation.setCPUPerformanceOverride";
             commands.push((method, tier.cdp_override()));
         }
-        if let Some(net) = self.network_throttling {
-            commands.push(("Network.emulateNetworkConditions", net.cdp_conditions()));
+        if self.network_throttling.is_some() {
+            let conditions = state.network_conditions();
+            commands.push(("Network.emulateNetworkConditions", conditions));
         }
         commands
     }
@@ -645,8 +671,9 @@ impl EmulateTool {
     }
 }
 
-/// The CDP commands of a reset: every emulation removed.
-fn reset_commands() -> Vec<(&'static str, Value)> {
+/// The CDP commands of a reset: every emulation removed, the offline
+/// switch of `state` (the tab reset) kept.
+fn reset_commands(state: &Emulation) -> Vec<(&'static str, Value)> {
     vec![
         ("Emulation.clearDeviceMetricsOverride", json!({})),
         (
@@ -666,7 +693,7 @@ fn reset_commands() -> Vec<(&'static str, Value)> {
         (BEST_EFFORT_ON_RESET, json!({})),
         (
             "Network.emulateNetworkConditions",
-            NetworkThrottling::None.cdp_conditions(),
+            state.network_conditions(),
         ),
     ]
 }
@@ -937,6 +964,41 @@ mod tests {
             (&last["width"], &last["deviceScaleFactor"]),
             (&json!(480), &json!(2.0)),
             "{last}"
+        );
+    }
+
+    /// #231 (Chrome): the network throttling and `set_offline`'s switch go
+    /// in one command, so each sends the other's part again: throttling an
+    /// offline tab keeps it offline, and a reset keeps it offline too
+    /// (`set_offline` lasts until set again).
+    #[test]
+    fn throttling_keeps_the_tab_offline() {
+        // Given an offline tab
+        let offline = Emulation::default().with_offline(true);
+        // When it is throttled
+        let throttle = tool(json!({"network_throttling": "4g"}));
+        let state = offline.merged(&throttle);
+        let commands = throttle.cdp_commands(&state);
+        // Then Chrome gets the throttling with the tab still offline
+        let conditions = json!({"offline": true, "latency": 165.0,
+            "downloadThroughput": 1_012_500.0, "uploadThroughput": 168_750.0});
+        assert_eq!(
+            commands,
+            [("Network.emulateNetworkConditions", conditions.clone())]
+        );
+        // And taken back online, it keeps the throttling
+        let online = state.with_offline(false).network_conditions();
+        assert_eq!(online["offline"], false);
+        assert_eq!(online["latency"], 165.0);
+        // And a reset removes the throttling, not the offline switch
+        let reset = tool(json!({"reset": true}));
+        let state = state.merged(&reset);
+        let commands = reset.cdp_commands(&state);
+        let (method, sent) = commands.last().unwrap();
+        assert_eq!(*method, "Network.emulateNetworkConditions");
+        assert_eq!(
+            *sent,
+            json!({"offline": true, "latency": 0.0, "downloadThroughput": -1.0, "uploadThroughput": -1.0})
         );
     }
 

@@ -1,0 +1,10 @@
+{
+ "number": 231,
+ "title": "set_offline and emulate network_throttling undo each other on Chrome; emulate still reports the lost throttling",
+ "family": "other",
+ "command": [
+  "repro_offline_throttle.py"
+ ],
+ "bug_regex": "BUG .*(THROTTLING_LOST|OFFLINE_LOST)",
+ "exit_on_bug": true
+}
