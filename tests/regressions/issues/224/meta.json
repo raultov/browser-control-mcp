@@ -1,0 +1,10 @@
+{
+ "number": 224,
+ "title": "click_element and hover: a visible 1\u00d71 px element is reported 'covered by body' and not clicked",
+ "family": "other",
+ "command": [
+  "repro_tiny_click.py"
+ ],
+ "bug_regex": "BUG: uncovered button reported covered",
+ "exit_on_bug": true
+}

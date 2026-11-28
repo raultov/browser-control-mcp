@@ -188,7 +188,9 @@ const CLICK_POINT: &str = "el.scrollIntoView({ behavior: 'instant', block: 'cent
     const left = Math.max(box.left, 0), right = Math.min(box.right, win.innerWidth); \
     const top = Math.max(box.top, 0), bottom = Math.min(box.bottom, win.innerHeight); \
     if (right <= left || bottom <= top) return { status: 'outside' }; \
-    let x = Math.round((left + right) / 2), y = Math.round((top + bottom) / 2); \
+    const mid = (low, high) => { const c = Math.round((low + high) / 2); \
+        return c >= high && c - 1 >= low ? c - 1 : c < low && c + 1 < high ? c + 1 : c; }; \
+    let x = mid(left, right), y = mid(top, bottom); \
     const covered = hit => { \
         const kind = typeof hit.className === 'string' && hit.className.trim() ? '.' + hit.className.trim().split(/\\s+/)[0] : ''; \
         return { status: 'covered', by: hit.tagName.toLowerCase() + (hit.id ? '#' + hit.id : '') + kind, x, y }; \
@@ -998,6 +1000,21 @@ mod tests {
             "{expression}"
         );
         assert!(expression.contains("over !== frame"), "{expression}");
+    }
+
+    /// #224: the point is a whole pixel inside the element's box, which
+    /// ends before its right and bottom edges: a 1×1 px box at (8, 8) is
+    /// clicked at (8, 8), not at its rounded centre (9, 9), outside it.
+    #[test]
+    fn click_point_stays_inside_a_one_pixel_box() {
+        // Given the click check of an element
+        let expression = click_point("#b");
+        // Then a rounded centre on the box's far edge steps back inside it
+        assert!(
+            expression.contains("c >= high && c - 1 >= low ? c - 1")
+                && expression.contains("let x = mid(left, right), y = mid(top, bottom);"),
+            "{expression}"
+        );
     }
 
     /// ISSUE-2: wait_for's values reach JavaScript as JSON literals (`null`

@@ -42,6 +42,10 @@ from a copy of its code: entries describe the differences from that release.
 - `mock_route` on Chrome answers the tab's service worker's own requests
   too: they reached the network, mocked or aborted routes or not (found
   by the target matrix's new service worker owner).
+- `click_element`, `hover` and `drag` use a whole pixel inside the
+  element's box: a 1 px wide or tall element was checked at its rounded
+  centre, on its far edge, outside it, and refused as `covered by 'body'`
+  (#224).
 
 ### Changed
 
