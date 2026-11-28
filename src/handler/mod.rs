@@ -2045,18 +2045,30 @@ pub(crate) fn extract_from_value<'a>(
 }
 
 /// The 0-based line and column of the first `pattern` in `source`, in the
-/// units the browsers' debuggers use: lines end at `\n`, columns count
-/// UTF-16 code units.
+/// units the browsers' debuggers use: lines end where JavaScript ends them
+/// ([`is_line_end`], a CRLF once), columns count UTF-16 code units.
 pub(crate) fn find_line_column(source: &str, pattern: &str) -> Option<(u32, u32)> {
     source.find(pattern).map(|at| line_column_at(source, at))
+}
+
+/// Whether JavaScript ends a line at `c`: LF, CR, U+2028 and U+2029 (#230:
+/// both debuggers count a lone CR as a line end).
+pub(crate) fn is_line_end(c: char) -> bool {
+    matches!(c, '\n' | '\r' | '\u{2028}' | '\u{2029}')
 }
 
 /// The 0-based line and column of byte `at` of `source`, counted as
 /// [`find_line_column`] counts them.
 pub(crate) fn line_column_at(source: &str, at: usize) -> (u32, u32) {
     let prefix = source.get(..at).unwrap_or(source);
-    let line_start = prefix.rfind('\n').map_or(0, |i| i + 1);
-    let line = prefix.matches('\n').count();
+    let (mut line, mut line_start) = (0usize, 0);
+    for (i, c) in prefix.char_indices() {
+        let crlf = c == '\r' && source.as_bytes().get(i + 1) == Some(&b'\n');
+        if is_line_end(c) && !crlf {
+            line += 1;
+            line_start = i + c.len_utf8();
+        }
+    }
     let column = prefix[line_start..].encode_utf16().count();
     (
         u32::try_from(line).unwrap_or(u32::MAX),
@@ -2638,6 +2650,19 @@ mod tests {
         );
         assert_eq!(find_line_column("a\n\n\nfoo", "foo"), Some((3, 0)));
         assert_eq!(find_line_column("a\r\nfoo", "foo"), Some((1, 0)));
+    }
+
+    /// #230: lines end where JavaScript ends them, as the debuggers count
+    /// them: at a lone CR, U+2028 and U+2029 too, a CRLF once.
+    #[test]
+    fn every_javascript_line_terminator_ends_a_line() {
+        assert_eq!(find_line_column("a\rb\r  foo", "foo"), Some((2, 2)));
+        assert_eq!(
+            find_line_column("a\u{2028}b\u{2029}foo", "foo"),
+            Some((2, 0))
+        );
+        assert_eq!(find_line_column("a\r\n\r\nfoo", "foo"), Some((2, 0)));
+        assert_eq!(find_line_column("a\n\rfoo", "foo"), Some((2, 0)));
     }
 
     /// AUD-DB-14: columns count UTF-16 code units, as the browsers do.

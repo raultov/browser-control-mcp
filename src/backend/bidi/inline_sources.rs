@@ -67,21 +67,17 @@ pub(crate) fn script_text<'a>(
     }
 }
 
-/// The byte where 0-based line `line` of `text` starts (`\n`, `\r\n` and
-/// `\r` end a line).
+/// The byte where 0-based line `line` of `text` starts (a line ends where
+/// JavaScript ends it, [`crate::handler::is_line_end`], a `\r\n` once).
 fn line_start(text: &str, line: usize) -> Option<usize> {
     let mut chars = text.char_indices().peekable();
     let mut seen = 0;
     while seen < line {
         let (_, c) = chars.next()?;
-        let ends = match c {
-            '\r' => {
-                chars.next_if(|&(_, next)| next == '\n');
-                true
-            }
-            '\n' => true,
-            _ => false,
-        };
+        if c == '\r' {
+            chars.next_if(|&(_, next)| next == '\n');
+        }
+        let ends = crate::handler::is_line_end(c);
         seen += usize::from(ends);
     }
     Some(chars.peek().map_or(text.len(), |&(at, _)| at))

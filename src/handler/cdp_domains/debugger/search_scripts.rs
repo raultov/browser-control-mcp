@@ -101,8 +101,11 @@ const PREVIEW_CONTEXT: usize = 100;
 /// [`PREVIEW_CONTEXT`] characters on each side, `…` where it was cut.
 fn line_preview(source: &str, query: &str) -> String {
     let at = source.find(query).unwrap_or_default();
-    let start = source[..at].rfind('\n').map_or(0, |i| i + 1);
-    let end = source[at..].find('\n').map_or(source.len(), |i| at + i);
+    let ends = crate::handler::is_line_end;
+    let start = source[..at].rfind(ends).map_or(0, |i| {
+        i + source[i..].chars().next().map_or(1, char::len_utf8)
+    });
+    let end = source[at..].find(ends).map_or(source.len(), |i| at + i);
     let line = &source[start..end];
     if line.chars().count() <= 4 * PREVIEW_CONTEXT {
         return line.trim().to_string();
@@ -579,6 +582,42 @@ mod tests {
         };
         report.add_source("needle", &short);
         assert_eq!(report.results[1]["linePreview"], "needle(1);");
+    }
+
+    /// #230: in a script whose lines end with a lone CR (or U+2028,
+    /// U+2029), a match is on the line the debugger counts, and its
+    /// preview is that line, not the whole file.
+    #[test]
+    fn a_lone_cr_ends_a_line() {
+        // Given a script whose lines end with a lone CR
+        let script = ScriptText {
+            id: "1",
+            hash: "h",
+            source: "var s = 1;\rfunction needleCR() {\r  return 22;\r}\r",
+            start: (0, 0),
+        };
+        let mut report = SearchReport::default();
+        // When it is searched
+        report.add_source("return 22", &script);
+        // Then the match is on line 2, column 2, previewed alone
+        let found = &report.results[0];
+        assert_eq!(
+            (&found["lineNumber"], &found["columnNumber"]),
+            (&json!(2), &json!(2))
+        );
+        assert_eq!(found["linePreview"], "return 22;");
+        // And U+2028 and U+2029 end lines too, a CRLF once
+        let separators = ScriptText {
+            source: "a;\u{2028}b;\u{2029}c;\r\n  needle();\r\nnext();",
+            ..script
+        };
+        report.add_source("needle", &separators);
+        let found = &report.results[1];
+        assert_eq!(
+            (&found["lineNumber"], &found["columnNumber"]),
+            (&json!(3), &json!(2))
+        );
+        assert_eq!(found["linePreview"], "needle();");
     }
 
     /// AUD-DB-02: matches in an inline script are reported in document

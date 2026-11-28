@@ -1,0 +1,10 @@
+{
+ "number": 230,
+ "title": "search_scripts: wrong line (0) for a match in a script whose lines end with a lone CR",
+ "family": "other",
+ "command": [
+  "repro_search_cr.py"
+ ],
+ "bug_regex": "SEARCH LINE WRONG on: ",
+ "exit_on_bug": true
+}

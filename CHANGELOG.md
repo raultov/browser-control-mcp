@@ -46,6 +46,10 @@ from a copy of its code: entries describe the differences from that release.
   element's box: a 1 px wide or tall element was checked at its rounded
   centre, on its far edge, outside it, and refused as `covered by 'body'`
   (#224).
+- `search_scripts` counts lines as the debuggers do: a lone CR, U+2028
+  and U+2029 end a line too (a CRLF once). A match in a script whose lines
+  end with a lone CR was on line 0, where a breakpoint never paused, and
+  previewed with the whole file (#230).
 
 ### Changed
 
