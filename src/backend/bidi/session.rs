@@ -77,6 +77,66 @@ pub(crate) struct FirefoxTab {
     pub(crate) dialog: Arc<Mutex<crate::handler::dialogs::DialogState>>,
     /// Mocked routes, and the intercept answering them.
     pub(crate) routes: Arc<Mutex<crate::handler::routes::RouteState>>,
+    /// The origins `emulate` granted the geolocation permission (#225).
+    pub(crate) geolocation: Arc<Mutex<GeolocationGrants>>,
+}
+
+/// Most origins [`GeolocationGrants`] remembers; one past it is granted
+/// still, and not taken back on a reset.
+const MAX_GRANTED_ORIGINS: usize = 64;
+
+/// The origins of a tab granted the geolocation permission while `emulate`
+/// emulates a position (#225): Firefox grants it per origin, unlike
+/// Chrome, so each origin the tab navigates to is granted too, or its page
+/// waits at a prompt; a reset takes them all back to asking.
+#[derive(Debug, Default)]
+pub(crate) struct GeolocationGrants {
+    /// Whether a position is emulated.
+    emulated: bool,
+    /// The origins granted, oldest first, at most [`MAX_GRANTED_ORIGINS`].
+    origins: Vec<String>,
+}
+
+impl GeolocationGrants {
+    /// A position is emulated, and `origin` (the page's, if http(s))
+    /// granted.
+    pub(crate) fn emulate(&mut self, origin: Option<&str>) {
+        self.emulated = true;
+        if let Some(origin) = origin {
+            self.remember(origin);
+        }
+    }
+
+    /// The origin of `url` to grant, when a position is emulated and it is
+    /// an http(s) origin not granted yet (then remembered as granted).
+    pub(crate) fn admit(&mut self, url: &str) -> Option<String> {
+        if !self.emulated {
+            return None;
+        }
+        let parsed = url::Url::parse(url).ok()?;
+        if !matches!(parsed.scheme(), "http" | "https") {
+            return None;
+        }
+        let origin = parsed.origin().ascii_serialization();
+        if self.origins.contains(&origin) {
+            return None;
+        }
+        self.remember(&origin);
+        Some(origin)
+    }
+
+    /// The emulation is reset: the origins granted, to take back.
+    pub(crate) fn reset(&mut self) -> Vec<String> {
+        self.emulated = false;
+        std::mem::take(&mut self.origins)
+    }
+
+    fn remember(&mut self, origin: &str) {
+        let known = self.origins.iter().any(|o| o == origin);
+        if !known && self.origins.len() < MAX_GRANTED_ORIGINS {
+            self.origins.push(origin.to_string());
+        }
+    }
 }
 
 /// Tabs by MCP id, plus the context tree used to route iframe events.
@@ -163,6 +223,7 @@ impl FirefoxTabs {
             custom: Default::default(),
             dialog: Default::default(),
             routes: Default::default(),
+            geolocation: Default::default(),
         };
         self.tabs.insert(id.clone(), entry);
         if self.active.is_none() {

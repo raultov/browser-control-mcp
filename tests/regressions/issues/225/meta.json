@@ -1,0 +1,10 @@
+{
+ "number": 225,
+ "title": "emulate geolocation on Firefox: on another origin of the tab, getCurrentPosition never answers",
+ "family": "other",
+ "command": [
+  "repro_geo_origin.py"
+ ],
+ "bug_regex": "firefox position on the second origin: no result",
+ "exit_on_bug": true
+}

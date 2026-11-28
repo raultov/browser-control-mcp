@@ -67,6 +67,12 @@ from a copy of its code: entries describe the differences from that release.
   evaluations and the page's inline scripts as it names the expression,
   by the expression's functions (an error thrown by an inline script's
   function was placed in the expression too).
+- `emulate`'s `geolocation` on Firefox reaches the other origins the tab
+  goes to: Firefox grants the permission to read it per origin, and only
+  the origin of the page at the call was granted, so a page of another
+  origin waited at a prompt and `getCurrentPosition` never answered. Each
+  origin is now granted as the navigation starts (and where a redirect
+  ended), and a reset takes every origin granted back to asking (#225).
 
 ### Changed
 

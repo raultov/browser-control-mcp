@@ -436,25 +436,40 @@ pub(crate) async fn emulate(params: CallToolRequestParams, handler: &McpHandler)
         page::command(&tab.tab, method, params).await?;
     }
     if args.geolocation.is_some() || args.resets() {
-        geolocation_permission(&tab.tab, args.geolocation.is_some()).await?;
+        geolocation_permission(&tab, args.geolocation.is_some()).await?;
     }
     let seen = page::run_snippet(&tab.tab, &args.measure()).await?;
     Ok(args.reply(&seen))
 }
 
-/// Grants (or, on a reset, takes back to asking) the geolocation permission
-/// of the page's origin: without it the page is asked, and waits.
+/// Grants the geolocation permission of the page's origin (without it the
+/// page is asked, and waits), and from now on of each origin the tab goes
+/// to (#225: Firefox grants it per origin, see `pump::grant_position`);
+/// on a reset, takes every origin granted back to asking.
 async fn geolocation_permission(
-    tab: &bidi_browser_lite::Tab,
+    tab: &super::session::FirefoxTab,
     grant: bool,
 ) -> Result<(), BackendError> {
-    let origin = page::run_snippet(tab, "location.origin").await?;
-    let Some(origin) = origin.as_str().filter(|o| o.starts_with("http")) else {
-        return Ok(());
+    let origin = page::run_snippet(&tab.tab, "location.origin").await?;
+    let origin = origin.as_str().filter(|o| o.starts_with("http"));
+    let mut grants = tab.geolocation.lock().await;
+    let (state, origins) = if grant {
+        grants.emulate(origin);
+        ("granted", origin.map(str::to_string).into_iter().collect())
+    } else {
+        let mut taken = grants.reset();
+        taken.extend(
+            origin
+                .filter(|o| !taken.iter().any(|t| t == o))
+                .map(str::to_string),
+        );
+        ("prompt", taken)
     };
-    let state = if grant { "granted" } else { "prompt" };
-    let params = json!({"descriptor": {"name": "geolocation"}, "state": state, "origin": origin});
-    page::command(tab, "permissions.setPermission", params).await?;
+    for origin in origins {
+        let params =
+            json!({"descriptor": {"name": "geolocation"}, "state": state, "origin": origin});
+        page::command(&tab.tab, "permissions.setPermission", params).await?;
+    }
     Ok(())
 }
 
@@ -2472,6 +2487,65 @@ mod tests {
             mock.bidi()
                 .commands_named("input.performActions")
                 .is_empty()
+        );
+        ts::stop(&handler).await;
+    }
+
+    /// #225 (Firefox): an emulated position grants the page's origin and,
+    /// from then on, each origin the tab goes to; a reset takes every one
+    /// of them back to asking.
+    #[tokio::test]
+    async fn a_reset_takes_back_every_origin_granted() {
+        // Given a page on http://a:1
+        let mock = MockFirefox::start(false).await.unwrap();
+        mock.bidi().respond_with("script.evaluate", |params| {
+            let origin = params["expression"] == "location.origin";
+            evaluate_success(ts::remote(&if origin {
+                json!("http://a:1")
+            } else {
+                json!({})
+            }))
+        });
+        let overrides = ["browsingContext.setViewport", "permissions.setPermission"];
+        let emulation = ["UserAgent", "Locale", "Timezone", "Geolocation"]
+            .map(|what| format!("emulation.set{what}Override"));
+        for method in overrides
+            .into_iter()
+            .chain(emulation.iter().map(String::as_str))
+        {
+            mock.bidi().respond_with(method, |_| json!({}));
+        }
+        let handler = ts::handler(&mock);
+        // When a position is emulated, and the tab then went to http://b:2
+        let place = json!({"geolocation": {"latitude": 10.0, "longitude": 20.0}});
+        emulate(call("emulate", place), &handler).await.unwrap();
+        let (_, tab) = handler
+            .firefox(None)
+            .await
+            .unwrap()
+            .tab(None)
+            .await
+            .unwrap();
+        assert!(tab.geolocation.lock().await.admit("http://b:2/x").is_some());
+        // And the emulation is reset
+        emulate(call("emulate", json!({"reset": true})), &handler)
+            .await
+            .unwrap();
+        // Then a was granted, and a and b taken back to asking
+        let sent: Vec<(Value, Value)> = mock
+            .bidi()
+            .commands_named("permissions.setPermission")
+            .into_iter()
+            .map(|c| (c.params["origin"].clone(), c.params["state"].clone()))
+            .collect();
+        let at = |origin: &str, state: &str| (json!(origin), json!(state));
+        assert_eq!(
+            sent,
+            [
+                at("http://a:1", "granted"),
+                at("http://a:1", "prompt"),
+                at("http://b:2", "prompt")
+            ]
         );
         ts::stop(&handler).await;
     }

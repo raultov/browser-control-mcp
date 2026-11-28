@@ -2,13 +2,13 @@
 //! subscription, every event routed by browsing context into the state of
 //! the tab that owns it (iframes included).
 
-use super::session::FirefoxTabs;
+use super::session::{FirefoxTabs, GeolocationGrants};
 use crate::handler::NetworkRequest;
 use crate::handler::cdp_domains::log::ConsoleMessage;
 use crate::util::json::{opt_string, str_field, string_or_empty};
 use crate::util::sync::{read, write};
 use bidi_browser_lite::{BrowserClient, WsResponse};
-use serde_json::{Map, Value};
+use serde_json::{Map, Value, json};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use tokio::sync::broadcast::{self, error::RecvError};
@@ -348,27 +348,38 @@ async fn on_context_created(params: &Value, client: &BrowserClient, state: &Pump
     }
 }
 
+/// The tab whose page (not one of its iframes) the navigation event
+/// `params` is about, its URL updated to the event's.
+fn navigated_tab(params: &Value, state: &PumpState) -> Option<super::session::FirefoxTab> {
+    let context = str_field(params, "context")?;
+    let mut tabs = write(&state.tabs);
+    let id = tabs.tab_of(context)?;
+    let tab = tabs.tabs.get_mut(&id)?;
+    if tab.tab.context_id() != context {
+        return None; // an iframe navigating: not a new page
+    }
+    if let Some(url) = str_field(params, "url") {
+        tab.url = url.to_string();
+    }
+    Some(tab.clone())
+}
+
 async fn on_navigation(method: &str, params: &Value, state: &PumpState) {
-    let Some(context) = str_field(params, "context") else {
+    let Some(super::session::FirefoxTab {
+        network,
+        log,
+        geolocation,
+        tab,
+        ..
+    }) = navigated_tab(params, state)
+    else {
         return;
     };
-    let top = {
-        let mut tabs = write(&state.tabs);
-        let Some(id) = tabs.tab_of(context) else {
-            return;
-        };
-        let Some(tab) = tabs.tabs.get_mut(&id) else {
-            return;
-        };
-        if tab.tab.context_id() != context {
-            return; // an iframe navigating: not a new page
-        }
-        if let Some(url) = str_field(params, "url") {
-            tab.url = url.to_string();
-        }
-        (tab.network.clone(), tab.log.clone())
-    };
-    let (network, log) = top;
+    if method != "browsingContext.load"
+        && let Some(url) = str_field(params, "url")
+    {
+        grant_position(&tab, &mut *geolocation.lock().await, url).await;
+    }
     match method {
         "browsingContext.navigationStarted" => {
             network.lock().await.split_after_navigation(None);
@@ -389,6 +400,28 @@ async fn on_navigation(method: &str, params: &Value, state: &PumpState) {
             }
         }
         _ => {}
+    }
+}
+
+/// Grants the geolocation permission to the origin of `url`, where the tab
+/// is going or went, when `emulate` emulates a position and it was not
+/// granted yet (#225): before the page runs, as the navigation starts, and
+/// again where it ended after a redirect. Best effort: a failure is
+/// logged, and the page asks.
+async fn grant_position(tab: &bidi_browser_lite::Tab, grants: &mut GeolocationGrants, url: &str) {
+    let Some(origin) = grants.admit(url) else {
+        return;
+    };
+    let params =
+        json!({"descriptor": {"name": "geolocation"}, "state": "granted", "origin": origin});
+    if super::page::command(tab, "permissions.setPermission", params)
+        .await
+        .is_err()
+    {
+        tracing::debug!(
+            context = tab.context_id(),
+            "could not grant the emulated position"
+        );
     }
 }
 
@@ -1332,6 +1365,51 @@ mod tests {
         let network = tab.network.lock().await;
         assert_eq!(network.iter_current().len(), 1);
         assert_eq!(network.iter_all().len(), 2);
+    }
+
+    /// #225 (Firefox): while `emulate` emulates a position, each origin the
+    /// tab navigates to is granted the geolocation permission as it starts
+    /// (Firefox grants it per origin; the page waited at a prompt), once;
+    /// a tab without an emulated position grants nothing.
+    #[tokio::test]
+    async fn an_emulated_position_is_granted_to_each_origin() {
+        // Given a tab emulating a position on http://a:1
+        let mock = MockBidi::start(MockBidiBehavior::Ready).await.unwrap();
+        let (client, state) = one_tab(&mock).await;
+        let grants = read(&state.tabs).tabs["tab-1"].geolocation.clone();
+        grants.lock().await.emulate(Some("http://a:1"));
+        // When it navigates to another origin, twice, and back
+        for url in [
+            "http://b:2/x",
+            "http://b:2/y",
+            "http://a:1/z",
+            "about:blank",
+        ] {
+            let nav = json!({"context": "ctx-0", "url": url, "navigation": "n"});
+            route(
+                &event("browsingContext.navigationStarted", nav),
+                &client,
+                &state,
+            )
+            .await;
+        }
+        // Then only the new origin was granted, once
+        let sent = mock.commands_named("permissions.setPermission");
+        let origins: Vec<&Value> = sent.iter().map(|c| &c.params["origin"]).collect();
+        assert_eq!(origins, [&json!("http://b:2")]);
+        assert_eq!(sent[0].params["state"], "granted");
+        assert_eq!(sent[0].params["descriptor"], json!({"name": "geolocation"}));
+        // And once the emulation is reset, a new origin is not granted
+        let taken = grants.lock().await.reset();
+        assert_eq!(taken, ["http://a:1", "http://b:2"]);
+        let nav = json!({"context": "ctx-0", "url": "http://c:3/", "navigation": "n"});
+        route(
+            &event("browsingContext.navigationStarted", nav),
+            &client,
+            &state,
+        )
+        .await;
+        assert_eq!(mock.commands_named("permissions.setPermission").len(), 1);
     }
 
     /// CON-01 (Firefox): a committed cross-site navigation clears the tab's
