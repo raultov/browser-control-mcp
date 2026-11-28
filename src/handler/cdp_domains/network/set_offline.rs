@@ -49,15 +49,18 @@ impl SetOfflineTool {
             crate::handler::resolve_target(handler, args.instance_id.clone(), args.tab_id.clone())
                 .await?;
         // The switch goes with the network throttling `emulate` set, in
-        // one command that replaces both (#231); held as `emulate` holds it.
-        let state = session.emulation_state(args.tab_id.clone())?;
-        let mut emulated = state.lock().await;
-        let switched = emulated.with_offline(args.offline);
-        let method = "Network.emulateNetworkConditions";
-        let conditions = switched.network_conditions();
-        crate::handler::send_or(&target, method, conditions, "CDP Error").await?;
-        *emulated = switched;
-        drop(emulated);
+        // one command that replaces both (#231).
+        use crate::handler::cdp_domains::page::emulate::{Change, change};
+        change(&session, args.tab_id.clone(), &target, |emulated| {
+            let next = emulated.with_offline(args.offline);
+            let conditions = next.network_conditions();
+            Change {
+                next,
+                commands: vec![("Network.emulateNetworkConditions", conditions)],
+                reset: false,
+            }
+        })
+        .await?;
         let online = crate::handler::snippet_value(&target, MEASURE).await?;
         Ok(args.reply(&online))
     }

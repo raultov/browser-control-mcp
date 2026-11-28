@@ -73,6 +73,9 @@ pub(crate) struct FrameSinks {
     pub(crate) debugger: Arc<Mutex<DebuggerState>>,
     /// The tab's mocked routes, which its frames answer too.
     pub(crate) routes: Arc<Mutex<RouteState>>,
+    /// What the tab emulates, which its frames of another origin get too
+    /// (#227: Chrome emulates each target apart).
+    pub(crate) emulation: Arc<Mutex<crate::handler::cdp_domains::page::emulate::Emulation>>,
     watched: Arc<AtomicUsize>,
     /// The targets of the watched frames the session lives in, outermost
     /// first (none for the tab): the frames its sockets go with (#167).
@@ -97,10 +100,19 @@ impl FrameSinks {
             network,
             debugger,
             routes,
+            emulation: Arc::default(),
             watched: Arc::default(),
             frames: Vec::new(),
             parent: None,
         }
+    }
+
+    /// These sinks, with the tab's emulation `emulation`.
+    pub(crate) fn with_emulation(
+        self,
+        emulation: Arc<Mutex<crate::handler::cdp_domains::page::emulate::Emulation>>,
+    ) -> Self {
+        Self { emulation, ..self }
     }
 
     /// The sinks of the frame `target_id`, nested in this session.
@@ -307,6 +319,12 @@ async fn watch_frame(session: &Tab, target_id: &str, sinks: FrameSinks) -> Liste
             .await;
     }
     debugger::frames::prepare_frame(&frame, &sinks.debugger).await;
+    // Held while sent: a call to emulate at once reaches the frame after.
+    let emulation = sinks.emulation.lock().await;
+    for (method, params) in emulation.frame_commands() {
+        let _ = frame.send_raw_command(method, params).await;
+    }
+    drop(emulation);
     let routes = crate::handler::cdp_domains::fetch::mock_route::watch_frame;
     routes(&sinks.routes, target_id, target).await;
     listeners.push(start_frame_watcher(&frame, sinks));
@@ -552,6 +570,46 @@ mod tests {
         mock.emit("Target.detachedFromTarget", gone, Some(&tab));
         eventually(|| sinks.watched.load(Ordering::Relaxed) == 1).await;
         assert_eq!(sinks.watched.load(Ordering::Relaxed), 1);
+    }
+
+    /// #227: a frame of another origin gets what the tab emulates (but
+    /// its viewport) before it runs: Chrome emulates each target apart.
+    #[tokio::test]
+    async fn frames_of_another_origin_get_the_tabs_emulation() {
+        // Given a tab emulating a user agent, watching its frames
+        let watched = watched_tab().await;
+        let (mock, sinks) = (watched.mock, &watched.sinks);
+        let args =
+            serde_json::from_value(json!({"user_agent": "QA-UA", "width": 400, "height": 300}));
+        let args: crate::handler::cdp_domains::page::emulate::EmulateTool = args.unwrap();
+        let emulated = sinks.emulation.lock().await.merged(&args);
+        *sinks.emulation.lock().await = emulated;
+        // When an iframe attaches
+        attach(&watched, "AUTO-F", "iframe");
+        let frame = frame_session(&watched).await;
+        eventually(|| {
+            !mock
+                .commands_named("Runtime.runIfWaitingForDebugger")
+                .is_empty()
+        })
+        .await;
+        // Then it got the user agent in its session before it ran, not the viewport
+        let order: Vec<(String, Option<String>)> = mock
+            .commands()
+            .into_iter()
+            .filter(|c| {
+                c.method.starts_with("Emulation.") || c.method == "Runtime.runIfWaitingForDebugger"
+            })
+            .map(|c| (c.method, c.session_id))
+            .collect();
+        let step = |method: &str, session: &str| (method.to_string(), Some(session.to_string()));
+        assert_eq!(
+            order,
+            [
+                step("Emulation.setUserAgentOverride", &frame),
+                step("Runtime.runIfWaitingForDebugger", "AUTO-F"),
+            ]
+        );
     }
 
     /// The debugger commands the mock got in `frame`'s session, and the

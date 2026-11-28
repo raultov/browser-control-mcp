@@ -103,6 +103,99 @@ pub(crate) struct Emulation {
     /// Whether `set_offline` took the tab offline: Chrome takes it and the
     /// network throttling in one command (#231). A reset keeps it.
     offline: bool,
+    /// The user agent, locale, time zone and position: kept for the frames
+    /// of another origin that attach later (#227).
+    identity: Identity,
+}
+
+/// The user agent, locale, time zone and position a tab emulates (or a
+/// call gives).
+#[derive(Debug, Default, Clone, PartialEq)]
+struct Identity {
+    user_agent: Option<String>,
+    locale: Option<String>,
+    timezone: Option<String>,
+    geolocation: Option<Geolocation>,
+}
+
+impl Identity {
+    /// What `args` gives.
+    fn of(args: &EmulateTool) -> Self {
+        Self {
+            user_agent: args.user_agent.clone(),
+            locale: args.locale.clone(),
+            timezone: args.timezone.clone(),
+            geolocation: args.geolocation,
+        }
+    }
+
+    /// This identity with what `args` gives.
+    fn merged(&self, args: &EmulateTool) -> Self {
+        let given = Self::of(args);
+        Self {
+            user_agent: given.user_agent.or_else(|| self.user_agent.clone()),
+            locale: given.locale.or_else(|| self.locale.clone()),
+            timezone: given.timezone.or_else(|| self.timezone.clone()),
+            geolocation: given.geolocation.or(self.geolocation),
+        }
+    }
+
+    /// Its CDP overrides, each target's own.
+    fn cdp_commands(&self) -> Vec<(&'static str, Value)> {
+        let mut commands = Vec::new();
+        if let Some(agent) = &self.user_agent {
+            commands.push((
+                "Emulation.setUserAgentOverride",
+                json!({"userAgent": agent}),
+            ));
+        }
+        if let Some(locale) = &self.locale {
+            commands.push(("Emulation.setLocaleOverride", json!({"locale": locale})));
+        }
+        if let Some(zone) = &self.timezone {
+            commands.push(("Emulation.setTimezoneOverride", json!({"timezoneId": zone})));
+        }
+        if let Some(place) = self.geolocation {
+            let accuracy = place.accuracy.unwrap_or(1.0);
+            let position = json!({"latitude": place.latitude, "longitude": place.longitude, "accuracy": accuracy});
+            commands.push(("Emulation.setGeolocationOverride", position));
+        }
+        commands
+    }
+}
+
+/// The commands of `commands` (a call's) that also go to the tab's frames
+/// of another origin, each a target Chrome emulates apart (#227): all but
+/// the viewport, which Chrome takes on the page only (the frames lay out
+/// in it), and the browser's permissions, which are not a target's.
+pub(crate) fn frame_part(commands: &[(&'static str, Value)]) -> Vec<(&'static str, Value)> {
+    let page_only = |method: &str| {
+        method.starts_with("Browser.")
+            || matches!(
+                method,
+                "Emulation.setDeviceMetricsOverride"
+                    | "Emulation.clearDeviceMetricsOverride"
+                    | "Emulation.setTouchEmulationEnabled"
+            )
+    };
+    commands
+        .iter()
+        .filter(|(method, _)| !page_only(method))
+        .cloned()
+        .collect()
+}
+
+/// Sends `commands` to each of the tab's frames of another origin
+/// (`frames`), best effort: a frame may be gone already.
+pub(crate) async fn to_frames(
+    frames: &[crate::handler::cdp_domains::debugger::frames::DebuggedFrame],
+    commands: &[(&'static str, Value)],
+) {
+    for frame in frames {
+        for (method, params) in commands {
+            let _ = frame.tab.send_raw_command(method, params.clone()).await;
+        }
+    }
 }
 
 impl Emulation {
@@ -177,6 +270,34 @@ impl Emulation {
         }
     }
 
+    /// The commands that put this emulation on a frame of another origin
+    /// attaching (#227): all of it but the viewport ([`frame_part`]).
+    pub(crate) fn frame_commands(&self) -> Vec<(&'static str, Value)> {
+        let mut commands = self.identity.cdp_commands();
+        let media = [
+            self.color_scheme.is_some(),
+            self.reduced_motion.is_some(),
+            self.forced_colors.is_some(),
+            self.media.is_some(),
+        ];
+        if media.contains(&true) {
+            commands.push(("Emulation.setEmulatedMedia", cdp_media(self)));
+        }
+        if let Some(rate) = self.cpu_throttling {
+            commands.push(("Emulation.setCPUThrottlingRate", json!({"rate": rate})));
+        }
+        if let Some(tier) = self.cpu_performance_tier {
+            commands.push(("Emulation.setCPUPerformanceOverride", tier.cdp_override()));
+        }
+        if self.network_throttling.is_some() || self.offline {
+            commands.push((
+                "Network.emulateNetworkConditions",
+                self.network_conditions(),
+            ));
+        }
+        commands
+    }
+
     /// This emulation with what `args` gives (nothing after a reset but
     /// the offline switch, which is `set_offline`'s; `1` for
     /// `cpu_throttling` and `"none"` for `network_throttling` clear them).
@@ -186,6 +307,7 @@ impl Emulation {
         }
         Self {
             offline: self.offline,
+            identity: self.identity.merged(args),
             width: args.width.or(self.width),
             height: args.height.or(self.height),
             device_scale_factor: args.device_scale_factor.or(self.device_scale_factor),
@@ -608,23 +730,8 @@ impl EmulateTool {
     /// a position also grants the permission to read it (the page is
     /// refused it otherwise).
     fn cdp_identity(&self) -> Vec<(&'static str, Value)> {
-        let mut commands = Vec::new();
-        if let Some(agent) = &self.user_agent {
-            commands.push((
-                "Emulation.setUserAgentOverride",
-                json!({"userAgent": agent}),
-            ));
-        }
-        if let Some(locale) = &self.locale {
-            commands.push(("Emulation.setLocaleOverride", json!({"locale": locale})));
-        }
-        if let Some(zone) = &self.timezone {
-            commands.push(("Emulation.setTimezoneOverride", json!({"timezoneId": zone})));
-        }
-        if let Some(place) = self.geolocation {
-            let accuracy = place.accuracy.unwrap_or(1.0);
-            let position = json!({"latitude": place.latitude, "longitude": place.longitude, "accuracy": accuracy});
-            commands.push(("Emulation.setGeolocationOverride", position));
+        let mut commands = Identity::of(self).cdp_commands();
+        if self.geolocation.is_some() {
             commands.push((
                 "Browser.grantPermissions",
                 json!({"permissions": ["geolocation"]}),
@@ -741,14 +848,16 @@ impl EmulateTool {
         if let Some(check) = args.names_check() {
             Self::names_error(&crate::handler::snippet_value(&target, &check).await?)?;
         }
-        let state = session.emulation_state(args.tab_id.clone())?;
-        // Held until Chrome took it all and it is kept: a call sent at
-        // once merges this one in, not what both started from (#226).
-        let mut emulated = state.lock().await;
-        let merged = emulated.merged(&args);
-        apply(&target, &args.cdp_commands(&merged), args.resets()).await?;
-        *emulated = merged.clone();
-        drop(emulated);
+        let merged = change(&session, args.tab_id.clone(), &target, |emulated| {
+            let next = emulated.merged(&args);
+            let commands = args.cdp_commands(&next);
+            Change {
+                next,
+                commands,
+                reset: args.resets(),
+            }
+        })
+        .await?;
         // The position the page reads comes in a promise, awaited; Chrome
         // runs no microtask while the page is paused in the debugger, so it
         // is left out then (ISSUE-64).
@@ -771,6 +880,42 @@ impl EmulateTool {
         }
         Ok(args.reply(&seen))
     }
+}
+
+/// What a call changes in a tab's emulation (see [`change`]).
+pub(crate) struct Change {
+    /// The emulation after the call.
+    pub(crate) next: Emulation,
+    /// The commands that have Chrome take it.
+    pub(crate) commands: Vec<(&'static str, Value)>,
+    /// Whether the call resets it ([`apply`]).
+    pub(crate) reset: bool,
+}
+
+/// Changes the emulation of `session`'s tab `tab_id` (its CDP target
+/// `target`) as `make` says from the one before, in the tab and then in
+/// its frames of another origin, each emulated apart (#227, best effort);
+/// held from the read until it is kept, so a call sent at once changes it
+/// after, not what both started from (#226). The emulation after.
+pub(crate) async fn change(
+    session: &crate::handler::BrowserSession,
+    tab_id: Option<String>,
+    target: &CdpTarget,
+    make: impl FnOnce(&Emulation) -> Change + Send,
+) -> Result<Emulation, CallToolError> {
+    let state = session.emulation_state(tab_id.clone())?;
+    let mut emulated = state.lock().await;
+    let Change {
+        next,
+        commands,
+        reset,
+    } = make(&emulated);
+    apply(target, &commands, reset).await?;
+    *emulated = next.clone();
+    let debugger = session.debugger_state(tab_id)?;
+    let frames = debugger.lock().await.debugged_frames();
+    to_frames(&frames, &frame_part(&commands)).await;
+    Ok(next)
 }
 
 /// Sends `commands` in order, failing at the first refused one, except, on
@@ -1000,6 +1145,97 @@ mod tests {
             *sent,
             json!({"offline": true, "latency": 0.0, "downloadThroughput": -1.0, "uploadThroughput": -1.0})
         );
+    }
+
+    /// #227 (Chrome): a frame of another origin is a target of its own,
+    /// which Chrome emulates apart: it gets what the tab emulates but the
+    /// viewport (it lays out in the page's) and the browser's permission,
+    /// when it attaches and with each call after.
+    #[test]
+    fn frames_of_another_origin_get_all_but_the_viewport() {
+        // Given a tab emulating an identity, media, throttling, and offline
+        let args = tool(
+            json!({"user_agent": "UA", "locale": "fr-FR", "timezone": "Asia/Tokyo",
+            "geolocation": {"latitude": 1.0, "longitude": 2.0}, "color_scheme": "dark",
+            "width": 400, "height": 300, "cpu_throttling": 4.0, "network_throttling": "4g"}),
+        );
+        let state = Emulation::default().merged(&args).with_offline(true);
+        // When a frame of another origin attaches, Then it gets all but the viewport
+        let methods = |commands: Vec<(&'static str, Value)>| -> Vec<&'static str> {
+            commands.into_iter().map(|(method, _)| method).collect()
+        };
+        let replayed = state.frame_commands();
+        assert_eq!(
+            methods(replayed.clone()),
+            [
+                "Emulation.setUserAgentOverride",
+                "Emulation.setLocaleOverride",
+                "Emulation.setTimezoneOverride",
+                "Emulation.setGeolocationOverride",
+                "Emulation.setEmulatedMedia",
+                "Emulation.setCPUThrottlingRate",
+                "Network.emulateNetworkConditions",
+            ]
+        );
+        assert_eq!(replayed[6].1["offline"], true);
+        // And a call's own commands reach it but the viewport and the permission
+        let sent = frame_part(&args.cdp_commands(&state));
+        assert!(
+            !methods(sent.clone())
+                .iter()
+                .any(|m| m.contains("DeviceMetrics")
+                    || m.contains("Touch")
+                    || m.starts_with("Browser."))
+        );
+        assert_eq!(sent.len(), 7, "{sent:?}");
+        // And a reset clears all it emulated there, the viewport left alone
+        let reset = tool(json!({"reset": true}));
+        let cleared = frame_part(&reset.cdp_commands(&state.merged(&reset)));
+        assert!(methods(cleared.clone()).contains(&"Emulation.setUserAgentOverride"));
+        assert!(!methods(cleared).contains(&"Emulation.clearDeviceMetricsOverride"));
+        // And an emulation that sets nothing replays nothing
+        assert!(Emulation::default().frame_commands().is_empty());
+    }
+
+    /// #227 (Chrome): a call reaches the tab's watched frames of another
+    /// origin too, in their own sessions.
+    #[tokio::test]
+    async fn a_call_reaches_the_frames_of_another_origin() {
+        use crate::handler::cdp_domains::tests::{call, mock_handler, spawn_recording_mock};
+        // Given a tab with a watched frame of another origin
+        let mock = spawn_recording_mock().await;
+        mock.respond_with(
+            "Runtime.evaluate",
+            |_| json!({"result": {"result": {"type": "object", "value": {}}}}),
+        );
+        let handler = mock_handler(mock.http_port);
+        let address = format!("127.0.0.1:{}", mock.http_port);
+        let browser =
+            cdp_browser_lite::BrowserClient::connect(&address, std::time::Duration::from_secs(2))
+                .await
+                .unwrap();
+        let frame = browser.attach("T-frame").await.unwrap();
+        let session = handler.session(None).await.unwrap();
+        let debugger = session.debugger_state(None).unwrap();
+        debugger
+            .lock()
+            .await
+            .register_frame("T-frame", frame.clone());
+        // When the user agent is emulated
+        EmulateTool::handle(call("emulate", json!({"user_agent": "QA-UA"})), &handler)
+            .await
+            .unwrap();
+        // Then the frame got it in its session too
+        let sessions: Vec<Option<String>> = mock
+            .commands_named("Emulation.setUserAgentOverride")
+            .into_iter()
+            .map(|c| c.session_id)
+            .collect();
+        assert!(
+            sessions.contains(&Some(frame.session_id().to_string())),
+            "{sessions:?}"
+        );
+        assert_eq!(sessions.len(), 2);
     }
 
     /// ISSUE-9: options that make no sense are refused before any browser

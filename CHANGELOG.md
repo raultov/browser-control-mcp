@@ -73,6 +73,14 @@ from a copy of its code: entries describe the differences from that release.
   origin waited at a prompt and `getCurrentPosition` never answered. Each
   origin is now granted as the navigation starts (and where a redirect
   ended), and a reset takes every origin granted back to asking (#225).
+- `emulate` and `set_offline` on Chrome reach the tab's frames of another
+  origin, which Chrome emulates apart: such a frame kept the real user
+  agent (in its requests too), time zone and locale, its media features,
+  CPU and network throttling, and stayed online. Each gets what the tab
+  emulates as it attaches, before it runs, and each call after, but the
+  viewport, which Chrome takes on the page only (#227). The README names
+  what still differs: such a frame's `devicePixelRatio` on Chrome, and the
+  user agent of workers already running.
 
 ### Changed
 

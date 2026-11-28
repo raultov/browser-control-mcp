@@ -20,6 +20,7 @@ pub(crate) struct TabDomainStates {
     pub(crate) webmcp: Arc<Mutex<WebmcpState>>,
     pub(crate) dialog: Arc<Mutex<DialogState>>,
     pub(crate) routes: Arc<Mutex<crate::handler::routes::RouteState>>,
+    pub(crate) emulation: Arc<Mutex<crate::handler::cdp_domains::page::emulate::Emulation>>,
 }
 
 pub(crate) struct TabEntry {
@@ -49,6 +50,7 @@ impl TabEntry {
             webmcp: self.webmcp_state.clone(),
             dialog: self.dialog_state.clone(),
             routes: self.route_state.clone(),
+            emulation: self.emulation_state.clone(),
         }
     }
 }

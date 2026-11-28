@@ -1,0 +1,10 @@
+{
+ "number": 227,
+ "title": "emulate: user_agent, timezone and locale do not reach a cross-site iframe on Chrome (they do on Firefox)",
+ "family": "other",
+ "command": [
+  "repro_emulate_xframe.py"
+ ],
+ "bug_regex": "BROWSERS DIFFER on: .*tz",
+ "exit_on_bug": true
+}
